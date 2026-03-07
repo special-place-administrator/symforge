@@ -1,28 +1,35 @@
 mod deployment;
 mod health;
 mod init;
+pub mod run_manager;
 
 use std::sync::Arc;
 
 use crate::config::ServerConfig;
 use std::path::PathBuf;
 
+use tracing::info;
+
 use crate::domain::{
-    ActiveWorkspaceContext, ComponentHealth, DeploymentReport, HealthReport, InitializationReport,
-    MigrationReport, RegistryView,
+    ActiveWorkspaceContext, ComponentHealth, DeploymentReport, HealthReport, IndexRun,
+    IndexRunMode, InitializationReport, MigrationReport, RegistryView,
 };
 use crate::error::{Result, TokenizorError};
-use crate::storage::{BlobStore, ControlPlane, LocalCasBlobStore, build_control_plane};
+use crate::storage::{
+    BlobStore, ControlPlane, LocalCasBlobStore, RegistryPersistence, build_control_plane,
+};
 
 use self::deployment::DeploymentService;
 use self::health::HealthService;
 use self::init::InitializationService;
+pub use self::run_manager::RunManager;
 
 #[derive(Clone)]
 pub struct ApplicationContext {
     config: ServerConfig,
     blob_store: Arc<dyn BlobStore>,
     control_plane: Arc<dyn ControlPlane>,
+    run_manager: Arc<RunManager>,
 }
 
 impl ApplicationContext {
@@ -31,10 +38,27 @@ impl ApplicationContext {
             Arc::new(LocalCasBlobStore::new(config.blob_store.clone()));
         let control_plane = build_control_plane(&config.control_plane)?;
 
+        let registry_path = config
+            .blob_store
+            .root_dir
+            .join("control-plane")
+            .join("project-workspace-registry.json");
+        let persistence = RegistryPersistence::new(registry_path);
+        let run_manager = Arc::new(RunManager::new(persistence));
+
+        let transitioned = run_manager.startup_sweep()?;
+        if !transitioned.is_empty() {
+            info!(
+                count = transitioned.len(),
+                "startup sweep transitioned stale runs to Interrupted"
+            );
+        }
+
         Ok(Self {
             config,
             blob_store,
             control_plane,
+            run_manager,
         })
     }
 
@@ -119,6 +143,14 @@ impl ApplicationContext {
         .resolve_active_context(target_path)
     }
 
+    pub fn start_indexing(&self, repo_id: &str, mode: IndexRunMode) -> Result<IndexRun> {
+        self.run_manager.start_run(repo_id, mode)
+    }
+
+    pub fn run_manager(&self) -> &Arc<RunManager> {
+        &self.run_manager
+    }
+
     pub fn ensure_runtime_ready(&self) -> Result<DeploymentReport> {
         let report = self.deployment_report()?;
 
@@ -144,9 +176,9 @@ mod tests {
         Checkpoint, ComponentHealth, HealthIssueCategory, IdempotencyRecord, IndexRun, Repository,
     };
     use crate::error::{Result, TokenizorError};
-    use crate::storage::{BlobStore, ControlPlane, StoredBlob};
+    use crate::storage::{BlobStore, ControlPlane, RegistryPersistence, StoredBlob};
 
-    use super::ApplicationContext;
+    use super::{ApplicationContext, RunManager};
 
     struct FakeBlobStore {
         root_dir: PathBuf,
@@ -265,10 +297,15 @@ mod tests {
             ),
         ));
         let control_plane = Arc::new(FakeControlPlane::new(deployment_checks));
+        let temp_dir = tempfile::tempdir().unwrap();
+        let registry_path = temp_dir.path().join("test-registry.json");
+        let persistence = RegistryPersistence::new(registry_path);
+        let run_manager = Arc::new(RunManager::new(persistence));
         let application = ApplicationContext {
             config,
             blob_store: blob_store.clone(),
             control_plane: control_plane.clone(),
+            run_manager,
         };
 
         (application, blob_store, control_plane)

@@ -35,10 +35,69 @@ impl TokenizorError {
             source,
         }
     }
+
+    pub fn is_systemic(&self) -> bool {
+        match self {
+            Self::Io { .. } => true,
+            Self::Storage(_) => true,
+            Self::Integrity(_) => true,
+            Self::ControlPlane(_) => true,
+            Self::Serialization(_) => true,
+            Self::Config(_) => false,
+            Self::InvalidArgument(_) => false,
+            Self::NotFound(_) => false,
+        }
+    }
 }
 
 impl From<serde_json::Error> for TokenizorError {
     fn from(error: serde_json::Error) -> Self {
         Self::Serialization(error.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_systemic_returns_true_for_io_errors() {
+        let err = TokenizorError::io("/tmp/test", io::Error::new(io::ErrorKind::NotFound, "gone"));
+        assert!(err.is_systemic());
+    }
+
+    #[test]
+    fn test_is_systemic_returns_true_for_storage_errors() {
+        assert!(TokenizorError::Storage("disk full".into()).is_systemic());
+    }
+
+    #[test]
+    fn test_is_systemic_returns_true_for_integrity_errors() {
+        assert!(TokenizorError::Integrity("hash mismatch".into()).is_systemic());
+    }
+
+    #[test]
+    fn test_is_systemic_returns_true_for_control_plane_errors() {
+        assert!(TokenizorError::ControlPlane("connection lost".into()).is_systemic());
+    }
+
+    #[test]
+    fn test_is_systemic_returns_true_for_serialization_errors() {
+        assert!(TokenizorError::Serialization("invalid json".into()).is_systemic());
+    }
+
+    #[test]
+    fn test_is_systemic_returns_false_for_config_errors() {
+        assert!(!TokenizorError::Config("bad config".into()).is_systemic());
+    }
+
+    #[test]
+    fn test_is_systemic_returns_false_for_invalid_argument_errors() {
+        assert!(!TokenizorError::InvalidArgument("bad arg".into()).is_systemic());
+    }
+
+    #[test]
+    fn test_is_systemic_returns_false_for_not_found_errors() {
+        assert!(!TokenizorError::NotFound("missing".into()).is_systemic());
     }
 }
