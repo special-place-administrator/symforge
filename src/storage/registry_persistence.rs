@@ -98,10 +98,37 @@ impl RegistryPersistence {
                         "run `{run_id}` not found in registry"
                     ))
                 })?;
+            // Skip if already terminal (e.g. cancelled before pipeline started)
+            if run.status.is_terminal() {
+                return Ok(());
+            }
             run.status = IndexRunStatus::Running;
             run.started_at_unix_ms = Some(started_at_unix_ms);
             Ok(())
         })
+    }
+
+    pub fn cancel_run_if_active(&self, run_id: &str, finished_at_unix_ms: u64) -> Result<bool> {
+        let mut changed = false;
+        self.read_modify_write(|data| {
+            let run = data
+                .runs
+                .iter_mut()
+                .find(|r| r.run_id == run_id)
+                .ok_or_else(|| {
+                    TokenizorError::NotFound(format!(
+                        "run `{run_id}` not found in registry"
+                    ))
+                })?;
+            if run.status.is_terminal() {
+                return Ok(());
+            }
+            run.status = IndexRunStatus::Cancelled;
+            run.finished_at_unix_ms = Some(finished_at_unix_ms);
+            changed = true;
+            Ok(())
+        })?;
+        Ok(changed)
     }
 
     pub fn update_run_status_with_finish(
@@ -808,5 +835,43 @@ mod tests {
         let fixture = include_str!("../../tests/fixtures/epic1-registry.json");
         let data: RegistryData = serde_json::from_str(fixture).unwrap();
         assert!(data.run_file_records.is_empty());
+    }
+
+    #[test]
+    fn test_cancel_run_if_active_transitions_running_to_cancelled() {
+        let (_dir, persistence) = temp_registry();
+        let run = sample_run("run-1", "repo-1", IndexRunStatus::Running);
+        persistence.save_run(&run).unwrap();
+
+        let changed = persistence.cancel_run_if_active("run-1", 5000).unwrap();
+        assert!(changed);
+
+        let updated = persistence.find_run("run-1").unwrap().unwrap();
+        assert_eq!(updated.status, IndexRunStatus::Cancelled);
+        assert_eq!(updated.finished_at_unix_ms, Some(5000));
+    }
+
+    #[test]
+    fn test_cancel_run_if_active_returns_false_for_terminal_run() {
+        let (_dir, persistence) = temp_registry();
+        let run = sample_run("run-1", "repo-1", IndexRunStatus::Succeeded);
+        persistence.save_run(&run).unwrap();
+
+        let changed = persistence.cancel_run_if_active("run-1", 5000).unwrap();
+        assert!(!changed);
+
+        let updated = persistence.find_run("run-1").unwrap().unwrap();
+        assert_eq!(updated.status, IndexRunStatus::Succeeded);
+        assert_eq!(updated.finished_at_unix_ms, None);
+    }
+
+    #[test]
+    fn test_cancel_run_if_active_returns_not_found_for_missing_run() {
+        let (_dir, persistence) = temp_registry();
+
+        let result = persistence.cancel_run_if_active("nonexistent", 5000);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, crate::error::TokenizorError::NotFound(_)));
     }
 }

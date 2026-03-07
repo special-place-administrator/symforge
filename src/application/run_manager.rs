@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::domain::{
     FileOutcomeSummary, FileRecord, IdempotencyRecord, IdempotencyStatus, IndexRun, IndexRunMode,
@@ -185,20 +185,37 @@ impl RunManager {
         let run_id = run.run_id.clone();
         let repo_id_owned = repo_id.to_string();
 
-        let pipeline = IndexingPipeline::new(run_id.clone(), repo_root)
+        let token = CancellationToken::new();
+
+        let pipeline = IndexingPipeline::new(run_id.clone(), repo_root, token.clone())
             .with_cas(blob_store, repo_id_owned.clone());
         let progress = pipeline.progress();
 
         let manager = Arc::clone(self);
-        let token = CancellationToken::new();
 
         let handle = tokio::spawn(async move {
-            // Transition to Running with start timestamp
+            // Transition to Running with start timestamp (skips if already terminal)
             if let Err(e) = manager.persistence.transition_to_running(
                 &run_id,
                 unix_timestamp_ms(),
             ) {
                 error!(run_id = %run_id, error = %e, "failed to transition to Running");
+                manager.deregister_active_run(&repo_id_owned);
+                return;
+            }
+
+            // If already cancelled before pipeline starts, skip execution
+            let already_terminal = match manager.persistence.find_run(&run_id) {
+                Ok(Some(r)) => r.status.is_terminal(),
+                Ok(None) => false,
+                Err(e) => {
+                    warn!(run_id = %run_id, error = %e, "failed to read run before pipeline start");
+                    false
+                }
+            };
+            if already_terminal {
+                debug!(run_id = %run_id, "run already terminal before pipeline start — skipping");
+                manager.deregister_active_run(&repo_id_owned);
                 return;
             }
 
@@ -239,23 +256,38 @@ impl RunManager {
                 (None, None) => None,
             };
 
-            let finished_at = unix_timestamp_ms();
-            let not_yet_supported = if result.not_yet_supported.is_empty() {
-                None
-            } else {
-                Some(result.not_yet_supported)
+            // Check if the run was already cancelled (or otherwise made terminal)
+            // by cancel_run() before we update status — prevents overwriting Cancelled
+            let already_terminal = match manager.persistence.find_run(&run_id) {
+                Ok(Some(r)) => r.status.is_terminal(),
+                Ok(None) => false,
+                Err(e) => {
+                    warn!(run_id = %run_id, error = %e, "failed to read run before status update");
+                    false
+                }
             };
-            if let Err(e) = manager.persistence.update_run_status_with_finish(
-                &run_id,
-                result.status.clone(),
-                final_error_summary,
-                finished_at,
-                not_yet_supported,
-            ) {
-                error!(run_id = %run_id, error = %e, "failed to update final run status");
+
+            if !already_terminal {
+                let finished_at = unix_timestamp_ms();
+                let not_yet_supported = if result.not_yet_supported.is_empty() {
+                    None
+                } else {
+                    Some(result.not_yet_supported)
+                };
+                if let Err(e) = manager.persistence.update_run_status_with_finish(
+                    &run_id,
+                    result.status.clone(),
+                    final_error_summary,
+                    finished_at,
+                    not_yet_supported,
+                ) {
+                    error!(run_id = %run_id, error = %e, "failed to update final run status");
+                }
+            } else {
+                debug!(run_id = %run_id, "run already terminal — skipping status update");
             }
 
-            // Deregister active run
+            // Deregister active run (idempotent — no-op if already removed by cancel_run)
             manager.deregister_active_run(&repo_id_owned);
         });
 
@@ -287,6 +319,40 @@ impl RunManager {
             .ok_or_else(|| TokenizorError::NotFound(format!("run '{run_id}' not found")))?;
 
         self.build_run_report(run)
+    }
+
+    pub fn cancel_run(&self, run_id: &str) -> Result<RunStatusReport> {
+        let run = self
+            .persistence
+            .find_run(run_id)?
+            .ok_or_else(|| TokenizorError::NotFound(format!("run '{run_id}' not found")))?;
+
+        // AC #2: terminal runs return current report without mutation
+        if run.status.is_terminal() {
+            return self.inspect_run(run_id);
+        }
+
+        // Signal cancellation token and remove from active_runs
+        // Drop Mutex guard before calling persistence methods
+        {
+            let mut active_runs = self.active_runs.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(active_run) = active_runs.remove(&run.repo_id) {
+                active_run.cancellation_token.cancel();
+                debug!(run_id = %run_id, repo_id = %run.repo_id, "cancellation token signaled");
+            }
+        }
+
+        // Atomic, race-safe persistence update
+        let changed = self
+            .persistence
+            .cancel_run_if_active(run_id, unix_timestamp_ms())?;
+
+        if changed {
+            info!(run_id = %run_id, "run cancelled");
+        } else {
+            debug!(run_id = %run_id, "cancel_run: run became terminal before persistence update");
+        }
+        self.inspect_run(run_id)
     }
 
     pub fn list_runs_with_health(
@@ -890,5 +956,96 @@ mod tests {
         assert_eq!(progress.total_files, 1);
         assert_eq!(progress.files_processed, 1);
         assert_eq!(progress.files_failed, 0);
+    }
+
+    #[tokio::test]
+    async fn test_cancel_active_run_signals_token_and_returns_cancelled() {
+        let (_dir, manager) = temp_run_manager();
+        let run = manager.start_run("repo-cancel", IndexRunMode::Full).unwrap();
+        let run_id = run.run_id.clone();
+
+        // Transition to Running
+        manager.persistence.transition_to_running(&run_id, 1001).unwrap();
+
+        // Register an active run with a cancellation token
+        let token = CancellationToken::new();
+        let token_clone = token.clone();
+        manager.register_active_run(
+            "repo-cancel",
+            ActiveRun {
+                handle: tokio::spawn(async {}),
+                cancellation_token: token,
+                progress: None,
+            },
+        );
+
+        let report = manager.cancel_run(&run_id).unwrap();
+        assert_eq!(report.run.status, IndexRunStatus::Cancelled);
+        assert!(!report.is_active);
+        assert!(token_clone.is_cancelled());
+    }
+
+    #[test]
+    fn test_cancel_terminal_run_returns_current_report_without_mutation() {
+        let (_dir, manager) = temp_run_manager();
+        let run = manager.start_run("repo-term", IndexRunMode::Full).unwrap();
+        let run_id = run.run_id.clone();
+
+        // Complete the run
+        manager
+            .persistence
+            .update_run_status_with_finish(&run_id, IndexRunStatus::Succeeded, None, 2000, None)
+            .unwrap();
+
+        let report = manager.cancel_run(&run_id).unwrap();
+        assert_eq!(report.run.status, IndexRunStatus::Succeeded);
+        assert!(!report.is_active);
+    }
+
+    #[test]
+    fn test_cancel_nonexistent_run_returns_not_found() {
+        let (_dir, manager) = temp_run_manager();
+
+        let result = manager.cancel_run("nonexistent-run");
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            crate::error::TokenizorError::NotFound(_)
+        ));
+    }
+
+    #[test]
+    fn test_cancel_queued_run_without_active_entry_transitions_to_cancelled() {
+        let (_dir, manager) = temp_run_manager();
+        let run = manager.start_run("repo-queued", IndexRunMode::Full).unwrap();
+        let run_id = run.run_id.clone();
+
+        // Run is Queued — no active entry registered yet
+        let report = manager.cancel_run(&run_id).unwrap();
+        assert_eq!(report.run.status, IndexRunStatus::Cancelled);
+        assert!(!report.is_active);
+    }
+
+    #[tokio::test]
+    async fn test_cancel_removes_from_active_runs() {
+        let (_dir, manager) = temp_run_manager();
+        let run = manager.start_run("repo-remove", IndexRunMode::Full).unwrap();
+        let run_id = run.run_id.clone();
+
+        manager.persistence.transition_to_running(&run_id, 1001).unwrap();
+
+        let token = CancellationToken::new();
+        manager.register_active_run(
+            "repo-remove",
+            ActiveRun {
+                handle: tokio::spawn(async {}),
+                cancellation_token: token,
+                progress: None,
+            },
+        );
+
+        assert!(manager.has_active_run("repo-remove"));
+        manager.cancel_run(&run_id).unwrap();
+        assert!(!manager.has_active_run("repo-remove"));
     }
 }

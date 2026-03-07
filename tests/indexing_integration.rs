@@ -814,3 +814,175 @@ async fn test_phase_transitions_during_pipeline_execution() {
     assert!(!report.is_active);
     assert_eq!(report.run.status, IndexRunStatus::Succeeded);
 }
+
+// ============================================================
+// Story 2.7 — Cancel an Active Indexing Run Safely
+// ============================================================
+
+#[tokio::test]
+async fn test_cancel_active_run_transitions_to_cancelled() {
+    let (_dir, manager, _cas_dir, cas) = setup_test_env();
+
+    // Create a repo with many files so the pipeline takes long enough to cancel
+    let repo_dir = tempfile::tempdir().unwrap();
+    for i in 0..500 {
+        fs::write(
+            repo_dir.path().join(format!("file_{i}.rs")),
+            format!("fn f{i}() {{ let x = {i}; let y = x + 1; let z = y * 2; }}"),
+        )
+        .unwrap();
+    }
+
+    let (run, _progress) = manager
+        .launch_run(
+            "repo-cancel-active",
+            IndexRunMode::Full,
+            repo_dir.path().to_path_buf(),
+            cas,
+        )
+        .unwrap();
+
+    // Yield to let the spawned task start and transition to Running
+    tokio::task::yield_now().await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+
+    // Cancel the run
+    let report = manager.cancel_run(&run.run_id).unwrap();
+    assert_eq!(report.run.status, IndexRunStatus::Cancelled);
+    assert!(!report.is_active);
+    assert_eq!(report.health, RunHealth::Healthy);
+
+    // Wait for spawned task to finish
+    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+
+    // Verify the status is still Cancelled (spawned task didn't overwrite)
+    let final_report = manager.inspect_run(&run.run_id).unwrap();
+    assert_eq!(final_report.run.status, IndexRunStatus::Cancelled);
+    assert!(!final_report.is_active);
+    assert!(final_report.run.finished_at_unix_ms.is_some());
+
+    if let Some(progress) = final_report.progress {
+        assert_eq!(progress.phase, RunPhase::Complete);
+    }
+}
+
+#[tokio::test]
+async fn test_cancel_succeeded_run_returns_succeeded_unchanged() {
+    let (_dir, manager, _cas_dir, cas) = setup_test_env();
+    let repo_dir = tempfile::tempdir().unwrap();
+    fs::write(repo_dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+    let (run, _progress) = manager
+        .launch_run(
+            "repo-cancel-succ",
+            IndexRunMode::Full,
+            repo_dir.path().to_path_buf(),
+            cas,
+        )
+        .unwrap();
+
+    // Wait for pipeline to complete
+    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+    let before = manager.inspect_run(&run.run_id).unwrap();
+    assert_eq!(before.run.status, IndexRunStatus::Succeeded);
+
+    // Cancel after success — AC #2: deterministic, no mutation
+    let report = manager.cancel_run(&run.run_id).unwrap();
+    assert_eq!(report.run.status, IndexRunStatus::Succeeded);
+}
+
+#[tokio::test]
+async fn test_cancel_nonexistent_run_returns_not_found() {
+    let (_dir, manager, _cas_dir, _cas) = setup_test_env();
+
+    let result = manager.cancel_run("does-not-exist");
+    assert!(result.is_err());
+    assert!(matches!(
+        result.unwrap_err(),
+        TokenizorError::NotFound(_)
+    ));
+}
+
+#[tokio::test]
+async fn test_cancel_failed_run_returns_failed_unchanged() {
+    let (_dir, manager, _cas_dir, cas) = setup_test_env();
+
+    // Use a non-existent repo root to trigger discovery failure → Failed status
+    let (run, _progress) = manager
+        .launch_run(
+            "repo-cancel-fail",
+            IndexRunMode::Full,
+            PathBuf::from("/nonexistent/repo/path"),
+            cas,
+        )
+        .unwrap();
+
+    // Wait for pipeline to fail
+    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+    let before = manager.inspect_run(&run.run_id).unwrap();
+    assert_eq!(before.run.status, IndexRunStatus::Failed);
+
+    // Cancel after failure — AC #2: no overwrite
+    let report = manager.cancel_run(&run.run_id).unwrap();
+    assert_eq!(report.run.status, IndexRunStatus::Failed);
+}
+
+#[tokio::test]
+async fn test_cancel_immediate_processes_no_files() {
+    let (_dir, manager, _cas_dir, cas) = setup_test_env();
+    let repo_dir = tempfile::tempdir().unwrap();
+    fs::write(repo_dir.path().join("main.rs"), "fn main() {}").unwrap();
+    fs::write(repo_dir.path().join("lib.py"), "def foo(): pass").unwrap();
+
+    let (run, _progress) = manager
+        .launch_run(
+            "repo-precancel",
+            IndexRunMode::Full,
+            repo_dir.path().to_path_buf(),
+            cas,
+        )
+        .unwrap();
+
+    // Cancel immediately before pipeline has a chance to start
+    let _report = manager.cancel_run(&run.run_id).unwrap();
+
+    // Wait for spawned task to observe the cancellation
+    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+    let final_report = manager.inspect_run(&run.run_id).unwrap();
+    assert_eq!(final_report.run.status, IndexRunStatus::Cancelled);
+    assert!(!final_report.is_active);
+
+    // Verify no files were processed (files_processed == 0)
+    let file_records = manager.persistence().get_file_records(&run.run_id).unwrap();
+    assert_eq!(file_records.len(), 0, "expected 0 file records for immediately cancelled run");
+}
+
+#[tokio::test]
+async fn test_double_cancel_same_run_returns_same_cancelled_report() {
+    let (_dir, manager, _cas_dir, cas) = setup_test_env();
+    let repo_dir = tempfile::tempdir().unwrap();
+    fs::write(repo_dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+    let (run, _progress) = manager
+        .launch_run(
+            "repo-double-cancel",
+            IndexRunMode::Full,
+            repo_dir.path().to_path_buf(),
+            cas,
+        )
+        .unwrap();
+
+    // First cancel
+    let report1 = manager.cancel_run(&run.run_id).unwrap();
+    assert_eq!(report1.run.status, IndexRunStatus::Cancelled);
+
+    // Wait for spawned task to finish
+    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+    // Second cancel — AC #2: already terminal, returns same status
+    let report2 = manager.cancel_run(&run.run_id).unwrap();
+    assert_eq!(report2.run.status, IndexRunStatus::Cancelled);
+}

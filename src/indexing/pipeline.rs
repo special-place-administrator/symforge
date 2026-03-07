@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::Semaphore;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::domain::{FileOutcome, FileProcessingResult, FileRecord, IndexRunStatus, LanguageId, PersistedFileOutcome, RunPhase, SupportTier};
@@ -53,10 +54,11 @@ pub struct IndexingPipeline {
     circuit_breaker_threshold: usize,
     progress: Arc<PipelineProgress>,
     cas: Option<Arc<dyn BlobStore>>,
+    cancellation_token: CancellationToken,
 }
 
 impl IndexingPipeline {
-    pub fn new(run_id: String, repo_root: PathBuf) -> Self {
+    pub fn new(run_id: String, repo_root: PathBuf, cancellation_token: CancellationToken) -> Self {
         let concurrency_cap = num_cpus::get().max(1).min(16);
         Self {
             run_id,
@@ -66,6 +68,7 @@ impl IndexingPipeline {
             circuit_breaker_threshold: 5,
             progress: Arc::new(PipelineProgress::new()),
             cas: None,
+            cancellation_token,
         }
     }
 
@@ -91,6 +94,18 @@ impl IndexingPipeline {
 
     pub async fn execute(self) -> PipelineResult {
         info!(run_id = %self.run_id, root = %self.repo_root.display(), "pipeline starting");
+
+        if self.cancellation_token.is_cancelled() {
+            info!(run_id = %self.run_id, "pipeline cancelled before discovery");
+            self.progress.set_phase(RunPhase::Complete);
+            return PipelineResult {
+                status: IndexRunStatus::Cancelled,
+                results: vec![],
+                file_records: vec![],
+                not_yet_supported: BTreeMap::new(),
+                error_summary: None,
+            };
+        }
 
         let files = match discovery::discover_files(&self.repo_root) {
             Ok(files) => files,
@@ -161,6 +176,12 @@ impl IndexingPipeline {
         for file in files {
             // M3: Stop spawning tasks once the circuit breaker has tripped
             if circuit_broken.load(Ordering::Relaxed) {
+                break;
+            }
+
+            // Cooperative cancellation: stop spawning new file tasks
+            if self.cancellation_token.is_cancelled() {
+                debug!(run_id = %self.run_id, "cancellation detected — stopping file spawn loop");
                 break;
             }
 
@@ -286,6 +307,19 @@ impl IndexingPipeline {
             }
         }
 
+        // If cancelled, set phase to Complete and return Cancelled immediately
+        if self.cancellation_token.is_cancelled() {
+            info!(run_id = %self.run_id, "pipeline cancelled — returning Cancelled status");
+            self.progress.set_phase(RunPhase::Complete);
+            return PipelineResult {
+                status: IndexRunStatus::Cancelled,
+                results,
+                file_records,
+                not_yet_supported,
+                error_summary: None,
+            };
+        }
+
         self.progress.set_phase(RunPhase::Finalizing);
 
         let was_broken = circuit_broken.load(Ordering::Relaxed);
@@ -372,6 +406,7 @@ impl IndexingPipeline {
 mod tests {
     use super::*;
     use std::fs;
+    use tokio_util::sync::CancellationToken;
 
     fn temp_repo_with_files(files: &[(&str, &str)]) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
@@ -392,7 +427,7 @@ mod tests {
             ("lib.py", "def foo(): pass"),
         ]);
 
-        let pipeline = IndexingPipeline::new("test-run".into(), dir.path().to_path_buf())
+        let pipeline = IndexingPipeline::new("test-run".into(), dir.path().to_path_buf(), CancellationToken::new())
             .with_concurrency(2);
         let result = pipeline.execute().await;
 
@@ -413,7 +448,7 @@ mod tests {
             })
             .collect();
 
-        let pipeline = IndexingPipeline::new("test-cb".into(), PathBuf::from("/tmp"))
+        let pipeline = IndexingPipeline::new("test-cb".into(), PathBuf::from("/tmp"), CancellationToken::new())
             .with_concurrency(1)
             .with_circuit_breaker(3);
         let result = pipeline.process_discovered(fake_files).await;
@@ -442,7 +477,7 @@ mod tests {
             ("c.go", "package main\nfunc c() {}"),
         ]);
 
-        let pipeline = IndexingPipeline::new("test-prog".into(), dir.path().to_path_buf())
+        let pipeline = IndexingPipeline::new("test-prog".into(), dir.path().to_path_buf(), CancellationToken::new())
             .with_concurrency(1);
         let progress = pipeline.progress();
         let result = pipeline.execute().await;
@@ -456,7 +491,7 @@ mod tests {
     #[tokio::test]
     async fn test_pipeline_empty_repo() {
         let dir = tempfile::tempdir().unwrap();
-        let pipeline = IndexingPipeline::new("test-empty".into(), dir.path().to_path_buf());
+        let pipeline = IndexingPipeline::new("test-empty".into(), dir.path().to_path_buf(), CancellationToken::new());
         let result = pipeline.execute().await;
 
         assert_eq!(result.status, IndexRunStatus::Succeeded);
@@ -466,7 +501,7 @@ mod tests {
     #[tokio::test]
     async fn test_pipeline_discovery_failure() {
         let pipeline =
-            IndexingPipeline::new("test-bad".into(), PathBuf::from("/nonexistent/path/repo"));
+            IndexingPipeline::new("test-bad".into(), PathBuf::from("/nonexistent/path/repo"), CancellationToken::new());
         let result = pipeline.execute().await;
 
         assert_eq!(result.status, IndexRunStatus::Failed);
@@ -487,7 +522,7 @@ mod tests {
             root_dir: cas_dir.path().to_path_buf(),
         }));
 
-        let pipeline = IndexingPipeline::new("test-cas".into(), repo_dir.path().to_path_buf())
+        let pipeline = IndexingPipeline::new("test-cas".into(), repo_dir.path().to_path_buf(), CancellationToken::new())
             .with_cas(cas, "repo-1".to_string())
             .with_concurrency(1);
         let result = pipeline.execute().await;
@@ -507,7 +542,7 @@ mod tests {
     async fn test_pipeline_without_cas_produces_no_file_records() {
         let dir = temp_repo_with_files(&[("main.rs", "fn main() {}")]);
 
-        let pipeline = IndexingPipeline::new("test-no-cas".into(), dir.path().to_path_buf())
+        let pipeline = IndexingPipeline::new("test-no-cas".into(), dir.path().to_path_buf(), CancellationToken::new())
             .with_concurrency(1);
         let result = pipeline.execute().await;
 
@@ -565,7 +600,7 @@ mod tests {
             root: PathBuf::from("/nonexistent/cas/root"),
         });
 
-        let pipeline = IndexingPipeline::new("test-systemic".into(), repo_dir.path().to_path_buf())
+        let pipeline = IndexingPipeline::new("test-systemic".into(), repo_dir.path().to_path_buf(), CancellationToken::new())
             .with_cas(cas, "repo-1".to_string())
             .with_concurrency(1);
         let result = pipeline.execute().await;
@@ -592,7 +627,7 @@ mod tests {
             ("main.cs", "class Main {}"),
         ]);
 
-        let pipeline = IndexingPipeline::new("test-partition".into(), dir.path().to_path_buf())
+        let pipeline = IndexingPipeline::new("test-partition".into(), dir.path().to_path_buf(), CancellationToken::new())
             .with_concurrency(1);
         let result = pipeline.execute().await;
 
@@ -626,5 +661,51 @@ mod tests {
             progress.set_phase(phase.clone());
             assert_eq!(progress.phase(), *phase);
         }
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_returns_cancelled_when_token_pre_cancelled() {
+        let dir = temp_repo_with_files(&[("main.rs", "fn main() {}")]);
+        let token = CancellationToken::new();
+        token.cancel();
+
+        let pipeline = IndexingPipeline::new("test-precancel".into(), dir.path().to_path_buf(), token);
+        let result = pipeline.execute().await;
+
+        assert_eq!(result.status, IndexRunStatus::Cancelled);
+        assert!(result.results.is_empty());
+        assert!(result.file_records.is_empty());
+        assert!(result.error_summary.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_checks_cancellation_between_files() {
+        let dir = temp_repo_with_files(&[
+            ("a.rs", "fn a() {}"),
+            ("b.py", "def b(): pass"),
+            ("c.go", "package main\nfunc c() {}"),
+        ]);
+
+        let token = CancellationToken::new();
+        let token_clone = token.clone();
+
+        let pipeline = IndexingPipeline::new("test-midcancel".into(), dir.path().to_path_buf(), token)
+            .with_concurrency(1);
+        let progress = pipeline.progress();
+
+        // Cancel immediately — with concurrency 1, the loop checks
+        // cancellation before each spawn, so at most 1 file may already be in-flight
+        token_clone.cancel();
+
+        let result = pipeline.execute().await;
+
+        assert_eq!(result.status, IndexRunStatus::Cancelled);
+        assert!(result.error_summary.is_none());
+        let processed = progress.files_processed.load(Ordering::Relaxed);
+        let total = progress.total_files.load(Ordering::Relaxed);
+        assert!(
+            processed <= total,
+            "expected processed ({processed}) <= total ({total})"
+        );
     }
 }

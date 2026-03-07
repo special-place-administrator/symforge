@@ -154,6 +154,28 @@ impl TokenizorServer {
 
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
+
+    #[tool(
+        description = "Cancel an active indexing run. Returns the updated run status report. If the run is already terminal, returns the current status without modification. Parameters: run_id (string, required)."
+    )]
+    fn cancel_index_run(&self, params: rmcp::model::JsonObject) -> Result<CallToolResult, McpError> {
+        let run_id = params
+            .get("run_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError::invalid_params("missing required parameter: run_id", None))?;
+
+        let report = self
+            .application
+            .run_manager()
+            .cancel_run(run_id)
+            .map_err(to_mcp_error)?;
+
+        let json = serde_json::to_string_pretty(&report).map_err(|e| {
+            McpError::internal_error(format!("failed to serialize run status report: {e}"), None)
+        })?;
+
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
 }
 
 #[tool_handler]
