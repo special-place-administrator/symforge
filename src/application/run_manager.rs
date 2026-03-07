@@ -7,9 +7,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::domain::{
-    Checkpoint, FileOutcomeSummary, FileRecord, IdempotencyRecord, IdempotencyStatus, IndexRun,
-    IndexRunMode, IndexRunStatus, PersistedFileOutcome, RunHealth, RunPhase, RunProgressSnapshot,
-    RunStatusReport, unix_timestamp_ms,
+    Checkpoint, FileOutcomeSummary, FileRecord, IdempotencyRecord, IdempotencyStatus,
+    IndexRun, IndexRunMode, IndexRunStatus, InvalidationResult, PersistedFileOutcome,
+    RepositoryStatus, RunHealth, RunPhase, RunProgressSnapshot, RunStatusReport,
+    unix_timestamp_ms,
 };
 use crate::storage::BlobStore;
 use crate::error::{Result, TokenizorError};
@@ -192,6 +193,12 @@ impl RunManager {
         let mode = IndexRunMode::Reindex;
         let request_hash = compute_request_hash(repo_id, ws_id, &mode);
 
+        // TODO(Story 2.9 bug): Same class of stale-record issue as invalidate_repository.
+        // If a reindex completes, the run terminates, and a new reindex with the same params
+        // is attempted, this idempotent replay returns the old (terminal) run without launching
+        // a new one. A different-param reindex is rejected as conflicting replay even though
+        // the old run is finished. Fix: verify the referenced run is still active/relevant
+        // before returning the idempotent replay result; fall through if stale.
         if let Some(existing) = self.persistence.find_idempotency_record(&idempotency_key)? {
             if existing.request_hash == request_hash {
                 info!(
@@ -287,6 +294,109 @@ impl RunManager {
         self.spawn_pipeline_for_run(&run, repo_root, blob_store);
 
         Ok(run)
+    }
+
+    pub fn invalidate_repository(
+        &self,
+        repo_id: &str,
+        workspace_id: Option<&str>,
+        reason: Option<&str>,
+    ) -> Result<InvalidationResult> {
+        // Validate repo exists first
+        let repo = self
+            .persistence
+            .get_repository(repo_id)?
+            .ok_or_else(|| {
+                TokenizorError::NotFound(format!("repository not found: {repo_id}"))
+            })?;
+
+        // Domain-level idempotency: already invalidated → return success
+        // regardless of idempotency key state or reason
+        if repo.status == RepositoryStatus::Invalidated {
+            info!(repo_id = %repo_id, "repository already invalidated, returning success");
+            return Ok(InvalidationResult {
+                repo_id: repo_id.to_string(),
+                previous_status: RepositoryStatus::Invalidated,
+                invalidated_at_unix_ms: repo.invalidated_at_unix_ms.unwrap_or(0),
+                reason: repo.invalidation_reason.clone(),
+                action_required: "re-index or repair required".to_string(),
+            });
+        }
+
+        let ws_id = workspace_id.unwrap_or("");
+        let idempotency_key = format!("invalidate::{repo_id}::{ws_id}");
+        let request_hash = compute_invalidation_request_hash(repo_id, ws_id, reason);
+
+        // Key-based idempotency check.
+        // We already know repo is NOT Invalidated (domain-level check above returned early).
+        // If an old idempotency record exists, the repo was previously invalidated but the
+        // effect was later reversed (e.g., by re-indexing). The record is stale — fall
+        // through to re-apply the invalidation and overwrite the idempotency record.
+        if let Some(_stale) = self.persistence.find_idempotency_record(&idempotency_key)? {
+            debug!(
+                idempotency_key = %idempotency_key,
+                "stale idempotency record found — repo no longer invalidated, re-applying"
+            );
+        }
+
+        // Check for active runs — cannot invalidate while indexing is active
+        let active_runs = self.active_runs.lock().unwrap_or_else(|e| e.into_inner());
+        if active_runs.contains_key(repo_id) {
+            return Err(TokenizorError::InvalidOperation(format!(
+                "cannot invalidate repository `{repo_id}`: an active indexing run exists \
+                 — cancel or wait for completion first"
+            )));
+        }
+        drop(active_runs);
+
+        let persisted_active = self.persistence.list_runs()?;
+        let has_active_persisted = persisted_active.iter().any(|r| {
+            r.repo_id == repo_id
+                && matches!(r.status, IndexRunStatus::Queued | IndexRunStatus::Running)
+        });
+        if has_active_persisted {
+            return Err(TokenizorError::InvalidOperation(format!(
+                "cannot invalidate repository `{repo_id}`: an active indexing run exists \
+                 — cancel or wait for completion first"
+            )));
+        }
+
+        // Transition repo status to Invalidated
+        let now = unix_timestamp_ms();
+        let previous_status = repo.status.clone();
+
+        self.persistence.update_repository_status(
+            repo_id,
+            RepositoryStatus::Invalidated,
+            Some(now),
+            reason.map(|r| r.to_string()),
+        )?;
+
+        // Save idempotency record
+        let record = IdempotencyRecord {
+            operation: "invalidate".to_string(),
+            idempotency_key,
+            request_hash,
+            status: IdempotencyStatus::Succeeded,
+            result_ref: Some(repo_id.to_string()),
+            created_at_unix_ms: now,
+            expires_at_unix_ms: None,
+        };
+        self.persistence.save_idempotency_record(&record)?;
+
+        info!(
+            repo_id = %repo_id,
+            previous_status = ?previous_status,
+            "repository indexed state invalidated"
+        );
+
+        Ok(InvalidationResult {
+            repo_id: repo_id.to_string(),
+            previous_status,
+            invalidated_at_unix_ms: now,
+            reason: reason.map(|r| r.to_string()),
+            action_required: "re-index or repair required".to_string(),
+        })
     }
 
     pub fn launch_run(
@@ -418,6 +528,24 @@ impl RunManager {
                     not_yet_supported,
                 ) {
                     error!(run_id = %run_id, error = %e, "failed to update final run status");
+                }
+
+                // Clear invalidation on successful run completion
+                if result.status == IndexRunStatus::Succeeded {
+                    if let Ok(Some(repo)) = manager.persistence.get_repository(&repo_id_owned) {
+                        if repo.status == RepositoryStatus::Invalidated {
+                            if let Err(e) = manager.persistence.update_repository_status(
+                                &repo_id_owned,
+                                RepositoryStatus::Ready,
+                                None,
+                                None,
+                            ) {
+                                warn!(repo_id = %repo_id_owned, error = %e, "failed to clear invalidation after successful run");
+                            } else {
+                                info!(repo_id = %repo_id_owned, "cleared invalidation after successful run");
+                            }
+                        }
+                    }
                 }
             } else {
                 debug!(run_id = %run_id, "run already terminal — skipping status update");
@@ -638,7 +766,19 @@ impl RunManager {
         };
 
         let health = classify_run_health(&run, file_outcome_summary.as_ref());
-        let action_required = action_required_message(&run, &health);
+        let mut action_required = action_required_message(&run, &health);
+
+        // Surface repo-level invalidation in action_required
+        if let Ok(Some(repo)) = self.persistence.get_repository(&run.repo_id) {
+            if repo.status == RepositoryStatus::Invalidated {
+                let invalidation_note =
+                    "repository indexed state has been invalidated — re-index or repair required";
+                action_required = Some(match action_required {
+                    Some(existing) => format!("{existing}. {invalidation_note}"),
+                    None => invalidation_note.to_string(),
+                });
+            }
+        }
 
         Ok(RunStatusReport {
             run,
@@ -655,6 +795,16 @@ impl RunManager {
 pub enum IdempotentRunResult {
     NewRun { run: IndexRun },
     ExistingRun { run_id: String },
+}
+
+fn compute_invalidation_request_hash(
+    repo_id: &str,
+    workspace_id: &str,
+    reason: Option<&str>,
+) -> String {
+    let reason_str = reason.unwrap_or("");
+    let input = format!("invalidate:{repo_id}:{workspace_id}:{reason_str}");
+    digest_hex(input.as_bytes())
 }
 
 fn compute_request_hash(repo_id: &str, workspace_id: &str, mode: &IndexRunMode) -> String {
@@ -1529,5 +1679,312 @@ mod tests {
             .unwrap();
         // Should pick run1 (succeeded), not run2 (failed)
         assert_eq!(reindex.prior_run_id, Some(run1.run_id));
+    }
+
+    fn seed_repo(manager: &RunManager, repo_id: &str) {
+        let repo = crate::domain::Repository {
+            repo_id: repo_id.to_string(),
+            kind: crate::domain::RepositoryKind::Git,
+            root_uri: format!("/tmp/{repo_id}"),
+            project_identity: format!("identity-{repo_id}"),
+            project_identity_kind: crate::domain::ProjectIdentityKind::GitCommonDir,
+            default_branch: None,
+            last_known_revision: None,
+            status: RepositoryStatus::Ready,
+            invalidated_at_unix_ms: None,
+            invalidation_reason: None,
+        };
+        manager.persistence.save_repository(&repo).unwrap();
+    }
+
+    #[test]
+    fn test_invalidate_transitions_repo_from_ready_to_invalidated() {
+        let (_dir, manager) = temp_run_manager();
+        seed_repo(&manager, "repo-1");
+
+        let result = manager
+            .invalidate_repository("repo-1", None, Some("stale data"))
+            .unwrap();
+        assert_eq!(result.repo_id, "repo-1");
+        assert_eq!(result.previous_status, RepositoryStatus::Ready);
+        assert!(result.invalidated_at_unix_ms > 0);
+        assert_eq!(result.reason.as_deref(), Some("stale data"));
+        assert_eq!(result.action_required, "re-index or repair required");
+
+        let repo = manager.persistence.get_repository("repo-1").unwrap().unwrap();
+        assert_eq!(repo.status, RepositoryStatus::Invalidated);
+    }
+
+    #[test]
+    fn test_invalidate_unknown_repo_returns_not_found() {
+        let (_dir, manager) = temp_run_manager();
+        let result = manager.invalidate_repository("nonexistent", None, None);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            TokenizorError::NotFound(_)
+        ));
+    }
+
+    #[test]
+    fn test_invalidate_already_invalidated_returns_success() {
+        let (_dir, manager) = temp_run_manager();
+        seed_repo(&manager, "repo-1");
+
+        let first = manager
+            .invalidate_repository("repo-1", None, Some("reason-1"))
+            .unwrap();
+        assert_eq!(first.previous_status, RepositoryStatus::Ready);
+
+        let second = manager
+            .invalidate_repository("repo-1", None, Some("reason-2"))
+            .unwrap();
+        // Domain-level idempotency: already invalidated → success
+        assert_eq!(second.previous_status, RepositoryStatus::Invalidated);
+    }
+
+    #[test]
+    fn test_invalidate_with_active_run_returns_invalid_operation() {
+        let (_dir, manager) = temp_run_manager();
+        seed_repo(&manager, "repo-1");
+
+        // Create a run to simulate active state
+        let run = manager.start_run("repo-1", IndexRunMode::Full).unwrap();
+        // Transition to Running in persistence
+        manager
+            .persistence
+            .transition_to_running(&run.run_id, unix_timestamp_ms())
+            .unwrap();
+
+        let result = manager.invalidate_repository("repo-1", None, None);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, TokenizorError::InvalidOperation(_)),
+            "expected InvalidOperation, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_invalidate_idempotent_replay_returns_stored_result() {
+        let (_dir, manager) = temp_run_manager();
+        seed_repo(&manager, "repo-1");
+
+        let first = manager
+            .invalidate_repository("repo-1", None, Some("reason"))
+            .unwrap();
+
+        // Same request replayed
+        let second = manager
+            .invalidate_repository("repo-1", None, Some("reason"))
+            .unwrap();
+
+        assert_eq!(first.repo_id, second.repo_id);
+        assert_eq!(second.action_required, "re-index or repair required");
+    }
+
+    #[test]
+    fn test_invalidate_different_reason_after_invalidated_returns_success() {
+        let (_dir, manager) = temp_run_manager();
+        seed_repo(&manager, "repo-1");
+
+        manager
+            .invalidate_repository("repo-1", None, Some("reason-A"))
+            .unwrap();
+
+        // Different reason but repo already invalidated → domain-level idempotency
+        // returns success (already invalidated)
+        let result = manager
+            .invalidate_repository("repo-1", None, Some("reason-B"))
+            .unwrap();
+        assert_eq!(result.previous_status, RepositoryStatus::Invalidated);
+        assert_eq!(result.reason.as_deref(), Some("reason-A")); // keeps original reason
+    }
+
+    #[test]
+    fn test_invalidate_pending_repo_works() {
+        let (_dir, manager) = temp_run_manager();
+        let repo = crate::domain::Repository {
+            repo_id: "repo-1".to_string(),
+            kind: crate::domain::RepositoryKind::Git,
+            root_uri: "/tmp/repo-1".to_string(),
+            project_identity: "identity".to_string(),
+            project_identity_kind: crate::domain::ProjectIdentityKind::GitCommonDir,
+            default_branch: None,
+            last_known_revision: None,
+            status: RepositoryStatus::Pending,
+            invalidated_at_unix_ms: None,
+            invalidation_reason: None,
+        };
+        manager.persistence.save_repository(&repo).unwrap();
+
+        let result = manager
+            .invalidate_repository("repo-1", None, None)
+            .unwrap();
+        assert_eq!(result.previous_status, RepositoryStatus::Pending);
+    }
+
+    #[test]
+    fn test_invalidation_idempotency_key_distinct_from_reindex() {
+        let (_dir, manager) = temp_run_manager();
+        seed_repo(&manager, "repo-1");
+
+        manager
+            .invalidate_repository("repo-1", None, Some("test"))
+            .unwrap();
+
+        // Verify invalidation key is in its own key space
+        let invalidate_record = manager
+            .persistence
+            .find_idempotency_record("invalidate::repo-1::")
+            .unwrap();
+        assert!(invalidate_record.is_some());
+        assert_eq!(invalidate_record.unwrap().operation, "invalidate");
+
+        // Reindex key space should be empty
+        let reindex_record = manager
+            .persistence
+            .find_idempotency_record("reindex::repo-1::")
+            .unwrap();
+        assert!(reindex_record.is_none());
+    }
+
+    #[test]
+    fn test_inspect_run_surfaces_repo_invalidation() {
+        let (_dir, manager) = temp_run_manager();
+        seed_repo(&manager, "repo-1");
+
+        // Create and persist a completed run
+        let run = manager.start_run("repo-1", IndexRunMode::Full).unwrap();
+        manager
+            .persistence
+            .update_run_status(
+                &run.run_id,
+                IndexRunStatus::Succeeded,
+                None,
+            )
+            .unwrap();
+
+        // Before invalidation: no invalidation note
+        let report = manager.inspect_run(&run.run_id).unwrap();
+        let action = report.action_required.as_deref().unwrap_or("");
+        assert!(
+            !action.contains("invalidated"),
+            "should not mention invalidation before invalidation"
+        );
+
+        // Invalidate the repo
+        manager
+            .invalidate_repository("repo-1", None, Some("test"))
+            .unwrap();
+
+        // After invalidation: action_required includes invalidation note
+        let report = manager.inspect_run(&run.run_id).unwrap();
+        let action = report.action_required.as_deref().unwrap_or("");
+        assert!(
+            action.contains("invalidated"),
+            "action_required should mention invalidation: got '{action}'"
+        );
+        assert!(
+            action.contains("re-index or repair"),
+            "action_required should mention recovery path: got '{action}'"
+        );
+    }
+
+    #[test]
+    fn test_list_runs_with_health_surfaces_repo_invalidation() {
+        let (_dir, manager) = temp_run_manager();
+        seed_repo(&manager, "repo-1");
+
+        let run = manager.start_run("repo-1", IndexRunMode::Full).unwrap();
+        manager
+            .persistence
+            .update_run_status(
+                &run.run_id,
+                IndexRunStatus::Succeeded,
+                None,
+            )
+            .unwrap();
+
+        manager
+            .invalidate_repository("repo-1", None, None)
+            .unwrap();
+
+        let reports = manager
+            .list_runs_with_health(Some("repo-1"), None)
+            .unwrap();
+        assert_eq!(reports.len(), 1);
+        let action = reports[0].action_required.as_deref().unwrap_or("");
+        assert!(
+            action.contains("invalidated"),
+            "list_runs should surface invalidation: got '{action}'"
+        );
+    }
+
+    #[test]
+    fn test_invalidate_reapplies_after_stale_idempotency_record_same_reason() {
+        let (_dir, manager) = temp_run_manager();
+        seed_repo(&manager, "repo-1");
+
+        // Invalidate with reason A
+        let first = manager
+            .invalidate_repository("repo-1", None, Some("reason-A"))
+            .unwrap();
+        assert_eq!(first.previous_status, RepositoryStatus::Ready);
+
+        // Simulate re-index clearing invalidation
+        manager
+            .persistence
+            .update_repository_status(
+                "repo-1",
+                RepositoryStatus::Ready,
+                None,
+                None,
+            )
+            .unwrap();
+
+        // Re-invalidate with same reason — stale record should be ignored, re-applied
+        let second = manager
+            .invalidate_repository("repo-1", None, Some("reason-A"))
+            .unwrap();
+        assert_eq!(second.previous_status, RepositoryStatus::Ready);
+        assert_eq!(second.reason.as_deref(), Some("reason-A"));
+        assert!(second.invalidated_at_unix_ms > 0);
+
+        let repo = manager.persistence.get_repository("repo-1").unwrap().unwrap();
+        assert_eq!(repo.status, RepositoryStatus::Invalidated);
+    }
+
+    #[test]
+    fn test_invalidate_reapplies_after_stale_idempotency_record_different_reason() {
+        let (_dir, manager) = temp_run_manager();
+        seed_repo(&manager, "repo-1");
+
+        // Invalidate with reason A
+        manager
+            .invalidate_repository("repo-1", None, Some("reason-A"))
+            .unwrap();
+
+        // Simulate re-index clearing invalidation
+        manager
+            .persistence
+            .update_repository_status(
+                "repo-1",
+                RepositoryStatus::Ready,
+                None,
+                None,
+            )
+            .unwrap();
+
+        // Re-invalidate with different reason — stale record should be ignored
+        let result = manager
+            .invalidate_repository("repo-1", None, Some("reason-B"))
+            .unwrap();
+        assert_eq!(result.previous_status, RepositoryStatus::Ready);
+        assert_eq!(result.reason.as_deref(), Some("reason-B"));
+
+        let repo = manager.persistence.get_repository("repo-1").unwrap().unwrap();
+        assert_eq!(repo.status, RepositoryStatus::Invalidated);
+        assert_eq!(repo.invalidation_reason.as_deref(), Some("reason-B"));
     }
 }

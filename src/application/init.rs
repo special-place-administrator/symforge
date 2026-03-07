@@ -939,6 +939,8 @@ fn build_repository(target: &ResolvedRepositoryTarget) -> Repository {
         default_branch: None,
         last_known_revision: None,
         status: RepositoryStatus::Ready,
+        invalidated_at_unix_ms: None,
+        invalidation_reason: None,
     }
 }
 
@@ -2231,6 +2233,8 @@ mod tests {
             default_branch: None,
             last_known_revision: None,
             status: crate::domain::RepositoryStatus::Ready,
+            invalidated_at_unix_ms: None,
+            invalidation_reason: None,
         }
     }
 

@@ -12,7 +12,7 @@ use tracing::info;
 
 use crate::domain::{
     ActiveWorkspaceContext, ComponentHealth, DeploymentReport, HealthReport, IndexRun,
-    IndexRunMode, InitializationReport, MigrationReport, RegistryView,
+    IndexRunMode, InitializationReport, InvalidationResult, MigrationReport, RegistryView,
 };
 use crate::indexing::pipeline::PipelineProgress;
 use crate::error::{Result, TokenizorError};
@@ -167,6 +167,16 @@ impl ApplicationContext {
     ) -> Result<IndexRun> {
         self.run_manager
             .reindex_repository(repo_id, workspace_id, reason, repo_root, self.blob_store.clone())
+    }
+
+    pub fn invalidate_repository(
+        &self,
+        repo_id: &str,
+        workspace_id: Option<&str>,
+        reason: Option<&str>,
+    ) -> Result<InvalidationResult> {
+        self.run_manager
+            .invalidate_repository(repo_id, workspace_id, reason)
     }
 
     pub fn run_manager(&self) -> &Arc<RunManager> {

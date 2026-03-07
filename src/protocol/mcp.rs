@@ -235,6 +235,38 @@ impl TokenizorServer {
 
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
+
+    #[tool(
+        description = "Invalidate indexed state for a repository so it is no longer treated as trusted. Use when indexed state should not be served to retrieval flows. Returns the invalidation result with guidance for recovery (re-index or repair). Parameters: repo_id (string, required), workspace_id (string, optional), reason (string, optional description of why invalidation is needed)."
+    )]
+    fn invalidate_indexed_state(
+        &self,
+        params: rmcp::model::JsonObject,
+    ) -> Result<CallToolResult, McpError> {
+        let repo_id = params
+            .get("repo_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                McpError::invalid_params("missing required parameter: repo_id", None)
+            })?;
+
+        let workspace_id = params.get("workspace_id").and_then(|v| v.as_str());
+        let reason = params.get("reason").and_then(|v| v.as_str());
+
+        let result = self
+            .application
+            .invalidate_repository(repo_id, workspace_id, reason)
+            .map_err(to_mcp_error)?;
+
+        let json = serde_json::to_string_pretty(&result).map_err(|e| {
+            McpError::internal_error(
+                format!("failed to serialize invalidation result: {e}"),
+                None,
+            )
+        })?;
+
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
 }
 
 #[tool_handler]

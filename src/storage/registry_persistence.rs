@@ -169,6 +169,40 @@ impl RegistryPersistence {
         Ok(data.runs)
     }
 
+    pub fn get_repository(&self, repo_id: &str) -> Result<Option<Repository>> {
+        let data = self.load()?;
+        Ok(data.repositories.get(repo_id).cloned())
+    }
+
+    pub fn save_repository(&self, repo: &Repository) -> Result<()> {
+        self.read_modify_write(|data| {
+            if data.schema_version == 0 {
+                data.schema_version = 2;
+            }
+            data.repositories
+                .insert(repo.repo_id.clone(), repo.clone());
+            Ok(())
+        })
+    }
+
+    pub fn update_repository_status(
+        &self,
+        repo_id: &str,
+        status: crate::domain::RepositoryStatus,
+        invalidated_at_unix_ms: Option<u64>,
+        invalidation_reason: Option<String>,
+    ) -> Result<()> {
+        self.read_modify_write(|data| {
+            let repo = data.repositories.get_mut(repo_id).ok_or_else(|| {
+                TokenizorError::NotFound(format!("repository not found: {repo_id}"))
+            })?;
+            repo.status = status;
+            repo.invalidated_at_unix_ms = invalidated_at_unix_ms;
+            repo.invalidation_reason = invalidation_reason;
+            Ok(())
+        })
+    }
+
     pub fn find_run(&self, run_id: &str) -> Result<Option<IndexRun>> {
         let data = self.load()?;
         Ok(data.runs.into_iter().find(|r| r.run_id == run_id))
@@ -667,6 +701,8 @@ mod tests {
                 default_branch: None,
                 last_known_revision: None,
                 status: crate::domain::RepositoryStatus::Ready,
+                invalidated_at_unix_ms: None,
+                invalidation_reason: None,
             },
         );
 
@@ -775,6 +811,8 @@ mod tests {
                 default_branch: None,
                 last_known_revision: None,
                 status: crate::domain::RepositoryStatus::Ready,
+                invalidated_at_unix_ms: None,
+                invalidation_reason: None,
             },
         );
         save_registry_data(&persistence.path, &data).unwrap();
@@ -1202,5 +1240,119 @@ mod tests {
         assert_eq!(found_index.operation, "index");
         assert_eq!(found_reindex.operation, "reindex");
         assert_ne!(found_index.idempotency_key, found_reindex.idempotency_key);
+    }
+
+    fn sample_repo(repo_id: &str) -> Repository {
+        Repository {
+            repo_id: repo_id.to_string(),
+            kind: crate::domain::RepositoryKind::Git,
+            root_uri: format!("/tmp/{repo_id}"),
+            project_identity: format!("identity-{repo_id}"),
+            project_identity_kind: crate::domain::ProjectIdentityKind::GitCommonDir,
+            default_branch: None,
+            last_known_revision: None,
+            status: crate::domain::RepositoryStatus::Ready,
+            invalidated_at_unix_ms: None,
+            invalidation_reason: None,
+        }
+    }
+
+    fn registry_with_repo(persistence: &RegistryPersistence, repo_id: &str) {
+        let mut data = RegistryData {
+            schema_version: 2,
+            ..RegistryData::default()
+        };
+        data.repositories
+            .insert(repo_id.to_string(), sample_repo(repo_id));
+        save_registry_data(&persistence.path, &data).unwrap();
+    }
+
+    #[test]
+    fn test_get_repository_returns_existing_repo() {
+        let (_dir, persistence) = temp_registry();
+        registry_with_repo(&persistence, "repo-1");
+
+        let repo = persistence.get_repository("repo-1").unwrap();
+        assert!(repo.is_some());
+        let repo = repo.unwrap();
+        assert_eq!(repo.repo_id, "repo-1");
+        assert_eq!(repo.status, crate::domain::RepositoryStatus::Ready);
+    }
+
+    #[test]
+    fn test_get_repository_returns_none_for_unknown() {
+        let (_dir, persistence) = temp_registry();
+        registry_with_repo(&persistence, "repo-1");
+
+        let repo = persistence.get_repository("nonexistent").unwrap();
+        assert!(repo.is_none());
+    }
+
+    #[test]
+    fn test_update_repository_status_transitions_to_invalidated() {
+        let (_dir, persistence) = temp_registry();
+        registry_with_repo(&persistence, "repo-1");
+
+        persistence
+            .update_repository_status(
+                "repo-1",
+                crate::domain::RepositoryStatus::Invalidated,
+                Some(1709827200000),
+                Some("stale data".to_string()),
+            )
+            .unwrap();
+
+        let repo = persistence.get_repository("repo-1").unwrap().unwrap();
+        assert_eq!(repo.status, crate::domain::RepositoryStatus::Invalidated);
+        assert_eq!(repo.invalidated_at_unix_ms, Some(1709827200000));
+        assert_eq!(repo.invalidation_reason.as_deref(), Some("stale data"));
+    }
+
+    #[test]
+    fn test_update_repository_status_returns_not_found_for_unknown() {
+        let (_dir, persistence) = temp_registry();
+        registry_with_repo(&persistence, "repo-1");
+
+        let result = persistence.update_repository_status(
+            "nonexistent",
+            crate::domain::RepositoryStatus::Invalidated,
+            None,
+            None,
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, TokenizorError::NotFound(_)),
+            "expected NotFound, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_update_repository_status_clears_invalidation_on_ready() {
+        let (_dir, persistence) = temp_registry();
+        let mut data = RegistryData {
+            schema_version: 2,
+            ..RegistryData::default()
+        };
+        let mut repo = sample_repo("repo-1");
+        repo.status = crate::domain::RepositoryStatus::Invalidated;
+        repo.invalidated_at_unix_ms = Some(1709827200000);
+        repo.invalidation_reason = Some("old reason".to_string());
+        data.repositories.insert("repo-1".to_string(), repo);
+        save_registry_data(&persistence.path, &data).unwrap();
+
+        persistence
+            .update_repository_status(
+                "repo-1",
+                crate::domain::RepositoryStatus::Ready,
+                None,
+                None,
+            )
+            .unwrap();
+
+        let repo = persistence.get_repository("repo-1").unwrap().unwrap();
+        assert_eq!(repo.status, crate::domain::RepositoryStatus::Ready);
+        assert!(repo.invalidated_at_unix_ms.is_none());
+        assert!(repo.invalidation_reason.is_none());
     }
 }

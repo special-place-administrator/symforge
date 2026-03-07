@@ -25,5 +25,7 @@ pub use migration::{
     MigrationRequest, MigrationSummary,
 };
 pub use registry::{AuthorityMode, RegisteredProject, RegistryKind, RegistryView};
-pub use repository::{ProjectIdentityKind, Repository, RepositoryKind, RepositoryStatus};
+pub use repository::{
+    InvalidationResult, ProjectIdentityKind, Repository, RepositoryKind, RepositoryStatus,
+};
 pub use workspace::{Workspace, WorkspaceStatus};

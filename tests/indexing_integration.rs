@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tokenizor_agentic_mcp::config::BlobStoreConfig;
-use tokenizor_agentic_mcp::domain::{ComponentHealth, FileRecord, IndexRunMode, IndexRunStatus, LanguageId, PersistedFileOutcome, RunHealth};
+use tokenizor_agentic_mcp::domain::{ComponentHealth, FileRecord, IndexRunMode, IndexRunStatus, LanguageId, PersistedFileOutcome, ProjectIdentityKind, Repository, RepositoryKind, RepositoryStatus, RunHealth};
 use tokenizor_agentic_mcp::error::TokenizorError;
 use tokenizor_agentic_mcp::storage::registry_persistence::RegistryPersistence;
 use tokenizor_agentic_mcp::storage::{BlobStore, LocalCasBlobStore, StoredBlob};
@@ -1390,4 +1390,216 @@ async fn test_reindex_no_prior_completed_run_succeeds_with_none() {
     assert_eq!(reindex.mode, IndexRunMode::Reindex);
     assert_eq!(reindex.prior_run_id, None, "no prior run should result in None");
     assert_eq!(reindex.status, IndexRunStatus::Queued);
+}
+
+// === Invalidation integration tests (Story 2.10) ===
+
+fn seed_integration_repo(manager: &RunManager, repo_id: &str) {
+    let repo = Repository {
+        repo_id: repo_id.to_string(),
+        kind: RepositoryKind::Git,
+        root_uri: format!("/tmp/{repo_id}"),
+        project_identity: format!("identity-{repo_id}"),
+        project_identity_kind: ProjectIdentityKind::GitCommonDir,
+        default_branch: None,
+        last_known_revision: None,
+        status: RepositoryStatus::Ready,
+        invalidated_at_unix_ms: None,
+        invalidation_reason: None,
+    };
+    manager.persistence().save_repository(&repo).unwrap();
+}
+
+#[tokio::test]
+async fn test_invalidation_lifecycle_register_index_invalidate() {
+    let (_dir, manager, _cas_dir, cas) = setup_test_env();
+    let repo_dir = tempfile::tempdir().unwrap();
+    fs::write(repo_dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+    seed_integration_repo(&manager, "test-repo");
+
+    // Complete an index run
+    let (run, _progress) = manager
+        .launch_run("test-repo", IndexRunMode::Full, repo_dir.path().to_path_buf(), cas)
+        .unwrap();
+    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+
+    let finished = manager.persistence().find_run(&run.run_id).unwrap().unwrap();
+    assert_eq!(finished.status, IndexRunStatus::Succeeded);
+
+    // Invalidate the repo
+    let result = manager
+        .invalidate_repository("test-repo", None, Some("stale data"))
+        .unwrap();
+    assert_eq!(result.previous_status, RepositoryStatus::Ready);
+    assert!(result.invalidated_at_unix_ms > 0);
+    assert_eq!(result.reason.as_deref(), Some("stale data"));
+    assert_eq!(result.action_required, "re-index or repair required");
+
+    // Verify repo status in persistence
+    let repo = manager.persistence().get_repository("test-repo").unwrap().unwrap();
+    assert_eq!(repo.status, RepositoryStatus::Invalidated);
+    assert!(repo.invalidated_at_unix_ms.is_some());
+    assert_eq!(repo.invalidation_reason.as_deref(), Some("stale data"));
+}
+
+#[tokio::test]
+async fn test_invalidation_blocks_active_runs() {
+    let (_dir, manager, _cas_dir, cas) = setup_test_env();
+    let repo_dir = tempfile::tempdir().unwrap();
+    // Large file to keep the pipeline busy
+    let mut content = String::new();
+    for i in 0..200 {
+        content.push_str(&format!("fn func_{i}() {{ let x = {i}; }}\n"));
+    }
+    fs::write(repo_dir.path().join("big.rs"), &content).unwrap();
+
+    seed_integration_repo(&manager, "test-repo");
+
+    // Start a run that will take some time
+    let (_run, _progress) = manager
+        .launch_run("test-repo", IndexRunMode::Full, repo_dir.path().to_path_buf(), cas)
+        .unwrap();
+
+    // Immediately attempt invalidation — should fail
+    let result = manager.invalidate_repository("test-repo", None, Some("stale"));
+    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("active indexing run exists"),
+        "error should mention active run: {err}"
+    );
+}
+
+#[tokio::test]
+async fn test_invalidation_idempotent_replay() {
+    let (_dir, manager, _cas_dir, _cas) = setup_test_env();
+    seed_integration_repo(&manager, "test-repo");
+
+    // First invalidation
+    let first = manager
+        .invalidate_repository("test-repo", None, Some("reason-1"))
+        .unwrap();
+    assert_eq!(first.previous_status, RepositoryStatus::Ready);
+
+    // Replay with same params — should succeed with same result
+    let replay = manager
+        .invalidate_repository("test-repo", None, Some("reason-1"))
+        .unwrap();
+    assert_eq!(replay.previous_status, RepositoryStatus::Invalidated);
+    assert_eq!(replay.reason.as_deref(), Some("reason-1"));
+}
+
+#[tokio::test]
+async fn test_invalidation_conflicting_replay() {
+    let (_dir, manager, _cas_dir, _cas) = setup_test_env();
+    seed_integration_repo(&manager, "test-repo");
+
+    // First invalidation
+    let first = manager
+        .invalidate_repository("test-repo", None, Some("reason-1"))
+        .unwrap();
+    assert_eq!(first.previous_status, RepositoryStatus::Ready);
+
+    // Replay with different reason — domain-level idempotency returns success
+    // because repo is already invalidated (preserves original reason)
+    let second = manager
+        .invalidate_repository("test-repo", None, Some("reason-2"))
+        .unwrap();
+    assert_eq!(second.previous_status, RepositoryStatus::Invalidated);
+    assert_eq!(second.reason.as_deref(), Some("reason-1"), "original reason preserved");
+}
+
+#[tokio::test]
+async fn test_invalidation_surfaces_in_inspect_run() {
+    let (_dir, manager, _cas_dir, cas) = setup_test_env();
+    let repo_dir = tempfile::tempdir().unwrap();
+    fs::write(repo_dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+    seed_integration_repo(&manager, "test-repo");
+
+    // Complete an index run
+    let (run, _progress) = manager
+        .launch_run("test-repo", IndexRunMode::Full, repo_dir.path().to_path_buf(), cas)
+        .unwrap();
+    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+
+    // Invalidate
+    manager
+        .invalidate_repository("test-repo", None, Some("compromised"))
+        .unwrap();
+
+    // Inspect the completed run — should surface invalidation
+    let report = manager.inspect_run(&run.run_id).unwrap();
+    let action = report.action_required.as_deref().unwrap_or("");
+    assert!(
+        action.contains("repository indexed state has been invalidated"),
+        "action_required should surface invalidation: {action}"
+    );
+}
+
+#[tokio::test]
+async fn test_reindex_clears_invalidation() {
+    let (_dir, manager, _cas_dir, cas) = setup_test_env();
+    let repo_dir = tempfile::tempdir().unwrap();
+    fs::write(repo_dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+    seed_integration_repo(&manager, "test-repo");
+
+    // Complete initial index
+    let (_run, _progress) = manager
+        .launch_run("test-repo", IndexRunMode::Full, repo_dir.path().to_path_buf(), cas.clone())
+        .unwrap();
+    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+
+    // Invalidate
+    manager
+        .invalidate_repository("test-repo", None, Some("stale"))
+        .unwrap();
+    let repo = manager.persistence().get_repository("test-repo").unwrap().unwrap();
+    assert_eq!(repo.status, RepositoryStatus::Invalidated);
+
+    // Re-index — should be allowed and clear invalidation on success
+    let reindex_run = manager
+        .reindex_repository("test-repo", None, Some("recovery"), repo_dir.path().to_path_buf(), cas)
+        .unwrap();
+    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+
+    let finished = manager.persistence().find_run(&reindex_run.run_id).unwrap().unwrap();
+    assert_eq!(finished.status, IndexRunStatus::Succeeded);
+
+    // Repo should transition back to Ready
+    let repo = manager.persistence().get_repository("test-repo").unwrap().unwrap();
+    assert_eq!(repo.status, RepositoryStatus::Ready, "re-index should clear invalidation");
+    assert!(repo.invalidated_at_unix_ms.is_none());
+    assert!(repo.invalidation_reason.is_none());
+}
+
+#[tokio::test]
+async fn test_invalidation_unknown_repo() {
+    let (_dir, manager, _cas_dir, _cas) = setup_test_env();
+
+    let result = manager.invalidate_repository("nonexistent", None, None);
+    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("not found") || err.contains("NotFound"), "should be NotFound: {err}");
+}
+
+#[tokio::test]
+async fn test_invalidation_already_invalidated_repo() {
+    let (_dir, manager, _cas_dir, _cas) = setup_test_env();
+    seed_integration_repo(&manager, "test-repo");
+
+    // First invalidation
+    let first = manager
+        .invalidate_repository("test-repo", None, Some("reason-1"))
+        .unwrap();
+    assert_eq!(first.previous_status, RepositoryStatus::Ready);
+
+    // Second invalidation — should succeed idempotently
+    let second = manager
+        .invalidate_repository("test-repo", None, Some("reason-2"))
+        .unwrap();
+    assert_eq!(second.previous_status, RepositoryStatus::Invalidated);
+    assert_eq!(second.reason.as_deref(), Some("reason-1"), "original reason preserved");
 }
