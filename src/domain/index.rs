@@ -220,6 +220,40 @@ pub struct FileRecord {
     pub committed_at_unix_ms: u64,
 }
 
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RunPhase {
+    Discovering,
+    Processing,
+    Finalizing,
+    Complete,
+}
+
+impl RunPhase {
+    pub fn to_u8(&self) -> u8 {
+        match self {
+            RunPhase::Discovering => 0,
+            RunPhase::Processing => 1,
+            RunPhase::Finalizing => 2,
+            RunPhase::Complete => 3,
+        }
+    }
+
+    pub fn from_u8(value: u8) -> RunPhase {
+        match value {
+            0 => RunPhase::Discovering,
+            1 => RunPhase::Processing,
+            2 => RunPhase::Finalizing,
+            3 => RunPhase::Complete,
+            other => {
+                tracing::debug!(value = other, "unexpected RunPhase u8 value, defaulting to Complete");
+                RunPhase::Complete
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RunHealth {
@@ -230,6 +264,7 @@ pub enum RunHealth {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RunProgressSnapshot {
+    pub phase: RunPhase,
     pub total_files: u64,
     pub files_processed: u64,
     pub files_failed: u64,
@@ -773,6 +808,7 @@ mod tests {
     #[test]
     fn test_run_progress_snapshot_serde_roundtrip() {
         let snapshot = RunProgressSnapshot {
+            phase: RunPhase::Processing,
             total_files: 100,
             files_processed: 80,
             files_failed: 5,
@@ -815,6 +851,7 @@ mod tests {
             health: RunHealth::Healthy,
             is_active: false,
             progress: Some(RunProgressSnapshot {
+                phase: RunPhase::Complete,
                 total_files: 10,
                 files_processed: 10,
                 files_failed: 0,
@@ -830,5 +867,61 @@ mod tests {
         let json = serde_json::to_string(&report).unwrap();
         let deserialized: RunStatusReport = serde_json::from_str(&json).unwrap();
         assert_eq!(report, deserialized);
+    }
+
+    #[test]
+    fn test_run_phase_serde_roundtrip() {
+        let variants = [
+            RunPhase::Discovering,
+            RunPhase::Processing,
+            RunPhase::Finalizing,
+            RunPhase::Complete,
+        ];
+        for phase in &variants {
+            let json = serde_json::to_string(phase).unwrap();
+            let deserialized: RunPhase = serde_json::from_str(&json).unwrap();
+            assert_eq!(*phase, deserialized);
+        }
+    }
+
+    #[test]
+    fn test_run_phase_serde_snake_case() {
+        assert_eq!(serde_json::to_string(&RunPhase::Discovering).unwrap(), "\"discovering\"");
+        assert_eq!(serde_json::to_string(&RunPhase::Processing).unwrap(), "\"processing\"");
+        assert_eq!(serde_json::to_string(&RunPhase::Finalizing).unwrap(), "\"finalizing\"");
+        assert_eq!(serde_json::to_string(&RunPhase::Complete).unwrap(), "\"complete\"");
+    }
+
+    #[test]
+    fn test_run_phase_u8_conversion_round_trips() {
+        let variants = [
+            RunPhase::Discovering,
+            RunPhase::Processing,
+            RunPhase::Finalizing,
+            RunPhase::Complete,
+        ];
+        for (i, phase) in variants.iter().enumerate() {
+            assert_eq!(phase.to_u8(), i as u8);
+            assert_eq!(RunPhase::from_u8(i as u8), *phase);
+        }
+    }
+
+    #[test]
+    fn test_run_phase_from_u8_unknown_defaults_to_complete() {
+        assert_eq!(RunPhase::from_u8(4), RunPhase::Complete);
+        assert_eq!(RunPhase::from_u8(255), RunPhase::Complete);
+    }
+
+    #[test]
+    fn test_run_progress_snapshot_with_phase_serde_roundtrip() {
+        let snapshot = RunProgressSnapshot {
+            phase: RunPhase::Finalizing,
+            total_files: 50,
+            files_processed: 48,
+            files_failed: 2,
+        };
+        let json = serde_json::to_string(&snapshot).unwrap();
+        let deserialized: RunProgressSnapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(snapshot, deserialized);
     }
 }

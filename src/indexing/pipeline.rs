@@ -1,12 +1,12 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::Semaphore;
 use tracing::{debug, error, info, warn};
 
-use crate::domain::{FileOutcome, FileProcessingResult, FileRecord, IndexRunStatus, LanguageId, PersistedFileOutcome, SupportTier};
+use crate::domain::{FileOutcome, FileProcessingResult, FileRecord, IndexRunStatus, LanguageId, PersistedFileOutcome, RunPhase, SupportTier};
 use crate::indexing::{commit, discovery};
 use crate::parsing;
 use crate::storage::BlobStore;
@@ -15,6 +15,7 @@ pub struct PipelineProgress {
     pub total_files: AtomicU64,
     pub files_processed: AtomicU64,
     pub files_failed: AtomicU64,
+    phase: AtomicU8,
 }
 
 impl PipelineProgress {
@@ -23,7 +24,16 @@ impl PipelineProgress {
             total_files: AtomicU64::new(0),
             files_processed: AtomicU64::new(0),
             files_failed: AtomicU64::new(0),
+            phase: AtomicU8::new(RunPhase::Discovering.to_u8()),
         }
+    }
+
+    pub fn set_phase(&self, phase: RunPhase) {
+        self.phase.store(phase.to_u8(), Ordering::Release);
+    }
+
+    pub fn phase(&self) -> RunPhase {
+        RunPhase::from_u8(self.phase.load(Ordering::Acquire))
     }
 }
 
@@ -124,6 +134,7 @@ impl IndexingPipeline {
 
         let total = indexable.len() as u64;
         self.progress.total_files.store(total, Ordering::Relaxed);
+        self.progress.set_phase(RunPhase::Processing);
         info!(run_id = %self.run_id, total_files = total, "discovery complete");
 
         if indexable.is_empty() {
@@ -275,6 +286,8 @@ impl IndexingPipeline {
             }
         }
 
+        self.progress.set_phase(RunPhase::Finalizing);
+
         let was_broken = circuit_broken.load(Ordering::Relaxed);
         let failed_count = progress.files_failed.load(Ordering::Relaxed);
 
@@ -342,6 +355,8 @@ impl IndexingPipeline {
             };
             (IndexRunStatus::Succeeded, error_summary)
         };
+
+        self.progress.set_phase(RunPhase::Complete);
 
         PipelineResult {
             status,
@@ -590,5 +605,26 @@ mod tests {
         assert_eq!(result.not_yet_supported.len(), 2);
         assert_eq!(result.not_yet_supported[&LanguageId::Ruby], 1);
         assert_eq!(result.not_yet_supported[&LanguageId::CSharp], 1);
+    }
+
+    #[test]
+    fn test_pipeline_progress_phase_defaults_to_discovering() {
+        let progress = PipelineProgress::new();
+        assert_eq!(progress.phase(), RunPhase::Discovering);
+    }
+
+    #[test]
+    fn test_pipeline_progress_phase_round_trips_all_variants() {
+        let progress = PipelineProgress::new();
+        let variants = [
+            RunPhase::Discovering,
+            RunPhase::Processing,
+            RunPhase::Finalizing,
+            RunPhase::Complete,
+        ];
+        for phase in &variants {
+            progress.set_phase(phase.clone());
+            assert_eq!(progress.phase(), *phase);
+        }
     }
 }

@@ -8,7 +8,8 @@ use tracing::{debug, error, info};
 
 use crate::domain::{
     FileOutcomeSummary, FileRecord, IdempotencyRecord, IdempotencyStatus, IndexRun, IndexRunMode,
-    IndexRunStatus, PersistedFileOutcome, RunHealth, RunProgressSnapshot, RunStatusReport,
+    IndexRunStatus, PersistedFileOutcome, RunHealth, RunPhase, RunProgressSnapshot,
+    RunStatusReport,
     unix_timestamp_ms,
 };
 use crate::storage::BlobStore;
@@ -123,6 +124,7 @@ impl RunManager {
         let active_runs = self.active_runs.lock().unwrap_or_else(|e| e.into_inner());
         active_runs.get(repo_id).and_then(|active| {
             active.progress.as_ref().map(|p| RunProgressSnapshot {
+                phase: p.phase(),
                 total_files: p.total_files.load(std::sync::atomic::Ordering::Relaxed),
                 files_processed: p.files_processed.load(std::sync::atomic::Ordering::Relaxed),
                 files_failed: p.files_failed.load(std::sync::atomic::Ordering::Relaxed),
@@ -311,6 +313,21 @@ impl RunManager {
         Ok(reports)
     }
 
+    pub fn list_recent_run_ids(&self, limit: usize) -> Vec<String> {
+        let all_runs = self.persistence.list_runs().unwrap_or_default();
+        let mut sorted = all_runs;
+        // Sort by requested_at (not started_at) because started_at is Option<u64>
+        // and may be None for Queued runs. requested_at is always set.
+        sorted.sort_by(|a, b| {
+            b.requested_at_unix_ms.cmp(&a.requested_at_unix_ms)
+        });
+        sorted
+            .into_iter()
+            .take(limit)
+            .map(|r| r.run_id)
+            .collect()
+    }
+
     fn build_run_report(&self, run: IndexRun) -> Result<RunStatusReport> {
         let is_active =
             run.status == IndexRunStatus::Running && self.has_active_run(&run.repo_id);
@@ -330,6 +347,19 @@ impl RunManager {
             }
         } else {
             None
+        };
+
+        let progress = match progress {
+            Some(p) => Some(p),
+            None if run.status.is_terminal() => {
+                file_outcome_summary.as_ref().map(|fos| RunProgressSnapshot {
+                    phase: RunPhase::Complete,
+                    total_files: fos.total_committed,
+                    files_processed: fos.processed_ok + fos.partial_parse,
+                    files_failed: fos.failed,
+                })
+            }
+            None => None,
         };
 
         let health = classify_run_health(&run, file_outcome_summary.as_ref());
@@ -681,11 +711,10 @@ mod tests {
             .unwrap()
             .spawn(async {});
 
-        let progress = Arc::new(PipelineProgress {
-            total_files: std::sync::atomic::AtomicU64::new(100),
-            files_processed: std::sync::atomic::AtomicU64::new(75),
-            files_failed: std::sync::atomic::AtomicU64::new(3),
-        });
+        let progress = Arc::new(PipelineProgress::new());
+        progress.total_files.store(100, std::sync::atomic::Ordering::Relaxed);
+        progress.files_processed.store(75, std::sync::atomic::Ordering::Relaxed);
+        progress.files_failed.store(3, std::sync::atomic::Ordering::Relaxed);
 
         manager.register_active_run(
             "repo-progress",
@@ -798,5 +827,68 @@ mod tests {
         };
         let health = classify_run_health(&run, Some(&summary));
         assert!(action_required_message(&run, &health).is_none());
+    }
+
+    #[test]
+    fn test_active_progress_snapshot_includes_phase() {
+        let (_dir, manager) = temp_run_manager();
+        let token = CancellationToken::new();
+        let handle = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .spawn(async {});
+
+        let progress = Arc::new(PipelineProgress::new());
+        progress.total_files.store(50, std::sync::atomic::Ordering::Relaxed);
+        progress.files_processed.store(25, std::sync::atomic::Ordering::Relaxed);
+        progress.set_phase(RunPhase::Processing);
+
+        manager.register_active_run(
+            "repo-phase",
+            ActiveRun {
+                handle,
+                cancellation_token: token,
+                progress: Some(Arc::clone(&progress)),
+            },
+        );
+
+        let snapshot = manager.get_active_progress("repo-phase").unwrap();
+        assert_eq!(snapshot.phase, RunPhase::Processing);
+        assert_eq!(snapshot.total_files, 50);
+        assert_eq!(snapshot.files_processed, 25);
+    }
+
+    #[test]
+    fn test_terminal_run_report_includes_final_progress_snapshot() {
+        let (_dir, manager) = temp_run_manager();
+
+        // Create a run that completes
+        let run = manager.start_run("repo-terminal", IndexRunMode::Full).unwrap();
+        let run_id = run.run_id.clone();
+
+        // Simulate run completion with file records
+        let file_record = FileRecord {
+            relative_path: "main.rs".into(),
+            language: crate::domain::LanguageId::Rust,
+            blob_id: "abc123".into(),
+            byte_len: 100,
+            content_hash: "hash123".into(),
+            outcome: PersistedFileOutcome::Committed,
+            symbols: vec![],
+            run_id: run_id.clone(),
+            repo_id: "repo-terminal".into(),
+            committed_at_unix_ms: 1000,
+        };
+        manager.persistence.save_file_records(&run_id, &[file_record]).unwrap();
+        manager.persistence.update_run_status(&run_id, IndexRunStatus::Succeeded, None).unwrap();
+
+        let report = manager.inspect_run(&run_id).unwrap();
+        assert!(!report.is_active);
+        assert!(report.progress.is_some());
+        let progress = report.progress.unwrap();
+        assert_eq!(progress.phase, RunPhase::Complete);
+        assert_eq!(progress.total_files, 1);
+        assert_eq!(progress.files_processed, 1);
+        assert_eq!(progress.files_failed, 0);
     }
 }

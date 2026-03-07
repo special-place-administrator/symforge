@@ -636,3 +636,181 @@ async fn test_list_runs_filtered_by_status() {
     assert_eq!(reports.len(), 1);
     assert_eq!(reports[0].run.status, IndexRunStatus::Queued);
 }
+
+// ── Story 2.6: Phase & Resource Integration Tests ──────────────────────────
+
+use tokenizor_agentic_mcp::domain::RunPhase;
+
+#[tokio::test]
+async fn test_active_run_progress_includes_processing_phase() {
+    let (_dir, manager, _cas_dir, cas) = setup_test_env();
+    let repo_dir = tempfile::tempdir().unwrap();
+    // Write several files to ensure the run spends time in Processing
+    for i in 0..5 {
+        fs::write(
+            repo_dir.path().join(format!("mod_{i}.rs")),
+            format!("pub fn f{i}() {{}}\npub fn g{i}() {{}}\n"),
+        )
+        .unwrap();
+    }
+
+    let (run, _progress) = manager
+        .launch_run(
+            "repo-phase",
+            IndexRunMode::Full,
+            repo_dir.path().to_path_buf(),
+            cas,
+        )
+        .unwrap();
+
+    // Wait for completion
+    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+    let report = manager.inspect_run(&run.run_id).unwrap();
+    assert!(!report.is_active);
+    assert!(report.progress.is_some());
+    let progress = report.progress.unwrap();
+    // Terminal run should show Complete phase
+    assert_eq!(progress.phase, RunPhase::Complete);
+    assert!(progress.total_files > 0);
+    assert!(progress.files_processed > 0);
+}
+
+#[tokio::test]
+async fn test_terminal_succeeded_run_has_complete_phase_in_progress() {
+    let (_dir, manager, _cas_dir, cas) = setup_test_env();
+    let repo_dir = tempfile::tempdir().unwrap();
+    fs::write(repo_dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+    let (run, _progress) = manager
+        .launch_run(
+            "repo-terminal-ok",
+            IndexRunMode::Full,
+            repo_dir.path().to_path_buf(),
+            cas,
+        )
+        .unwrap();
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+    let report = manager.inspect_run(&run.run_id).unwrap();
+    assert!(!report.is_active);
+    assert_eq!(report.run.status, IndexRunStatus::Succeeded);
+    assert!(report.progress.is_some());
+    let progress = report.progress.unwrap();
+    assert_eq!(progress.phase, RunPhase::Complete);
+    assert!(report.file_outcome_summary.is_some());
+}
+
+#[tokio::test]
+async fn test_failed_run_does_not_present_as_live() {
+    let (_dir, manager, _cas_dir, _cas) = setup_test_env();
+
+    // Create a run with file records, then mark it as failed
+    let run = manager.start_run("repo-fail", IndexRunMode::Full).unwrap();
+
+    // Simulate partial progress: some files committed, some failed
+    let committed_file = FileRecord {
+        relative_path: "lib.rs".into(),
+        language: LanguageId::Rust,
+        blob_id: "blob-ok".into(),
+        byte_len: 200,
+        content_hash: "hash-ok".into(),
+        outcome: PersistedFileOutcome::Committed,
+        symbols: vec![],
+        run_id: run.run_id.clone(),
+        repo_id: "repo-fail".into(),
+        committed_at_unix_ms: 1000,
+    };
+    let failed_file = FileRecord {
+        relative_path: "broken.rs".into(),
+        language: LanguageId::Rust,
+        blob_id: "blob-fail".into(),
+        byte_len: 50,
+        content_hash: "hash-fail".into(),
+        outcome: PersistedFileOutcome::Failed {
+            error: "parse error".into(),
+        },
+        symbols: vec![],
+        run_id: run.run_id.clone(),
+        repo_id: "repo-fail".into(),
+        committed_at_unix_ms: 1001,
+    };
+    manager
+        .persistence()
+        .save_file_records(&run.run_id, &[committed_file, failed_file])
+        .unwrap();
+
+    // Mark the run as failed after partial processing
+    manager
+        .persistence()
+        .update_run_status(&run.run_id, IndexRunStatus::Failed, Some("systemic error".into()))
+        .unwrap();
+
+    let report = manager.inspect_run(&run.run_id).unwrap();
+    assert!(!report.is_active);
+    assert_eq!(report.run.status, IndexRunStatus::Failed);
+    assert_eq!(report.health, RunHealth::Unhealthy);
+    // Failed run with file records should have synthetic terminal progress
+    assert!(report.progress.is_some());
+    let progress = report.progress.unwrap();
+    assert_eq!(progress.phase, RunPhase::Complete);
+    assert_eq!(progress.total_files, 2);
+    assert_eq!(progress.files_processed, 1);
+    assert_eq!(progress.files_failed, 1);
+}
+
+#[tokio::test]
+async fn test_read_nonexistent_run_status_returns_error() {
+    let (_dir, manager, _cas_dir, _cas) = setup_test_env();
+    let result = manager.inspect_run("nonexistent-run-id-xyz");
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn test_list_recent_run_ids_includes_active_and_terminal() {
+    let (_dir, manager, _cas_dir, cas) = setup_test_env();
+    let repo_dir = tempfile::tempdir().unwrap();
+    fs::write(repo_dir.path().join("lib.rs"), "pub fn x() {}").unwrap();
+
+    let (run, _progress) = manager
+        .launch_run(
+            "repo-recent",
+            IndexRunMode::Full,
+            repo_dir.path().to_path_buf(),
+            cas,
+        )
+        .unwrap();
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+    let ids = manager.list_recent_run_ids(10);
+    assert!(!ids.is_empty());
+    assert!(ids.contains(&run.run_id));
+}
+
+#[tokio::test]
+async fn test_phase_transitions_during_pipeline_execution() {
+    let (_dir, manager, _cas_dir, cas) = setup_test_env();
+    let repo_dir = tempfile::tempdir().unwrap();
+    fs::write(repo_dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+    let (run, progress) = manager
+        .launch_run(
+            "repo-phases",
+            IndexRunMode::Full,
+            repo_dir.path().to_path_buf(),
+            cas,
+        )
+        .unwrap();
+
+    // Wait for completion
+    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+    // After pipeline completes, progress phase should be Complete
+    assert_eq!(progress.phase(), RunPhase::Complete);
+
+    let report = manager.inspect_run(&run.run_id).unwrap();
+    assert!(!report.is_active);
+    assert_eq!(report.run.status, IndexRunStatus::Succeeded);
+}

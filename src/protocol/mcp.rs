@@ -1,12 +1,20 @@
 use rmcp::{
-    ErrorData as McpError, ServerHandler,
+    ErrorData as McpError, RoleServer, ServerHandler,
     handler::server::router::tool::ToolRouter,
-    model::{CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo},
+    model::{
+        Annotated, CallToolResult, Content, Implementation, ListResourcesResult,
+        PaginatedRequestParams, RawResource, ReadResourceRequestParams, ReadResourceResult,
+        ResourceContents, ServerCapabilities, ServerInfo,
+    },
+    service::RequestContext,
     tool, tool_handler, tool_router,
 };
 
 use crate::domain::{IndexRunMode, IndexRunStatus};
 use crate::{ApplicationContext, TokenizorError};
+
+const RUN_STATUS_URI_PREFIX: &str = "tokenizor://runs/";
+const RUN_STATUS_URI_SUFFIX: &str = "/status";
 
 #[derive(Clone)]
 pub struct TokenizorServer {
@@ -151,11 +159,66 @@ impl TokenizorServer {
 #[tool_handler]
 impl ServerHandler for TokenizorServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::from_build_env())
-            .with_instructions(
-                "tokenizor_agentic_mcp is a Rust-native MCP server for indexing and retrieval. This foundation slice exposes deployment-aware health while the durable SpacetimeDB control plane and local byte-exact CAS are brought online.",
-            )
+        ServerInfo::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .build(),
+        )
+        .with_server_info(Implementation::from_build_env())
+        .with_instructions(
+            "tokenizor_agentic_mcp is a Rust-native MCP server for indexing and retrieval. This foundation slice exposes deployment-aware health while the durable SpacetimeDB control plane and local byte-exact CAS are brought online.",
+        )
+    }
+
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, McpError> {
+        let run_ids = self.application.run_manager().list_recent_run_ids(10);
+        let resources = run_ids
+            .iter()
+            .map(|id| {
+                Annotated::new(
+                    RawResource {
+                        uri: format!("{}{}{}", RUN_STATUS_URI_PREFIX, id, RUN_STATUS_URI_SUFFIX),
+                        name: format!("Run {} Status", id),
+                        title: None,
+                        description: Some(format!(
+                            "Status and health for indexing run {}",
+                            id
+                        )),
+                        mime_type: Some("application/json".to_string()),
+                        size: None,
+                        icons: None,
+                        meta: None,
+                    },
+                    None,
+                )
+            })
+            .collect();
+        Ok(ListResourcesResult::with_all_items(resources))
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResult, McpError> {
+        let run_id = parse_run_id_from_uri(&request.uri)?;
+        let report = self
+            .application
+            .run_manager()
+            .inspect_run(&run_id)
+            .map_err(to_mcp_error)?;
+        let json = serde_json::to_string_pretty(&report).map_err(|e| {
+            McpError::internal_error(format!("failed to serialize run status report: {e}"), None)
+        })?;
+        Ok(ReadResourceResult::new(vec![ResourceContents::text(
+            json,
+            request.uri,
+        )]))
     }
 }
 
@@ -175,5 +238,93 @@ fn to_mcp_error(error: TokenizorError) -> McpError {
             None,
         ),
         TokenizorError::Serialization(message) => McpError::internal_error(message, None),
+    }
+}
+
+fn parse_run_id_from_uri(uri: &str) -> Result<String, McpError> {
+    let stripped = uri
+        .strip_prefix(RUN_STATUS_URI_PREFIX)
+        .and_then(|s| s.strip_suffix(RUN_STATUS_URI_SUFFIX))
+        .ok_or_else(|| {
+            McpError::invalid_params(
+                format!(
+                    "invalid resource URI: expected {}{{run_id}}{}",
+                    RUN_STATUS_URI_PREFIX, RUN_STATUS_URI_SUFFIX
+                ),
+                None,
+            )
+        })?;
+    if stripped.is_empty() {
+        return Err(McpError::invalid_params(
+            "invalid resource URI: run_id is empty",
+            None,
+        ));
+    }
+    Ok(stripped.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_run_id_from_uri_valid_uuid() {
+        let uri = "tokenizor://runs/550e8400-e29b-41d4-a716-446655440000/status";
+        let result = parse_run_id_from_uri(uri).unwrap();
+        assert_eq!(result, "550e8400-e29b-41d4-a716-446655440000");
+    }
+
+    #[test]
+    fn test_parse_run_id_from_uri_simple_id() {
+        let uri = "tokenizor://runs/run-123/status";
+        let result = parse_run_id_from_uri(uri).unwrap();
+        assert_eq!(result, "run-123");
+    }
+
+    #[test]
+    fn test_parse_run_id_from_uri_missing_prefix() {
+        let uri = "invalid://runs/abc/status";
+        let result = parse_run_id_from_uri(uri);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_run_id_from_uri_missing_suffix() {
+        let uri = "tokenizor://runs/abc";
+        let result = parse_run_id_from_uri(uri);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_run_id_from_uri_empty_run_id() {
+        let uri = "tokenizor://runs//status";
+        let result = parse_run_id_from_uri(uri);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_run_id_from_uri_completely_invalid() {
+        let result = parse_run_id_from_uri("garbage");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_run_id_from_uri_empty_string() {
+        let result = parse_run_id_from_uri("");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_run_id_from_uri_only_prefix() {
+        let result = parse_run_id_from_uri("tokenizor://runs/");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_run_status_uri_round_trip() {
+        let run_id = "test-run-42";
+        let uri = format!("{}{}{}", RUN_STATUS_URI_PREFIX, run_id, RUN_STATUS_URI_SUFFIX);
+        let parsed = parse_run_id_from_uri(&uri).unwrap();
+        assert_eq!(parsed, run_id);
     }
 }
