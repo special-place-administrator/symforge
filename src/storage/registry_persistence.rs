@@ -80,6 +80,32 @@ impl RegistryPersistence {
         })
     }
 
+    pub fn update_run_status_with_finish(
+        &self,
+        run_id: &str,
+        status: IndexRunStatus,
+        error_summary: Option<String>,
+        finished_at_unix_ms: u64,
+    ) -> Result<()> {
+        self.read_modify_write(|data| {
+            let run = data
+                .runs
+                .iter_mut()
+                .find(|r| r.run_id == run_id)
+                .ok_or_else(|| {
+                    TokenizorError::NotFound(format!(
+                        "run `{run_id}` not found in registry"
+                    ))
+                })?;
+            run.status = status.clone();
+            run.finished_at_unix_ms = Some(finished_at_unix_ms);
+            if error_summary.is_some() {
+                run.error_summary = error_summary.clone();
+            }
+            Ok(())
+        })
+    }
+
     /// List all persisted runs. Reads without acquiring the advisory lock.
     /// Callers in a concurrent environment should serialize at a higher level
     /// (e.g. `RunManager`'s `Mutex`) to avoid stale-read races.

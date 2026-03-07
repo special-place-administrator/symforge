@@ -1,15 +1,17 @@
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{error, info};
 
 use crate::domain::{
     IdempotencyRecord, IdempotencyStatus, IndexRun, IndexRunMode, IndexRunStatus,
     unix_timestamp_ms,
 };
 use crate::error::{Result, TokenizorError};
+use crate::indexing::pipeline::{IndexingPipeline, PipelineProgress};
 use crate::storage::RegistryPersistence;
 use crate::storage::digest_hex;
 
@@ -153,6 +155,65 @@ impl RunManager {
         self.persistence.save_idempotency_record(&record)?;
 
         Ok(IdempotentRunResult::NewRun { run })
+    }
+
+    pub fn launch_run(
+        self: &Arc<Self>,
+        repo_id: &str,
+        mode: IndexRunMode,
+        repo_root: PathBuf,
+    ) -> Result<(IndexRun, Arc<PipelineProgress>)> {
+        let run = self.start_run(repo_id, mode)?;
+        let run_id = run.run_id.clone();
+        let repo_id_owned = repo_id.to_string();
+
+        let pipeline = IndexingPipeline::new(run_id.clone(), repo_root);
+        let progress = pipeline.progress();
+
+        let manager = Arc::clone(self);
+        let token = CancellationToken::new();
+
+        let handle = tokio::spawn(async move {
+            // Transition to Running
+            if let Err(e) = manager.persistence.update_run_status(
+                &run_id,
+                IndexRunStatus::Running,
+                None,
+            ) {
+                error!(run_id = %run_id, error = %e, "failed to transition to Running");
+                return;
+            }
+
+            let result = pipeline.execute().await;
+
+            let finished_at = unix_timestamp_ms();
+            if let Err(e) = manager.persistence.update_run_status_with_finish(
+                &run_id,
+                result.status.clone(),
+                result.error_summary,
+                finished_at,
+            ) {
+                error!(run_id = %run_id, error = %e, "failed to update final run status");
+            }
+
+            // Deregister active run
+            manager.deregister_active_run(&repo_id_owned);
+        });
+
+        self.register_active_run(
+            repo_id,
+            ActiveRun {
+                handle,
+                cancellation_token: token,
+            },
+        );
+
+        Ok((run, progress))
+    }
+
+    pub fn deregister_active_run(&self, repo_id: &str) {
+        let mut active_runs = self.active_runs.lock().unwrap_or_else(|e| e.into_inner());
+        active_runs.remove(repo_id);
     }
 
     pub fn persistence(&self) -> &RegistryPersistence {

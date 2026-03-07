@@ -1,5 +1,100 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum LanguageId {
+    Rust,
+    Python,
+    JavaScript,
+    TypeScript,
+    Go,
+}
+
+impl LanguageId {
+    pub fn from_extension(ext: &str) -> Option<Self> {
+        match ext {
+            "rs" => Some(Self::Rust),
+            "py" => Some(Self::Python),
+            "js" | "jsx" => Some(Self::JavaScript),
+            "ts" | "tsx" => Some(Self::TypeScript),
+            "go" => Some(Self::Go),
+            _ => None,
+        }
+    }
+
+    pub fn extensions(&self) -> &[&str] {
+        match self {
+            Self::Rust => &["rs"],
+            Self::Python => &["py"],
+            Self::JavaScript => &["js", "jsx"],
+            Self::TypeScript => &["ts", "tsx"],
+            Self::Go => &["go"],
+        }
+    }
+
+    pub fn support_tier(&self) -> SupportTier {
+        match self {
+            Self::Rust | Self::Python | Self::JavaScript | Self::TypeScript | Self::Go => {
+                SupportTier::QualityFocus
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SupportTier {
+    QualityFocus,
+    Broader,
+    Unsupported,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileProcessingResult {
+    pub relative_path: String,
+    pub language: LanguageId,
+    pub outcome: FileOutcome,
+    pub symbols: Vec<SymbolRecord>,
+    pub byte_len: u64,
+    pub content_hash: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FileOutcome {
+    Processed,
+    PartialParse { warning: String },
+    Failed { error: String },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SymbolRecord {
+    pub name: String,
+    pub kind: SymbolKind,
+    pub depth: u32,
+    pub sort_order: u32,
+    pub byte_range: (u32, u32),
+    pub line_range: (u32, u32),
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SymbolKind {
+    Function,
+    Method,
+    Class,
+    Struct,
+    Enum,
+    Interface,
+    Module,
+    Constant,
+    Variable,
+    Type,
+    Trait,
+    Impl,
+    Other,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IndexRun {
     pub run_id: String,
@@ -33,6 +128,7 @@ pub enum IndexRunStatus {
     Failed,
     Cancelled,
     Interrupted,
+    Aborted,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -47,6 +143,185 @@ pub struct Checkpoint {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_from_extension_maps_rust() {
+        assert_eq!(LanguageId::from_extension("rs"), Some(LanguageId::Rust));
+    }
+
+    #[test]
+    fn test_from_extension_maps_python() {
+        assert_eq!(LanguageId::from_extension("py"), Some(LanguageId::Python));
+    }
+
+    #[test]
+    fn test_from_extension_maps_javascript() {
+        assert_eq!(LanguageId::from_extension("js"), Some(LanguageId::JavaScript));
+        assert_eq!(LanguageId::from_extension("jsx"), Some(LanguageId::JavaScript));
+    }
+
+    #[test]
+    fn test_from_extension_maps_typescript() {
+        assert_eq!(LanguageId::from_extension("ts"), Some(LanguageId::TypeScript));
+        assert_eq!(LanguageId::from_extension("tsx"), Some(LanguageId::TypeScript));
+    }
+
+    #[test]
+    fn test_from_extension_maps_go() {
+        assert_eq!(LanguageId::from_extension("go"), Some(LanguageId::Go));
+    }
+
+    #[test]
+    fn test_from_extension_returns_none_for_unknown() {
+        assert_eq!(LanguageId::from_extension("cpp"), None);
+        assert_eq!(LanguageId::from_extension("java"), None);
+        assert_eq!(LanguageId::from_extension("rb"), None);
+        assert_eq!(LanguageId::from_extension(""), None);
+    }
+
+    #[test]
+    fn test_extensions_returns_correct_set() {
+        assert_eq!(LanguageId::Rust.extensions(), &["rs"]);
+        assert_eq!(LanguageId::Python.extensions(), &["py"]);
+        assert_eq!(LanguageId::JavaScript.extensions(), &["js", "jsx"]);
+        assert_eq!(LanguageId::TypeScript.extensions(), &["ts", "tsx"]);
+        assert_eq!(LanguageId::Go.extensions(), &["go"]);
+    }
+
+    #[test]
+    fn test_support_tier_all_quality_focus() {
+        assert_eq!(LanguageId::Rust.support_tier(), SupportTier::QualityFocus);
+        assert_eq!(LanguageId::Python.support_tier(), SupportTier::QualityFocus);
+        assert_eq!(LanguageId::JavaScript.support_tier(), SupportTier::QualityFocus);
+        assert_eq!(LanguageId::TypeScript.support_tier(), SupportTier::QualityFocus);
+        assert_eq!(LanguageId::Go.support_tier(), SupportTier::QualityFocus);
+    }
+
+    #[test]
+    fn test_language_id_serde_roundtrip() {
+        let languages = vec![
+            LanguageId::Rust,
+            LanguageId::Python,
+            LanguageId::JavaScript,
+            LanguageId::TypeScript,
+            LanguageId::Go,
+        ];
+        for lang in languages {
+            let json = serde_json::to_string(&lang).unwrap();
+            let deserialized: LanguageId = serde_json::from_str(&json).unwrap();
+            assert_eq!(lang, deserialized);
+        }
+    }
+
+    #[test]
+    fn test_support_tier_serde_roundtrip() {
+        let tiers = vec![
+            SupportTier::QualityFocus,
+            SupportTier::Broader,
+            SupportTier::Unsupported,
+        ];
+        for tier in tiers {
+            let json = serde_json::to_string(&tier).unwrap();
+            let deserialized: SupportTier = serde_json::from_str(&json).unwrap();
+            assert_eq!(tier, deserialized);
+        }
+    }
+
+    #[test]
+    fn test_file_processing_result_serde_roundtrip() {
+        let result = FileProcessingResult {
+            relative_path: "src/main.rs".to_string(),
+            language: LanguageId::Rust,
+            outcome: FileOutcome::Processed,
+            symbols: vec![SymbolRecord {
+                name: "main".to_string(),
+                kind: SymbolKind::Function,
+                depth: 0,
+                sort_order: 0,
+                byte_range: (0, 50),
+                line_range: (1, 3),
+            }],
+            byte_len: 50,
+            content_hash: "abc123".to_string(),
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        let deserialized: FileProcessingResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(result, deserialized);
+    }
+
+    #[test]
+    fn test_file_outcome_partial_parse_serde_roundtrip() {
+        let outcome = FileOutcome::PartialParse {
+            warning: "syntax error at line 5".to_string(),
+        };
+        let json = serde_json::to_string(&outcome).unwrap();
+        let deserialized: FileOutcome = serde_json::from_str(&json).unwrap();
+        assert_eq!(outcome, deserialized);
+    }
+
+    #[test]
+    fn test_file_outcome_failed_serde_roundtrip() {
+        let outcome = FileOutcome::Failed {
+            error: "could not parse file".to_string(),
+        };
+        let json = serde_json::to_string(&outcome).unwrap();
+        let deserialized: FileOutcome = serde_json::from_str(&json).unwrap();
+        assert_eq!(outcome, deserialized);
+    }
+
+    #[test]
+    fn test_symbol_record_serde_roundtrip() {
+        let record = SymbolRecord {
+            name: "MyStruct".to_string(),
+            kind: SymbolKind::Struct,
+            depth: 0,
+            sort_order: 1,
+            byte_range: (10, 100),
+            line_range: (2, 10),
+        };
+        let json = serde_json::to_string(&record).unwrap();
+        let deserialized: SymbolRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(record, deserialized);
+    }
+
+    #[test]
+    fn test_symbol_kind_all_variants_serde() {
+        let kinds = vec![
+            SymbolKind::Function,
+            SymbolKind::Method,
+            SymbolKind::Class,
+            SymbolKind::Struct,
+            SymbolKind::Enum,
+            SymbolKind::Interface,
+            SymbolKind::Module,
+            SymbolKind::Constant,
+            SymbolKind::Variable,
+            SymbolKind::Type,
+            SymbolKind::Trait,
+            SymbolKind::Impl,
+            SymbolKind::Other,
+        ];
+        for kind in kinds {
+            let json = serde_json::to_string(&kind).unwrap();
+            let deserialized: SymbolKind = serde_json::from_str(&json).unwrap();
+            assert_eq!(kind, deserialized);
+        }
+    }
+
+    #[test]
+    fn test_file_processing_result_failed_has_empty_symbols() {
+        let result = FileProcessingResult {
+            relative_path: "bad.rs".to_string(),
+            language: LanguageId::Rust,
+            outcome: FileOutcome::Failed {
+                error: "parse failed".to_string(),
+            },
+            symbols: vec![],
+            byte_len: 100,
+            content_hash: "def456".to_string(),
+        };
+        assert!(result.symbols.is_empty());
+    }
 
     #[test]
     fn test_deserialize_interrupted_status() {

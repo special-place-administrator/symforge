@@ -14,6 +14,7 @@ use crate::domain::{
     ActiveWorkspaceContext, ComponentHealth, DeploymentReport, HealthReport, IndexRun,
     IndexRunMode, InitializationReport, MigrationReport, RegistryView,
 };
+use crate::indexing::pipeline::PipelineProgress;
 use crate::error::{Result, TokenizorError};
 use crate::storage::{
     BlobStore, ControlPlane, LocalCasBlobStore, RegistryPersistence, build_control_plane,
@@ -145,6 +146,15 @@ impl ApplicationContext {
 
     pub fn start_indexing(&self, repo_id: &str, mode: IndexRunMode) -> Result<IndexRun> {
         self.run_manager.start_run(repo_id, mode)
+    }
+
+    pub fn launch_indexing(
+        &self,
+        repo_id: &str,
+        mode: IndexRunMode,
+        repo_root: PathBuf,
+    ) -> Result<(IndexRun, Arc<PipelineProgress>)> {
+        self.run_manager.launch_run(repo_id, mode, repo_root)
     }
 
     pub fn run_manager(&self) -> &Arc<RunManager> {

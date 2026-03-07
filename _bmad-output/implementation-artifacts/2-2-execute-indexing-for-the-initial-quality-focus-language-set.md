@@ -1,6 +1,6 @@
 # Story 2.2: Execute Indexing for the Initial Quality-Focus Language Set
 
-Status: ready-for-dev
+Status: review
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -29,88 +29,88 @@ so that the first trusted retrieval slice is implementable at high quality.
 
 ## Tasks / Subtasks
 
-- [ ] Task 1: Define `LanguageId` enum and file-extension-based detection (AC: 2)
-  - [ ] Create `LanguageId` enum in `src/domain/index.rs` with variants: `Rust`, `Python`, `JavaScript`, `TypeScript`, `Go`
-  - [ ] Implement `from_extension(&str) -> Option<LanguageId>` — single source of truth for extension mapping
-  - [ ] Implement `extensions(&self) -> &[&str]` — returns all recognized extensions per language
-  - [ ] Implement `support_tier(&self) -> SupportTier` — all five variants return `QualityFocus` for this story
-  - [ ] Add `SupportTier` enum (`QualityFocus`, `Broader`, `Unsupported`) to future-proof the onboarding pattern (Story 2.4)
-  - [ ] Unit tests: extension mapping covers `.rs`, `.py`, `.js`, `.jsx`, `.ts`, `.tsx`, `.go`; unknown extensions return `None`
+- [x] Task 1: Define `LanguageId` enum and file-extension-based detection (AC: 2)
+  - [x] Create `LanguageId` enum in `src/domain/index.rs` with variants: `Rust`, `Python`, `JavaScript`, `TypeScript`, `Go`
+  - [x] Implement `from_extension(&str) -> Option<LanguageId>` — single source of truth for extension mapping
+  - [x] Implement `extensions(&self) -> &[&str]` — returns all recognized extensions per language
+  - [x] Implement `support_tier(&self) -> SupportTier` — all five variants return `QualityFocus` for this story
+  - [x] Add `SupportTier` enum (`QualityFocus`, `Broader`, `Unsupported`) to future-proof the onboarding pattern (Story 2.4)
+  - [x] Unit tests: extension mapping covers `.rs`, `.py`, `.js`, `.jsx`, `.ts`, `.tsx`, `.go`; unknown extensions return `None`
 
-- [ ] Task 1.5: Verify tree-sitter grammar crates load on the build platform (AC: 1 — platform gate)
-  - [ ] Add `tree-sitter`, `tree-sitter-rust`, `tree-sitter-python`, `tree-sitter-javascript`, `tree-sitter-typescript`, `tree-sitter-go`, and `ignore` to `Cargo.toml`
-  - [ ] Write one integration test per language in `tests/` that creates a `Parser`, calls `set_language(&LANGUAGE.into())`, parses a trivial 1-line source string, and asserts the root node is not null
-  - [ ] Run `cargo test`. If ANY grammar fails to load (missing .dll/.so, ABI mismatch), STOP and fix the platform issue before proceeding to Task 2
-  - [ ] This is a hard gate: no parsing code, no discovery code, no pipeline code until all 5 grammars load successfully on Windows/MSYS2
+- [x] Task 1.5: Verify tree-sitter grammar crates load on the build platform (AC: 1 — platform gate)
+  - [x] Add `tree-sitter`, `tree-sitter-rust`, `tree-sitter-python`, `tree-sitter-javascript`, `tree-sitter-typescript`, `tree-sitter-go`, and `ignore` to `Cargo.toml`
+  - [x] Write one integration test per language in `tests/` that creates a `Parser`, calls `set_language(&LANGUAGE.into())`, parses a trivial 1-line source string, and asserts the root node is not null
+  - [x] Run `cargo test`. If ANY grammar fails to load (missing .dll/.so, ABI mismatch), STOP and fix the platform issue before proceeding to Task 2
+  - [x] This is a hard gate: no parsing code, no discovery code, no pipeline code until all 5 grammars load successfully on Windows/MSYS2
 
-- [ ] Task 2: Define `FileProcessingResult`, `FileOutcome`, and `SymbolRecord` domain types (AC: 1, 3)
-  - [ ] Create `FileProcessingResult` struct: `relative_path: String`, `language: LanguageId`, `outcome: FileOutcome`, `symbols: Vec<SymbolRecord>`, `byte_len: u64`, `content_hash: String`
-  - [ ] Create `FileOutcome` enum: `Processed`, `PartialParse { warning: String }`, `Failed { error: String }`
-  - [ ] Create `SymbolRecord` struct: `name: String`, `kind: SymbolKind`, `depth: u32`, `sort_order: u32`, `byte_range: (u32, u32)`, `line_range: (u32, u32)`
-  - [ ] Create `SymbolKind` enum: `Function`, `Method`, `Class`, `Struct`, `Enum`, `Interface`, `Module`, `Constant`, `Variable`, `Type`, `Trait`, `Impl`, `Other`
-  - [ ] All types derive `Clone, Debug, Serialize, Deserialize, PartialEq, Eq`
-  - [ ] Symbols are flat `Vec<SymbolRecord>` with `depth` + `sort_order` for hierarchical reconstruction
-  - [ ] Unit tests: constructors, serde round-trip
+- [x] Task 2: Define `FileProcessingResult`, `FileOutcome`, and `SymbolRecord` domain types (AC: 1, 3)
+  - [x] Create `FileProcessingResult` struct: `relative_path: String`, `language: LanguageId`, `outcome: FileOutcome`, `symbols: Vec<SymbolRecord>`, `byte_len: u64`, `content_hash: String`
+  - [x] Create `FileOutcome` enum: `Processed`, `PartialParse { warning: String }`, `Failed { error: String }`
+  - [x] Create `SymbolRecord` struct: `name: String`, `kind: SymbolKind`, `depth: u32`, `sort_order: u32`, `byte_range: (u32, u32)`, `line_range: (u32, u32)`
+  - [x] Create `SymbolKind` enum: `Function`, `Method`, `Class`, `Struct`, `Enum`, `Interface`, `Module`, `Constant`, `Variable`, `Type`, `Trait`, `Impl`, `Other`
+  - [x] All types derive `Clone, Debug, Serialize, Deserialize, PartialEq, Eq`
+  - [x] Symbols are flat `Vec<SymbolRecord>` with `depth` + `sort_order` for hierarchical reconstruction
+  - [x] Unit tests: constructors, serde round-trip
 
-- [ ] Task 3: Implement `process_file` pure function (AC: 1, 3)
-  - [ ] Create `fn process_file(relative_path: &str, bytes: &[u8], language: LanguageId) -> Result<FileProcessingResult>` in `src/parsing/mod.rs`
-  - [ ] This function is pure: no I/O, no state, no concurrency
-  - [ ] Convert bytes to UTF-8 (lossy for non-UTF-8 source files)
-  - [ ] Create tree-sitter `Parser`, set language grammar based on `LanguageId`
-  - [ ] Parse source, handle `None` (parse failure) as `FileOutcome::Failed`
-  - [ ] Walk tree nodes to extract `SymbolRecord` entries (functions, classes, structs, etc.)
-  - [ ] Wrap tree-sitter parsing in `std::panic::catch_unwind` for isolation
-  - [ ] Handle partial parses (`tree.root_node().has_error()`) as `FileOutcome::PartialParse`
-  - [ ] Compute `content_hash` via `digest_hex` on the raw bytes
-  - [ ] Unit tests: parse a small sample file for each of the 5 `LanguageId` variants; test all three `FileOutcome` variants; test panic isolation
+- [x] Task 3: Implement `process_file` pure function (AC: 1, 3)
+  - [x] Create `fn process_file(relative_path: &str, bytes: &[u8], language: LanguageId) -> Result<FileProcessingResult>` in `src/parsing/mod.rs`
+  - [x] This function is pure: no I/O, no state, no concurrency
+  - [x] Convert bytes to UTF-8 (lossy for non-UTF-8 source files)
+  - [x] Create tree-sitter `Parser`, set language grammar based on `LanguageId`
+  - [x] Parse source, handle `None` (parse failure) as `FileOutcome::Failed`
+  - [x] Walk tree nodes to extract `SymbolRecord` entries (functions, classes, structs, etc.)
+  - [x] Wrap tree-sitter parsing in `std::panic::catch_unwind` for isolation
+  - [x] Handle partial parses (`tree.root_node().has_error()`) as `FileOutcome::PartialParse`
+  - [x] Compute `content_hash` via `digest_hex` on the raw bytes
+  - [x] Unit tests: parse a small sample file for each of the 5 `LanguageId` variants; test all three `FileOutcome` variants; test panic isolation
 
-- [ ] Task 4: Implement tree-sitter symbol extraction per language (AC: 1)
-  - [ ] Create `src/parsing/languages/` directory with `mod.rs`, `rust.rs`, `python.rs`, `javascript.rs`, `typescript.rs`, `go.rs`
-  - [ ] Each language module implements `fn extract_symbols(node: &tree_sitter::Node, source: &str) -> Vec<SymbolRecord>`
-  - [ ] Rust: extract `fn`, `struct`, `enum`, `trait`, `impl`, `const`, `static`, `mod`, `type`
-  - [ ] Python: extract `def`, `class`, `async def`
-  - [ ] JavaScript: extract `function`, `class`, `const/let/var` (top-level), `export`
-  - [ ] TypeScript: extract same as JavaScript plus `interface`, `type`, `enum`
-  - [ ] Go: extract `func`, `type`, `struct`, `interface`, `const`, `var`
-  - [ ] Assign `depth` and `sort_order` during tree walk for hierarchical reconstruction
-  - [ ] Integration tests: parse a real sample file per language, verify symbol names and kinds
+- [x] Task 4: Implement tree-sitter symbol extraction per language (AC: 1)
+  - [x] Create `src/parsing/languages/` directory with `mod.rs`, `rust.rs`, `python.rs`, `javascript.rs`, `typescript.rs`, `go.rs`
+  - [x] Each language module implements `fn extract_symbols(node: &tree_sitter::Node, source: &str) -> Vec<SymbolRecord>`
+  - [x] Rust: extract `fn`, `struct`, `enum`, `trait`, `impl`, `const`, `static`, `mod`, `type`
+  - [x] Python: extract `def`, `class`, `async def`
+  - [x] JavaScript: extract `function`, `class`, `const/let/var` (top-level), `export`
+  - [x] TypeScript: extract same as JavaScript plus `interface`, `type`, `enum`
+  - [x] Go: extract `func`, `type`, `struct`, `interface`, `const`, `var`
+  - [x] Assign `depth` and `sort_order` during tree walk for hierarchical reconstruction
+  - [x] Integration tests: parse a real sample file per language, verify symbol names and kinds
 
-- [ ] Task 5: Implement file discovery using `ignore` crate (AC: 1, 2)
-  - [ ] Create `src/indexing/discovery.rs` with `fn discover_files(root: &Path) -> Result<Vec<DiscoveredFile>>`
-  - [ ] `DiscoveredFile` struct: `relative_path: String`, `absolute_path: PathBuf`, `language: LanguageId`
-  - [ ] Use `ignore::WalkBuilder` for `.gitignore`-respecting traversal
-  - [ ] Filter discovered files by `LanguageId::from_extension` — only include files with recognized extensions
-  - [ ] Sort results by normalized relative path (forward slashes, lowercase on Windows) for deterministic order
-  - [ ] Unit tests: discover files in a temp directory with mixed languages; verify gitignore exclusions
+- [x] Task 5: Implement file discovery using `ignore` crate (AC: 1, 2)
+  - [x] Create `src/indexing/discovery.rs` with `fn discover_files(root: &Path) -> Result<Vec<DiscoveredFile>>`
+  - [x] `DiscoveredFile` struct: `relative_path: String`, `absolute_path: PathBuf`, `language: LanguageId`
+  - [x] Use `ignore::WalkBuilder` for `.gitignore`-respecting traversal
+  - [x] Filter discovered files by `LanguageId::from_extension` — only include files with recognized extensions
+  - [x] Sort results by normalized relative path (forward slashes, lowercase on Windows) for deterministic order
+  - [x] Unit tests: discover files in a temp directory with mixed languages; verify gitignore exclusions
 
-- [ ] Task 6: Implement indexing pipeline orchestrator with bounded concurrency (AC: 1, 3)
-  - [ ] Create `src/indexing/pipeline.rs` with the main `IndexingPipeline` struct
-  - [ ] Accept `run_id`, `repo_root: PathBuf`, concurrency cap (default ~8 or `num_cpus`)
-  - [ ] Use `tokio::sync::Semaphore` for bounded `tokio::spawn` concurrency
-  - [ ] Pipeline flow: discover files → sort → for each file: acquire permit → read bytes → `process_file` → record result → release permit
-  - [ ] Each task is self-contained: a single file failing records degraded status, releases permit, continues
-  - [ ] Implement consecutive-failure circuit breaker: if N consecutive tasks fail (default N=5), abort with `Aborted` status; counter resets on success
-  - [ ] Track in-memory progress: `Arc<AtomicU64>` for files_processed, files_failed, total_files
-  - [ ] Transition run status: `Queued` → `Running` (at pipeline start) → `Succeeded`/`Failed`/`Aborted` (at pipeline end)
-  - [ ] Never hold `std::sync::Mutex` across `.await`
-  - [ ] Unit tests: pipeline processes files, circuit breaker triggers after N consecutive failures, progress tracking
+- [x] Task 6: Implement indexing pipeline orchestrator with bounded concurrency (AC: 1, 3)
+  - [x] Create `src/indexing/pipeline.rs` with the main `IndexingPipeline` struct
+  - [x] Accept `run_id`, `repo_root: PathBuf`, concurrency cap (default ~8 or `num_cpus`)
+  - [x] Use `tokio::sync::Semaphore` for bounded `tokio::spawn` concurrency
+  - [x] Pipeline flow: discover files → sort → for each file: acquire permit → read bytes → `process_file` → record result → release permit
+  - [x] Each task is self-contained: a single file failing records degraded status, releases permit, continues
+  - [x] Implement consecutive-failure circuit breaker: if N consecutive tasks fail (default N=5), abort with `Aborted` status; counter resets on success
+  - [x] Track in-memory progress: `Arc<AtomicU64>` for files_processed, files_failed, total_files
+  - [x] Transition run status: `Queued` → `Running` (at pipeline start) → `Succeeded`/`Failed`/`Aborted` (at pipeline end)
+  - [x] Never hold `std::sync::Mutex` across `.await`
+  - [x] Unit tests: pipeline processes files, circuit breaker triggers after N consecutive failures, progress tracking
 
-- [ ] Task 7: Wire pipeline into `RunManager` background task spawning (AC: 1)
-  - [ ] Extend `RunManager::start_run()` or add `RunManager::launch_run()` to spawn the indexing pipeline as a background `tokio::spawn` task
-  - [ ] Create `ActiveRun` with `JoinHandle`, `CancellationToken`, and progress `Arc`
-  - [ ] Register via existing `register_active_run()` method
-  - [ ] Background task: run pipeline → update run status via `RegistryPersistence` → deregister active run on completion
-  - [ ] `index_folder` MCP tool: call `launch_run()` instead of just `start_run()`, return `run_id` immediately
-  - [ ] Ensure tool handler never `.await`s the full pipeline
+- [x] Task 7: Wire pipeline into `RunManager` background task spawning (AC: 1)
+  - [x] Extend `RunManager::start_run()` or add `RunManager::launch_run()` to spawn the indexing pipeline as a background `tokio::spawn` task
+  - [x] Create `ActiveRun` with `JoinHandle`, `CancellationToken`, and progress `Arc`
+  - [x] Register via existing `register_active_run()` method
+  - [x] Background task: run pipeline → update run status via `RegistryPersistence` → deregister active run on completion
+  - [x] `index_folder` MCP tool: call `launch_run()` instead of just `start_run()`, return `run_id` immediately
+  - [x] Ensure tool handler never `.await`s the full pipeline
 
-- [ ] Task 8: Add comprehensive tests (AC: 1, 2, 3)
-  - [ ] `LanguageId`: extension mapping, support tier, exhaustive coverage
-  - [ ] `process_file`: sample file per language, all `FileOutcome` variants, panic isolation
-  - [ ] Tree-sitter integration: parse small sample files per language, verify grammar loads correctly (catches .dll/.so load failures on Windows)
-  - [ ] Discovery: gitignore exclusion, language filtering, deterministic sort order
-  - [ ] Pipeline: end-to-end with temp repo, bounded concurrency, circuit breaker, progress tracking
-  - [ ] Run lifecycle: `Queued` → `Running` → `Succeeded`/`Failed` transitions via background task
-  - [ ] Error isolation: single file failure doesn't poison the run
+- [x] Task 8: Add comprehensive tests (AC: 1, 2, 3)
+  - [x] `LanguageId`: extension mapping, support tier, exhaustive coverage
+  - [x] `process_file`: sample file per language, all `FileOutcome` variants, panic isolation
+  - [x] Tree-sitter integration: parse small sample files per language, verify grammar loads correctly (catches .dll/.so load failures on Windows)
+  - [x] Discovery: gitignore exclusion, language filtering, deterministic sort order
+  - [x] Pipeline: end-to-end with temp repo, bounded concurrency, circuit breaker, progress tracking
+  - [x] Run lifecycle: `Queued` → `Running` → `Succeeded`/`Failed` transitions via background task
+  - [x] Error isolation: single file failure doesn't poison the run
 
 ## Dev Notes
 
@@ -329,12 +329,52 @@ Key insights:
 
 ### Agent Model Used
 
-{{agent_model_name_version}}
+Claude Opus 4.6
 
 ### Debug Log References
 
+- tree-sitter 0.24 API: `Node::is_null()` removed — use `node.kind().is_empty()` for validity checks
+- `SymbolKind` needed `Copy` derive since it's used after pattern matching in tree walks
+- `ignore` crate requires a `.git/` directory to respect `.gitignore` in tests
+- tree-sitter-typescript exposes `LANGUAGE_TYPESCRIPT` (not `LANGUAGE`) for TypeScript grammar
+
 ### Completion Notes List
+
+- Implemented full indexing pipeline from domain types through background task spawning
+- All 5 quality-focus languages (Rust, Python, JavaScript, TypeScript, Go) parse and extract symbols
+- Pipeline uses bounded concurrency via `tokio::sync::Semaphore`, consecutive-failure circuit breaker
+- `process_file` is a pure function with `catch_unwind` isolation — safe against tree-sitter panics
+- File discovery respects `.gitignore`, normalizes paths with forward slashes, sorts deterministically
+- `RunManager::launch_run()` spawns background task, transitions `Queued→Running→Succeeded/Failed/Aborted`
+- MCP `index_folder` tool updated to accept `repo_root` parameter and call `launch_indexing()`
+- Added `Aborted` variant to `IndexRunStatus` for circuit breaker scenarios
+- Test count: 99 → 142 (43 new tests, 0 regressions)
 
 ### Change Log
 
+- 2026-03-07: Implemented Story 2.2 — full indexing pipeline for quality-focus language set
+
 ### File List
+
+**New files:**
+- `src/parsing/languages/mod.rs` — language dispatch for symbol extraction
+- `src/parsing/languages/rust.rs` — Rust symbol extraction
+- `src/parsing/languages/python.rs` — Python symbol extraction
+- `src/parsing/languages/javascript.rs` — JavaScript symbol extraction
+- `src/parsing/languages/typescript.rs` — TypeScript symbol extraction
+- `src/parsing/languages/go.rs` — Go symbol extraction
+- `src/indexing/discovery.rs` — gitignore-aware file discovery
+- `src/indexing/pipeline.rs` — bounded-concurrency indexing pipeline
+- `tests/tree_sitter_grammars.rs` — grammar load verification (integration)
+- `tests/indexing_integration.rs` — run lifecycle and error isolation (integration)
+
+**Modified files:**
+- `Cargo.toml` — added tree-sitter, tree-sitter-{rust,python,javascript,typescript,go}, ignore, num_cpus
+- `src/domain/index.rs` — added LanguageId, SupportTier, FileProcessingResult, FileOutcome, SymbolRecord, SymbolKind, Aborted status
+- `src/domain/mod.rs` — re-export new types
+- `src/parsing/mod.rs` — replaced ParsingScaffold with process_file and languages module
+- `src/indexing/mod.rs` — replaced IndexingScaffold with discovery and pipeline modules
+- `src/application/run_manager.rs` — added launch_run(), deregister_active_run()
+- `src/application/mod.rs` — added launch_indexing() method
+- `src/protocol/mcp.rs` — updated index_folder to accept repo_root and use launch_indexing
+- `src/storage/registry_persistence.rs` — added update_run_status_with_finish()

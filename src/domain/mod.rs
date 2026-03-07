@@ -14,7 +14,10 @@ pub use health::{
     HealthStatus, ServiceIdentity, aggregate_status, unix_timestamp_ms,
 };
 pub use idempotency::{IdempotencyRecord, IdempotencyStatus};
-pub use index::{Checkpoint, IndexRun, IndexRunMode, IndexRunStatus};
+pub use index::{
+    Checkpoint, FileOutcome, FileProcessingResult, IndexRun, IndexRunMode, IndexRunStatus,
+    LanguageId, SupportTier, SymbolKind, SymbolRecord,
+};
 pub use init::{InitializationReport, RegistrationAction, RegistrationResult};
 pub use migration::{
     MigrationEntityKind, MigrationIssue, MigrationMode, MigrationRecord, MigrationReport,

@@ -36,7 +36,7 @@ impl TokenizorServer {
     }
 
     #[tool(
-        description = "Start an indexing run for a repository. Returns the run ID immediately without blocking on the full indexing pipeline. Parameters: repo_id (string, required), mode (string, optional: full|incremental|repair|verify, defaults to full)."
+        description = "Start an indexing run for a repository. Returns the run ID immediately without blocking on the full indexing pipeline. Parameters: repo_id (string, required), repo_root (string, required — absolute path to repository), mode (string, optional: full|incremental|repair|verify, defaults to full)."
     )]
     fn index_folder(&self, params: rmcp::model::JsonObject) -> Result<CallToolResult, McpError> {
         let repo_id = params
@@ -44,6 +44,14 @@ impl TokenizorServer {
             .and_then(|v| v.as_str())
             .ok_or_else(|| McpError::invalid_params("missing required parameter: repo_id", None))?
             .to_string();
+
+        let repo_root = params
+            .get("repo_root")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                McpError::invalid_params("missing required parameter: repo_root", None)
+            })?;
+        let repo_root = std::path::PathBuf::from(repo_root);
 
         let mode_str = params.get("mode").and_then(|v| v.as_str());
         let run_mode = match mode_str {
@@ -59,9 +67,9 @@ impl TokenizorServer {
             }
         };
 
-        let run = self
+        let (run, _progress) = self
             .application
-            .start_indexing(&repo_id, run_mode)
+            .launch_indexing(&repo_id, run_mode, repo_root)
             .map_err(to_mcp_error)?;
 
         let payload = serde_json::to_string(&run).map_err(|error| {
