@@ -1,6 +1,6 @@
 # Story 2.4: Extend Indexing Through a Repeatable Broader-Language Onboarding Pattern
 
-Status: review
+Status: done
 
 ## Story
 
@@ -247,6 +247,7 @@ No conflicts with unified project structure detected. All new code follows estab
 ## Change Log
 
 - 2026-03-07: Implemented Story 2.4 — broader language onboarding pattern with Java as first onboarded slice, 10 new LanguageId variants, pipeline partition for multi-tier support, 30 new tests (211 total, up from 181)
+- 2026-03-07: Code review fixes — H1: pipeline success path now includes not-yet-supported summary in info! log and error_summary; M1: not_yet_supported BTreeMap persisted on IndexRun via registry (AC3 inspectability); M2: java module visibility pub→mod; M3: removed dead constant_declaration match arm; L1: added unsupported language defense-in-depth test (212 total tests)
 
 ## Dev Agent Record
 
@@ -287,3 +288,12 @@ Build order followed (per Dev Notes): Domain types (T1) -> Java extractor (T3) -
 - `src/indexing/pipeline.rs` — added BTreeMap/LanguageId/SupportTier imports, added not_yet_supported field to PipelineResult, partition logic in process_discovered, updated finish summary, 1 new test
 - `tests/tree_sitter_grammars.rs` — added Java grammar load+parse test
 - `tests/indexing_integration.rs` — updated existing out-of-scope test, added 5 new Story 2.4 integration tests
+
+**Modified by review fixes:**
+- `src/domain/index.rs` — added `not_yet_supported: Option<BTreeMap<LanguageId, u64>>` field to `IndexRun` with `#[serde(default)]`
+- `src/storage/registry_persistence.rs` — `update_run_status_with_finish` now accepts and persists `not_yet_supported`
+- `src/application/run_manager.rs` — passes pipeline `not_yet_supported` through to persistence
+- `src/indexing/pipeline.rs` — success path includes not-yet-supported summary in log and error_summary
+- `src/parsing/languages/mod.rs` — changed `pub mod java` to `mod java`
+- `src/parsing/languages/java.rs` — removed dead `constant_declaration` match arm
+- `src/parsing/mod.rs` — added `test_process_file_unsupported_language_returns_failed` test

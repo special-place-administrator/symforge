@@ -333,9 +333,14 @@ impl IndexingPipeline {
                 run_id = %self.run_id,
                 persisted = persisted_count,
                 committed = committed_count,
-                "pipeline succeeded"
+                "pipeline succeeded{not_yet_supported_summary}"
             );
-            (IndexRunStatus::Succeeded, None)
+            let error_summary = if not_yet_supported_summary.is_empty() {
+                None
+            } else {
+                Some(not_yet_supported_summary.trim_start_matches("; ").to_string())
+            };
+            (IndexRunStatus::Succeeded, error_summary)
         };
 
         PipelineResult {

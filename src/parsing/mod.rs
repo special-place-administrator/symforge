@@ -193,4 +193,14 @@ mod tests {
             assert!(!result.content_hash.is_empty());
         }
     }
+
+    #[test]
+    fn test_process_file_unsupported_language_returns_failed() {
+        let source = b"def hello; end";
+        let result = process_file("app.rb", source, LanguageId::Ruby);
+        assert!(matches!(result.outcome, FileOutcome::Failed { .. }));
+        if let FileOutcome::Failed { error } = &result.outcome {
+            assert!(error.contains("not yet onboarded"));
+        }
+    }
 }

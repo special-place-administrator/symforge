@@ -110,6 +110,7 @@ impl RegistryPersistence {
         status: IndexRunStatus,
         error_summary: Option<String>,
         finished_at_unix_ms: u64,
+        not_yet_supported: Option<BTreeMap<crate::domain::LanguageId, u64>>,
     ) -> Result<()> {
         self.read_modify_write(|data| {
             let run = data
@@ -126,6 +127,7 @@ impl RegistryPersistence {
             if error_summary.is_some() {
                 run.error_summary = error_summary.clone();
             }
+            run.not_yet_supported = not_yet_supported.clone();
             Ok(())
         })
     }
@@ -403,6 +405,7 @@ mod tests {
             request_hash: None,
             checkpoint_cursor: None,
             error_summary: None,
+            not_yet_supported: None,
         }
     }
 

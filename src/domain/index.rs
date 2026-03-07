@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -148,6 +150,8 @@ pub struct IndexRun {
     pub request_hash: Option<String>,
     pub checkpoint_cursor: Option<String>,
     pub error_summary: Option<String>,
+    #[serde(default)]
+    pub not_yet_supported: Option<BTreeMap<LanguageId, u64>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -704,6 +708,7 @@ mod tests {
             request_hash: None,
             checkpoint_cursor: None,
             error_summary: Some("process exited unexpectedly".to_string()),
+            not_yet_supported: None,
         };
         let json = serde_json::to_string(&run).unwrap();
         let deserialized: IndexRun = serde_json::from_str(&json).unwrap();

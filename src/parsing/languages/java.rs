@@ -26,7 +26,6 @@ fn walk_node(
             extract_field(node, source, depth, sort_order, symbols);
             return;
         }
-        "constant_declaration" => Some(SymbolKind::Constant),
         _ => None,
     };
 

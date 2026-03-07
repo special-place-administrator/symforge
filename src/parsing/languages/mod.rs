@@ -1,5 +1,5 @@
 mod go;
-pub mod java;
+mod java;
 mod javascript;
 mod python;
 mod rust;

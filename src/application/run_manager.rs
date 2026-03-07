@@ -92,6 +92,7 @@ impl RunManager {
             request_hash: None,
             checkpoint_cursor: None,
             error_summary: None,
+            not_yet_supported: None,
         };
 
         self.persistence.save_run(&run)?;
@@ -224,11 +225,17 @@ impl RunManager {
             };
 
             let finished_at = unix_timestamp_ms();
+            let not_yet_supported = if result.not_yet_supported.is_empty() {
+                None
+            } else {
+                Some(result.not_yet_supported)
+            };
             if let Err(e) = manager.persistence.update_run_status_with_finish(
                 &run_id,
                 result.status.clone(),
                 final_error_summary,
                 finished_at,
+                not_yet_supported,
             ) {
                 error!(run_id = %run_id, error = %e, "failed to update final run status");
             }
@@ -355,6 +362,7 @@ mod tests {
                 request_hash: None,
                 checkpoint_cursor: None,
                 error_summary: None,
+                not_yet_supported: None,
             };
             persistence.save_run(&run).unwrap();
         }
@@ -392,6 +400,7 @@ mod tests {
                 request_hash: None,
                 checkpoint_cursor: None,
                 error_summary: None,
+                not_yet_supported: None,
             })
             .unwrap();
         persistence
@@ -407,6 +416,7 @@ mod tests {
                 request_hash: None,
                 checkpoint_cursor: None,
                 error_summary: None,
+                not_yet_supported: None,
             })
             .unwrap();
 
