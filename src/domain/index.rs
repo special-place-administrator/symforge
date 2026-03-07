@@ -152,6 +152,10 @@ pub struct IndexRun {
     pub error_summary: Option<String>,
     #[serde(default)]
     pub not_yet_supported: Option<BTreeMap<LanguageId, u64>>,
+    #[serde(default)]
+    pub prior_run_id: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -161,6 +165,7 @@ pub enum IndexRunMode {
     Incremental,
     Repair,
     Verify,
+    Reindex,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -790,6 +795,8 @@ mod tests {
             checkpoint_cursor: None,
             error_summary: Some("process exited unexpectedly".to_string()),
             not_yet_supported: None,
+            prior_run_id: None,
+            description: None,
         };
         let json = serde_json::to_string(&run).unwrap();
         let deserialized: IndexRun = serde_json::from_str(&json).unwrap();
@@ -847,6 +854,8 @@ mod tests {
                 checkpoint_cursor: None,
                 error_summary: None,
                 not_yet_supported: None,
+                prior_run_id: None,
+                description: None,
             },
             health: RunHealth::Healthy,
             is_active: false,
@@ -924,4 +933,59 @@ mod tests {
         let deserialized: RunProgressSnapshot = serde_json::from_str(&json).unwrap();
         assert_eq!(snapshot, deserialized);
     }
+
+    #[test]
+    fn test_roundtrip_index_run_with_prior_run_id() {
+        let run = IndexRun {
+            run_id: "reindex-run".to_string(),
+            repo_id: "repo-1".to_string(),
+            mode: IndexRunMode::Reindex,
+            status: IndexRunStatus::Queued,
+            requested_at_unix_ms: 2000,
+            started_at_unix_ms: None,
+            finished_at_unix_ms: None,
+            idempotency_key: None,
+            request_hash: None,
+            checkpoint_cursor: None,
+            error_summary: None,
+            not_yet_supported: None,
+            prior_run_id: Some("previous-run-id".to_string()),
+            description: None,
+        };
+        let json = serde_json::to_string(&run).unwrap();
+        let deserialized: IndexRun = serde_json::from_str(&json).unwrap();
+        assert_eq!(run, deserialized);
+        assert_eq!(deserialized.prior_run_id, Some("previous-run-id".to_string()));
+    }
+
+    #[test]
+    fn test_deserialize_index_run_without_prior_run_id_backward_compat() {
+        let json = r#"{
+            "run_id": "old-run",
+            "repo_id": "repo-1",
+            "mode": "full",
+            "status": "succeeded",
+            "requested_at_unix_ms": 1000,
+            "started_at_unix_ms": 1001,
+            "finished_at_unix_ms": 2000,
+            "idempotency_key": null,
+            "request_hash": null,
+            "checkpoint_cursor": null,
+            "error_summary": null
+        }"#;
+        let run: IndexRun = serde_json::from_str(json).unwrap();
+        assert_eq!(run.run_id, "old-run");
+        assert_eq!(run.prior_run_id, None);
+        assert_eq!(run.not_yet_supported, None);
+    }
+
+    #[test]
+    fn test_reindex_mode_serde_roundtrip() {
+        let mode = IndexRunMode::Reindex;
+        let json = serde_json::to_string(&mode).unwrap();
+        assert_eq!(json, "\"reindex\"");
+        let deserialized: IndexRunMode = serde_json::from_str(&json).unwrap();
+        assert_eq!(mode, deserialized);
+    }
+
 }

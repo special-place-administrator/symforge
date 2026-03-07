@@ -96,6 +96,8 @@ impl RunManager {
             checkpoint_cursor: None,
             error_summary: None,
             not_yet_supported: None,
+            prior_run_id: None,
+            description: None,
         };
 
         self.persistence.save_run(&run)?;
@@ -174,6 +176,119 @@ impl RunManager {
         Ok(IdempotentRunResult::NewRun { run })
     }
 
+    pub fn reindex_repository(
+        self: &Arc<Self>,
+        repo_id: &str,
+        workspace_id: Option<&str>,
+        reason: Option<&str>,
+        repo_root: PathBuf,
+        blob_store: Arc<dyn BlobStore>,
+    ) -> Result<IndexRun> {
+        // H1 fix: Idempotency check FIRST (before active-run check).
+        // Same pattern as start_run_idempotent — if same request replays,
+        // return stored result even if that run is still active.
+        let ws_id = workspace_id.unwrap_or("");
+        let idempotency_key = format!("reindex::{repo_id}::{ws_id}");
+        let mode = IndexRunMode::Reindex;
+        let request_hash = compute_request_hash(repo_id, ws_id, &mode);
+
+        if let Some(existing) = self.persistence.find_idempotency_record(&idempotency_key)? {
+            if existing.request_hash == request_hash {
+                info!(
+                    idempotency_key = %idempotency_key,
+                    "idempotent reindex replay detected, returning stored result"
+                );
+                let run_id = existing.result_ref.unwrap_or_default();
+                return self
+                    .persistence
+                    .find_run(&run_id)?
+                    .ok_or_else(|| {
+                        TokenizorError::Integrity(format!(
+                            "idempotency record references run `{run_id}` but run not found"
+                        ))
+                    });
+            } else {
+                return Err(TokenizorError::InvalidArgument(format!(
+                    "conflicting replay for idempotency key `{idempotency_key}`: \
+                     request hash differs from stored record"
+                )));
+            }
+        }
+
+        // Check for active runs — one active run per repo at a time
+        let active_runs = self.active_runs.lock().unwrap_or_else(|e| e.into_inner());
+        if active_runs.contains_key(repo_id) {
+            return Err(TokenizorError::InvalidOperation(format!(
+                "cannot re-index repository `{repo_id}`: an active indexing run exists"
+            )));
+        }
+        drop(active_runs);
+
+        let persisted_active = self.persistence.list_runs()?;
+        let has_active_persisted = persisted_active.iter().any(|r| {
+            r.repo_id == repo_id
+                && matches!(r.status, IndexRunStatus::Queued | IndexRunStatus::Running)
+        });
+        if has_active_persisted {
+            return Err(TokenizorError::InvalidOperation(format!(
+                "cannot re-index repository `{repo_id}`: an active indexing run exists"
+            )));
+        }
+
+        // Auto-discover prior_run_id
+        let prior_run_id = self
+            .persistence
+            .get_latest_completed_run(repo_id)?
+            .map(|r| r.run_id);
+
+        // Create new reindex run
+        let requested_at = unix_timestamp_ms();
+        let run_id = generate_run_id(repo_id, &mode, requested_at);
+
+        let run = IndexRun {
+            run_id,
+            repo_id: repo_id.to_string(),
+            mode,
+            status: IndexRunStatus::Queued,
+            requested_at_unix_ms: requested_at,
+            started_at_unix_ms: None,
+            finished_at_unix_ms: None,
+            idempotency_key: Some(idempotency_key.clone()),
+            request_hash: Some(request_hash.clone()),
+            checkpoint_cursor: None,
+            error_summary: None,
+            not_yet_supported: None,
+            prior_run_id,
+            description: reason.map(|r| r.to_string()),
+        };
+
+        self.persistence.save_run(&run)?;
+
+        // Save idempotency record
+        let record = IdempotencyRecord {
+            operation: "reindex".to_string(),
+            idempotency_key,
+            request_hash,
+            status: IdempotencyStatus::Pending,
+            result_ref: Some(run.run_id.clone()),
+            created_at_unix_ms: requested_at,
+            expires_at_unix_ms: None,
+        };
+        self.persistence.save_idempotency_record(&record)?;
+
+        info!(
+            run_id = %run.run_id,
+            repo_id = %run.repo_id,
+            prior_run_id = ?run.prior_run_id,
+            "created new reindex run, launching pipeline"
+        );
+
+        // H2 fix: Actually launch the pipeline (same pattern as launch_run)
+        self.spawn_pipeline_for_run(&run, repo_root, blob_store);
+
+        Ok(run)
+    }
+
     pub fn launch_run(
         self: &Arc<Self>,
         repo_id: &str,
@@ -182,8 +297,18 @@ impl RunManager {
         blob_store: Arc<dyn BlobStore>,
     ) -> Result<(IndexRun, Arc<PipelineProgress>)> {
         let run = self.start_run(repo_id, mode)?;
+        let progress = self.spawn_pipeline_for_run(&run, repo_root, blob_store);
+        Ok((run, progress))
+    }
+
+    fn spawn_pipeline_for_run(
+        self: &Arc<Self>,
+        run: &IndexRun,
+        repo_root: PathBuf,
+        blob_store: Arc<dyn BlobStore>,
+    ) -> Arc<PipelineProgress> {
         let run_id = run.run_id.clone();
-        let repo_id_owned = repo_id.to_string();
+        let repo_id_owned = run.repo_id.clone();
 
         let token = CancellationToken::new();
 
@@ -306,7 +431,7 @@ impl RunManager {
             Arc::new(move || tracker.checkpoint_cursor());
 
         self.register_active_run(
-            repo_id,
+            &run.repo_id,
             ActiveRun {
                 handle,
                 cancellation_token: token,
@@ -315,7 +440,7 @@ impl RunManager {
             },
         );
 
-        Ok((run, progress))
+        progress
     }
 
     pub fn deregister_active_run(&self, repo_id: &str) {
@@ -538,6 +663,7 @@ fn compute_request_hash(repo_id: &str, workspace_id: &str, mode: &IndexRunMode) 
         IndexRunMode::Incremental => "incremental",
         IndexRunMode::Repair => "repair",
         IndexRunMode::Verify => "verify",
+        IndexRunMode::Reindex => "reindex",
     };
     let input = format!("index:{repo_id}:{workspace_id}:{mode_str}");
     digest_hex(input.as_bytes())
@@ -549,6 +675,7 @@ fn generate_run_id(repo_id: &str, mode: &IndexRunMode, requested_at_unix_ms: u64
         IndexRunMode::Incremental => "incremental",
         IndexRunMode::Repair => "repair",
         IndexRunMode::Verify => "verify",
+        IndexRunMode::Reindex => "reindex",
     };
     let input = format!("{repo_id}:{mode_str}:{requested_at_unix_ms}");
     digest_hex(input.as_bytes())
@@ -682,6 +809,8 @@ mod tests {
                 checkpoint_cursor: None,
                 error_summary: None,
                 not_yet_supported: None,
+                prior_run_id: None,
+                description: None,
             };
             persistence.save_run(&run).unwrap();
         }
@@ -720,6 +849,8 @@ mod tests {
                 checkpoint_cursor: None,
                 error_summary: None,
                 not_yet_supported: None,
+                prior_run_id: None,
+                description: None,
             })
             .unwrap();
         persistence
@@ -736,6 +867,8 @@ mod tests {
                 checkpoint_cursor: None,
                 error_summary: None,
                 not_yet_supported: None,
+                prior_run_id: None,
+                description: None,
             })
             .unwrap();
 
@@ -902,6 +1035,8 @@ mod tests {
             checkpoint_cursor: None,
             error_summary: None,
             not_yet_supported: None,
+            prior_run_id: None,
+            description: None,
         }
     }
 
@@ -1249,5 +1384,150 @@ mod tests {
         let result = manager.checkpoint_run(&run_id);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), TokenizorError::InvalidOperation(_)));
+    }
+
+    fn temp_reindex_env() -> (
+        tempfile::TempDir,
+        Arc<RunManager>,
+        tempfile::TempDir,
+        Arc<dyn BlobStore>,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("registry.json");
+        let persistence = RegistryPersistence::new(path);
+        let manager = Arc::new(RunManager::new(persistence));
+        let cas_dir = tempfile::tempdir().unwrap();
+        let cas: Arc<dyn BlobStore> = Arc::new(
+            crate::storage::LocalCasBlobStore::new(crate::config::BlobStoreConfig {
+                root_dir: cas_dir.path().to_path_buf(),
+            }),
+        );
+        cas.initialize().unwrap();
+        (dir, manager, cas_dir, cas)
+    }
+
+    fn reindex_repo_root() -> tempfile::TempDir {
+        let repo_dir = tempfile::tempdir().unwrap();
+        std::fs::write(repo_dir.path().join("main.rs"), "fn main() {}").unwrap();
+        repo_dir
+    }
+
+    #[tokio::test]
+    async fn test_reindex_creates_run_with_prior_run_id() {
+        let (_dir, manager, _cas_dir, cas) = temp_reindex_env();
+        let repo_dir = reindex_repo_root();
+        // Create and complete a prior run
+        let prior = manager.start_run("repo-1", IndexRunMode::Full).unwrap();
+        manager
+            .persistence
+            .update_run_status_with_finish(&prior.run_id, IndexRunStatus::Succeeded, None, 2000, None)
+            .unwrap();
+
+        let reindex = manager
+            .reindex_repository("repo-1", None, None, repo_dir.path().to_path_buf(), cas)
+            .unwrap();
+        assert_eq!(reindex.mode, IndexRunMode::Reindex);
+        assert_eq!(reindex.prior_run_id, Some(prior.run_id));
+        assert_eq!(reindex.status, IndexRunStatus::Queued);
+    }
+
+    #[tokio::test]
+    async fn test_reindex_with_active_run_returns_error() {
+        let (_dir, manager, _cas_dir, cas) = temp_reindex_env();
+        let repo_dir = reindex_repo_root();
+        let _active = manager.start_run("repo-1", IndexRunMode::Full).unwrap();
+
+        let result = manager.reindex_repository(
+            "repo-1", None, None, repo_dir.path().to_path_buf(), cas,
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("active indexing run exists"));
+    }
+
+    #[tokio::test]
+    async fn test_reindex_idempotent_replay_returns_same_run_while_queued() {
+        let (_dir, manager, _cas_dir, cas) = temp_reindex_env();
+        let repo_dir = reindex_repo_root();
+        // Create and complete a prior run so reindex has a target
+        let prior = manager.start_run("repo-1", IndexRunMode::Full).unwrap();
+        manager
+            .persistence
+            .update_run_status_with_finish(&prior.run_id, IndexRunStatus::Succeeded, None, 2000, None)
+            .unwrap();
+
+        let first = manager
+            .reindex_repository("repo-1", None, None, repo_dir.path().to_path_buf(), cas.clone())
+            .unwrap();
+        // H1 fix: replay while the first reindex is still active — idempotency check
+        // fires before active-run check, so the stored result is returned
+        let replay = manager
+            .reindex_repository("repo-1", None, None, repo_dir.path().to_path_buf(), cas)
+            .unwrap();
+        assert_eq!(first.run_id, replay.run_id, "idempotent replay should return same run");
+    }
+
+    #[tokio::test]
+    async fn test_reindex_conflicting_replay_returns_error() {
+        let (_dir, manager, _cas_dir, cas) = temp_reindex_env();
+        let repo_dir = reindex_repo_root();
+        // Manually insert an idempotency record with different request_hash
+        // to simulate a conflicting replay scenario
+        let record = IdempotencyRecord {
+            operation: "reindex".to_string(),
+            idempotency_key: "reindex::repo-1::".to_string(),
+            request_hash: "different-hash-from-prior-request".to_string(),
+            status: IdempotencyStatus::Pending,
+            result_ref: Some("old-run-id".to_string()),
+            created_at_unix_ms: 1000,
+            expires_at_unix_ms: None,
+        };
+        manager
+            .persistence
+            .save_idempotency_record(&record)
+            .unwrap();
+
+        let result = manager.reindex_repository(
+            "repo-1", None, None, repo_dir.path().to_path_buf(), cas,
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("conflicting replay"));
+    }
+
+    #[tokio::test]
+    async fn test_reindex_no_prior_completed_run_sets_none() {
+        let (_dir, manager, _cas_dir, cas) = temp_reindex_env();
+        let repo_dir = reindex_repo_root();
+        // No prior runs at all
+        let reindex = manager
+            .reindex_repository("repo-1", None, None, repo_dir.path().to_path_buf(), cas)
+            .unwrap();
+        assert_eq!(reindex.mode, IndexRunMode::Reindex);
+        assert_eq!(reindex.prior_run_id, None);
+    }
+
+    #[tokio::test]
+    async fn test_reindex_prior_run_auto_discovered() {
+        let (_dir, manager, _cas_dir, cas) = temp_reindex_env();
+        let repo_dir = reindex_repo_root();
+        // Create multiple runs — only succeeded ones count
+        let run1 = manager.start_run("repo-1", IndexRunMode::Full).unwrap();
+        manager
+            .persistence
+            .update_run_status_with_finish(&run1.run_id, IndexRunStatus::Succeeded, None, 2000, None)
+            .unwrap();
+
+        let run2 = manager.start_run("repo-1", IndexRunMode::Full).unwrap();
+        manager
+            .persistence
+            .update_run_status_with_finish(&run2.run_id, IndexRunStatus::Failed, None, 3000, None)
+            .unwrap();
+
+        let reindex = manager
+            .reindex_repository("repo-1", None, None, repo_dir.path().to_path_buf(), cas)
+            .unwrap();
+        // Should pick run1 (succeeded), not run2 (failed)
+        assert_eq!(reindex.prior_run_id, Some(run1.run_id));
     }
 }

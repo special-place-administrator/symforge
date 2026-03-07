@@ -158,6 +158,17 @@ impl ApplicationContext {
             .launch_run(repo_id, mode, repo_root, self.blob_store.clone())
     }
 
+    pub fn reindex_repository(
+        &self,
+        repo_id: &str,
+        workspace_id: Option<&str>,
+        reason: Option<&str>,
+        repo_root: PathBuf,
+    ) -> Result<IndexRun> {
+        self.run_manager
+            .reindex_repository(repo_id, workspace_id, reason, repo_root, self.blob_store.clone())
+    }
+
     pub fn run_manager(&self) -> &Arc<RunManager> {
         &self.run_manager
     }

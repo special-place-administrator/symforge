@@ -183,6 +183,26 @@ impl RegistryPersistence {
             .collect())
     }
 
+    pub fn get_latest_completed_run(&self, repo_id: &str) -> Result<Option<IndexRun>> {
+        let data = self.load()?;
+        Ok(data
+            .runs
+            .into_iter()
+            .filter(|r| r.repo_id == repo_id && r.status == IndexRunStatus::Succeeded)
+            .max_by_key(|r| r.requested_at_unix_ms))
+    }
+
+    pub fn get_runs_by_repo(&self, repo_id: &str) -> Result<Vec<IndexRun>> {
+        let data = self.load()?;
+        let mut runs: Vec<IndexRun> = data
+            .runs
+            .into_iter()
+            .filter(|r| r.repo_id == repo_id)
+            .collect();
+        runs.sort_by(|a, b| b.requested_at_unix_ms.cmp(&a.requested_at_unix_ms));
+        Ok(runs)
+    }
+
     pub fn save_idempotency_record(&self, record: &IdempotencyRecord) -> Result<()> {
         self.read_modify_write(|data| {
             if let Some(existing) = data
@@ -468,6 +488,8 @@ mod tests {
             checkpoint_cursor: None,
             error_summary: None,
             not_yet_supported: None,
+            prior_run_id: None,
+            description: None,
         }
     }
 
@@ -1036,5 +1058,149 @@ mod tests {
 
         let latest = persistence.get_latest_checkpoint("run-1").unwrap();
         assert!(latest.is_none());
+    }
+
+    #[test]
+    fn test_get_latest_completed_run_returns_succeeded_run() {
+        let (_dir, persistence) = temp_registry();
+        persistence
+            .save_run(&sample_run("run-1", "repo-1", IndexRunStatus::Running))
+            .unwrap();
+        let mut succeeded = sample_run("run-2", "repo-1", IndexRunStatus::Succeeded);
+        succeeded.requested_at_unix_ms = 2000;
+        persistence.save_run(&succeeded).unwrap();
+        persistence
+            .save_run(&sample_run("run-3", "repo-1", IndexRunStatus::Failed))
+            .unwrap();
+
+        let result = persistence.get_latest_completed_run("repo-1").unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().run_id, "run-2");
+    }
+
+    #[test]
+    fn test_get_latest_completed_run_returns_none_when_no_completed() {
+        let (_dir, persistence) = temp_registry();
+        persistence
+            .save_run(&sample_run("run-1", "repo-1", IndexRunStatus::Running))
+            .unwrap();
+        persistence
+            .save_run(&sample_run("run-2", "repo-1", IndexRunStatus::Failed))
+            .unwrap();
+
+        let result = persistence.get_latest_completed_run("repo-1").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_latest_completed_run_filters_by_repo_id() {
+        let (_dir, persistence) = temp_registry();
+        let mut run_a = sample_run("run-a", "repo-a", IndexRunStatus::Succeeded);
+        run_a.requested_at_unix_ms = 3000;
+        persistence.save_run(&run_a).unwrap();
+        persistence
+            .save_run(&sample_run("run-b", "repo-b", IndexRunStatus::Succeeded))
+            .unwrap();
+
+        let result = persistence.get_latest_completed_run("repo-a").unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().run_id, "run-a");
+
+        let result_b = persistence.get_latest_completed_run("repo-b").unwrap();
+        assert!(result_b.is_some());
+        assert_eq!(result_b.unwrap().run_id, "run-b");
+    }
+
+    #[test]
+    fn test_get_runs_by_repo_returns_all_sorted_descending() {
+        let (_dir, persistence) = temp_registry();
+        let mut run1 = sample_run("run-1", "repo-1", IndexRunStatus::Succeeded);
+        run1.requested_at_unix_ms = 1000;
+        let mut run2 = sample_run("run-2", "repo-1", IndexRunStatus::Running);
+        run2.requested_at_unix_ms = 3000;
+        let mut run3 = sample_run("run-3", "repo-1", IndexRunStatus::Failed);
+        run3.requested_at_unix_ms = 2000;
+        persistence.save_run(&run1).unwrap();
+        persistence.save_run(&run2).unwrap();
+        persistence.save_run(&run3).unwrap();
+
+        let runs = persistence.get_runs_by_repo("repo-1").unwrap();
+        assert_eq!(runs.len(), 3);
+        assert_eq!(runs[0].run_id, "run-2"); // 3000 — most recent
+        assert_eq!(runs[1].run_id, "run-3"); // 2000
+        assert_eq!(runs[2].run_id, "run-1"); // 1000 — oldest
+    }
+
+    #[test]
+    fn test_get_runs_by_repo_returns_empty_for_unknown_repo() {
+        let (_dir, persistence) = temp_registry();
+        persistence
+            .save_run(&sample_run("run-1", "repo-1", IndexRunStatus::Succeeded))
+            .unwrap();
+
+        let runs = persistence.get_runs_by_repo("unknown-repo").unwrap();
+        assert!(runs.is_empty());
+    }
+
+    #[test]
+    fn test_idempotency_record_supports_reindex_operation() {
+        let (_dir, persistence) = temp_registry();
+        let record = IdempotencyRecord {
+            operation: "reindex".to_string(),
+            idempotency_key: "reindex::repo-1::ws-1".to_string(),
+            request_hash: "hash-123".to_string(),
+            status: IdempotencyStatus::Pending,
+            result_ref: Some("run-reindex-1".to_string()),
+            created_at_unix_ms: 1000,
+            expires_at_unix_ms: None,
+        };
+        persistence.save_idempotency_record(&record).unwrap();
+
+        let found = persistence
+            .find_idempotency_record("reindex::repo-1::ws-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.operation, "reindex");
+        assert_eq!(found.request_hash, "hash-123");
+        assert_eq!(found.result_ref, Some("run-reindex-1".to_string()));
+    }
+
+    #[test]
+    fn test_reindex_idempotency_key_distinct_from_index() {
+        let (_dir, persistence) = temp_registry();
+        let index_record = IdempotencyRecord {
+            operation: "index".to_string(),
+            idempotency_key: "index::repo-1::ws-1".to_string(),
+            request_hash: "hash-index".to_string(),
+            status: IdempotencyStatus::Succeeded,
+            result_ref: Some("run-index-1".to_string()),
+            created_at_unix_ms: 1000,
+            expires_at_unix_ms: None,
+        };
+        let reindex_record = IdempotencyRecord {
+            operation: "reindex".to_string(),
+            idempotency_key: "reindex::repo-1::ws-1".to_string(),
+            request_hash: "hash-reindex".to_string(),
+            status: IdempotencyStatus::Pending,
+            result_ref: Some("run-reindex-1".to_string()),
+            created_at_unix_ms: 2000,
+            expires_at_unix_ms: None,
+        };
+        persistence.save_idempotency_record(&index_record).unwrap();
+        persistence
+            .save_idempotency_record(&reindex_record)
+            .unwrap();
+
+        let found_index = persistence
+            .find_idempotency_record("index::repo-1::ws-1")
+            .unwrap()
+            .unwrap();
+        let found_reindex = persistence
+            .find_idempotency_record("reindex::repo-1::ws-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(found_index.operation, "index");
+        assert_eq!(found_reindex.operation, "reindex");
+        assert_ne!(found_index.idempotency_key, found_reindex.idempotency_key);
     }
 }

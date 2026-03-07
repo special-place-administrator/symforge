@@ -198,6 +198,43 @@ impl TokenizorServer {
 
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
+
+    #[tool(
+        description = "Re-index a previously indexed repository. Creates a new indexing run with mode 'reindex', linking to the prior completed run for traceability. Prior state remains inspectable. Behaves idempotently on replay. Parameters: repo_id (string, required), repo_root (string, required — absolute path to repository), workspace_id (string, optional), reason (string, optional description of why re-indexing)."
+    )]
+    fn reindex_repository(
+        &self,
+        params: rmcp::model::JsonObject,
+    ) -> Result<CallToolResult, McpError> {
+        let repo_id = params
+            .get("repo_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                McpError::invalid_params("missing required parameter: repo_id", None)
+            })?;
+
+        let repo_root = params
+            .get("repo_root")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                McpError::invalid_params("missing required parameter: repo_root", None)
+            })?;
+        let repo_root = std::path::PathBuf::from(repo_root);
+
+        let workspace_id = params.get("workspace_id").and_then(|v| v.as_str());
+        let reason = params.get("reason").and_then(|v| v.as_str());
+
+        let run = self
+            .application
+            .reindex_repository(repo_id, workspace_id, reason, repo_root)
+            .map_err(to_mcp_error)?;
+
+        let json = serde_json::to_string_pretty(&run).map_err(|e| {
+            McpError::internal_error(format!("failed to serialize reindex run: {e}"), None)
+        })?;
+
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
 }
 
 #[tool_handler]

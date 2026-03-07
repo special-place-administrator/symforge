@@ -1224,3 +1224,170 @@ async fn test_checkpoint_cursor_on_index_run_updated_after_checkpoint() {
     // Wait for completion
     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 }
+
+// === Re-index integration tests (Story 2.9) ===
+
+#[tokio::test]
+async fn test_reindex_lifecycle_creates_new_run_with_prior_run_id() {
+    let (_dir, manager, _cas_dir, cas) = setup_test_env();
+    let repo_dir = tempfile::tempdir().unwrap();
+    fs::write(repo_dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+    // Initial index run
+    let (initial_run, _progress) = manager
+        .launch_run("test-repo", IndexRunMode::Full, repo_dir.path().to_path_buf(), cas.clone())
+        .unwrap();
+    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+
+    let initial_report = manager.inspect_run(&initial_run.run_id).unwrap();
+    assert_eq!(initial_report.run.status, IndexRunStatus::Succeeded);
+
+    // Trigger re-index — now actually launches the pipeline
+    let reindex_run = manager
+        .reindex_repository("test-repo", None, Some("files changed"), repo_dir.path().to_path_buf(), cas)
+        .unwrap();
+    assert_eq!(reindex_run.mode, IndexRunMode::Reindex);
+    assert_eq!(reindex_run.prior_run_id, Some(initial_run.run_id.clone()));
+    assert_eq!(reindex_run.status, IndexRunStatus::Queued);
+    assert_eq!(reindex_run.description, Some("files changed".to_string()));
+
+    // Both runs are inspectable
+    let initial_report = manager.inspect_run(&initial_run.run_id).unwrap();
+    assert_eq!(initial_report.run.status, IndexRunStatus::Succeeded);
+    let reindex_report = manager.inspect_run(&reindex_run.run_id).unwrap();
+    assert_eq!(reindex_report.run.mode, IndexRunMode::Reindex);
+}
+
+#[tokio::test]
+async fn test_reindex_prior_state_preservation() {
+    let (_dir, manager, _cas_dir, cas) = setup_test_env();
+    let repo_dir = tempfile::tempdir().unwrap();
+    fs::write(repo_dir.path().join("lib.rs"), "pub fn hello() {}").unwrap();
+
+    // Initial index run — complete it
+    let (initial_run, _progress) = manager
+        .launch_run("test-repo", IndexRunMode::Full, repo_dir.path().to_path_buf(), cas.clone())
+        .unwrap();
+    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+
+    // Verify initial run has file records
+    let initial_files = manager.persistence().get_file_records(&initial_run.run_id).unwrap();
+    assert!(!initial_files.is_empty(), "initial run should have file records");
+    let initial_file_count = initial_files.len();
+
+    // Trigger re-index
+    let reindex_run = manager
+        .reindex_repository("test-repo", None, None, repo_dir.path().to_path_buf(), cas)
+        .unwrap();
+
+    // Prior state still intact
+    let prior_files = manager.persistence().get_file_records(&initial_run.run_id).unwrap();
+    assert_eq!(prior_files.len(), initial_file_count, "prior run file records should be preserved");
+
+    let prior_report = manager.inspect_run(&initial_run.run_id).unwrap();
+    assert_eq!(prior_report.run.status, IndexRunStatus::Succeeded);
+    assert_eq!(prior_report.run.run_id, initial_run.run_id);
+
+    // Reindex run exists alongside
+    let reindex_report = manager.inspect_run(&reindex_run.run_id).unwrap();
+    assert_eq!(reindex_report.run.prior_run_id, Some(initial_run.run_id));
+}
+
+#[tokio::test]
+async fn test_reindex_idempotent_replay_returns_same_run() {
+    let (_dir, manager, _cas_dir, cas) = setup_test_env();
+    let repo_dir = tempfile::tempdir().unwrap();
+    fs::write(repo_dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+    // Initial index
+    let (_initial_run, _progress) = manager
+        .launch_run("test-repo", IndexRunMode::Full, repo_dir.path().to_path_buf(), cas.clone())
+        .unwrap();
+    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+
+    // First reindex — launches pipeline, run is active
+    let first_reindex = manager
+        .reindex_repository("test-repo", None, None, repo_dir.path().to_path_buf(), cas.clone())
+        .unwrap();
+
+    // H1 fix: idempotent replay while the reindex is still active — idempotency
+    // check fires before active-run check, so stored result is returned
+    let replay = manager
+        .reindex_repository("test-repo", None, None, repo_dir.path().to_path_buf(), cas)
+        .unwrap();
+    assert_eq!(first_reindex.run_id, replay.run_id, "idempotent replay should return same run");
+}
+
+#[tokio::test]
+async fn test_reindex_conflicting_replay_returns_error() {
+    let (_dir, manager, _cas_dir, cas) = setup_test_env();
+    let repo_dir = tempfile::tempdir().unwrap();
+    fs::write(repo_dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+    // Manually insert an idempotency record to create a conflict
+    use tokenizor_agentic_mcp::domain::{IdempotencyRecord, IdempotencyStatus};
+    let record = IdempotencyRecord {
+        operation: "reindex".to_string(),
+        idempotency_key: "reindex::test-repo::".to_string(),
+        request_hash: "fake-hash-that-wont-match".to_string(),
+        status: IdempotencyStatus::Pending,
+        result_ref: Some("old-run".to_string()),
+        created_at_unix_ms: 1000,
+        expires_at_unix_ms: None,
+    };
+    manager
+        .persistence()
+        .save_idempotency_record(&record)
+        .unwrap();
+
+    let result = manager.reindex_repository(
+        "test-repo", None, None, repo_dir.path().to_path_buf(), cas,
+    );
+    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("conflicting replay"), "error should mention conflicting replay: {err}");
+}
+
+#[tokio::test]
+async fn test_reindex_while_active_run_is_rejected() {
+    let (_dir, manager, _cas_dir, cas) = setup_test_env();
+    let repo_dir = tempfile::tempdir().unwrap();
+    // Create a large file to keep the pipeline busy
+    let mut content = String::new();
+    for i in 0..200 {
+        content.push_str(&format!("fn func_{i}() {{ let x = {i}; }}\n"));
+    }
+    fs::write(repo_dir.path().join("big.rs"), &content).unwrap();
+
+    // Start a run that will take some time
+    let (_run, _progress) = manager
+        .launch_run("test-repo", IndexRunMode::Full, repo_dir.path().to_path_buf(), cas.clone())
+        .unwrap();
+
+    // Immediately attempt reindex — should fail (no matching idempotency record,
+    // so falls through to active-run check)
+    let result = manager.reindex_repository(
+        "test-repo", None, None, repo_dir.path().to_path_buf(), cas,
+    );
+    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("active indexing run exists"),
+        "error should mention active run: {err}"
+    );
+}
+
+#[tokio::test]
+async fn test_reindex_no_prior_completed_run_succeeds_with_none() {
+    let (_dir, manager, _cas_dir, cas) = setup_test_env();
+    let repo_dir = tempfile::tempdir().unwrap();
+    fs::write(repo_dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+    // No prior runs — reindex should still work
+    let reindex = manager
+        .reindex_repository("fresh-repo", None, None, repo_dir.path().to_path_buf(), cas)
+        .unwrap();
+    assert_eq!(reindex.mode, IndexRunMode::Reindex);
+    assert_eq!(reindex.prior_run_id, None, "no prior run should result in None");
+    assert_eq!(reindex.status, IndexRunStatus::Queued);
+}
