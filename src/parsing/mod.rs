@@ -170,4 +170,25 @@ mod tests {
         let result = process_file("src/lib.rs", b"fn x() {}", LanguageId::Rust);
         assert_eq!(result.relative_path, "src/lib.rs");
     }
+
+    #[test]
+    fn test_process_file_never_panics_on_adversarial_input() {
+        // Verifies the catch_unwind safety net: process_file must ALWAYS
+        // return a FileProcessingResult regardless of input, never propagate a panic.
+        let cases: &[(&[u8], &str, LanguageId)] = &[
+            (b"\xff\xfe\x00\x01", "binary.rs", LanguageId::Rust),
+            (b"", "empty.py", LanguageId::Python),
+            (&[0u8; 10000], "zeros.js", LanguageId::JavaScript),
+            (b"\n\n\n\n\n", "newlines.ts", LanguageId::TypeScript),
+            ("\u{200b}\u{200b}".as_bytes(), "zwsp.go", LanguageId::Go),
+            (b"\0\0\0fn main() {}\0\0", "null_padded.rs", LanguageId::Rust),
+        ];
+
+        for &(source, path, ref lang) in cases {
+            let result = process_file(path, source, lang.clone());
+            assert_eq!(result.relative_path, path);
+            assert_eq!(result.byte_len, source.len() as u64);
+            assert!(!result.content_hash.is_empty());
+        }
+    }
 }

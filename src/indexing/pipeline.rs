@@ -6,7 +6,6 @@ use tokio::sync::Semaphore;
 use tracing::{debug, error, info, warn};
 
 use crate::domain::{FileOutcome, FileProcessingResult, IndexRunStatus};
-use crate::error::TokenizorError;
 use crate::indexing::discovery;
 use crate::parsing;
 
@@ -81,6 +80,13 @@ impl IndexingPipeline {
             }
         };
 
+        self.process_discovered(files).await
+    }
+
+    async fn process_discovered(
+        self,
+        files: Vec<discovery::DiscoveredFile>,
+    ) -> PipelineResult {
         let total = files.len() as u64;
         self.progress.total_files.store(total, Ordering::Relaxed);
         info!(run_id = %self.run_id, total_files = total, "discovery complete");
@@ -102,6 +108,11 @@ impl IndexingPipeline {
         let mut handles = Vec::with_capacity(files.len());
 
         for file in files {
+            // M3: Stop spawning tasks once the circuit breaker has tripped
+            if circuit_broken.load(Ordering::Relaxed) {
+                break;
+            }
+
             let permit = semaphore.clone().acquire_owned().await.unwrap();
             let progress = progress.clone();
             let consecutive_failures = consecutive_failures.clone();
@@ -114,19 +125,18 @@ impl IndexingPipeline {
                     return None;
                 }
 
+                // H1: File-level I/O errors are NOT systemic — they go through
+                // the consecutive-failure counter like any other file failure.
+                // Only system-level errors (registry, CAS root) are systemic.
                 let bytes = match std::fs::read(&file.absolute_path) {
                     Ok(b) => b,
                     Err(e) => {
-                        let err = TokenizorError::io(&file.absolute_path, e);
-                        if err.is_systemic() {
-                            error!(
-                                run_id = %run_id,
-                                path = %file.relative_path,
-                                error = %err,
-                                "systemic I/O error — triggering circuit breaker"
-                            );
-                            circuit_broken.store(true, Ordering::Relaxed);
-                        }
+                        warn!(
+                            run_id = %run_id,
+                            path = %file.relative_path,
+                            error = %e,
+                            "file read failed"
+                        );
                         progress.files_failed.fetch_add(1, Ordering::Relaxed);
                         let prev = consecutive_failures.fetch_add(1, Ordering::Relaxed);
                         if prev + 1 >= threshold {
@@ -137,7 +147,7 @@ impl IndexingPipeline {
                             relative_path: file.relative_path,
                             language: file.language,
                             outcome: FileOutcome::Failed {
-                                error: err.to_string(),
+                                error: format!("file read error: {e}"),
                             },
                             symbols: vec![],
                             byte_len: 0,
@@ -248,32 +258,35 @@ mod tests {
 
     #[tokio::test]
     async fn test_pipeline_circuit_breaker_triggers() {
-        let dir = temp_repo_with_files(&[
-            ("a.rs", ""),
-            ("b.rs", ""),
-            ("c.rs", ""),
-            ("d.rs", ""),
-            ("e.rs", ""),
-            ("f.rs", ""),
-        ]);
+        // Feed the pipeline pre-discovered files that point to nonexistent paths.
+        // Every file read will fail, triggering the consecutive-failure circuit breaker.
+        let fake_files: Vec<discovery::DiscoveredFile> = (0..6)
+            .map(|i| discovery::DiscoveredFile {
+                relative_path: format!("nonexistent_{i}.rs"),
+                absolute_path: PathBuf::from(format!("/nonexistent/path_{i}.rs")),
+                language: crate::domain::LanguageId::Rust,
+            })
+            .collect();
 
-        // Delete the files after discovery will have found them — force read failures
-        // Instead, use a nonexistent root to cause discovery failure
-        // Actually, let's use a simpler approach — set circuit breaker threshold to 1
-        // and create a file that will fail to read by making it a directory
-        let dir2 = tempfile::tempdir().unwrap();
-        fs::write(dir2.path().join("good.rs"), "fn good() {}").unwrap();
-
-        // Create files that cause parsing failures by using empty content
-        // (empty files parse fine with tree-sitter, so this approach won't trigger failures)
-        // Instead, test that the circuit breaker logic works with the threshold
-        let pipeline = IndexingPipeline::new("test-cb".into(), dir.path().to_path_buf())
+        let pipeline = IndexingPipeline::new("test-cb".into(), PathBuf::from("/tmp"))
             .with_concurrency(1)
             .with_circuit_breaker(3);
-        let result = pipeline.execute().await;
+        let result = pipeline.process_discovered(fake_files).await;
 
-        // Empty .rs files should still parse (they're valid empty modules)
-        assert_eq!(result.status, IndexRunStatus::Succeeded);
+        assert_eq!(result.status, IndexRunStatus::Aborted);
+        assert!(result.error_summary.is_some());
+        assert!(result.error_summary.as_ref().unwrap().contains("circuit breaker"));
+        // Threshold 3, concurrency 1: exactly 3 files fail before breaker trips,
+        // then the early-exit check stops spawning remaining files.
+        assert!(
+            result.results.len() <= 4,
+            "expected at most 4 results (3 failures + possible 1 in-flight), got {}",
+            result.results.len()
+        );
+        assert!(result.results.iter().all(|r| matches!(
+            r.outcome,
+            FileOutcome::Failed { .. }
+        )));
     }
 
     #[tokio::test]

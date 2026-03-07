@@ -174,11 +174,10 @@ impl RunManager {
         let token = CancellationToken::new();
 
         let handle = tokio::spawn(async move {
-            // Transition to Running
-            if let Err(e) = manager.persistence.update_run_status(
+            // Transition to Running with start timestamp
+            if let Err(e) = manager.persistence.transition_to_running(
                 &run_id,
-                IndexRunStatus::Running,
-                None,
+                unix_timestamp_ms(),
             ) {
                 error!(run_id = %run_id, error = %e, "failed to transition to Running");
                 return;

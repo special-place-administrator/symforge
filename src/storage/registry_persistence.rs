@@ -80,6 +80,27 @@ impl RegistryPersistence {
         })
     }
 
+    pub fn transition_to_running(
+        &self,
+        run_id: &str,
+        started_at_unix_ms: u64,
+    ) -> Result<()> {
+        self.read_modify_write(|data| {
+            let run = data
+                .runs
+                .iter_mut()
+                .find(|r| r.run_id == run_id)
+                .ok_or_else(|| {
+                    TokenizorError::NotFound(format!(
+                        "run `{run_id}` not found in registry"
+                    ))
+                })?;
+            run.status = IndexRunStatus::Running;
+            run.started_at_unix_ms = Some(started_at_unix_ms);
+            Ok(())
+        })
+    }
+
     pub fn update_run_status_with_finish(
         &self,
         run_id: &str,

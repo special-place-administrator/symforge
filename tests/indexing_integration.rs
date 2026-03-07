@@ -27,6 +27,7 @@ async fn test_launch_run_transitions_queued_running_succeeded() {
 
     let finished_run = manager.persistence().find_run(&run.run_id).unwrap().unwrap();
     assert_eq!(finished_run.status, IndexRunStatus::Succeeded);
+    assert!(finished_run.started_at_unix_ms.is_some());
     assert!(finished_run.finished_at_unix_ms.is_some());
 
     assert_eq!(

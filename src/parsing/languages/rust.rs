@@ -97,7 +97,7 @@ fn extract_impl_name(node: &Node, source: &str) -> Option<String> {
 
     if found_for {
         match (&trait_name, &type_name) {
-            (Some(tr), Some(ty)) => return Some(format!("{tr} for {ty}")),
+            (Some(tr), Some(ty)) => return Some(format!("impl {tr} for {ty}")),
             _ => {}
         }
     }

@@ -1,6 +1,6 @@
 # Story 2.2: Execute Indexing for the Initial Quality-Focus Language Set
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -348,11 +348,43 @@ Claude Opus 4.6
 - `RunManager::launch_run()` spawns background task, transitions `Queued→Running→Succeeded/Failed/Aborted`
 - MCP `index_folder` tool updated to accept `repo_root` parameter and call `launch_indexing()`
 - Added `Aborted` variant to `IndexRunStatus` for circuit breaker scenarios
-- Test count: 99 → 142 (43 new tests, 0 regressions)
+- Test count: 99 → 143 (44 new tests, 0 regressions)
 
 ### Change Log
 
 - 2026-03-07: Implemented Story 2.2 — full indexing pipeline for quality-focus language set
+- 2026-03-07: Code review fixes — H1/H2/M1/M2/M3/M4 (6 issues fixed, 2 noted for later)
+
+### Senior Developer Review (AI)
+
+**Reviewer:** Sir (via adversarial code review workflow)
+**Date:** 2026-03-07
+**Outcome:** Changes Requested → Fixed
+
+**Issues Found: 2 High, 4 Medium, 2 Low**
+
+| ID | Severity | Description | Status |
+|----|----------|-------------|--------|
+| H1 | HIGH | `is_systemic()` treats ALL I/O as systemic — single file read failure aborts pipeline (violates AC3) | FIXED |
+| H2 | HIGH | Circuit breaker test asserts `Succeeded` not `Aborted` — false confidence | FIXED |
+| M1 | MEDIUM | `started_at_unix_ms` never set during Queued→Running transition | FIXED |
+| M2 | MEDIUM | Rust `extract_impl_name` drops "impl" prefix for trait impls ("Display for Foo" vs "impl Display for Foo") | FIXED |
+| M3 | MEDIUM | Circuit breaker doesn't break outer spawning loop — spawns N no-op tasks after breaker trips | FIXED |
+| M4 | MEDIUM | No test for `catch_unwind` panic isolation in `process_file` | FIXED |
+| L1 | LOW | No test for Python `async def` extraction | NOTED |
+| L2 | LOW | JS/TS variable declarations extracted at all depths, not just top-level per spec | NOTED |
+
+**H1 Fix:** Removed `is_systemic()` check from per-file read errors in pipeline. File-level I/O goes through consecutive-failure counter only. Systemic classification reserved for system-level operations (registry, CAS).
+
+**H2 Fix:** Rewrote circuit breaker test using `process_discovered()` with fabricated `DiscoveredFile` entries pointing to nonexistent paths. Now correctly asserts `IndexRunStatus::Aborted`.
+
+**M1 Fix:** Added `transition_to_running()` method to `RegistryPersistence`. Background task sets `started_at_unix_ms` when transitioning to Running. Integration test verifies.
+
+**M2 Fix:** Changed `format!("{tr} for {ty}")` to `format!("impl {tr} for {ty}")` in `rust.rs:100`.
+
+**M3 Fix:** Added `if circuit_broken.load(Ordering::Relaxed) { break; }` at top of spawning loop. Refactored `execute()` into `execute()` + `process_discovered()` for testability.
+
+**M4 Fix:** Added `test_process_file_never_panics_on_adversarial_input` with binary, empty, null-padded, and zero-width-space inputs.
 
 ### File List
 
@@ -377,4 +409,12 @@ Claude Opus 4.6
 - `src/application/run_manager.rs` — added launch_run(), deregister_active_run()
 - `src/application/mod.rs` — added launch_indexing() method
 - `src/protocol/mcp.rs` — updated index_folder to accept repo_root and use launch_indexing
-- `src/storage/registry_persistence.rs` — added update_run_status_with_finish()
+- `src/storage/registry_persistence.rs` — added update_run_status_with_finish(), transition_to_running()
+
+**Modified by review fixes:**
+- `src/indexing/pipeline.rs` — H1: removed is_systemic from file reads; H2: rewrote circuit breaker test; M3: early-exit on breaker trip
+- `src/parsing/languages/rust.rs` — M2: fixed impl name for trait impls
+- `src/storage/registry_persistence.rs` — M1: added transition_to_running()
+- `src/application/run_manager.rs` — M1: use transition_to_running() in background task
+- `src/parsing/mod.rs` — M4: added adversarial input test
+- `tests/indexing_integration.rs` — M1: assert started_at_unix_ms is set
