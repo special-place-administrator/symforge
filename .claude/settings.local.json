@@ -25,7 +25,11 @@
       "mcp__serena__insert_after_symbol",
       "mcp__serena__search_for_pattern",
       "mcp__serena__replace_symbol_body",
-      "mcp__plugin_serena_serena__replace_content"
+      "mcp__plugin_serena_serena__replace_content",
+      "mcp__jcodemunch__get_symbols",
+      "Bash(cargo doc:*)",
+      "Bash(cargo tree:*)",
+      "Bash(ls:*)"
     ]
   }
 }
