@@ -26,27 +26,37 @@ This split exists for a reason:
 
 ## Current Status
 
-The repository is in a real foundation phase, not a blank scaffold and not a finished product.
+Epic 1 (Foundation) and Epic 2 (Durable Indexing and Run Control) are complete. The codebase is a working indexing engine with full lifecycle management.
 
-Implemented now:
+Implemented:
 - layered Rust crate structure across `application`, `domain`, `storage`, `protocol`, `indexing`, `parsing`, and `observability`
 - guarded CLI entrypoints for `run`, `doctor`, `init`, `attach`, `migrate`, `inspect`, and `resolve`
-- MCP stdio server scaffold with a working `health` tool
+- MCP stdio server with tools: `health`, `index_folder`, `get_index_run`, `list_index_runs`, `cancel_index_run`, `reindex_folder`, `invalidate_repository`, `checkpoint_now`
+- MCP resources: `tokenizor://runs/{run_id}/status` for live progress observation
 - deployment-aware startup/readiness checks
 - local byte-exact CAS foundation with atomic writes and writeability checks
-- durable local bootstrap registry for repository/workspace identity
+- durable local bootstrap registry for repository/workspace identity with atomic file writes and advisory locking
 - canonical Git common-directory matching for worktree attachment under one project identity
 - explicit `migrate` flow for legacy registry identity upgrades and stale path reconciliation
 - read-only registry inspection and active-context resolution
 - structured JSON operator output for initialization, migration, inspection, and workspace resolution flows
+- full indexing pipeline: gitignore-aware discovery, bounded concurrent processing, CAS storage, registry persistence
+- tree-sitter-based parsing and symbol extraction for 6 languages (Rust, Python, JavaScript, TypeScript, Go, Java) with 10 additional language variants registered
+- run lifecycle management: Queued → Running → Succeeded/Failed/Aborted/Cancelled/Interrupted
+- cooperative cancellation via CancellationToken with safe pipeline shutdown
+- checkpointing with configurable frequency and resume-from-cursor support
+- re-indexing with idempotency-backed replay and stale record detection
+- repository invalidation for untrusted indexed state
+- idempotent operation replay with conflict detection (5-case decision tree)
+- circuit breaker for consecutive file failures (default N=5)
+- run health classification and live progress tracking with phase observation
 
 Not implemented yet:
-- real SpacetimeDB-backed project/workspace persistence
-- full indexing pipeline and durable index runs
-- search, outlines, symbol extraction, and verified source retrieval
-- repair workflows, checkpoints, and idempotency-backed mutating run orchestration
-- MCP resources/prompts beyond the initial direction
-- provider-native adoption layers beyond the current planning baseline
+- real SpacetimeDB-backed project/workspace persistence (control plane trait boundary is ready, write methods are stubs)
+- search, outlines, and verified source retrieval (Epic 3)
+- repair workflows beyond invalidation
+- MCP prompts
+- provider-native adoption layers
 
 ## Architecture
 
@@ -236,40 +246,31 @@ cargo run -- run
 
 At the moment, `run` will only succeed when the configured SpacetimeDB runtime/service is actually reachable and compatible.
 
-## MCP Direction
+## MCP Surface
 
-Tokenizor is being designed for:
-- tools
-- resources
-- prompts
+Implemented MCP tools:
+- `health` — deployment readiness check
+- `index_folder` — launch background indexing run for a repository path
+- `get_index_run` — inspect run status, health, and progress
+- `list_index_runs` — list runs by repository
+- `cancel_index_run` — cooperatively cancel an active run
+- `reindex_folder` — re-index with idempotency and stale detection
+- `invalidate_repository` — mark indexed state as untrusted
+- `checkpoint_now` — trigger checkpoint for an active run
 
-Likely foundation MCP tools:
-- `health`
-- `index_folder`
-- `index_repository`
-- `get_index_run`
-- `cancel_index_run`
-- `checkpoint_now`
-- `repair_index`
-- `search_symbols`
-- `search_text`
-- `get_file_outline`
-- `get_symbol`
-- `get_symbols`
-- `get_repo_outline`
-- `invalidate_cache`
+Implemented MCP resources:
+- `tokenizor://runs/{run_id}/status` — live run status and progress
 
-Planned useful resources:
-- repository outline
-- repository health
-- run status
-- symbol metadata views
+Planned (Epic 3):
+- `search_symbols` — search indexed symbol records
+- `search_text` — full-text search across indexed files
+- `get_file_outline` — file-level symbol outline
+- `get_symbol` / `get_symbols` — symbol retrieval with trust verification
+- `get_repo_outline` — repository-level structural overview
 
-Planned useful prompts:
-- architecture map
-- codebase audit
-- failure triage
-- repair diagnosis
+Planned (future):
+- MCP prompts: architecture map, codebase audit, failure triage, repair diagnosis
+- additional resources: repository health, symbol metadata views
 
 ## Documentation
 
@@ -287,14 +288,15 @@ Important repo docs:
 The root `README.md` should be read as a project-facing summary of current state and direction.
 The `docs/` folder contains the deeper architecture and planning baseline.
 
-## Near-Term Build Order
+## Build Order
 
-Near-term implementation focus:
+Completed:
+1. ~~finish durable local foundation and operator flows~~ (Epic 1)
+2. ~~implement durable indexing runs and run lifecycle control~~ (Epic 2)
 
-1. finish durable local foundation and operator flows
-2. wire real control-plane persistence through SpacetimeDB
-3. implement durable indexing runs and run lifecycle control
-4. add search, outlines, symbol extraction, and verified retrieval
+Next:
+3. add search, outlines, symbol extraction, and verified retrieval (Epic 3)
+4. wire real control-plane persistence through SpacetimeDB
 5. add recovery, repair, and richer MCP surfaces
 6. layer in workflow adoption paths after retrieval is trustworthy enough to matter
 
@@ -302,8 +304,17 @@ Near-term implementation focus:
 
 - Rust edition: 2024
 - async runtime: Tokio
-- MCP SDK: `rmcp`
+- MCP SDK: `rmcp` 1.1.0
+- parsing: `tree-sitter` 0.24 with language-specific grammars
 - serialization: `serde`, `serde_json`, `schemars`
+- error handling: `thiserror` 2.0 (domain), `anyhow` (CLI boundary only)
 - observability: `tracing`, `tracing-subscriber`
+- test suite: 369 tests (284 unit + 55 integration + 6 grammar + 24 other)
+
+```bash
+cargo test          # run all tests
+cargo run -- doctor # verify deployment readiness
+cargo run -- run    # start MCP stdio server
+```
 
 This repository is optimized for the best end state, not legacy imitation.
