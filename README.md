@@ -26,7 +26,7 @@ This split exists for a reason:
 
 ## Current Status
 
-Epic 1 (Foundation) and Epic 2 (Durable Indexing and Run Control) are complete. The codebase is a working indexing engine with full lifecycle management.
+Epic 1 (Foundation), Epic 2 (Durable Indexing and Run Control), and Epic 3 (Trusted Code Discovery and Verified Retrieval) are complete. The codebase is a working indexing and retrieval engine with full lifecycle management and 6 MCP retrieval tools.
 
 Implemented:
 - layered Rust crate structure across `application`, `domain`, `storage`, `protocol`, `indexing`, `parsing`, and `observability`
@@ -50,11 +50,18 @@ Implemented:
 - idempotent operation replay with conflict detection (5-case decision tree)
 - circuit breaker for consecutive file failures (default N=5)
 - run health classification and live progress tracking with phase observation
+- text search with blob integrity verification and quarantine exclusion
+- symbol search with coverage transparency (no blob I/O required)
+- file and repository outlines with quarantine visibility
+- verified source retrieval with byte-exact fidelity (blob integrity + byte-range extraction + UTF-8 validation)
+- suspect retrieval blocking with actionable NextAction guidance
+- batched multi-target retrieval with per-item independence and mixed symbol/code-slice targets
+- shared trust contract: ResultEnvelope, RetrievalOutcome, TrustLevel, Provenance, RequestGateError, NextAction
+- universal request gate (check_request_gate) reused across all retrieval operations
 
 Not implemented yet:
 - real SpacetimeDB-backed project/workspace persistence (control plane trait boundary is ready, write methods are stubs)
-- search, outlines, and verified source retrieval (Epic 3)
-- repair workflows beyond invalidation
+- recovery, repair, and operational confidence workflows (Epic 4)
 - MCP prompts
 - provider-native adoption layers
 
@@ -257,20 +264,20 @@ Implemented MCP tools:
 - `reindex_folder` — re-index with idempotency and stale detection
 - `invalidate_repository` — mark indexed state as untrusted
 - `checkpoint_now` — trigger checkpoint for an active run
+- `search_text` — full-text search across indexed files with blob integrity verification
+- `search_symbols` — search indexed symbol records with coverage transparency
+- `get_file_outline` — file-level symbol outline with quarantine visibility
+- `get_repo_outline` — repository-level structural overview
+- `get_symbol` — verified source retrieval for a single symbol or code slice
+- `get_symbols` — batched retrieval for multiple symbols or code slices in one request
 
 Implemented MCP resources:
 - `tokenizor://runs/{run_id}/status` — live run status and progress
 
-Planned (Epic 3):
-- `search_symbols` — search indexed symbol records
-- `search_text` — full-text search across indexed files
-- `get_file_outline` — file-level symbol outline
-- `get_symbol` / `get_symbols` — symbol retrieval with trust verification
-- `get_repo_outline` — repository-level structural overview
-
 Planned (future):
 - MCP prompts: architecture map, codebase audit, failure triage, repair diagnosis
 - additional resources: repository health, symbol metadata views
+- recovery and repair tools (Epic 4)
 
 ## Documentation
 
@@ -293,11 +300,11 @@ The `docs/` folder contains the deeper architecture and planning baseline.
 Completed:
 1. ~~finish durable local foundation and operator flows~~ (Epic 1)
 2. ~~implement durable indexing runs and run lifecycle control~~ (Epic 2)
+3. ~~add trusted code discovery and verified retrieval~~ (Epic 3)
 
 Next:
-3. add search, outlines, symbol extraction, and verified retrieval (Epic 3)
-4. wire real control-plane persistence through SpacetimeDB
-5. add recovery, repair, and richer MCP surfaces
+4. recovery, repair, and operational confidence (Epic 4)
+5. wire real control-plane persistence through SpacetimeDB
 6. layer in workflow adoption paths after retrieval is trustworthy enough to matter
 
 ## Development Notes
@@ -309,7 +316,7 @@ Next:
 - serialization: `serde`, `serde_json`, `schemars`
 - error handling: `thiserror` 2.0 (domain), `anyhow` (CLI boundary only)
 - observability: `tracing`, `tracing-subscriber`
-- test suite: 369 tests (284 unit + 55 integration + 6 grammar + 24 other)
+- test suite: 607 tests (unit + integration + conformance + grammar)
 
 ```bash
 cargo test          # run all tests
