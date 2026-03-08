@@ -6,7 +6,9 @@ fn test_rust_grammar_loads_and_parses() {
     parser
         .set_language(&tree_sitter_rust::LANGUAGE.into())
         .expect("failed to load Rust grammar");
-    let tree = parser.parse("fn main() {}", None).expect("parse returned None");
+    let tree = parser
+        .parse("fn main() {}", None)
+        .expect("parse returned None");
     assert!(!tree.root_node().kind().is_empty());
 }
 
@@ -16,7 +18,9 @@ fn test_python_grammar_loads_and_parses() {
     parser
         .set_language(&tree_sitter_python::LANGUAGE.into())
         .expect("failed to load Python grammar");
-    let tree = parser.parse("def hello(): pass", None).expect("parse returned None");
+    let tree = parser
+        .parse("def hello(): pass", None)
+        .expect("parse returned None");
     assert!(!tree.root_node().kind().is_empty());
 }
 

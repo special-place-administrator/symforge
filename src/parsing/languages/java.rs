@@ -37,7 +37,10 @@ fn walk_node(
                 depth,
                 sort_order: *sort_order,
                 byte_range: (node.start_byte() as u32, node.end_byte() as u32),
-                line_range: (node.start_position().row as u32, node.end_position().row as u32),
+                line_range: (
+                    node.start_position().row as u32,
+                    node.end_position().row as u32,
+                ),
             });
             *sort_order += 1;
         }
@@ -115,7 +118,10 @@ public class Greeter {
         assert_eq!(class.unwrap().name, "Greeter");
         assert_eq!(class.unwrap().depth, 0);
 
-        let methods: Vec<_> = symbols.iter().filter(|s| s.kind == SymbolKind::Method).collect();
+        let methods: Vec<_> = symbols
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Method)
+            .collect();
         assert_eq!(methods.len(), 2);
         assert_eq!(methods[0].name, "greet");
         assert_eq!(methods[1].name, "getName");
@@ -171,7 +177,10 @@ public class Config {
 }
 "#;
         let symbols = parse_java(source);
-        let fields: Vec<_> = symbols.iter().filter(|s| s.kind == SymbolKind::Variable).collect();
+        let fields: Vec<_> = symbols
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Variable)
+            .collect();
         assert_eq!(fields.len(), 2);
         assert_eq!(fields[0].name, "count");
         assert_eq!(fields[1].name, "name");

@@ -6,6 +6,7 @@ mod init;
 mod migration;
 mod registry;
 mod repository;
+mod retrieval;
 mod workspace;
 
 pub use context::{ActiveWorkspaceContext, ContextResolutionMode};
@@ -27,5 +28,13 @@ pub use migration::{
 pub use registry::{AuthorityMode, RegisteredProject, RegistryKind, RegistryView};
 pub use repository::{
     InvalidationResult, ProjectIdentityKind, Repository, RepositoryKind, RepositoryStatus,
+};
+pub use retrieval::{
+    BatchRetrievalRequest, BatchRetrievalResponseData, BatchRetrievalResultItem, CodeSliceRequest,
+    FileOutcomeStatus, FileOutlineResponse, GetSymbolsResponse, NextAction, OutlineSymbol,
+    Provenance, RepoOutlineCoverage, RepoOutlineEntry, RepoOutlineResponse, RequestGateError,
+    ResultEnvelope, RetrievalOutcome, SearchResultItem, SymbolCoverage, SymbolRequest,
+    SymbolResultItem, SymbolSearchResponse, TrustLevel, VerifiedCodeSliceResponse,
+    VerifiedSourceResponse,
 };
 pub use workspace::{Workspace, WorkspaceStatus};

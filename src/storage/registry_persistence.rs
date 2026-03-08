@@ -73,9 +73,7 @@ impl RegistryPersistence {
                 .iter_mut()
                 .find(|r| r.run_id == run_id)
                 .ok_or_else(|| {
-                    TokenizorError::NotFound(format!(
-                        "run `{run_id}` not found in registry"
-                    ))
+                    TokenizorError::NotFound(format!("run `{run_id}` not found in registry"))
                 })?;
             run.status = status.clone();
             if error_summary.is_some() {
@@ -85,20 +83,14 @@ impl RegistryPersistence {
         })
     }
 
-    pub fn transition_to_running(
-        &self,
-        run_id: &str,
-        started_at_unix_ms: u64,
-    ) -> Result<()> {
+    pub fn transition_to_running(&self, run_id: &str, started_at_unix_ms: u64) -> Result<()> {
         self.read_modify_write(|data| {
             let run = data
                 .runs
                 .iter_mut()
                 .find(|r| r.run_id == run_id)
                 .ok_or_else(|| {
-                    TokenizorError::NotFound(format!(
-                        "run `{run_id}` not found in registry"
-                    ))
+                    TokenizorError::NotFound(format!("run `{run_id}` not found in registry"))
                 })?;
             // Skip if already terminal (e.g. cancelled before pipeline started)
             if run.status.is_terminal() {
@@ -124,9 +116,7 @@ impl RegistryPersistence {
                 .iter_mut()
                 .find(|r| r.run_id == run_id)
                 .ok_or_else(|| {
-                    TokenizorError::NotFound(format!(
-                        "run `{run_id}` not found in registry"
-                    ))
+                    TokenizorError::NotFound(format!("run `{run_id}` not found in registry"))
                 })?;
             run.status = status.clone();
             run.finished_at_unix_ms = Some(finished_at_unix_ms);
@@ -146,9 +136,7 @@ impl RegistryPersistence {
                 .iter_mut()
                 .find(|r| r.run_id == run_id)
                 .ok_or_else(|| {
-                    TokenizorError::NotFound(format!(
-                        "run `{run_id}` not found in registry"
-                    ))
+                    TokenizorError::NotFound(format!("run `{run_id}` not found in registry"))
                 })?;
             if run.status.is_terminal() {
                 return Ok(());
@@ -179,8 +167,7 @@ impl RegistryPersistence {
             if data.schema_version == 0 {
                 data.schema_version = 2;
             }
-            data.repositories
-                .insert(repo.repo_id.clone(), repo.clone());
+            data.repositories.insert(repo.repo_id.clone(), repo.clone());
             Ok(())
         })
     }
@@ -191,6 +178,8 @@ impl RegistryPersistence {
         status: crate::domain::RepositoryStatus,
         invalidated_at_unix_ms: Option<u64>,
         invalidation_reason: Option<String>,
+        quarantined_at_unix_ms: Option<u64>,
+        quarantine_reason: Option<String>,
     ) -> Result<()> {
         self.read_modify_write(|data| {
             let repo = data.repositories.get_mut(repo_id).ok_or_else(|| {
@@ -199,6 +188,8 @@ impl RegistryPersistence {
             repo.status = status;
             repo.invalidated_at_unix_ms = invalidated_at_unix_ms;
             repo.invalidation_reason = invalidation_reason;
+            repo.quarantined_at_unix_ms = quarantined_at_unix_ms;
+            repo.quarantine_reason = quarantine_reason;
             Ok(())
         })
     }
@@ -310,7 +301,10 @@ impl RegistryPersistence {
             .max_by_key(|c| c.created_at_unix_ms))
     }
 
-    fn read_modify_write(&self, modify: impl FnOnce(&mut RegistryData) -> Result<()>) -> Result<()> {
+    fn read_modify_write(
+        &self,
+        modify: impl FnOnce(&mut RegistryData) -> Result<()>,
+    ) -> Result<()> {
         let _lock = acquire_lock(&self.path)?;
 
         let mut data = load_registry_data(&self.path)?;
@@ -376,9 +370,7 @@ fn load_registry_data(path: &Path) -> Result<RegistryData> {
                 path.display()
             ))
         }),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            Ok(RegistryData::default())
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(RegistryData::default()),
         Err(error) => Err(TokenizorError::io(path, error)),
     }
 }
@@ -498,7 +490,7 @@ fn sync_parent_dir(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{IndexRunMode, IdempotencyStatus};
+    use crate::domain::{IdempotencyStatus, IndexRunMode};
     use std::fs;
 
     fn temp_registry() -> (tempfile::TempDir, RegistryPersistence) {
@@ -673,10 +665,12 @@ mod tests {
     #[test]
     fn test_find_idempotency_record_returns_none_for_missing() {
         let (_dir, persistence) = temp_registry();
-        assert!(persistence
-            .find_idempotency_record("nonexistent")
-            .unwrap()
-            .is_none());
+        assert!(
+            persistence
+                .find_idempotency_record("nonexistent")
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -703,6 +697,8 @@ mod tests {
                 status: crate::domain::RepositoryStatus::Ready,
                 invalidated_at_unix_ms: None,
                 invalidation_reason: None,
+                quarantined_at_unix_ms: None,
+                quarantine_reason: None,
             },
         );
 
@@ -813,6 +809,8 @@ mod tests {
                 status: crate::domain::RepositoryStatus::Ready,
                 invalidated_at_unix_ms: None,
                 invalidation_reason: None,
+                quarantined_at_unix_ms: None,
+                quarantine_reason: None,
             },
         );
         save_registry_data(&persistence.path, &data).unwrap();
@@ -1033,7 +1031,10 @@ mod tests {
 
         // Verify run's checkpoint_cursor was updated
         let loaded_run = persistence.find_run("run-1").unwrap().unwrap();
-        assert_eq!(loaded_run.checkpoint_cursor, Some("src/main.rs".to_string()));
+        assert_eq!(
+            loaded_run.checkpoint_cursor,
+            Some("src/main.rs".to_string())
+        );
     }
 
     #[test]
@@ -1080,10 +1081,7 @@ mod tests {
             .save_checkpoint(&sample_checkpoint("run-1", "src/c.rs", 3000))
             .unwrap();
 
-        let latest = persistence
-            .get_latest_checkpoint("run-1")
-            .unwrap()
-            .unwrap();
+        let latest = persistence.get_latest_checkpoint("run-1").unwrap().unwrap();
         assert_eq!(latest.cursor, "src/c.rs");
         assert_eq!(latest.created_at_unix_ms, 3000);
     }
@@ -1254,6 +1252,8 @@ mod tests {
             status: crate::domain::RepositoryStatus::Ready,
             invalidated_at_unix_ms: None,
             invalidation_reason: None,
+            quarantined_at_unix_ms: None,
+            quarantine_reason: None,
         }
     }
 
@@ -1299,6 +1299,8 @@ mod tests {
                 crate::domain::RepositoryStatus::Invalidated,
                 Some(1709827200000),
                 Some("stale data".to_string()),
+                None,
+                None,
             )
             .unwrap();
 
@@ -1316,6 +1318,8 @@ mod tests {
         let result = persistence.update_repository_status(
             "nonexistent",
             crate::domain::RepositoryStatus::Invalidated,
+            None,
+            None,
             None,
             None,
         );
@@ -1347,6 +1351,8 @@ mod tests {
                 crate::domain::RepositoryStatus::Ready,
                 None,
                 None,
+                None,
+                None,
             )
             .unwrap();
 
@@ -1354,5 +1360,65 @@ mod tests {
         assert_eq!(repo.status, crate::domain::RepositoryStatus::Ready);
         assert!(repo.invalidated_at_unix_ms.is_none());
         assert!(repo.invalidation_reason.is_none());
+        assert!(repo.quarantined_at_unix_ms.is_none());
+        assert!(repo.quarantine_reason.is_none());
+    }
+
+    #[test]
+    fn test_update_repository_status_transitions_to_quarantined() {
+        let (_dir, persistence) = temp_registry();
+        registry_with_repo(&persistence, "repo-1");
+
+        persistence
+            .update_repository_status(
+                "repo-1",
+                crate::domain::RepositoryStatus::Quarantined,
+                None,
+                None,
+                Some(1709827300000),
+                Some("blob verification failed repeatedly".to_string()),
+            )
+            .unwrap();
+
+        let repo = persistence.get_repository("repo-1").unwrap().unwrap();
+        assert_eq!(repo.status, crate::domain::RepositoryStatus::Quarantined);
+        assert_eq!(repo.quarantined_at_unix_ms, Some(1709827300000));
+        assert_eq!(
+            repo.quarantine_reason.as_deref(),
+            Some("blob verification failed repeatedly")
+        );
+        assert!(repo.invalidated_at_unix_ms.is_none());
+        assert!(repo.invalidation_reason.is_none());
+    }
+
+    #[test]
+    fn test_update_repository_status_clears_quarantine_on_ready() {
+        let (_dir, persistence) = temp_registry();
+        let mut data = RegistryData {
+            schema_version: 2,
+            ..RegistryData::default()
+        };
+        let mut repo = sample_repo("repo-1");
+        repo.status = crate::domain::RepositoryStatus::Quarantined;
+        repo.quarantined_at_unix_ms = Some(1709827300000);
+        repo.quarantine_reason = Some("quarantine reason".to_string());
+        data.repositories.insert("repo-1".to_string(), repo);
+        save_registry_data(&persistence.path, &data).unwrap();
+
+        persistence
+            .update_repository_status(
+                "repo-1",
+                crate::domain::RepositoryStatus::Ready,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+
+        let repo = persistence.get_repository("repo-1").unwrap().unwrap();
+        assert_eq!(repo.status, crate::domain::RepositoryStatus::Ready);
+        assert!(repo.quarantined_at_unix_ms.is_none());
+        assert!(repo.quarantine_reason.is_none());
     }
 }

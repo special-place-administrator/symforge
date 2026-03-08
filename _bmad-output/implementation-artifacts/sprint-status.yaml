@@ -1,4 +1,4 @@
-# generated: 2026-03-07
+# generated: 2026-03-08
 # project: tokenizor_agentic_mcp
 # project_key: NOKEY
 # tracking_system: file-system
@@ -33,7 +33,7 @@
 # - SM typically creates next story after previous one is 'done' to incorporate learnings
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
-generated: 2026-03-07
+generated: 2026-03-08
 project: tokenizor_agentic_mcp
 project_key: NOKEY
 tracking_system: file-system
@@ -50,7 +50,7 @@ development_status:
   1-7-migrate-or-update-workspace-state-safely: done
   epic-1-retrospective: done
 
-  epic-2: in-progress
+  epic-2: done
   2-1-start-an-indexed-run-with-durable-run-identity: done
   2-2-execute-indexing-for-the-initial-quality-focus-language-set: done
   2-3-persist-file-level-indexing-outputs-and-symbol-file-metadata-for-the-initial-quality-focus-language-set: done
@@ -64,15 +64,15 @@ development_status:
   2-11-reject-conflicting-idempotent-replays: done
   epic-2-retrospective: done
 
-  epic-3: backlog
-  3-1-search-indexed-repositories-by-text: backlog
-  3-2-search-indexed-repositories-by-symbol: backlog
-  3-3-retrieve-file-and-repository-outlines: backlog
-  3-4-expose-the-full-baseline-retrieval-slice-through-mcp: backlog
-  3-5-retrieve-verified-source-for-a-symbol-or-code-slice: backlog
-  3-6-block-or-quarantine-suspect-retrieval: backlog
-  3-7-retrieve-multiple-symbols-or-code-slices-in-one-workflow: backlog
-  epic-3-retrospective: optional
+  epic-3: done
+  3-1-search-indexed-repositories-by-text: done
+  3-2-search-indexed-repositories-by-symbol: done
+  3-3-retrieve-file-and-repository-outlines: done
+  3-4-expose-the-full-baseline-retrieval-slice-through-mcp: done
+  3-5-retrieve-verified-source-for-a-symbol-or-code-slice: done
+  3-6-block-or-quarantine-suspect-retrieval: done
+  3-7-retrieve-multiple-symbols-or-code-slices-in-one-workflow: done
+  epic-3-retrospective: done
 
   epic-4: backlog
   4-1-sweep-stale-leases-and-interrupted-state-on-startup: backlog

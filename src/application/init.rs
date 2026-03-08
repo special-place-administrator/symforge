@@ -941,6 +941,8 @@ fn build_repository(target: &ResolvedRepositoryTarget) -> Repository {
         status: RepositoryStatus::Ready,
         invalidated_at_unix_ms: None,
         invalidation_reason: None,
+        quarantined_at_unix_ms: None,
+        quarantine_reason: None,
     }
 }
 
@@ -1026,9 +1028,7 @@ fn apply_explicit_path_update(
     }
 
     let repo_id = repo_ids.into_iter().next().ok_or_else(|| {
-        TokenizorError::Storage(
-            "repo_ids was unexpectedly empty after single-element guard".into(),
-        )
+        TokenizorError::Storage("repo_ids was unexpectedly empty after single-element guard".into())
     })?;
     let repository = snapshot
         .repositories
@@ -2235,6 +2235,8 @@ mod tests {
             status: crate::domain::RepositoryStatus::Ready,
             invalidated_at_unix_ms: None,
             invalidation_reason: None,
+            quarantined_at_unix_ms: None,
+            quarantine_reason: None,
         }
     }
 
@@ -3510,15 +3512,19 @@ mod tests {
 
         let error = resolve_migration_request(Some(&source_only), None, &current_dir)
             .expect_err("single source path without target should fail");
-        assert!(error
-            .to_string()
-            .contains("migrate expects either no path arguments"));
+        assert!(
+            error
+                .to_string()
+                .contains("migrate expects either no path arguments")
+        );
 
         let target_only = PathBuf::from("/other/path");
         let error = resolve_migration_request(None, Some(&target_only), &current_dir)
             .expect_err("single target path without source should fail");
-        assert!(error
-            .to_string()
-            .contains("migrate expects either no path arguments"));
+        assert!(
+            error
+                .to_string()
+                .contains("migrate expects either no path arguments")
+        );
     }
 }

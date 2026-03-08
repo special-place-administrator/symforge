@@ -30,6 +30,8 @@ pub enum TokenizorError {
     },
     #[error("serialization error: {0}")]
     Serialization(String),
+    #[error("request gated: {gate_error}")]
+    RequestGated { gate_error: String },
 }
 
 impl TokenizorError {
@@ -52,6 +54,7 @@ impl TokenizorError {
             Self::InvalidOperation(_) => false,
             Self::ConflictingReplay(_) => false,
             Self::NotFound(_) => false,
+            Self::RequestGated { .. } => false,
         }
     }
 }
@@ -110,7 +113,10 @@ mod tests {
     #[test]
     fn test_conflicting_replay_display_formats_correctly() {
         let err = TokenizorError::ConflictingReplay("key `k1`: hash mismatch".into());
-        assert_eq!(err.to_string(), "conflicting replay: key `k1`: hash mismatch");
+        assert_eq!(
+            err.to_string(),
+            "conflicting replay: key `k1`: hash mismatch"
+        );
     }
 
     #[test]

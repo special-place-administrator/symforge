@@ -59,10 +59,7 @@ pub fn process_file(
     }
 }
 
-fn parse_source(
-    source: &str,
-    language: &LanguageId,
-) -> Result<(Vec<SymbolRecord>, bool), String> {
+fn parse_source(source: &str, language: &LanguageId) -> Result<(Vec<SymbolRecord>, bool), String> {
     let mut parser = Parser::new();
 
     let ts_language = match language {
@@ -72,7 +69,11 @@ fn parse_source(
         LanguageId::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
         LanguageId::Go => tree_sitter_go::LANGUAGE.into(),
         LanguageId::Java => tree_sitter_java::LANGUAGE.into(),
-        _ => return Err(format!("language not yet onboarded for parsing: {language:?}")),
+        _ => {
+            return Err(format!(
+                "language not yet onboarded for parsing: {language:?}"
+            ));
+        }
     };
 
     parser
@@ -130,7 +131,10 @@ mod tests {
         let source = b"interface Greeter { greet(): void; }";
         let result = process_file("test.ts", source, LanguageId::TypeScript);
         assert_eq!(result.outcome, FileOutcome::Processed);
-        let interface = result.symbols.iter().find(|s| s.kind == SymbolKind::Interface);
+        let interface = result
+            .symbols
+            .iter()
+            .find(|s| s.kind == SymbolKind::Interface);
         assert!(interface.is_some());
         assert_eq!(interface.unwrap().name, "Greeter");
     }
@@ -183,7 +187,11 @@ mod tests {
             (&[0u8; 10000], "zeros.js", LanguageId::JavaScript),
             (b"\n\n\n\n\n", "newlines.ts", LanguageId::TypeScript),
             ("\u{200b}\u{200b}".as_bytes(), "zwsp.go", LanguageId::Go),
-            (b"\0\0\0fn main() {}\0\0", "null_padded.rs", LanguageId::Rust),
+            (
+                b"\0\0\0fn main() {}\0\0",
+                "null_padded.rs",
+                LanguageId::Rust,
+            ),
         ];
 
         for &(source, path, ref lang) in cases {

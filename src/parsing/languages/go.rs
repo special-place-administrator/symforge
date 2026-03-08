@@ -38,7 +38,10 @@ fn walk_node(
                 depth,
                 sort_order: *sort_order,
                 byte_range: (node.start_byte() as u32, node.end_byte() as u32),
-                line_range: (node.start_position().row as u32, node.end_position().row as u32),
+                line_range: (
+                    node.start_position().row as u32,
+                    node.end_position().row as u32,
+                ),
             });
             *sort_order += 1;
         }

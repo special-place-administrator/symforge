@@ -1,13 +1,16 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-use crate::domain::{FileOutcome, FileProcessingResult, FileRecord, IndexRunStatus, LanguageId, PersistedFileOutcome, RunPhase, SupportTier};
+use crate::domain::{
+    FileOutcome, FileProcessingResult, FileRecord, IndexRunStatus, LanguageId,
+    PersistedFileOutcome, RunPhase, SupportTier,
+};
 use crate::indexing::{commit, discovery};
 use crate::parsing;
 use crate::storage::BlobStore;
@@ -146,7 +149,11 @@ impl IndexingPipeline {
         self
     }
 
-    pub fn with_checkpoint_callback(mut self, callback: Box<dyn Fn() + Send + Sync>, interval: u64) -> Self {
+    pub fn with_checkpoint_callback(
+        mut self,
+        callback: Box<dyn Fn() + Send + Sync>,
+        interval: u64,
+    ) -> Self {
         self.checkpoint_callback = Some(callback);
         self.checkpoint_interval = interval.max(1);
         self
@@ -192,10 +199,7 @@ impl IndexingPipeline {
         self.process_discovered(files).await
     }
 
-    async fn process_discovered(
-        mut self,
-        files: Vec<discovery::DiscoveredFile>,
-    ) -> PipelineResult {
+    async fn process_discovered(mut self, files: Vec<discovery::DiscoveredFile>) -> PipelineResult {
         let (indexable, not_yet_supported_files): (Vec<_>, Vec<_>) = files
             .into_iter()
             .partition(|f| f.language.support_tier() != SupportTier::Unsupported);
@@ -231,7 +235,11 @@ impl IndexingPipeline {
         }
 
         let mut files = indexable;
-        files.sort_by(|a, b| a.relative_path.to_lowercase().cmp(&b.relative_path.to_lowercase()));
+        files.sort_by(|a, b| {
+            a.relative_path
+                .to_lowercase()
+                .cmp(&b.relative_path.to_lowercase())
+        });
 
         // Initialize checkpoint tracker with sorted file paths
         let sorted_paths: Vec<String> = files.iter().map(|f| f.relative_path.clone()).collect();
@@ -349,24 +357,32 @@ impl IndexingPipeline {
                 };
 
                 // Helper: record successful processing, track checkpoint, invoke callback
-                let record_success = |result: &FileProcessingResult, file_record: &Option<FileRecord>| {
-                    let symbol_count = result.symbols.len() as u64;
-                    progress.symbols_extracted.fetch_add(symbol_count, Ordering::Relaxed);
-                    let processed = progress.files_processed.fetch_add(1, Ordering::Relaxed) + 1;
-                    // Mark complete in tracker only after durable CAS commit
-                    if file_record.is_some() {
-                        tracker.mark_complete(sorted_index);
-                    }
-                    // Periodic checkpoint callback
-                    if cb_interval > 0 && processed % cb_interval == 0 {
-                        if let Some(ref callback) = cb {
-                            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback())) {
-                                Ok(()) => {}
-                                Err(_) => warn!(run_id = %run_id, "checkpoint callback panicked"),
+                let record_success =
+                    |result: &FileProcessingResult, file_record: &Option<FileRecord>| {
+                        let symbol_count = result.symbols.len() as u64;
+                        progress
+                            .symbols_extracted
+                            .fetch_add(symbol_count, Ordering::Relaxed);
+                        let processed =
+                            progress.files_processed.fetch_add(1, Ordering::Relaxed) + 1;
+                        // Mark complete in tracker only after durable CAS commit
+                        if file_record.is_some() {
+                            tracker.mark_complete(sorted_index);
+                        }
+                        // Periodic checkpoint callback
+                        if cb_interval > 0 && processed % cb_interval == 0 {
+                            if let Some(ref callback) = cb {
+                                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    callback()
+                                })) {
+                                    Ok(()) => {}
+                                    Err(_) => {
+                                        warn!(run_id = %run_id, "checkpoint callback panicked")
+                                    }
+                                }
                             }
                         }
-                    }
-                };
+                    };
 
                 match &result.outcome {
                     FileOutcome::Processed => {
@@ -446,7 +462,10 @@ impl IndexingPipeline {
 
         let not_yet_supported_summary = if !not_yet_supported.is_empty() {
             let total_unsupported: u64 = not_yet_supported.values().sum();
-            format!("; not-yet-supported: {total_unsupported} files across {} languages", not_yet_supported.len())
+            format!(
+                "; not-yet-supported: {total_unsupported} files across {} languages",
+                not_yet_supported.len()
+            )
         } else {
             String::new()
         };
@@ -485,7 +504,11 @@ impl IndexingPipeline {
             let error_summary = if not_yet_supported_summary.is_empty() {
                 None
             } else {
-                Some(not_yet_supported_summary.trim_start_matches("; ").to_string())
+                Some(
+                    not_yet_supported_summary
+                        .trim_start_matches("; ")
+                        .to_string(),
+                )
             };
             (IndexRunStatus::Succeeded, error_summary)
         };
@@ -522,13 +545,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_pipeline_processes_files() {
-        let dir = temp_repo_with_files(&[
-            ("main.rs", "fn main() {}"),
-            ("lib.py", "def foo(): pass"),
-        ]);
+        let dir =
+            temp_repo_with_files(&[("main.rs", "fn main() {}"), ("lib.py", "def foo(): pass")]);
 
-        let pipeline = IndexingPipeline::new("test-run".into(), dir.path().to_path_buf(), CancellationToken::new())
-            .with_concurrency(2);
+        let pipeline = IndexingPipeline::new(
+            "test-run".into(),
+            dir.path().to_path_buf(),
+            CancellationToken::new(),
+        )
+        .with_concurrency(2);
         let result = pipeline.execute().await;
 
         assert_eq!(result.status, IndexRunStatus::Succeeded);
@@ -548,14 +573,24 @@ mod tests {
             })
             .collect();
 
-        let pipeline = IndexingPipeline::new("test-cb".into(), PathBuf::from("/tmp"), CancellationToken::new())
-            .with_concurrency(1)
-            .with_circuit_breaker(3);
+        let pipeline = IndexingPipeline::new(
+            "test-cb".into(),
+            PathBuf::from("/tmp"),
+            CancellationToken::new(),
+        )
+        .with_concurrency(1)
+        .with_circuit_breaker(3);
         let result = pipeline.process_discovered(fake_files).await;
 
         assert_eq!(result.status, IndexRunStatus::Aborted);
         assert!(result.error_summary.is_some());
-        assert!(result.error_summary.as_ref().unwrap().contains("circuit breaker"));
+        assert!(
+            result
+                .error_summary
+                .as_ref()
+                .unwrap()
+                .contains("circuit breaker")
+        );
         // Threshold 3, concurrency 1: exactly 3 files fail before breaker trips,
         // then the early-exit check stops spawning remaining files.
         assert!(
@@ -563,10 +598,12 @@ mod tests {
             "expected at most 4 results (3 failures + possible 1 in-flight), got {}",
             result.results.len()
         );
-        assert!(result.results.iter().all(|r| matches!(
-            r.outcome,
-            FileOutcome::Failed { .. }
-        )));
+        assert!(
+            result
+                .results
+                .iter()
+                .all(|r| matches!(r.outcome, FileOutcome::Failed { .. }))
+        );
     }
 
     #[tokio::test]
@@ -577,8 +614,12 @@ mod tests {
             ("c.go", "package main\nfunc c() {}"),
         ]);
 
-        let pipeline = IndexingPipeline::new("test-prog".into(), dir.path().to_path_buf(), CancellationToken::new())
-            .with_concurrency(1);
+        let pipeline = IndexingPipeline::new(
+            "test-prog".into(),
+            dir.path().to_path_buf(),
+            CancellationToken::new(),
+        )
+        .with_concurrency(1);
         let progress = pipeline.progress();
         let result = pipeline.execute().await;
 
@@ -591,7 +632,11 @@ mod tests {
     #[tokio::test]
     async fn test_pipeline_empty_repo() {
         let dir = tempfile::tempdir().unwrap();
-        let pipeline = IndexingPipeline::new("test-empty".into(), dir.path().to_path_buf(), CancellationToken::new());
+        let pipeline = IndexingPipeline::new(
+            "test-empty".into(),
+            dir.path().to_path_buf(),
+            CancellationToken::new(),
+        );
         let result = pipeline.execute().await;
 
         assert_eq!(result.status, IndexRunStatus::Succeeded);
@@ -600,8 +645,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_pipeline_discovery_failure() {
-        let pipeline =
-            IndexingPipeline::new("test-bad".into(), PathBuf::from("/nonexistent/path/repo"), CancellationToken::new());
+        let pipeline = IndexingPipeline::new(
+            "test-bad".into(),
+            PathBuf::from("/nonexistent/path/repo"),
+            CancellationToken::new(),
+        );
         let result = pipeline.execute().await;
 
         assert_eq!(result.status, IndexRunStatus::Failed);
@@ -613,18 +661,20 @@ mod tests {
         use crate::config::BlobStoreConfig;
         use crate::storage::LocalCasBlobStore;
 
-        let repo_dir = temp_repo_with_files(&[
-            ("main.rs", "fn main() {}"),
-            ("lib.py", "def foo(): pass"),
-        ]);
+        let repo_dir =
+            temp_repo_with_files(&[("main.rs", "fn main() {}"), ("lib.py", "def foo(): pass")]);
         let cas_dir = tempfile::tempdir().unwrap();
         let cas = Arc::new(LocalCasBlobStore::new(BlobStoreConfig {
             root_dir: cas_dir.path().to_path_buf(),
         }));
 
-        let pipeline = IndexingPipeline::new("test-cas".into(), repo_dir.path().to_path_buf(), CancellationToken::new())
-            .with_cas(cas, "repo-1".to_string())
-            .with_concurrency(1);
+        let pipeline = IndexingPipeline::new(
+            "test-cas".into(),
+            repo_dir.path().to_path_buf(),
+            CancellationToken::new(),
+        )
+        .with_cas(cas, "repo-1".to_string())
+        .with_concurrency(1);
         let result = pipeline.execute().await;
 
         assert_eq!(result.status, IndexRunStatus::Succeeded);
@@ -642,8 +692,12 @@ mod tests {
     async fn test_pipeline_without_cas_produces_no_file_records() {
         let dir = temp_repo_with_files(&[("main.rs", "fn main() {}")]);
 
-        let pipeline = IndexingPipeline::new("test-no-cas".into(), dir.path().to_path_buf(), CancellationToken::new())
-            .with_concurrency(1);
+        let pipeline = IndexingPipeline::new(
+            "test-no-cas".into(),
+            dir.path().to_path_buf(),
+            CancellationToken::new(),
+        )
+        .with_concurrency(1);
         let result = pipeline.execute().await;
 
         assert_eq!(result.status, IndexRunStatus::Succeeded);
@@ -700,9 +754,13 @@ mod tests {
             root: PathBuf::from("/nonexistent/cas/root"),
         });
 
-        let pipeline = IndexingPipeline::new("test-systemic".into(), repo_dir.path().to_path_buf(), CancellationToken::new())
-            .with_cas(cas, "repo-1".to_string())
-            .with_concurrency(1);
+        let pipeline = IndexingPipeline::new(
+            "test-systemic".into(),
+            repo_dir.path().to_path_buf(),
+            CancellationToken::new(),
+        )
+        .with_cas(cas, "repo-1".to_string())
+        .with_concurrency(1);
         let result = pipeline.execute().await;
 
         assert_eq!(result.status, IndexRunStatus::Aborted);
@@ -727,15 +785,29 @@ mod tests {
             ("main.cs", "class Main {}"),
         ]);
 
-        let pipeline = IndexingPipeline::new("test-partition".into(), dir.path().to_path_buf(), CancellationToken::new())
-            .with_concurrency(1);
+        let pipeline = IndexingPipeline::new(
+            "test-partition".into(),
+            dir.path().to_path_buf(),
+            CancellationToken::new(),
+        )
+        .with_concurrency(1);
         let result = pipeline.execute().await;
 
         assert_eq!(result.status, IndexRunStatus::Succeeded);
         // Only Rust (QualityFocus) and Java (Broader) should be processed
         assert_eq!(result.results.len(), 2);
-        assert!(result.results.iter().any(|r| r.language == LanguageId::Rust));
-        assert!(result.results.iter().any(|r| r.language == LanguageId::Java));
+        assert!(
+            result
+                .results
+                .iter()
+                .any(|r| r.language == LanguageId::Rust)
+        );
+        assert!(
+            result
+                .results
+                .iter()
+                .any(|r| r.language == LanguageId::Java)
+        );
         // Ruby and C# are Unsupported — counted but not processed
         assert_eq!(result.not_yet_supported.len(), 2);
         assert_eq!(result.not_yet_supported[&LanguageId::Ruby], 1);
@@ -769,7 +841,8 @@ mod tests {
         let token = CancellationToken::new();
         token.cancel();
 
-        let pipeline = IndexingPipeline::new("test-precancel".into(), dir.path().to_path_buf(), token);
+        let pipeline =
+            IndexingPipeline::new("test-precancel".into(), dir.path().to_path_buf(), token);
         let result = pipeline.execute().await;
 
         assert_eq!(result.status, IndexRunStatus::Cancelled);
@@ -790,8 +863,9 @@ mod tests {
         let token_clone = token.clone();
 
         // Cancel after a short delay so discovery completes but not all files process
-        let pipeline = IndexingPipeline::new("test-midcancel".into(), dir.path().to_path_buf(), token)
-            .with_concurrency(1);
+        let pipeline =
+            IndexingPipeline::new("test-midcancel".into(), dir.path().to_path_buf(), token)
+                .with_concurrency(1);
         let progress = pipeline.progress();
 
         // Cancel immediately after spawning — with concurrency 1, the loop checks
@@ -871,9 +945,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_pipeline_invokes_checkpoint_callback_at_interval() {
-        use std::sync::atomic::AtomicUsize;
         use crate::config::BlobStoreConfig;
         use crate::storage::LocalCasBlobStore;
+        use std::sync::atomic::AtomicUsize;
 
         let repo_dir = temp_repo_with_files(&[
             ("a.go", "package main\nfunc a() {}"),
@@ -893,28 +967,36 @@ mod tests {
             counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         });
 
-        let pipeline = IndexingPipeline::new("test-cb-interval".into(), repo_dir.path().to_path_buf(), CancellationToken::new())
-            .with_cas(cas, "repo-1".to_string())
-            .with_concurrency(1)
-            .with_checkpoint_callback(callback, 2);
+        let pipeline = IndexingPipeline::new(
+            "test-cb-interval".into(),
+            repo_dir.path().to_path_buf(),
+            CancellationToken::new(),
+        )
+        .with_cas(cas, "repo-1".to_string())
+        .with_concurrency(1)
+        .with_checkpoint_callback(callback, 2);
         let result = pipeline.execute().await;
 
         assert_eq!(result.status, IndexRunStatus::Succeeded);
         // With 5 files and interval 2, callback fires at files_processed=2 and 4
         let count = call_count.load(std::sync::atomic::Ordering::Relaxed);
-        assert_eq!(count, 2, "expected callback at processed=2 and processed=4, got {count} calls");
+        assert_eq!(
+            count, 2,
+            "expected callback at processed=2 and processed=4, got {count} calls"
+        );
     }
 
     #[tokio::test]
     async fn test_pipeline_skips_checkpoint_when_no_callback() {
-        let dir = temp_repo_with_files(&[
-            ("a.rs", "fn a() {}"),
-            ("b.py", "def b(): pass"),
-        ]);
+        let dir = temp_repo_with_files(&[("a.rs", "fn a() {}"), ("b.py", "def b(): pass")]);
 
         // No callback set — should not panic
-        let pipeline = IndexingPipeline::new("test-no-cb".into(), dir.path().to_path_buf(), CancellationToken::new())
-            .with_concurrency(1);
+        let pipeline = IndexingPipeline::new(
+            "test-no-cb".into(),
+            dir.path().to_path_buf(),
+            CancellationToken::new(),
+        )
+        .with_concurrency(1);
         let result = pipeline.execute().await;
 
         assert_eq!(result.status, IndexRunStatus::Succeeded);

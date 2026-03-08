@@ -17,7 +17,10 @@ pub fn discover_files(root: &Path) -> Result<Vec<DiscoveredFile>> {
 
     for entry in WalkBuilder::new(root).build() {
         let entry = entry.map_err(|e| {
-            TokenizorError::io(root.to_path_buf(), std::io::Error::new(std::io::ErrorKind::Other, e))
+            TokenizorError::io(
+                root.to_path_buf(),
+                std::io::Error::new(std::io::ErrorKind::Other, e),
+            )
         })?;
 
         if !entry.file_type().map_or(false, |ft| ft.is_file()) {
@@ -144,10 +147,16 @@ mod tests {
         let files = discover_files(dir.path()).unwrap();
         assert_eq!(files.len(), 2);
 
-        let jsx = files.iter().find(|f| f.relative_path == "component.jsx").unwrap();
+        let jsx = files
+            .iter()
+            .find(|f| f.relative_path == "component.jsx")
+            .unwrap();
         assert_eq!(jsx.language, LanguageId::JavaScript);
 
-        let tsx = files.iter().find(|f| f.relative_path == "component.tsx").unwrap();
+        let tsx = files
+            .iter()
+            .find(|f| f.relative_path == "component.tsx")
+            .unwrap();
         assert_eq!(tsx.language, LanguageId::TypeScript);
     }
 }

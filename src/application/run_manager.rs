@@ -7,18 +7,18 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::domain::{
-    Checkpoint, FileOutcomeSummary, FileRecord, IdempotencyRecord, IdempotencyStatus,
-    IndexRun, IndexRunMode, IndexRunStatus, InvalidationResult, PersistedFileOutcome,
-    RepositoryStatus, RunHealth, RunPhase, RunProgressSnapshot, RunStatusReport,
-    unix_timestamp_ms,
+    Checkpoint, FileOutcomeSummary, FileRecord, IdempotencyRecord, IdempotencyStatus, IndexRun,
+    IndexRunMode, IndexRunStatus, InvalidationResult, PersistedFileOutcome, RepositoryStatus,
+    RunHealth, RunPhase, RunProgressSnapshot, RunStatusReport, unix_timestamp_ms,
 };
-use crate::storage::BlobStore;
 use crate::error::{Result, TokenizorError};
 use crate::indexing::pipeline::{IndexingPipeline, PipelineProgress};
+use crate::storage::BlobStore;
 use crate::storage::RegistryPersistence;
 use crate::storage::digest_hex;
 
 pub struct ActiveRun {
+    pub run_id: String,
     pub handle: JoinHandle<()>,
     pub cancellation_token: CancellationToken,
     pub progress: Option<Arc<PipelineProgress>>,
@@ -121,6 +121,11 @@ impl RunManager {
     pub fn has_active_run(&self, repo_id: &str) -> bool {
         let active_runs = self.active_runs.lock().unwrap_or_else(|e| e.into_inner());
         active_runs.contains_key(repo_id)
+    }
+
+    pub fn get_active_run_id(&self, repo_id: &str) -> Option<String> {
+        let active_runs = self.active_runs.lock().unwrap_or_else(|e| e.into_inner());
+        active_runs.get(repo_id).map(|r| r.run_id.clone())
     }
 
     pub fn get_active_progress(&self, repo_id: &str) -> Option<RunProgressSnapshot> {
@@ -338,9 +343,7 @@ impl RunManager {
         let repo = self
             .persistence
             .get_repository(repo_id)?
-            .ok_or_else(|| {
-                TokenizorError::NotFound(format!("repository not found: {repo_id}"))
-            })?;
+            .ok_or_else(|| TokenizorError::NotFound(format!("repository not found: {repo_id}")))?;
 
         // Domain-level idempotency: already invalidated → return success
         // regardless of idempotency key state or reason
@@ -402,6 +405,8 @@ impl RunManager {
             RepositoryStatus::Invalidated,
             Some(now),
             reason.map(|r| r.to_string()),
+            None,
+            None,
         )?;
 
         // Save idempotency record
@@ -473,10 +478,10 @@ impl RunManager {
 
         let handle = tokio::spawn(async move {
             // Transition to Running with start timestamp (skips if already terminal)
-            if let Err(e) = manager.persistence.transition_to_running(
-                &run_id,
-                unix_timestamp_ms(),
-            ) {
+            if let Err(e) = manager
+                .persistence
+                .transition_to_running(&run_id, unix_timestamp_ms())
+            {
                 error!(run_id = %run_id, error = %e, "failed to transition to Running");
                 manager.deregister_active_run(&repo_id_owned);
                 return;
@@ -571,6 +576,8 @@ impl RunManager {
                                 RepositoryStatus::Ready,
                                 None,
                                 None,
+                                None,
+                                None,
                             ) {
                                 warn!(repo_id = %repo_id_owned, error = %e, "failed to clear invalidation after successful run");
                             } else {
@@ -593,6 +600,7 @@ impl RunManager {
         self.register_active_run(
             &run.repo_id,
             ActiveRun {
+                run_id: run.run_id.clone(),
                 handle,
                 cancellation_token: token,
                 progress: Some(Arc::clone(&progress)),
@@ -683,18 +691,16 @@ impl RunManager {
                 ))
             })?;
 
-            let files_processed = progress.files_processed.load(std::sync::atomic::Ordering::Relaxed);
-            let symbols_extracted = progress.symbols_extracted.load(std::sync::atomic::Ordering::Relaxed);
+            let files_processed = progress
+                .files_processed
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let symbols_extracted = progress
+                .symbols_extracted
+                .load(std::sync::atomic::Ordering::Relaxed);
 
-            let cursor = active
-                .checkpoint_cursor_fn
-                .as_ref()
-                .and_then(|f| f());
+            let cursor = active.checkpoint_cursor_fn.as_ref().and_then(|f| f());
 
-            (
-                (files_processed, symbols_extracted),
-                cursor,
-            )
+            ((files_processed, symbols_extracted), cursor)
         };
         // Mutex guard dropped here
 
@@ -735,7 +741,10 @@ impl RunManager {
         };
 
         let filtered = match repo_id {
-            Some(rid) => runs.into_iter().filter(|r| r.repo_id == rid).collect::<Vec<_>>(),
+            Some(rid) => runs
+                .into_iter()
+                .filter(|r| r.repo_id == rid)
+                .collect::<Vec<_>>(),
             None => runs,
         };
 
@@ -753,19 +762,12 @@ impl RunManager {
         let mut sorted = all_runs;
         // Sort by requested_at (not started_at) because started_at is Option<u64>
         // and may be None for Queued runs. requested_at is always set.
-        sorted.sort_by(|a, b| {
-            b.requested_at_unix_ms.cmp(&a.requested_at_unix_ms)
-        });
-        sorted
-            .into_iter()
-            .take(limit)
-            .map(|r| r.run_id)
-            .collect()
+        sorted.sort_by(|a, b| b.requested_at_unix_ms.cmp(&a.requested_at_unix_ms));
+        sorted.into_iter().take(limit).map(|r| r.run_id).collect()
     }
 
     fn build_run_report(&self, run: IndexRun) -> Result<RunStatusReport> {
-        let is_active =
-            run.status == IndexRunStatus::Running && self.has_active_run(&run.repo_id);
+        let is_active = run.status == IndexRunStatus::Running && self.has_active_run(&run.repo_id);
 
         let progress = if is_active {
             self.get_active_progress(&run.repo_id)
@@ -787,12 +789,14 @@ impl RunManager {
         let progress = match progress {
             Some(p) => Some(p),
             None if run.status.is_terminal() => {
-                file_outcome_summary.as_ref().map(|fos| RunProgressSnapshot {
-                    phase: RunPhase::Complete,
-                    total_files: fos.total_committed,
-                    files_processed: fos.processed_ok + fos.partial_parse,
-                    files_failed: fos.failed,
-                })
+                file_outcome_summary
+                    .as_ref()
+                    .map(|fos| RunProgressSnapshot {
+                        phase: RunPhase::Complete,
+                        total_files: fos.total_committed,
+                        files_processed: fos.processed_ok + fos.partial_parse,
+                        files_failed: fos.failed,
+                    })
             }
             None => None,
         };
@@ -872,9 +876,7 @@ fn classify_run_health(run: &IndexRun, file_summary: Option<&FileOutcomeSummary>
             RunHealth::Unhealthy
         }
         IndexRunStatus::Succeeded => match file_summary {
-            Some(summary) if summary.failed > 0 || summary.partial_parse > 0 => {
-                RunHealth::Degraded
-            }
+            Some(summary) if summary.failed > 0 || summary.partial_parse > 0 => RunHealth::Degraded,
             _ => RunHealth::Healthy,
         },
     }
@@ -886,15 +888,12 @@ fn action_required_message(run: &IndexRun, health: &RunHealth) -> Option<String>
             Some("Run was interrupted. Resume with re-index or repair.".into())
         }
         IndexRunStatus::Failed => {
-            let detail = run
-                .error_summary
-                .as_deref()
-                .unwrap_or("unknown error");
+            let detail = run.error_summary.as_deref().unwrap_or("unknown error");
             Some(format!("Run failed: {detail}. Investigate and re-run."))
         }
-        IndexRunStatus::Aborted => {
-            Some("Run aborted (circuit breaker). Check file-level errors, consider repair mode.".into())
-        }
+        IndexRunStatus::Aborted => Some(
+            "Run aborted (circuit breaker). Check file-level errors, consider repair mode.".into(),
+        ),
         IndexRunStatus::Succeeded if *health == RunHealth::Degraded => {
             Some("Run completed with degraded files. Review partial/failed outcomes.".into())
         }
@@ -1002,11 +1001,7 @@ mod tests {
         let transitioned = manager.startup_sweep().unwrap();
 
         assert_eq!(transitioned, vec!["stale-run".to_string()]);
-        let run = manager
-            .persistence
-            .find_run("stale-run")
-            .unwrap()
-            .unwrap();
+        let run = manager.persistence.find_run("stale-run").unwrap().unwrap();
         assert_eq!(run.status, IndexRunStatus::Interrupted);
         assert!(run.error_summary.is_some());
     }
@@ -1090,6 +1085,7 @@ mod tests {
         manager.register_active_run(
             "repo-1",
             ActiveRun {
+                run_id: "run-1".to_string(),
                 handle,
                 cancellation_token: token,
                 progress: None,
@@ -1180,7 +1176,10 @@ mod tests {
             .unwrap();
         match replay {
             IdempotentRunResult::NewRun { run } => {
-                assert_ne!(run.run_id, first_run_id, "should be a new run, not the old one");
+                assert_ne!(
+                    run.run_id, first_run_id,
+                    "should be a new run, not the old one"
+                );
             }
             IdempotentRunResult::ExistingRun { .. } => panic!("expected NewRun for stale record"),
         }
@@ -1247,7 +1246,10 @@ mod tests {
             created_at_unix_ms: 1000,
             expires_at_unix_ms: None,
         };
-        manager.persistence.save_idempotency_record(&record).unwrap();
+        manager
+            .persistence
+            .save_idempotency_record(&record)
+            .unwrap();
 
         // Same params replay with orphaned record → new run
         let result = manager
@@ -1257,7 +1259,9 @@ mod tests {
             IdempotentRunResult::NewRun { run } => {
                 assert_ne!(run.run_id, "nonexistent-run");
             }
-            IdempotentRunResult::ExistingRun { .. } => panic!("expected NewRun for orphaned record"),
+            IdempotentRunResult::ExistingRun { .. } => {
+                panic!("expected NewRun for orphaned record")
+            }
         }
     }
 
@@ -1286,13 +1290,20 @@ mod tests {
             .spawn(async {});
 
         let progress = Arc::new(PipelineProgress::new());
-        progress.total_files.store(100, std::sync::atomic::Ordering::Relaxed);
-        progress.files_processed.store(75, std::sync::atomic::Ordering::Relaxed);
-        progress.files_failed.store(3, std::sync::atomic::Ordering::Relaxed);
+        progress
+            .total_files
+            .store(100, std::sync::atomic::Ordering::Relaxed);
+        progress
+            .files_processed
+            .store(75, std::sync::atomic::Ordering::Relaxed);
+        progress
+            .files_failed
+            .store(3, std::sync::atomic::Ordering::Relaxed);
 
         manager.register_active_run(
             "repo-progress",
             ActiveRun {
+                run_id: "run-progress".to_string(),
                 handle,
                 cancellation_token: token,
                 progress: Some(Arc::clone(&progress)),
@@ -1339,7 +1350,10 @@ mod tests {
             partial_parse: 0,
             failed: 0,
         };
-        assert_eq!(classify_run_health(&run, Some(&summary)), RunHealth::Healthy);
+        assert_eq!(
+            classify_run_health(&run, Some(&summary)),
+            RunHealth::Healthy
+        );
     }
 
     #[test]
@@ -1351,7 +1365,10 @@ mod tests {
             partial_parse: 2,
             failed: 0,
         };
-        assert_eq!(classify_run_health(&run, Some(&summary)), RunHealth::Degraded);
+        assert_eq!(
+            classify_run_health(&run, Some(&summary)),
+            RunHealth::Degraded
+        );
     }
 
     #[test]
@@ -1416,13 +1433,18 @@ mod tests {
             .spawn(async {});
 
         let progress = Arc::new(PipelineProgress::new());
-        progress.total_files.store(50, std::sync::atomic::Ordering::Relaxed);
-        progress.files_processed.store(25, std::sync::atomic::Ordering::Relaxed);
+        progress
+            .total_files
+            .store(50, std::sync::atomic::Ordering::Relaxed);
+        progress
+            .files_processed
+            .store(25, std::sync::atomic::Ordering::Relaxed);
         progress.set_phase(RunPhase::Processing);
 
         manager.register_active_run(
             "repo-phase",
             ActiveRun {
+                run_id: "run-phase".to_string(),
                 handle,
                 cancellation_token: token,
                 progress: Some(Arc::clone(&progress)),
@@ -1441,7 +1463,9 @@ mod tests {
         let (_dir, manager) = temp_run_manager();
 
         // Create a run that completes
-        let run = manager.start_run("repo-terminal", IndexRunMode::Full).unwrap();
+        let run = manager
+            .start_run("repo-terminal", IndexRunMode::Full)
+            .unwrap();
         let run_id = run.run_id.clone();
 
         // Simulate run completion with file records
@@ -1457,8 +1481,14 @@ mod tests {
             repo_id: "repo-terminal".into(),
             committed_at_unix_ms: 1000,
         };
-        manager.persistence.save_file_records(&run_id, &[file_record]).unwrap();
-        manager.persistence.update_run_status(&run_id, IndexRunStatus::Succeeded, None).unwrap();
+        manager
+            .persistence
+            .save_file_records(&run_id, &[file_record])
+            .unwrap();
+        manager
+            .persistence
+            .update_run_status(&run_id, IndexRunStatus::Succeeded, None)
+            .unwrap();
 
         let report = manager.inspect_run(&run_id).unwrap();
         assert!(!report.is_active);
@@ -1473,11 +1503,16 @@ mod tests {
     #[tokio::test]
     async fn test_cancel_active_run_signals_token_and_returns_cancelled() {
         let (_dir, manager) = temp_run_manager();
-        let run = manager.start_run("repo-cancel", IndexRunMode::Full).unwrap();
+        let run = manager
+            .start_run("repo-cancel", IndexRunMode::Full)
+            .unwrap();
         let run_id = run.run_id.clone();
 
         // Transition to Running
-        manager.persistence.transition_to_running(&run_id, 1001).unwrap();
+        manager
+            .persistence
+            .transition_to_running(&run_id, 1001)
+            .unwrap();
 
         // Register an active run with a cancellation token
         let token = CancellationToken::new();
@@ -1485,6 +1520,7 @@ mod tests {
         manager.register_active_run(
             "repo-cancel",
             ActiveRun {
+                run_id: run_id.clone(),
                 handle: tokio::spawn(async {}),
                 cancellation_token: token,
                 progress: None,
@@ -1530,7 +1566,9 @@ mod tests {
     #[test]
     fn test_cancel_queued_run_without_active_entry_transitions_to_cancelled() {
         let (_dir, manager) = temp_run_manager();
-        let run = manager.start_run("repo-queued", IndexRunMode::Full).unwrap();
+        let run = manager
+            .start_run("repo-queued", IndexRunMode::Full)
+            .unwrap();
         let run_id = run.run_id.clone();
 
         // Run is Queued — no active entry registered yet
@@ -1542,15 +1580,21 @@ mod tests {
     #[tokio::test]
     async fn test_cancel_removes_from_active_runs() {
         let (_dir, manager) = temp_run_manager();
-        let run = manager.start_run("repo-remove", IndexRunMode::Full).unwrap();
+        let run = manager
+            .start_run("repo-remove", IndexRunMode::Full)
+            .unwrap();
         let run_id = run.run_id.clone();
 
-        manager.persistence.transition_to_running(&run_id, 1001).unwrap();
+        manager
+            .persistence
+            .transition_to_running(&run_id, 1001)
+            .unwrap();
 
         let token = CancellationToken::new();
         manager.register_active_run(
             "repo-remove",
             ActiveRun {
+                run_id: run_id.clone(),
                 handle: tokio::spawn(async {}),
                 cancellation_token: token,
                 progress: None,
@@ -1568,11 +1612,18 @@ mod tests {
         let (_dir, manager) = temp_run_manager();
         let run = manager.start_run("repo-cp", IndexRunMode::Full).unwrap();
         let run_id = run.run_id.clone();
-        manager.persistence.transition_to_running(&run_id, 1001).unwrap();
+        manager
+            .persistence
+            .transition_to_running(&run_id, 1001)
+            .unwrap();
 
         let progress = Arc::new(PipelineProgress::new());
-        progress.files_processed.store(42, std::sync::atomic::Ordering::Relaxed);
-        progress.symbols_extracted.store(150, std::sync::atomic::Ordering::Relaxed);
+        progress
+            .files_processed
+            .store(42, std::sync::atomic::Ordering::Relaxed);
+        progress
+            .symbols_extracted
+            .store(150, std::sync::atomic::Ordering::Relaxed);
 
         let cursor_fn: Arc<dyn Fn() -> Option<String> + Send + Sync> =
             Arc::new(|| Some("src/main.rs".to_string()));
@@ -1580,6 +1631,7 @@ mod tests {
         manager.register_active_run(
             "repo-cp",
             ActiveRun {
+                run_id: run_id.clone(),
                 handle: tokio::spawn(async {}),
                 cancellation_token: CancellationToken::new(),
                 progress: Some(progress),
@@ -1595,25 +1647,39 @@ mod tests {
         assert!(checkpoint.created_at_unix_ms > 0);
 
         // Verify persisted
-        let latest = manager.persistence().get_latest_checkpoint(&run_id).unwrap();
+        let latest = manager
+            .persistence()
+            .get_latest_checkpoint(&run_id)
+            .unwrap();
         assert!(latest.is_some());
         assert_eq!(latest.unwrap().cursor, "src/main.rs");
 
         // Verify run's checkpoint_cursor updated
         let updated_run = manager.persistence().find_run(&run_id).unwrap().unwrap();
-        assert_eq!(updated_run.checkpoint_cursor, Some("src/main.rs".to_string()));
+        assert_eq!(
+            updated_run.checkpoint_cursor,
+            Some("src/main.rs".to_string())
+        );
     }
 
     #[test]
     fn test_checkpoint_terminal_run_returns_error() {
         let (_dir, manager) = temp_run_manager();
-        let run = manager.start_run("repo-term-cp", IndexRunMode::Full).unwrap();
+        let run = manager
+            .start_run("repo-term-cp", IndexRunMode::Full)
+            .unwrap();
         let run_id = run.run_id.clone();
-        manager.persistence.update_run_status(&run_id, IndexRunStatus::Succeeded, None).unwrap();
+        manager
+            .persistence
+            .update_run_status(&run_id, IndexRunStatus::Succeeded, None)
+            .unwrap();
 
         let result = manager.checkpoint_run(&run_id);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), TokenizorError::InvalidOperation(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            TokenizorError::InvalidOperation(_)
+        ));
     }
 
     #[test]
@@ -1628,13 +1694,19 @@ mod tests {
     #[tokio::test]
     async fn test_checkpoint_run_without_progress_returns_error() {
         let (_dir, manager) = temp_run_manager();
-        let run = manager.start_run("repo-noprog", IndexRunMode::Full).unwrap();
+        let run = manager
+            .start_run("repo-noprog", IndexRunMode::Full)
+            .unwrap();
         let run_id = run.run_id.clone();
-        manager.persistence.transition_to_running(&run_id, 1001).unwrap();
+        manager
+            .persistence
+            .transition_to_running(&run_id, 1001)
+            .unwrap();
 
         manager.register_active_run(
             "repo-noprog",
             ActiveRun {
+                run_id: run_id.clone(),
                 handle: tokio::spawn(async {}),
                 cancellation_token: CancellationToken::new(),
                 progress: None,
@@ -1644,26 +1716,36 @@ mod tests {
 
         let result = manager.checkpoint_run(&run_id);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), TokenizorError::InvalidOperation(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            TokenizorError::InvalidOperation(_)
+        ));
     }
 
     #[tokio::test]
     async fn test_checkpoint_run_without_cursor_returns_error() {
         let (_dir, manager) = temp_run_manager();
-        let run = manager.start_run("repo-nocursor", IndexRunMode::Full).unwrap();
+        let run = manager
+            .start_run("repo-nocursor", IndexRunMode::Full)
+            .unwrap();
         let run_id = run.run_id.clone();
-        manager.persistence.transition_to_running(&run_id, 1001).unwrap();
+        manager
+            .persistence
+            .transition_to_running(&run_id, 1001)
+            .unwrap();
 
         let progress = Arc::new(PipelineProgress::new());
-        progress.files_processed.store(10, std::sync::atomic::Ordering::Relaxed);
+        progress
+            .files_processed
+            .store(10, std::sync::atomic::Ordering::Relaxed);
 
         // cursor_fn returns None (no committed work yet)
-        let cursor_fn: Arc<dyn Fn() -> Option<String> + Send + Sync> =
-            Arc::new(|| None);
+        let cursor_fn: Arc<dyn Fn() -> Option<String> + Send + Sync> = Arc::new(|| None);
 
         manager.register_active_run(
             "repo-nocursor",
             ActiveRun {
+                run_id: run_id.clone(),
                 handle: tokio::spawn(async {}),
                 cancellation_token: CancellationToken::new(),
                 progress: Some(progress),
@@ -1673,7 +1755,10 @@ mod tests {
 
         let result = manager.checkpoint_run(&run_id);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), TokenizorError::InvalidOperation(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            TokenizorError::InvalidOperation(_)
+        ));
     }
 
     fn temp_reindex_env() -> (
@@ -1687,11 +1772,11 @@ mod tests {
         let persistence = RegistryPersistence::new(path);
         let manager = Arc::new(RunManager::new(persistence));
         let cas_dir = tempfile::tempdir().unwrap();
-        let cas: Arc<dyn BlobStore> = Arc::new(
-            crate::storage::LocalCasBlobStore::new(crate::config::BlobStoreConfig {
+        let cas: Arc<dyn BlobStore> = Arc::new(crate::storage::LocalCasBlobStore::new(
+            crate::config::BlobStoreConfig {
                 root_dir: cas_dir.path().to_path_buf(),
-            }),
-        );
+            },
+        ));
         cas.initialize().unwrap();
         (dir, manager, cas_dir, cas)
     }
@@ -1710,7 +1795,13 @@ mod tests {
         let prior = manager.start_run("repo-1", IndexRunMode::Full).unwrap();
         manager
             .persistence
-            .update_run_status_with_finish(&prior.run_id, IndexRunStatus::Succeeded, None, 2000, None)
+            .update_run_status_with_finish(
+                &prior.run_id,
+                IndexRunStatus::Succeeded,
+                None,
+                2000,
+                None,
+            )
             .unwrap();
 
         let reindex = manager
@@ -1727,9 +1818,8 @@ mod tests {
         let repo_dir = reindex_repo_root();
         let _active = manager.start_run("repo-1", IndexRunMode::Full).unwrap();
 
-        let result = manager.reindex_repository(
-            "repo-1", None, None, repo_dir.path().to_path_buf(), cas,
-        );
+        let result =
+            manager.reindex_repository("repo-1", None, None, repo_dir.path().to_path_buf(), cas);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("active indexing run exists"));
@@ -1743,18 +1833,33 @@ mod tests {
         let prior = manager.start_run("repo-1", IndexRunMode::Full).unwrap();
         manager
             .persistence
-            .update_run_status_with_finish(&prior.run_id, IndexRunStatus::Succeeded, None, 2000, None)
+            .update_run_status_with_finish(
+                &prior.run_id,
+                IndexRunStatus::Succeeded,
+                None,
+                2000,
+                None,
+            )
             .unwrap();
 
         let first = manager
-            .reindex_repository("repo-1", None, None, repo_dir.path().to_path_buf(), cas.clone())
+            .reindex_repository(
+                "repo-1",
+                None,
+                None,
+                repo_dir.path().to_path_buf(),
+                cas.clone(),
+            )
             .unwrap();
         // H1 fix: replay while the first reindex is still active — idempotency check
         // fires before active-run check, so the stored result is returned
         let replay = manager
             .reindex_repository("repo-1", None, None, repo_dir.path().to_path_buf(), cas)
             .unwrap();
-        assert_eq!(first.run_id, replay.run_id, "idempotent replay should return same run");
+        assert_eq!(
+            first.run_id, replay.run_id,
+            "idempotent replay should return same run"
+        );
     }
 
     #[tokio::test]
@@ -1777,9 +1882,8 @@ mod tests {
             .save_idempotency_record(&record)
             .unwrap();
 
-        let result = manager.reindex_repository(
-            "repo-1", None, None, repo_dir.path().to_path_buf(), cas,
-        );
+        let result =
+            manager.reindex_repository("repo-1", None, None, repo_dir.path().to_path_buf(), cas);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
@@ -1809,7 +1913,13 @@ mod tests {
         let run1 = manager.start_run("repo-1", IndexRunMode::Full).unwrap();
         manager
             .persistence
-            .update_run_status_with_finish(&run1.run_id, IndexRunStatus::Succeeded, None, 2000, None)
+            .update_run_status_with_finish(
+                &run1.run_id,
+                IndexRunStatus::Succeeded,
+                None,
+                2000,
+                None,
+            )
             .unwrap();
 
         let run2 = manager.start_run("repo-1", IndexRunMode::Full).unwrap();
@@ -1833,12 +1943,24 @@ mod tests {
         let prior = manager.start_run("repo-1", IndexRunMode::Full).unwrap();
         manager
             .persistence
-            .update_run_status_with_finish(&prior.run_id, IndexRunStatus::Succeeded, None, 2000, None)
+            .update_run_status_with_finish(
+                &prior.run_id,
+                IndexRunStatus::Succeeded,
+                None,
+                2000,
+                None,
+            )
             .unwrap();
 
         // First reindex
         let first = manager
-            .reindex_repository("repo-1", None, None, repo_dir.path().to_path_buf(), cas.clone())
+            .reindex_repository(
+                "repo-1",
+                None,
+                None,
+                repo_dir.path().to_path_buf(),
+                cas.clone(),
+            )
             .unwrap();
         let first_id = first.run_id.clone();
 
@@ -1853,7 +1975,10 @@ mod tests {
         let second = manager
             .reindex_repository("repo-1", None, None, repo_dir.path().to_path_buf(), cas)
             .unwrap();
-        assert_ne!(second.run_id, first_id, "should be a new run, not the old one");
+        assert_ne!(
+            second.run_id, first_id,
+            "should be a new run, not the old one"
+        );
         assert_eq!(second.mode, IndexRunMode::Reindex);
     }
 
@@ -1872,11 +1997,13 @@ mod tests {
             created_at_unix_ms: 1000,
             expires_at_unix_ms: None,
         };
-        manager.persistence.save_idempotency_record(&record).unwrap();
+        manager
+            .persistence
+            .save_idempotency_record(&record)
+            .unwrap();
 
-        let result = manager.reindex_repository(
-            "repo-1", None, None, repo_dir.path().to_path_buf(), cas,
-        );
+        let result =
+            manager.reindex_repository("repo-1", None, None, repo_dir.path().to_path_buf(), cas);
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -1903,7 +2030,10 @@ mod tests {
             created_at_unix_ms: 1000,
             expires_at_unix_ms: None,
         };
-        manager.persistence.save_idempotency_record(&record).unwrap();
+        manager
+            .persistence
+            .save_idempotency_record(&record)
+            .unwrap();
 
         // Different hash + terminal run → new run (stale record bypassed)
         let result = manager
@@ -1928,7 +2058,10 @@ mod tests {
             created_at_unix_ms: 1000,
             expires_at_unix_ms: None,
         };
-        manager.persistence.save_idempotency_record(&record).unwrap();
+        manager
+            .persistence
+            .save_idempotency_record(&record)
+            .unwrap();
 
         let result = manager
             .reindex_repository("repo-1", None, None, repo_dir.path().to_path_buf(), cas)
@@ -1949,6 +2082,8 @@ mod tests {
             status: RepositoryStatus::Ready,
             invalidated_at_unix_ms: None,
             invalidation_reason: None,
+            quarantined_at_unix_ms: None,
+            quarantine_reason: None,
         };
         manager.persistence.save_repository(&repo).unwrap();
     }
@@ -1967,7 +2102,11 @@ mod tests {
         assert_eq!(result.reason.as_deref(), Some("stale data"));
         assert_eq!(result.action_required, "re-index or repair required");
 
-        let repo = manager.persistence.get_repository("repo-1").unwrap().unwrap();
+        let repo = manager
+            .persistence
+            .get_repository("repo-1")
+            .unwrap()
+            .unwrap();
         assert_eq!(repo.status, RepositoryStatus::Invalidated);
     }
 
@@ -1976,10 +2115,7 @@ mod tests {
         let (_dir, manager) = temp_run_manager();
         let result = manager.invalidate_repository("nonexistent", None, None);
         assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            TokenizorError::NotFound(_)
-        ));
+        assert!(matches!(result.unwrap_err(), TokenizorError::NotFound(_)));
     }
 
     #[test]
@@ -2071,12 +2207,12 @@ mod tests {
             status: RepositoryStatus::Pending,
             invalidated_at_unix_ms: None,
             invalidation_reason: None,
+            quarantined_at_unix_ms: None,
+            quarantine_reason: None,
         };
         manager.persistence.save_repository(&repo).unwrap();
 
-        let result = manager
-            .invalidate_repository("repo-1", None, None)
-            .unwrap();
+        let result = manager.invalidate_repository("repo-1", None, None).unwrap();
         assert_eq!(result.previous_status, RepositoryStatus::Pending);
     }
 
@@ -2114,11 +2250,7 @@ mod tests {
         let run = manager.start_run("repo-1", IndexRunMode::Full).unwrap();
         manager
             .persistence
-            .update_run_status(
-                &run.run_id,
-                IndexRunStatus::Succeeded,
-                None,
-            )
+            .update_run_status(&run.run_id, IndexRunStatus::Succeeded, None)
             .unwrap();
 
         // Before invalidation: no invalidation note
@@ -2155,20 +2287,12 @@ mod tests {
         let run = manager.start_run("repo-1", IndexRunMode::Full).unwrap();
         manager
             .persistence
-            .update_run_status(
-                &run.run_id,
-                IndexRunStatus::Succeeded,
-                None,
-            )
+            .update_run_status(&run.run_id, IndexRunStatus::Succeeded, None)
             .unwrap();
 
-        manager
-            .invalidate_repository("repo-1", None, None)
-            .unwrap();
+        manager.invalidate_repository("repo-1", None, None).unwrap();
 
-        let reports = manager
-            .list_runs_with_health(Some("repo-1"), None)
-            .unwrap();
+        let reports = manager.list_runs_with_health(Some("repo-1"), None).unwrap();
         assert_eq!(reports.len(), 1);
         let action = reports[0].action_required.as_deref().unwrap_or("");
         assert!(
@@ -2191,12 +2315,7 @@ mod tests {
         // Simulate re-index clearing invalidation
         manager
             .persistence
-            .update_repository_status(
-                "repo-1",
-                RepositoryStatus::Ready,
-                None,
-                None,
-            )
+            .update_repository_status("repo-1", RepositoryStatus::Ready, None, None, None, None)
             .unwrap();
 
         // Re-invalidate with same reason — stale record should be ignored, re-applied
@@ -2207,7 +2326,11 @@ mod tests {
         assert_eq!(second.reason.as_deref(), Some("reason-A"));
         assert!(second.invalidated_at_unix_ms > 0);
 
-        let repo = manager.persistence.get_repository("repo-1").unwrap().unwrap();
+        let repo = manager
+            .persistence
+            .get_repository("repo-1")
+            .unwrap()
+            .unwrap();
         assert_eq!(repo.status, RepositoryStatus::Invalidated);
     }
 
@@ -2224,12 +2347,7 @@ mod tests {
         // Simulate re-index clearing invalidation
         manager
             .persistence
-            .update_repository_status(
-                "repo-1",
-                RepositoryStatus::Ready,
-                None,
-                None,
-            )
+            .update_repository_status("repo-1", RepositoryStatus::Ready, None, None, None, None)
             .unwrap();
 
         // Re-invalidate with different reason — stale record should be ignored
@@ -2239,7 +2357,11 @@ mod tests {
         assert_eq!(result.previous_status, RepositoryStatus::Ready);
         assert_eq!(result.reason.as_deref(), Some("reason-B"));
 
-        let repo = manager.persistence.get_repository("repo-1").unwrap().unwrap();
+        let repo = manager
+            .persistence
+            .get_repository("repo-1")
+            .unwrap()
+            .unwrap();
         assert_eq!(repo.status, RepositoryStatus::Invalidated);
         assert_eq!(repo.invalidation_reason.as_deref(), Some("reason-B"));
     }

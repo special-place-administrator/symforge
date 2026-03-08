@@ -2,12 +2,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use tokenizor_agentic_mcp::application::run_manager::RunManager;
 use tokenizor_agentic_mcp::config::BlobStoreConfig;
-use tokenizor_agentic_mcp::domain::{ComponentHealth, FileRecord, IndexRunMode, IndexRunStatus, LanguageId, PersistedFileOutcome, ProjectIdentityKind, Repository, RepositoryKind, RepositoryStatus, RunHealth};
+use tokenizor_agentic_mcp::domain::{
+    ComponentHealth, FileRecord, IndexRunMode, IndexRunStatus, LanguageId, PersistedFileOutcome,
+    ProjectIdentityKind, Repository, RepositoryKind, RepositoryStatus, RunHealth,
+};
 use tokenizor_agentic_mcp::error::TokenizorError;
 use tokenizor_agentic_mcp::storage::registry_persistence::RegistryPersistence;
 use tokenizor_agentic_mcp::storage::{BlobStore, LocalCasBlobStore, StoredBlob};
-use tokenizor_agentic_mcp::application::run_manager::RunManager;
 
 /// A BlobStore that always fails on store_bytes but has an existing root_dir.
 /// Used to test that CAS write failures produce PersistedFileOutcome::Failed records.
@@ -71,7 +74,12 @@ async fn test_launch_run_transitions_queued_running_succeeded() {
     fs::write(repo_dir.path().join("lib.py"), "def foo(): pass").unwrap();
 
     let (run, progress) = manager
-        .launch_run("test-repo", IndexRunMode::Full, repo_dir.path().to_path_buf(), cas)
+        .launch_run(
+            "test-repo",
+            IndexRunMode::Full,
+            repo_dir.path().to_path_buf(),
+            cas,
+        )
         .unwrap();
 
     assert_eq!(run.status, IndexRunStatus::Queued);
@@ -79,17 +87,25 @@ async fn test_launch_run_transitions_queued_running_succeeded() {
     // Wait for background task to complete
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
-    let finished_run = manager.persistence().find_run(&run.run_id).unwrap().unwrap();
+    let finished_run = manager
+        .persistence()
+        .find_run(&run.run_id)
+        .unwrap()
+        .unwrap();
     assert_eq!(finished_run.status, IndexRunStatus::Succeeded);
     assert!(finished_run.started_at_unix_ms.is_some());
     assert!(finished_run.finished_at_unix_ms.is_some());
 
     assert_eq!(
-        progress.total_files.load(std::sync::atomic::Ordering::Relaxed),
+        progress
+            .total_files
+            .load(std::sync::atomic::Ordering::Relaxed),
         2
     );
     assert_eq!(
-        progress.files_processed.load(std::sync::atomic::Ordering::Relaxed),
+        progress
+            .files_processed
+            .load(std::sync::atomic::Ordering::Relaxed),
         2
     );
 
@@ -107,12 +123,21 @@ async fn test_single_file_failure_does_not_poison_run() {
     fs::write(repo_dir.path().join("broken.rs"), "fn broken( { }").unwrap();
 
     let (run, _progress) = manager
-        .launch_run("test-repo", IndexRunMode::Full, repo_dir.path().to_path_buf(), cas)
+        .launch_run(
+            "test-repo",
+            IndexRunMode::Full,
+            repo_dir.path().to_path_buf(),
+            cas,
+        )
         .unwrap();
 
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
-    let finished_run = manager.persistence().find_run(&run.run_id).unwrap().unwrap();
+    let finished_run = manager
+        .persistence()
+        .find_run(&run.run_id)
+        .unwrap()
+        .unwrap();
     assert_eq!(finished_run.status, IndexRunStatus::Succeeded);
 }
 
@@ -128,7 +153,12 @@ async fn test_pipeline_persists_file_records_in_registry() {
     fs::write(repo_dir.path().join("app.ts"), "function hello() {}").unwrap();
 
     let (run, _progress) = manager
-        .launch_run("test-repo", IndexRunMode::Full, repo_dir.path().to_path_buf(), cas)
+        .launch_run(
+            "test-repo",
+            IndexRunMode::Full,
+            repo_dir.path().to_path_buf(),
+            cas,
+        )
         .unwrap();
 
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
@@ -154,7 +184,12 @@ async fn test_empty_symbols_file_produces_empty_symbols_outcome() {
     fs::write(repo_dir.path().join("empty.rs"), "// just a comment").unwrap();
 
     let (run, _progress) = manager
-        .launch_run("test-repo", IndexRunMode::Full, repo_dir.path().to_path_buf(), cas)
+        .launch_run(
+            "test-repo",
+            IndexRunMode::Full,
+            repo_dir.path().to_path_buf(),
+            cas,
+        )
         .unwrap();
 
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
@@ -175,7 +210,12 @@ async fn test_out_of_scope_files_not_persisted_as_file_records() {
     fs::write(repo_dir.path().join("app.rb"), "def hello; end").unwrap();
 
     let (run, _progress) = manager
-        .launch_run("test-repo", IndexRunMode::Full, repo_dir.path().to_path_buf(), cas)
+        .launch_run(
+            "test-repo",
+            IndexRunMode::Full,
+            repo_dir.path().to_path_buf(),
+            cas,
+        )
         .unwrap();
 
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
@@ -184,7 +224,11 @@ async fn test_out_of_scope_files_not_persisted_as_file_records() {
     // Rust (QualityFocus) and Java (Broader) should be persisted, not Ruby (Unsupported)
     assert_eq!(records.len(), 2);
     assert!(records.iter().any(|r| r.relative_path.ends_with("main.rs")));
-    assert!(records.iter().any(|r| r.relative_path.ends_with("App.java")));
+    assert!(
+        records
+            .iter()
+            .any(|r| r.relative_path.ends_with("App.java"))
+    );
     assert!(!records.iter().any(|r| r.relative_path.ends_with("app.rb")));
 }
 
@@ -193,10 +237,19 @@ async fn test_file_records_linked_to_run_and_repo() {
     let (_dir, manager, _cas_dir, cas) = setup_test_env();
 
     let repo_dir = tempfile::tempdir().unwrap();
-    fs::write(repo_dir.path().join("lib.go"), "package main\nfunc Lib() {}").unwrap();
+    fs::write(
+        repo_dir.path().join("lib.go"),
+        "package main\nfunc Lib() {}",
+    )
+    .unwrap();
 
     let (run, _progress) = manager
-        .launch_run("my-repo-id", IndexRunMode::Full, repo_dir.path().to_path_buf(), cas)
+        .launch_run(
+            "my-repo-id",
+            IndexRunMode::Full,
+            repo_dir.path().to_path_buf(),
+            cas,
+        )
         .unwrap();
 
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
@@ -215,7 +268,12 @@ async fn test_cas_blobs_exist_on_disk_after_pipeline() {
     fs::write(repo_dir.path().join("main.rs"), "fn main() {}").unwrap();
 
     let (run, _progress) = manager
-        .launch_run("test-repo", IndexRunMode::Full, repo_dir.path().to_path_buf(), cas.clone())
+        .launch_run(
+            "test-repo",
+            IndexRunMode::Full,
+            repo_dir.path().to_path_buf(),
+            cas.clone(),
+        )
         .unwrap();
 
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
@@ -279,10 +337,7 @@ async fn test_failed_file_produces_failed_outcome_in_persisted_records() {
 
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
-    let records = manager
-        .persistence()
-        .get_file_records(&run.run_id)
-        .unwrap();
+    let records = manager.persistence().get_file_records(&run.run_id).unwrap();
     assert_eq!(records.len(), 1);
     match &records[0].outcome {
         PersistedFileOutcome::Failed { error } => {
@@ -309,7 +364,12 @@ async fn test_java_file_produces_committed_outcome_with_symbols() {
     .unwrap();
 
     let (run, _progress) = manager
-        .launch_run("test-repo", IndexRunMode::Full, repo_dir.path().to_path_buf(), cas.clone())
+        .launch_run(
+            "test-repo",
+            IndexRunMode::Full,
+            repo_dir.path().to_path_buf(),
+            cas.clone(),
+        )
         .unwrap();
 
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
@@ -337,7 +397,12 @@ async fn test_java_syntax_error_produces_partial_parse() {
     .unwrap();
 
     let (run, _progress) = manager
-        .launch_run("test-repo", IndexRunMode::Full, repo_dir.path().to_path_buf(), cas)
+        .launch_run(
+            "test-repo",
+            IndexRunMode::Full,
+            repo_dir.path().to_path_buf(),
+            cas,
+        )
         .unwrap();
 
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
@@ -347,7 +412,10 @@ async fn test_java_syntax_error_produces_partial_parse() {
     // Should be Committed (partial parse with symbols) or Quarantined (partial parse, no symbols)
     // Either way, not Failed — tree-sitter handles syntax errors gracefully
     assert!(
-        matches!(records[0].outcome, PersistedFileOutcome::Committed | PersistedFileOutcome::Quarantined { .. }),
+        matches!(
+            records[0].outcome,
+            PersistedFileOutcome::Committed | PersistedFileOutcome::Quarantined { .. }
+        ),
         "expected Committed or Quarantined for partial parse, got: {:?}",
         records[0].outcome
     );
@@ -369,7 +437,12 @@ async fn test_mixed_repo_java_processed_unsupported_reported() {
     fs::write(repo_dir.path().join("main.cs"), "class Main {}").unwrap();
 
     let (run, _progress) = manager
-        .launch_run("test-repo", IndexRunMode::Full, repo_dir.path().to_path_buf(), cas)
+        .launch_run(
+            "test-repo",
+            IndexRunMode::Full,
+            repo_dir.path().to_path_buf(),
+            cas,
+        )
         .unwrap();
 
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
@@ -378,7 +451,11 @@ async fn test_mixed_repo_java_processed_unsupported_reported() {
     // Only Rust and Java should produce file records
     assert_eq!(records.len(), 2);
     assert!(records.iter().any(|r| r.relative_path.ends_with("main.rs")));
-    assert!(records.iter().any(|r| r.relative_path.ends_with("Service.java")));
+    assert!(
+        records
+            .iter()
+            .any(|r| r.relative_path.ends_with("Service.java"))
+    );
     // Ruby and C# files should NOT produce records or CAS blobs
     assert!(!records.iter().any(|r| r.relative_path.ends_with("app.rb")));
     assert!(!records.iter().any(|r| r.relative_path.ends_with("main.cs")));
@@ -395,13 +472,21 @@ async fn test_not_yet_supported_files_produce_no_file_records_or_cas_blobs() {
     fs::write(repo_dir.path().join("script.php"), "<?php echo 'hi';").unwrap();
 
     let (run, _progress) = manager
-        .launch_run("test-repo", IndexRunMode::Full, repo_dir.path().to_path_buf(), cas)
+        .launch_run(
+            "test-repo",
+            IndexRunMode::Full,
+            repo_dir.path().to_path_buf(),
+            cas,
+        )
         .unwrap();
 
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
     let records = manager.persistence().get_file_records(&run.run_id).unwrap();
-    assert!(records.is_empty(), "unsupported files should produce no file records");
+    assert!(
+        records.is_empty(),
+        "unsupported files should produce no file records"
+    );
 }
 
 #[tokio::test]
@@ -413,15 +498,28 @@ async fn test_quality_focus_languages_still_process_correctly() {
     fs::write(repo_dir.path().join("lib.py"), "def foo(): pass").unwrap();
     fs::write(repo_dir.path().join("app.js"), "function app() {}").unwrap();
     fs::write(repo_dir.path().join("mod.ts"), "function hello(): void {}").unwrap();
-    fs::write(repo_dir.path().join("main.go"), "package main\nfunc main() {}").unwrap();
+    fs::write(
+        repo_dir.path().join("main.go"),
+        "package main\nfunc main() {}",
+    )
+    .unwrap();
 
     let (run, _progress) = manager
-        .launch_run("test-repo", IndexRunMode::Full, repo_dir.path().to_path_buf(), cas)
+        .launch_run(
+            "test-repo",
+            IndexRunMode::Full,
+            repo_dir.path().to_path_buf(),
+            cas,
+        )
         .unwrap();
 
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
-    let finished = manager.persistence().find_run(&run.run_id).unwrap().unwrap();
+    let finished = manager
+        .persistence()
+        .find_run(&run.run_id)
+        .unwrap()
+        .unwrap();
     assert_eq!(finished.status, IndexRunStatus::Succeeded);
 
     let records = manager.persistence().get_file_records(&run.run_id).unwrap();
@@ -441,7 +539,12 @@ async fn test_inspect_succeeded_all_ok_returns_healthy() {
     fs::write(repo_dir.path().join("main.rs"), "fn main() {}").unwrap();
 
     let (run, _progress) = manager
-        .launch_run("repo-healthy", IndexRunMode::Full, repo_dir.path().to_path_buf(), cas)
+        .launch_run(
+            "repo-healthy",
+            IndexRunMode::Full,
+            repo_dir.path().to_path_buf(),
+            cas,
+        )
         .unwrap();
 
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
@@ -463,7 +566,9 @@ async fn test_inspect_succeeded_with_partial_returns_degraded() {
 
     // Create a run and manually set it to Succeeded with quarantined file records
     // to deterministically test the degraded path (no pipeline dependency).
-    let run = manager.start_run("repo-degraded", IndexRunMode::Full).unwrap();
+    let run = manager
+        .start_run("repo-degraded", IndexRunMode::Full)
+        .unwrap();
     manager
         .persistence()
         .update_run_status(&run.run_id, IndexRunStatus::Succeeded, None)
@@ -538,7 +643,9 @@ async fn test_inspect_interrupted_run_returns_unhealthy() {
     let (_dir, manager, _cas_dir, _cas) = setup_test_env();
 
     // Create a run and manually set it to Interrupted via persistence
-    let run = manager.start_run("repo-interrupt", IndexRunMode::Full).unwrap();
+    let run = manager
+        .start_run("repo-interrupt", IndexRunMode::Full)
+        .unwrap();
     manager
         .persistence()
         .update_run_status(&run.run_id, IndexRunStatus::Running, None)
@@ -557,7 +664,9 @@ async fn test_inspect_interrupted_run_returns_unhealthy() {
 async fn test_inspect_cancelled_run_returns_healthy() {
     let (_dir, manager, _cas_dir, _cas) = setup_test_env();
 
-    let run = manager.start_run("repo-cancel", IndexRunMode::Full).unwrap();
+    let run = manager
+        .start_run("repo-cancel", IndexRunMode::Full)
+        .unwrap();
     manager
         .persistence()
         .update_run_status(&run.run_id, IndexRunStatus::Cancelled, None)
@@ -744,7 +853,11 @@ async fn test_failed_run_does_not_present_as_live() {
     // Mark the run as failed after partial processing
     manager
         .persistence()
-        .update_run_status(&run.run_id, IndexRunStatus::Failed, Some("systemic error".into()))
+        .update_run_status(
+            &run.run_id,
+            IndexRunStatus::Failed,
+            Some("systemic error".into()),
+        )
         .unwrap();
 
     let report = manager.inspect_run(&run.run_id).unwrap();
@@ -900,10 +1013,7 @@ async fn test_cancel_nonexistent_run_returns_not_found() {
 
     let result = manager.cancel_run("does-not-exist");
     assert!(result.is_err());
-    assert!(matches!(
-        result.unwrap_err(),
-        TokenizorError::NotFound(_)
-    ));
+    assert!(matches!(result.unwrap_err(), TokenizorError::NotFound(_)));
 }
 
 #[tokio::test]
@@ -959,7 +1069,11 @@ async fn test_cancel_immediate_processes_no_files() {
 
     // Verify no files were processed (files_processed == 0)
     let file_records = manager.persistence().get_file_records(&run.run_id).unwrap();
-    assert_eq!(file_records.len(), 0, "expected 0 file records for immediately cancelled run");
+    assert_eq!(
+        file_records.len(),
+        0,
+        "expected 0 file records for immediately cancelled run"
+    );
 }
 
 #[tokio::test]
@@ -1019,7 +1133,9 @@ async fn test_checkpoint_active_run_persists_with_correct_identity() {
     // Wait for pipeline to start and process some files
     for _ in 0..100 {
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-        let processed = progress.files_processed.load(std::sync::atomic::Ordering::Relaxed);
+        let processed = progress
+            .files_processed
+            .load(std::sync::atomic::Ordering::Relaxed);
         if processed >= 10 {
             break;
         }
@@ -1074,7 +1190,11 @@ async fn test_checkpoint_terminal_succeeded_run_returns_error() {
     // Wait for pipeline to complete
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
-    let finished = manager.persistence().find_run(&run.run_id).unwrap().unwrap();
+    let finished = manager
+        .persistence()
+        .find_run(&run.run_id)
+        .unwrap()
+        .unwrap();
     assert_eq!(finished.status, IndexRunStatus::Succeeded);
 
     // Checkpoint after success — AC #2: explicit failure
@@ -1092,10 +1212,7 @@ async fn test_checkpoint_nonexistent_run_returns_not_found() {
 
     let result = manager.checkpoint_run("does-not-exist-cp");
     assert!(result.is_err());
-    assert!(matches!(
-        result.unwrap_err(),
-        TokenizorError::NotFound(_)
-    ));
+    assert!(matches!(result.unwrap_err(), TokenizorError::NotFound(_)));
 }
 
 #[tokio::test]
@@ -1117,7 +1234,11 @@ async fn test_checkpoint_cancelled_run_returns_error() {
     manager.cancel_run(&run.run_id).unwrap();
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
-    let finished = manager.persistence().find_run(&run.run_id).unwrap().unwrap();
+    let finished = manager
+        .persistence()
+        .find_run(&run.run_id)
+        .unwrap()
+        .unwrap();
     assert_eq!(finished.status, IndexRunStatus::Cancelled);
 
     // Checkpoint after cancel — AC #2: explicit failure
@@ -1155,7 +1276,11 @@ async fn test_automatic_checkpoint_fires_during_processing() {
     // Wait for pipeline to complete
     tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
 
-    let finished = manager.persistence().find_run(&run.run_id).unwrap().unwrap();
+    let finished = manager
+        .persistence()
+        .find_run(&run.run_id)
+        .unwrap()
+        .unwrap();
     assert_eq!(finished.status, IndexRunStatus::Succeeded);
 
     // Automatic checkpoints should have been created at files_processed=100, 200
@@ -1197,7 +1322,9 @@ async fn test_checkpoint_cursor_on_index_run_updated_after_checkpoint() {
     // Wait for some files to process
     for _ in 0..100 {
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-        let processed = progress.files_processed.load(std::sync::atomic::Ordering::Relaxed);
+        let processed = progress
+            .files_processed
+            .load(std::sync::atomic::Ordering::Relaxed);
         if processed >= 10 {
             break;
         }
@@ -1214,7 +1341,11 @@ async fn test_checkpoint_cursor_on_index_run_updated_after_checkpoint() {
     };
 
     // Verify IndexRun.checkpoint_cursor matches
-    let updated_run = manager.persistence().find_run(&run.run_id).unwrap().unwrap();
+    let updated_run = manager
+        .persistence()
+        .find_run(&run.run_id)
+        .unwrap()
+        .unwrap();
     assert_eq!(
         updated_run.checkpoint_cursor,
         Some(checkpoint.cursor.clone()),
@@ -1235,7 +1366,12 @@ async fn test_reindex_lifecycle_creates_new_run_with_prior_run_id() {
 
     // Initial index run
     let (initial_run, _progress) = manager
-        .launch_run("test-repo", IndexRunMode::Full, repo_dir.path().to_path_buf(), cas.clone())
+        .launch_run(
+            "test-repo",
+            IndexRunMode::Full,
+            repo_dir.path().to_path_buf(),
+            cas.clone(),
+        )
         .unwrap();
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
@@ -1244,7 +1380,13 @@ async fn test_reindex_lifecycle_creates_new_run_with_prior_run_id() {
 
     // Trigger re-index — now actually launches the pipeline
     let reindex_run = manager
-        .reindex_repository("test-repo", None, Some("files changed"), repo_dir.path().to_path_buf(), cas)
+        .reindex_repository(
+            "test-repo",
+            None,
+            Some("files changed"),
+            repo_dir.path().to_path_buf(),
+            cas,
+        )
         .unwrap();
     assert_eq!(reindex_run.mode, IndexRunMode::Reindex);
     assert_eq!(reindex_run.prior_run_id, Some(initial_run.run_id.clone()));
@@ -1266,13 +1408,24 @@ async fn test_reindex_prior_state_preservation() {
 
     // Initial index run — complete it
     let (initial_run, _progress) = manager
-        .launch_run("test-repo", IndexRunMode::Full, repo_dir.path().to_path_buf(), cas.clone())
+        .launch_run(
+            "test-repo",
+            IndexRunMode::Full,
+            repo_dir.path().to_path_buf(),
+            cas.clone(),
+        )
         .unwrap();
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
     // Verify initial run has file records
-    let initial_files = manager.persistence().get_file_records(&initial_run.run_id).unwrap();
-    assert!(!initial_files.is_empty(), "initial run should have file records");
+    let initial_files = manager
+        .persistence()
+        .get_file_records(&initial_run.run_id)
+        .unwrap();
+    assert!(
+        !initial_files.is_empty(),
+        "initial run should have file records"
+    );
     let initial_file_count = initial_files.len();
 
     // Trigger re-index
@@ -1281,8 +1434,15 @@ async fn test_reindex_prior_state_preservation() {
         .unwrap();
 
     // Prior state still intact
-    let prior_files = manager.persistence().get_file_records(&initial_run.run_id).unwrap();
-    assert_eq!(prior_files.len(), initial_file_count, "prior run file records should be preserved");
+    let prior_files = manager
+        .persistence()
+        .get_file_records(&initial_run.run_id)
+        .unwrap();
+    assert_eq!(
+        prior_files.len(),
+        initial_file_count,
+        "prior run file records should be preserved"
+    );
 
     let prior_report = manager.inspect_run(&initial_run.run_id).unwrap();
     assert_eq!(prior_report.run.status, IndexRunStatus::Succeeded);
@@ -1301,13 +1461,24 @@ async fn test_reindex_idempotent_replay_returns_same_run() {
 
     // Initial index
     let (_initial_run, _progress) = manager
-        .launch_run("test-repo", IndexRunMode::Full, repo_dir.path().to_path_buf(), cas.clone())
+        .launch_run(
+            "test-repo",
+            IndexRunMode::Full,
+            repo_dir.path().to_path_buf(),
+            cas.clone(),
+        )
         .unwrap();
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
     // First reindex — launches pipeline, run is active
     let first_reindex = manager
-        .reindex_repository("test-repo", None, None, repo_dir.path().to_path_buf(), cas.clone())
+        .reindex_repository(
+            "test-repo",
+            None,
+            None,
+            repo_dir.path().to_path_buf(),
+            cas.clone(),
+        )
         .unwrap();
 
     // H1 fix: idempotent replay while the reindex is still active — idempotency
@@ -1315,7 +1486,10 @@ async fn test_reindex_idempotent_replay_returns_same_run() {
     let replay = manager
         .reindex_repository("test-repo", None, None, repo_dir.path().to_path_buf(), cas)
         .unwrap();
-    assert_eq!(first_reindex.run_id, replay.run_id, "idempotent replay should return same run");
+    assert_eq!(
+        first_reindex.run_id, replay.run_id,
+        "idempotent replay should return same run"
+    );
 }
 
 #[tokio::test]
@@ -1326,7 +1500,9 @@ async fn test_reindex_conflicting_replay_returns_error() {
 
     // Create an active (non-terminal) run that the idempotency record references
     use tokenizor_agentic_mcp::domain::{IdempotencyRecord, IdempotencyStatus};
-    let active_run = manager.start_run("test-repo", IndexRunMode::Reindex).unwrap();
+    let active_run = manager
+        .start_run("test-repo", IndexRunMode::Reindex)
+        .unwrap();
     let record = IdempotencyRecord {
         operation: "reindex".to_string(),
         idempotency_key: "reindex::test-repo::".to_string(),
@@ -1341,12 +1517,14 @@ async fn test_reindex_conflicting_replay_returns_error() {
         .save_idempotency_record(&record)
         .unwrap();
 
-    let result = manager.reindex_repository(
-        "test-repo", None, None, repo_dir.path().to_path_buf(), cas,
-    );
+    let result =
+        manager.reindex_repository("test-repo", None, None, repo_dir.path().to_path_buf(), cas);
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
-    assert!(err.contains("conflicting replay"), "error should mention conflicting replay: {err}");
+    assert!(
+        err.contains("conflicting replay"),
+        "error should mention conflicting replay: {err}"
+    );
 }
 
 #[tokio::test]
@@ -1362,14 +1540,18 @@ async fn test_reindex_while_active_run_is_rejected() {
 
     // Start a run that will take some time
     let (_run, _progress) = manager
-        .launch_run("test-repo", IndexRunMode::Full, repo_dir.path().to_path_buf(), cas.clone())
+        .launch_run(
+            "test-repo",
+            IndexRunMode::Full,
+            repo_dir.path().to_path_buf(),
+            cas.clone(),
+        )
         .unwrap();
 
     // Immediately attempt reindex — should fail (no matching idempotency record,
     // so falls through to active-run check)
-    let result = manager.reindex_repository(
-        "test-repo", None, None, repo_dir.path().to_path_buf(), cas,
-    );
+    let result =
+        manager.reindex_repository("test-repo", None, None, repo_dir.path().to_path_buf(), cas);
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
     assert!(
@@ -1389,7 +1571,10 @@ async fn test_reindex_no_prior_completed_run_succeeds_with_none() {
         .reindex_repository("fresh-repo", None, None, repo_dir.path().to_path_buf(), cas)
         .unwrap();
     assert_eq!(reindex.mode, IndexRunMode::Reindex);
-    assert_eq!(reindex.prior_run_id, None, "no prior run should result in None");
+    assert_eq!(
+        reindex.prior_run_id, None,
+        "no prior run should result in None"
+    );
     assert_eq!(reindex.status, IndexRunStatus::Queued);
 }
 
@@ -1407,6 +1592,8 @@ fn seed_integration_repo(manager: &RunManager, repo_id: &str) {
         status: RepositoryStatus::Ready,
         invalidated_at_unix_ms: None,
         invalidation_reason: None,
+        quarantined_at_unix_ms: None,
+        quarantine_reason: None,
     };
     manager.persistence().save_repository(&repo).unwrap();
 }
@@ -1421,11 +1608,20 @@ async fn test_invalidation_lifecycle_register_index_invalidate() {
 
     // Complete an index run
     let (run, _progress) = manager
-        .launch_run("test-repo", IndexRunMode::Full, repo_dir.path().to_path_buf(), cas)
+        .launch_run(
+            "test-repo",
+            IndexRunMode::Full,
+            repo_dir.path().to_path_buf(),
+            cas,
+        )
         .unwrap();
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
-    let finished = manager.persistence().find_run(&run.run_id).unwrap().unwrap();
+    let finished = manager
+        .persistence()
+        .find_run(&run.run_id)
+        .unwrap()
+        .unwrap();
     assert_eq!(finished.status, IndexRunStatus::Succeeded);
 
     // Invalidate the repo
@@ -1438,7 +1634,11 @@ async fn test_invalidation_lifecycle_register_index_invalidate() {
     assert_eq!(result.action_required, "re-index or repair required");
 
     // Verify repo status in persistence
-    let repo = manager.persistence().get_repository("test-repo").unwrap().unwrap();
+    let repo = manager
+        .persistence()
+        .get_repository("test-repo")
+        .unwrap()
+        .unwrap();
     assert_eq!(repo.status, RepositoryStatus::Invalidated);
     assert!(repo.invalidated_at_unix_ms.is_some());
     assert_eq!(repo.invalidation_reason.as_deref(), Some("stale data"));
@@ -1459,7 +1659,12 @@ async fn test_invalidation_blocks_active_runs() {
 
     // Start a run that will take some time
     let (_run, _progress) = manager
-        .launch_run("test-repo", IndexRunMode::Full, repo_dir.path().to_path_buf(), cas)
+        .launch_run(
+            "test-repo",
+            IndexRunMode::Full,
+            repo_dir.path().to_path_buf(),
+            cas,
+        )
         .unwrap();
 
     // Immediately attempt invalidation — should fail
@@ -1508,7 +1713,11 @@ async fn test_invalidation_conflicting_replay() {
         .invalidate_repository("test-repo", None, Some("reason-2"))
         .unwrap();
     assert_eq!(second.previous_status, RepositoryStatus::Invalidated);
-    assert_eq!(second.reason.as_deref(), Some("reason-1"), "original reason preserved");
+    assert_eq!(
+        second.reason.as_deref(),
+        Some("reason-1"),
+        "original reason preserved"
+    );
 }
 
 #[tokio::test]
@@ -1521,7 +1730,12 @@ async fn test_invalidation_surfaces_in_inspect_run() {
 
     // Complete an index run
     let (run, _progress) = manager
-        .launch_run("test-repo", IndexRunMode::Full, repo_dir.path().to_path_buf(), cas)
+        .launch_run(
+            "test-repo",
+            IndexRunMode::Full,
+            repo_dir.path().to_path_buf(),
+            cas,
+        )
         .unwrap();
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
@@ -1549,7 +1763,12 @@ async fn test_reindex_clears_invalidation() {
 
     // Complete initial index
     let (_run, _progress) = manager
-        .launch_run("test-repo", IndexRunMode::Full, repo_dir.path().to_path_buf(), cas.clone())
+        .launch_run(
+            "test-repo",
+            IndexRunMode::Full,
+            repo_dir.path().to_path_buf(),
+            cas.clone(),
+        )
         .unwrap();
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
@@ -1557,21 +1776,43 @@ async fn test_reindex_clears_invalidation() {
     manager
         .invalidate_repository("test-repo", None, Some("stale"))
         .unwrap();
-    let repo = manager.persistence().get_repository("test-repo").unwrap().unwrap();
+    let repo = manager
+        .persistence()
+        .get_repository("test-repo")
+        .unwrap()
+        .unwrap();
     assert_eq!(repo.status, RepositoryStatus::Invalidated);
 
     // Re-index — should be allowed and clear invalidation on success
     let reindex_run = manager
-        .reindex_repository("test-repo", None, Some("recovery"), repo_dir.path().to_path_buf(), cas)
+        .reindex_repository(
+            "test-repo",
+            None,
+            Some("recovery"),
+            repo_dir.path().to_path_buf(),
+            cas,
+        )
         .unwrap();
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
-    let finished = manager.persistence().find_run(&reindex_run.run_id).unwrap().unwrap();
+    let finished = manager
+        .persistence()
+        .find_run(&reindex_run.run_id)
+        .unwrap()
+        .unwrap();
     assert_eq!(finished.status, IndexRunStatus::Succeeded);
 
     // Repo should transition back to Ready
-    let repo = manager.persistence().get_repository("test-repo").unwrap().unwrap();
-    assert_eq!(repo.status, RepositoryStatus::Ready, "re-index should clear invalidation");
+    let repo = manager
+        .persistence()
+        .get_repository("test-repo")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        repo.status,
+        RepositoryStatus::Ready,
+        "re-index should clear invalidation"
+    );
     assert!(repo.invalidated_at_unix_ms.is_none());
     assert!(repo.invalidation_reason.is_none());
 }
@@ -1583,7 +1824,10 @@ async fn test_invalidation_unknown_repo() {
     let result = manager.invalidate_repository("nonexistent", None, None);
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
-    assert!(err.contains("not found") || err.contains("NotFound"), "should be NotFound: {err}");
+    assert!(
+        err.contains("not found") || err.contains("NotFound"),
+        "should be NotFound: {err}"
+    );
 }
 
 #[tokio::test]
@@ -1602,7 +1846,11 @@ async fn test_invalidation_already_invalidated_repo() {
         .invalidate_repository("test-repo", None, Some("reason-2"))
         .unwrap();
     assert_eq!(second.previous_status, RepositoryStatus::Invalidated);
-    assert_eq!(second.reason.as_deref(), Some("reason-1"), "original reason preserved");
+    assert_eq!(
+        second.reason.as_deref(),
+        Some("reason-1"),
+        "original reason preserved"
+    );
 }
 
 // ============================================================
@@ -1616,19 +1864,24 @@ fn test_index_run_completes_then_same_param_retry_creates_new_run() {
     let (_dir, manager, _cas_dir, _cas) = setup_test_env();
 
     // Create run via idempotent path
-    let result = manager.start_run_idempotent("repo-stale", "", IndexRunMode::Full).unwrap();
+    let result = manager
+        .start_run_idempotent("repo-stale", "", IndexRunMode::Full)
+        .unwrap();
     let first_id = match &result {
         IdempotentRunResult::NewRun { run } => run.run_id.clone(),
         _ => panic!("expected NewRun"),
     };
 
     // Complete the run
-    manager.persistence()
+    manager
+        .persistence()
         .update_run_status_with_finish(&first_id, IndexRunStatus::Succeeded, None, 2000, None)
         .unwrap();
 
     // Same-param retry → should create a new run (stale record bypassed)
-    let retry = manager.start_run_idempotent("repo-stale", "", IndexRunMode::Full).unwrap();
+    let retry = manager
+        .start_run_idempotent("repo-stale", "", IndexRunMode::Full)
+        .unwrap();
     match retry {
         IdempotentRunResult::NewRun { run } => {
             assert_ne!(run.run_id, first_id, "should be a new run, not the old one");
@@ -1643,19 +1896,24 @@ fn test_index_run_completes_then_different_param_retry_creates_new_run() {
     let (_dir, manager, _cas_dir, _cas) = setup_test_env();
 
     // Create Full run via idempotent path
-    let result = manager.start_run_idempotent("repo-stale2", "", IndexRunMode::Full).unwrap();
+    let result = manager
+        .start_run_idempotent("repo-stale2", "", IndexRunMode::Full)
+        .unwrap();
     let first_id = match &result {
         IdempotentRunResult::NewRun { run } => run.run_id.clone(),
         _ => panic!("expected NewRun"),
     };
 
     // Complete the run
-    manager.persistence()
+    manager
+        .persistence()
         .update_run_status_with_finish(&first_id, IndexRunStatus::Succeeded, None, 2000, None)
         .unwrap();
 
     // Different-param retry (Incremental) → should create new run (stale record)
-    let retry = manager.start_run_idempotent("repo-stale2", "", IndexRunMode::Incremental).unwrap();
+    let retry = manager
+        .start_run_idempotent("repo-stale2", "", IndexRunMode::Incremental)
+        .unwrap();
     match retry {
         IdempotentRunResult::NewRun { run } => {
             assert_ne!(run.run_id, first_id);
@@ -1670,7 +1928,9 @@ fn test_index_active_then_different_param_retry_returns_conflicting_replay() {
     let (_dir, manager, _cas_dir, _cas) = setup_test_env();
 
     // Create active run via idempotent path (Queued = non-terminal)
-    let result = manager.start_run_idempotent("repo-conflict", "", IndexRunMode::Full).unwrap();
+    let result = manager
+        .start_run_idempotent("repo-conflict", "", IndexRunMode::Full)
+        .unwrap();
     assert!(matches!(result, IdempotentRunResult::NewRun { .. }));
 
     // Different-param retry while active → ConflictingReplay
@@ -1691,18 +1951,43 @@ async fn test_reindex_completes_then_same_param_retry_creates_new_run() {
 
     // Create and complete an initial run
     let (initial, _) = manager
-        .launch_run("repo-ri", IndexRunMode::Full, repo_dir.path().to_path_buf(), cas.clone())
+        .launch_run(
+            "repo-ri",
+            IndexRunMode::Full,
+            repo_dir.path().to_path_buf(),
+            cas.clone(),
+        )
         .unwrap();
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-    assert!(manager.inspect_run(&initial.run_id).unwrap().run.status.is_terminal());
+    assert!(
+        manager
+            .inspect_run(&initial.run_id)
+            .unwrap()
+            .run
+            .status
+            .is_terminal()
+    );
 
     // First reindex
     let first = manager
-        .reindex_repository("repo-ri", None, None, repo_dir.path().to_path_buf(), cas.clone())
+        .reindex_repository(
+            "repo-ri",
+            None,
+            None,
+            repo_dir.path().to_path_buf(),
+            cas.clone(),
+        )
         .unwrap();
     let first_id = first.run_id.clone();
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-    assert!(manager.inspect_run(&first_id).unwrap().run.status.is_terminal());
+    assert!(
+        manager
+            .inspect_run(&first_id)
+            .unwrap()
+            .run
+            .status
+            .is_terminal()
+    );
 
     // Same-param reindex retry → new run (stale record bypassed)
     let second = manager
@@ -1720,22 +2005,53 @@ async fn test_reindex_completes_then_different_param_retry_creates_new_run() {
 
     // Create and complete an initial run
     let (initial, _) = manager
-        .launch_run("repo-ri2", IndexRunMode::Full, repo_dir.path().to_path_buf(), cas.clone())
+        .launch_run(
+            "repo-ri2",
+            IndexRunMode::Full,
+            repo_dir.path().to_path_buf(),
+            cas.clone(),
+        )
         .unwrap();
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-    assert!(manager.inspect_run(&initial.run_id).unwrap().run.status.is_terminal());
+    assert!(
+        manager
+            .inspect_run(&initial.run_id)
+            .unwrap()
+            .run
+            .status
+            .is_terminal()
+    );
 
     // First reindex with no workspace
     let first = manager
-        .reindex_repository("repo-ri2", None, None, repo_dir.path().to_path_buf(), cas.clone())
+        .reindex_repository(
+            "repo-ri2",
+            None,
+            None,
+            repo_dir.path().to_path_buf(),
+            cas.clone(),
+        )
         .unwrap();
     let first_id = first.run_id.clone();
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-    assert!(manager.inspect_run(&first_id).unwrap().run.status.is_terminal());
+    assert!(
+        manager
+            .inspect_run(&first_id)
+            .unwrap()
+            .run
+            .status
+            .is_terminal()
+    );
 
     // Different-param reindex (with workspace_id) → new run (stale record bypassed)
     let second = manager
-        .reindex_repository("repo-ri2", Some("ws-new"), None, repo_dir.path().to_path_buf(), cas)
+        .reindex_repository(
+            "repo-ri2",
+            Some("ws-new"),
+            None,
+            repo_dir.path().to_path_buf(),
+            cas,
+        )
         .unwrap();
     assert_ne!(second.run_id, first_id);
     assert_eq!(second.mode, IndexRunMode::Reindex);
@@ -1747,7 +2063,9 @@ fn test_reindex_active_then_different_hash_returns_conflicting_replay() {
     let (_dir, manager, _cas_dir, _cas) = setup_test_env();
 
     // Create an active run and seed an idempotency record with different hash
-    let active_run = manager.start_run("repo-ri3", IndexRunMode::Reindex).unwrap();
+    let active_run = manager
+        .start_run("repo-ri3", IndexRunMode::Reindex)
+        .unwrap();
     let record = IdempotencyRecord {
         operation: "reindex".to_string(),
         idempotency_key: "reindex::repo-ri3::".to_string(),
@@ -1757,15 +2075,17 @@ fn test_reindex_active_then_different_hash_returns_conflicting_replay() {
         created_at_unix_ms: 1000,
         expires_at_unix_ms: None,
     };
-    manager.persistence().save_idempotency_record(&record).unwrap();
+    manager
+        .persistence()
+        .save_idempotency_record(&record)
+        .unwrap();
 
     let repo_dir = tempfile::tempdir().unwrap();
     fs::write(repo_dir.path().join("main.rs"), "fn main() {}").unwrap();
 
     // Reindex with same key but hash mismatches stored record → ConflictingReplay
-    let result = manager.reindex_repository(
-        "repo-ri3", None, None, repo_dir.path().to_path_buf(), _cas,
-    );
+    let result =
+        manager.reindex_repository("repo-ri3", None, None, repo_dir.path().to_path_buf(), _cas);
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(
@@ -1790,14 +2110,35 @@ async fn test_invalidate_reindex_invalidate_different_reason_succeeds() {
 
     // Re-index to clear invalidation
     let reindex = manager
-        .reindex_repository("repo-inv", None, Some("restore"), repo_dir.path().to_path_buf(), cas)
+        .reindex_repository(
+            "repo-inv",
+            None,
+            Some("restore"),
+            repo_dir.path().to_path_buf(),
+            cas,
+        )
         .unwrap();
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-    assert!(manager.inspect_run(&reindex.run_id).unwrap().run.status.is_terminal());
+    assert!(
+        manager
+            .inspect_run(&reindex.run_id)
+            .unwrap()
+            .run
+            .status
+            .is_terminal()
+    );
 
     // Verify repo status is back to Ready (pipeline completion handler does this)
-    let repo = manager.persistence().get_repository("repo-inv").unwrap().unwrap();
-    assert_eq!(repo.status, RepositoryStatus::Ready, "re-index should restore Ready status");
+    let repo = manager
+        .persistence()
+        .get_repository("repo-inv")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        repo.status,
+        RepositoryStatus::Ready,
+        "re-index should restore Ready status"
+    );
 
     // Re-invalidate with different reason → succeeds (stale record handled)
     let second = manager
@@ -1823,14 +2164,35 @@ async fn test_invalidate_reindex_invalidate_same_reason_succeeds() {
 
     // Re-index to clear invalidation
     let reindex = manager
-        .reindex_repository("repo-inv2", None, Some("restore"), repo_dir.path().to_path_buf(), cas)
+        .reindex_repository(
+            "repo-inv2",
+            None,
+            Some("restore"),
+            repo_dir.path().to_path_buf(),
+            cas,
+        )
         .unwrap();
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-    assert!(manager.inspect_run(&reindex.run_id).unwrap().run.status.is_terminal());
+    assert!(
+        manager
+            .inspect_run(&reindex.run_id)
+            .unwrap()
+            .run
+            .status
+            .is_terminal()
+    );
 
     // Verify repo status is back to Ready
-    let repo = manager.persistence().get_repository("repo-inv2").unwrap().unwrap();
-    assert_eq!(repo.status, RepositoryStatus::Ready, "re-index should restore Ready status");
+    let repo = manager
+        .persistence()
+        .get_repository("repo-inv2")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        repo.status,
+        RepositoryStatus::Ready,
+        "re-index should restore Ready status"
+    );
 
     // Re-invalidate with same reason → succeeds (stale record handled)
     let second = manager
@@ -1855,7 +2217,8 @@ fn test_idempotency_key_space_isolation() {
     };
 
     // Complete the run so it doesn't block invalidation
-    manager.persistence()
+    manager
+        .persistence()
         .update_run_status_with_finish(&index_run_id, IndexRunStatus::Succeeded, None, 2000, None)
         .unwrap();
 
@@ -1864,21 +2227,30 @@ fn test_idempotency_key_space_isolation() {
         .persistence()
         .find_idempotency_record("index::repo-iso::")
         .unwrap();
-    assert!(index_record.is_some(), "index idempotency record should exist");
+    assert!(
+        index_record.is_some(),
+        "index idempotency record should exist"
+    );
 
     // Verify reindex:: key space is separate
     let reindex_record = manager
         .persistence()
         .find_idempotency_record("reindex::repo-iso::")
         .unwrap();
-    assert!(reindex_record.is_none(), "reindex key space should be empty");
+    assert!(
+        reindex_record.is_none(),
+        "reindex key space should be empty"
+    );
 
     // Verify invalidate:: key space is separate
     let invalidate_record = manager
         .persistence()
         .find_idempotency_record("invalidate::repo-iso::")
         .unwrap();
-    assert!(invalidate_record.is_none(), "invalidate key space should be empty");
+    assert!(
+        invalidate_record.is_none(),
+        "invalidate key space should be empty"
+    );
 
     // Create invalidation record
     manager
@@ -1890,7 +2262,10 @@ fn test_idempotency_key_space_isolation() {
         .persistence()
         .find_idempotency_record("invalidate::repo-iso::")
         .unwrap();
-    assert!(invalidate_record.is_some(), "invalidate record should exist");
+    assert!(
+        invalidate_record.is_some(),
+        "invalidate record should exist"
+    );
 
     // Index key still intact
     let index_record = manager

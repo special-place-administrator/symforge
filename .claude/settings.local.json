@@ -29,7 +29,16 @@
       "mcp__jcodemunch__get_symbols",
       "Bash(cargo doc:*)",
       "Bash(cargo tree:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(cp:*)",
+      "mcp__serena__find_referencing_symbols",
+      "Bash(xargs grep -c \"^\\\\s*#\\\\[test\\\\]\")",
+      "Bash(xargs grep:*)",
+      "Bash(xargs wc:*)",
+      "mcp__jcodemunch__search_text",
+      "Bash(cargo fmt:*)",
+      "Bash(grep:*)",
+      "Bash(git:*)"
     ]
   }
 }

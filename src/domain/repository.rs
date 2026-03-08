@@ -16,6 +16,10 @@ pub struct Repository {
     pub invalidated_at_unix_ms: Option<u64>,
     #[serde(default)]
     pub invalidation_reason: Option<String>,
+    #[serde(default)]
+    pub quarantined_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub quarantine_reason: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -42,6 +46,7 @@ pub enum RepositoryStatus {
     Degraded,
     Failed,
     Invalidated,
+    Quarantined,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -74,6 +79,8 @@ mod tests {
         assert_eq!(repo.status, RepositoryStatus::Ready);
         assert!(repo.invalidated_at_unix_ms.is_none());
         assert!(repo.invalidation_reason.is_none());
+        assert!(repo.quarantined_at_unix_ms.is_none());
+        assert!(repo.quarantine_reason.is_none());
     }
 
     #[test]
@@ -89,6 +96,8 @@ mod tests {
             status: RepositoryStatus::Invalidated,
             invalidated_at_unix_ms: Some(1709827200000),
             invalidation_reason: Some("stale data after branch switch".to_string()),
+            quarantined_at_unix_ms: None,
+            quarantine_reason: None,
         };
         let json = serde_json::to_string(&repo).unwrap();
         let deserialized: Repository = serde_json::from_str(&json).unwrap();
@@ -97,6 +106,34 @@ mod tests {
         assert_eq!(
             deserialized.invalidation_reason.as_deref(),
             Some("stale data after branch switch"),
+        );
+        assert!(deserialized.quarantined_at_unix_ms.is_none());
+        assert!(deserialized.quarantine_reason.is_none());
+    }
+
+    #[test]
+    fn test_repository_roundtrip_with_quarantine_fields() {
+        let repo = Repository {
+            repo_id: "repo-2".to_string(),
+            kind: RepositoryKind::Git,
+            root_uri: "/tmp/test".to_string(),
+            project_identity: "id-2".to_string(),
+            project_identity_kind: ProjectIdentityKind::LocalRootPath,
+            default_branch: None,
+            last_known_revision: None,
+            status: RepositoryStatus::Quarantined,
+            invalidated_at_unix_ms: None,
+            invalidation_reason: None,
+            quarantined_at_unix_ms: Some(1709827300000),
+            quarantine_reason: Some("quarantine policy triggered".to_string()),
+        };
+        let json = serde_json::to_string(&repo).unwrap();
+        let deserialized: Repository = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.status, RepositoryStatus::Quarantined);
+        assert_eq!(deserialized.quarantined_at_unix_ms, Some(1709827300000));
+        assert_eq!(
+            deserialized.quarantine_reason.as_deref(),
+            Some("quarantine policy triggered")
         );
     }
 

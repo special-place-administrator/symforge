@@ -730,6 +730,170 @@ So that I can gather grounded code context efficiently.
 **Then** Tokenizor reports mixed outcomes explicitly
 **And** it preserves determinism about which items were trusted, blocked, or absent
 
+#### Epic 3 Execution Narrative
+
+*Added 2026-03-08 during sprint planning. Derived from first-principles analysis and architecture decision records.*
+
+**Scope Boundaries — Epic 3 does NOT cover:**
+
+- Live filesystem change detection or watch-based invalidation
+- Write-side operations (re-indexing, repair, state mutation)
+- Freshness policy enforcement (deferred to Epic 4/5)
+- Cross-repository or cross-workspace search
+- MCP resource endpoints (deferred to Epic 5)
+
+**Phase 0: Shared Read-Side Contract (Prerequisite)**
+
+The contract is specified before Story 3.1 is considered started. It is reviewed against the requirements of 3.1, 3.2, 3.3, 3.5, 3.6, and 3.7 before any story begins. First implementation happens during 3.1, but the contract is not shaped by any single consumer.
+
+The contract includes:
+- **Request-level gating**: Health/context gate checks repo validity before any item processing. Unhealthy, invalidated, or context-invalid repos fail the entire request uniformly — no silent degraded service.
+- **Result envelope**: `outcome` + `trust` + `provenance` on every item/result
+- **Result-state disambiguation**: explicit empty vs missing vs stale vs quarantined
+- **Quarantined-file exclusion rules**
+- **Active-context resolution**
+
+**Phase 1: Search & Outlines (3.1, 3.2, 3.3 — parallel-eligible)**
+
+Parallel only after the contract is defined. Each story conforms to the shared contract.
+
+**Phase 2: Verified Retrieval (3.5)**
+
+Core verification path. Byte-exact verification against stored content. Returns outcome + trust.
+
+**Phase 3: Suspect Blocking (3.6)**
+
+Blocking/quarantine behavior and explicit suspect outcomes. Tracked separately from 3.5 even if implemented alongside it.
+
+**Phase 4: Batched Retrieval (3.7)**
+
+Per-item outcomes with batch summary. Request-level gating passes first — if it fails, the whole batch fails uniformly before item processing. If it passes, mixed per-item outcomes are returned. Deterministic, request-order preserved.
+
+**Phase 5: MCP Exposure (3.4)**
+
+Fine-grained tools using canonical names:
+- `search_text`
+- `search_symbols`
+- `get_file_outline`
+- `get_repo_outline`
+- `get_symbol`
+- `get_symbols`
+
+Built last, once the capability contract is stable.
+
+**Architecture Decisions:**
+
+| ADR | Decision | Rationale |
+|-----|----------|-----------|
+| ADR-1 | Contract specified before 3.1 starts; reviewed against all stories | Prevents contract from being shaped by a single consumer |
+| ADR-2 | Split `outcome` + `trust` fields; request-level gating before item processing | Orthogonal concerns; unhealthy repos fail early, not silently degraded |
+| ADR-3 | Fine-grained MCP tools (6 canonical names) | Matches jCodeMunch pattern, better AI client discovery |
+| ADR-4 | Per-item outcomes in batch, only after request gating passes | Preserves valid work; gate failure = uniform batch failure |
+
+**Execution Guidance:**
+
+- **Critical path**: Story 3.5 (Verified Retrieval) is the Epic 3 critical-path story. It carries the highest combined dependency load and implementation risk. Allocate the heaviest design and test attention here.
+- **Phase 0 review gate**: The shared read-side contract has high risk but no visible user value. It requires an explicit review gate — confirmed against the requirements of 3.1, 3.2, 3.3, 3.5, 3.6, and 3.7 — before any Phase 1 story starts.
+- **Phase 1 serialization**: If capacity forces sequencing within Phase 1, prefer 3.1 or 3.2 before 3.3. Text and symbol search exercise more of the contract surface (query patterns, result semantics, provenance) than outlines do.
+- **3.3 as confidence builder**: Story 3.3 (Outlines) has the highest scope clarity and lowest risk, making it a safe early confidence-building story — but not the best contract-shaping story.
+
+**Failure Mode Guidance:**
+
+- **Request-fatal vs item-local failures**: The contract must explicitly distinguish which conditions block the entire request vs which are reported per-item. Request-fatal: invalidated repo, quarantined repo, no active context, interrupted/incomplete index state, health-gate failure. Item-local: individual file quarantined, stale symbol metadata for a specific file, missing symbol in otherwise healthy index. Request gating runs first; item-level outcomes apply only after the gate passes.
+- **Retrieval verification model**: Verified retrieval checks blob_id, span offset/length boundaries, and that the extracted slice matches expected indexed metadata. Mismatch → fail closed. Trust is against indexed state, not live disk. If the workspace drifts after indexing, that is an index-freshness concern (modeled through repo/run health state), not a retrieval verification bug.
+- **Quarantine exclusion**: This is a contract-level filter, not a per-story implementation detail. Quarantine operates at two levels:
+  - *Repo-level*: entire repository quarantined → request-fatal, all operations blocked.
+  - *File-level*: individual file quarantined → excluded from search results; returned with `trust: quarantined` for targeted outline/retrieval requests.
+- **Full-chain integration test (required gate)**: At least one end-to-end integration path must exercise index → search/outline/retrieve → trust decision → MCP surface before Epic 3 is considered done. This is a mandatory quality gate, not optional.
+- **MCP tool naming**: Canonical names (`search_text`, `search_symbols`, `get_file_outline`, `get_repo_outline`, `get_symbol`, `get_symbols`) are decided. Coexistence with jCodeMunch is an integration decision to be resolved during Story 3.4, not preemptively mitigated via namespace prefixes.
+
+**Adversarial Findings (Red Team):**
+
+- **Active mutation blocking**: Request gating must consult authoritative run/lease state from Epic 2. Reads during active mutation are request-fatal. The implementation must define the exact ordering and atomicity guarantees for "run becomes active" — idempotency enforcement (Story 2.11) and lease acquisition are not the same mechanism and must not be conflated.
+- **MCP context integrity**: MCP retrieval tools must not accept repo/workspace override parameters. They operate against the resolved active context. Context switching is a separate, explicit operation — never a side effect of a retrieval call.
+- **Quarantine policy**: Search results exclude quarantined items unconditionally. Outline and retrieval results for specifically requested targets may return results with explicit `trust: quarantined` to support targeted diagnosis. This policy is consistent across all retrieval surfaces.
+- **Scope of `verified`**: `trust: verified` means verified against indexed-state integrity only — not against live workspace state. Freshness is conveyed through provenance metadata (index timestamp, run_id). Policy decisions based on freshness belong to Epic 4 (health inspection) and Epic 5 (workflow guidance). Epic 3 does not silently block old-but-valid indexes.
+
+**Planning Model:**
+
+*Phase readiness criteria* — each phase has an entry gate before stories move to `ready-for-dev`:
+
+| Phase | Entry Gate |
+|-------|-----------|
+| Phase 0 (Contract) | Contract type definitions drafted; cross-check documented against ACs for 3.1, 3.2, 3.3, 3.5, 3.6, and 3.7 |
+| Phase 1 (3.1, 3.2, 3.3) | Contract review gate passed; story files created with implementation notes referencing contract types |
+| Phase 2 (3.5) | Phase 1 stories done; verification approach documented in story file; blob/span access patterns confirmed against Epic 2 storage |
+| Phase 3 (3.6) | 3.5 done; quarantine policy confirmed; next_action categories aligned with Epic 4 |
+| Phase 4 (3.7) | 3.5 done; batch size limits decided; per-item outcome model confirmed |
+| Phase 5 (3.4) | 3.1–3.7 done; canonical tool names confirmed; coexistence strategy decided; integration test plan written |
+
+*Story ownership boundaries:*
+
+- 3.5 defines the retrieval result model and verified-path behavior.
+- 3.6 owns blocked/quarantined behavior, explicit suspect outcomes, and associated tests.
+
+*Integration test strategy (incremental):*
+
+- Phase 0 starts a read-side integration test skeleton covering contract conformance, search, and retrieval behavior.
+- Story 3.4 extends it to MCP end-to-end coverage, exercising the full chain: index → search/outline/retrieve → trust decision → MCP surface.
+
+*Epic 3 state transition:*
+
+- `epic-3` becomes `in-progress` when the first story file is created. This matches the existing sprint-status convention.
+
+*Contract review mechanism:* PR containing type/interface definitions for the result envelope, request gate, and provenance struct. PR description includes a checklist cross-referencing each story's ACs. Merged = gate passed.
+
+*The contract review gate and integration test checkpoints are planning-level gates within this narrative. They are not separate sprint-status entries.*
+
+**Contract Gaps (from self-consistency validation):**
+
+*Must-have contract additions:*
+
+- **Symbol result payload (3.2)**: Symbol search results must include: symbol name, symbol kind, file path, and line/span metadata — enough to drive follow-up retrieval or navigation without a second round-trip.
+- **Symbol coverage semantics (3.2)**: Results must distinguish: language/file type unsupported for symbol extraction, partial coverage (some files indexed but not all), and no matches in fully-covered scope. "Does not overstate coverage" requires an explicit coverage signal.
+- **Raw byte fidelity (3.5)**: Bytes returned must equal stored bytes exactly. No line-ending conversion, no encoding normalization, no whitespace transformation. This is a contract-level invariant, not an implementation detail.
+- **Index completeness policy**: Active, interrupted, checkpoint-incomplete, or otherwise incomplete index state is request-fatal for trusted Epic 3 read operations unless a future explicit degraded-read mode is introduced. Incomplete indexes violate the "no silent degradation" principle.
+- **Epic 3→4 shared next_action vocabulary**: Blocked or quarantined responses must use a shared vocabulary compatible with Epic 4's action classification. Initial categories: `reindex`, `repair`, `wait`, `resolve_context`.
+
+*Story-specific constraints (added to individual story files, not global contract):*
+
+- **Performance targets (NFR)**:
+  - `search_text`: p50 ≤ 150 ms, p95 ≤ 500 ms
+  - `search_symbols`: p50 ≤ 100 ms, p95 ≤ 300 ms
+  - `get_file_outline`: p50 ≤ 120 ms, p95 ≤ 350 ms
+  - `get_symbol` / verified retrieval: p50 ≤ 150 ms, p95 ≤ 400 ms
+- **Symbol metadata schema details**: Exact field names and types belong in 3.2's story file.
+- **Outline completeness indicators**: Coverage metadata for outlines belongs in 3.3's story file.
+
+**Epic 2 Read-Side Interface Dependency:**
+
+Epic 3 depends on Epic 2 read-side interfaces/access patterns for:
+- Blob lookup by blob_id (raw byte retrieval for verification)
+- Symbol metadata lookup (name, kind, file path, line/span)
+- Run/lease state lookup (active mutation detection for request gating)
+- Invalidation state lookup (repo-level and file-level invalidation flags)
+- Checkpoint/completeness status lookup (index completion state for request gating)
+
+If these interfaces evolve or an abstraction layer is introduced, Epic 3's read paths must be updated accordingly.
+
+**Sprint Risk Mitigations (from pre-mortem analysis):**
+
+*Process gates:*
+
+1. **Distill narrative into story files**: When each Story 3.x file is created at prep time, the SM must distill the relevant contract requirements, failure mode rules, and constraints from this narrative into story-specific implementation notes. The narrative is thorough but will not be read at implementation time unless the relevant bits are in the work item.
+2. **Contract-conformance test gating**: Every Epic 3 story must pass the evolving contract-conformance test skeleton before it can move to `done`. The skeleton grows with each story. Story 3.4 should be integration *wiring*, not integration *discovery*.
+3. **Epic 2 interface verification in Phase 0**: Before any story starts, confirm that each of the 5 listed Epic 2 read-side interfaces has an actual function/method/API that implements it. This is 30 minutes of code exploration. If an interface doesn't exist, that's a Phase 0 blocker.
+4. **Phase 0 time box**: Contract PR must be opened within 2 working days, merged within 3. The contract is types and interfaces (~200 lines), not a design document. "Reviewed against all stories" means a checklist in the PR — one line per story AC: "covered by [type/field/gate]" or "not applicable."
+
+*Gating thresholds (hard block vs soft warning):*
+
+- **Hard block (request-fatal)**: no active context, invalidated repo, repo-level quarantine, active mutation in progress, interrupted/checkpoint-incomplete index.
+- **Soft warning (via provenance/trust metadata)**: aged-but-complete index, partial symbol coverage for supported queries, minor non-fatal health warnings. The caller is informed, not blocked.
+
+*Per-story latency checks:*
+
+- Each story's "done" criteria must include a basic latency sanity check against the relevant NFR target. Not the full benchmark suite, but a test-fixture assertion that the operation completes within a reasonable bound. Performance is not deferred to a later pass.
+
 ## Epic 4: Recovery, Repair, and Operational Confidence
 
 Users can recover interrupted work, diagnose unhealthy or suspect state, and repair the system without losing trust in the indexed repository.

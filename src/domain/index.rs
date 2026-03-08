@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -119,7 +120,7 @@ pub struct SymbolRecord {
     pub line_range: (u32, u32),
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SymbolKind {
     Function,
@@ -225,7 +226,6 @@ pub struct FileRecord {
     pub committed_at_unix_ms: u64,
 }
 
-
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RunPhase {
@@ -252,7 +252,10 @@ impl RunPhase {
             2 => RunPhase::Finalizing,
             3 => RunPhase::Complete,
             other => {
-                tracing::debug!(value = other, "unexpected RunPhase u8 value, defaulting to Complete");
+                tracing::debug!(
+                    value = other,
+                    "unexpected RunPhase u8 value, defaulting to Complete"
+                );
                 RunPhase::Complete
             }
         }
@@ -309,14 +312,26 @@ mod tests {
 
     #[test]
     fn test_from_extension_maps_javascript() {
-        assert_eq!(LanguageId::from_extension("js"), Some(LanguageId::JavaScript));
-        assert_eq!(LanguageId::from_extension("jsx"), Some(LanguageId::JavaScript));
+        assert_eq!(
+            LanguageId::from_extension("js"),
+            Some(LanguageId::JavaScript)
+        );
+        assert_eq!(
+            LanguageId::from_extension("jsx"),
+            Some(LanguageId::JavaScript)
+        );
     }
 
     #[test]
     fn test_from_extension_maps_typescript() {
-        assert_eq!(LanguageId::from_extension("ts"), Some(LanguageId::TypeScript));
-        assert_eq!(LanguageId::from_extension("tsx"), Some(LanguageId::TypeScript));
+        assert_eq!(
+            LanguageId::from_extension("ts"),
+            Some(LanguageId::TypeScript)
+        );
+        assert_eq!(
+            LanguageId::from_extension("tsx"),
+            Some(LanguageId::TypeScript)
+        );
     }
 
     #[test]
@@ -344,8 +359,14 @@ mod tests {
     fn test_support_tier_all_quality_focus() {
         assert_eq!(LanguageId::Rust.support_tier(), SupportTier::QualityFocus);
         assert_eq!(LanguageId::Python.support_tier(), SupportTier::QualityFocus);
-        assert_eq!(LanguageId::JavaScript.support_tier(), SupportTier::QualityFocus);
-        assert_eq!(LanguageId::TypeScript.support_tier(), SupportTier::QualityFocus);
+        assert_eq!(
+            LanguageId::JavaScript.support_tier(),
+            SupportTier::QualityFocus
+        );
+        assert_eq!(
+            LanguageId::TypeScript.support_tier(),
+            SupportTier::QualityFocus
+        );
         assert_eq!(LanguageId::Go.support_tier(), SupportTier::QualityFocus);
     }
 
@@ -438,7 +459,10 @@ mod tests {
     fn test_extensions_broader_languages() {
         assert_eq!(LanguageId::Java.extensions(), &["java"]);
         assert_eq!(LanguageId::C.extensions(), &["c", "h"]);
-        assert_eq!(LanguageId::Cpp.extensions(), &["cpp", "cxx", "cc", "hpp", "hxx", "hh"]);
+        assert_eq!(
+            LanguageId::Cpp.extensions(),
+            &["cpp", "cxx", "cc", "hpp", "hxx", "hh"]
+        );
         assert_eq!(LanguageId::CSharp.extensions(), &["cs"]);
         assert_eq!(LanguageId::Ruby.extensions(), &["rb"]);
         assert_eq!(LanguageId::Php.extensions(), &["php"]);
@@ -805,7 +829,11 @@ mod tests {
 
     #[test]
     fn test_run_health_serde_roundtrip() {
-        for variant in [RunHealth::Healthy, RunHealth::Degraded, RunHealth::Unhealthy] {
+        for variant in [
+            RunHealth::Healthy,
+            RunHealth::Degraded,
+            RunHealth::Unhealthy,
+        ] {
             let json = serde_json::to_string(&variant).unwrap();
             let deserialized: RunHealth = serde_json::from_str(&json).unwrap();
             assert_eq!(variant, deserialized);
@@ -895,10 +923,22 @@ mod tests {
 
     #[test]
     fn test_run_phase_serde_snake_case() {
-        assert_eq!(serde_json::to_string(&RunPhase::Discovering).unwrap(), "\"discovering\"");
-        assert_eq!(serde_json::to_string(&RunPhase::Processing).unwrap(), "\"processing\"");
-        assert_eq!(serde_json::to_string(&RunPhase::Finalizing).unwrap(), "\"finalizing\"");
-        assert_eq!(serde_json::to_string(&RunPhase::Complete).unwrap(), "\"complete\"");
+        assert_eq!(
+            serde_json::to_string(&RunPhase::Discovering).unwrap(),
+            "\"discovering\""
+        );
+        assert_eq!(
+            serde_json::to_string(&RunPhase::Processing).unwrap(),
+            "\"processing\""
+        );
+        assert_eq!(
+            serde_json::to_string(&RunPhase::Finalizing).unwrap(),
+            "\"finalizing\""
+        );
+        assert_eq!(
+            serde_json::to_string(&RunPhase::Complete).unwrap(),
+            "\"complete\""
+        );
     }
 
     #[test]
@@ -955,7 +995,10 @@ mod tests {
         let json = serde_json::to_string(&run).unwrap();
         let deserialized: IndexRun = serde_json::from_str(&json).unwrap();
         assert_eq!(run, deserialized);
-        assert_eq!(deserialized.prior_run_id, Some("previous-run-id".to_string()));
+        assert_eq!(
+            deserialized.prior_run_id,
+            Some("previous-run-id".to_string())
+        );
     }
 
     #[test]
@@ -987,5 +1030,4 @@ mod tests {
         let deserialized: IndexRunMode = serde_json::from_str(&json).unwrap();
         assert_eq!(mode, deserialized);
     }
-
 }

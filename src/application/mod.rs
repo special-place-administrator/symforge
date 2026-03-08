@@ -2,6 +2,7 @@ mod deployment;
 mod health;
 mod init;
 pub mod run_manager;
+pub mod search;
 
 use std::sync::Arc;
 
@@ -11,11 +12,13 @@ use std::path::PathBuf;
 use tracing::info;
 
 use crate::domain::{
-    ActiveWorkspaceContext, ComponentHealth, DeploymentReport, HealthReport, IndexRun,
-    IndexRunMode, InitializationReport, InvalidationResult, MigrationReport, RegistryView,
+    ActiveWorkspaceContext, BatchRetrievalRequest, ComponentHealth, DeploymentReport,
+    FileOutlineResponse, GetSymbolsResponse, HealthReport, IndexRun, IndexRunMode,
+    InitializationReport, InvalidationResult, MigrationReport, RegistryView, RepoOutlineResponse,
+    ResultEnvelope, SearchResultItem, SymbolKind, SymbolSearchResponse, VerifiedSourceResponse,
 };
-use crate::indexing::pipeline::PipelineProgress;
 use crate::error::{Result, TokenizorError};
+use crate::indexing::pipeline::PipelineProgress;
 use crate::storage::{
     BlobStore, ControlPlane, LocalCasBlobStore, RegistryPersistence, build_control_plane,
 };
@@ -165,8 +168,13 @@ impl ApplicationContext {
         reason: Option<&str>,
         repo_root: PathBuf,
     ) -> Result<IndexRun> {
-        self.run_manager
-            .reindex_repository(repo_id, workspace_id, reason, repo_root, self.blob_store.clone())
+        self.run_manager.reindex_repository(
+            repo_id,
+            workspace_id,
+            reason,
+            repo_root,
+            self.blob_store.clone(),
+        )
     }
 
     pub fn invalidate_repository(
@@ -177,6 +185,84 @@ impl ApplicationContext {
     ) -> Result<InvalidationResult> {
         self.run_manager
             .invalidate_repository(repo_id, workspace_id, reason)
+    }
+
+    pub fn search_text(
+        &self,
+        repo_id: &str,
+        query: &str,
+    ) -> Result<ResultEnvelope<Vec<SearchResultItem>>> {
+        search::search_text(
+            repo_id,
+            query,
+            self.run_manager.persistence(),
+            &self.run_manager,
+            self.blob_store.as_ref(),
+        )
+    }
+
+    pub fn search_symbols(
+        &self,
+        repo_id: &str,
+        query: &str,
+        kind_filter: Option<SymbolKind>,
+    ) -> Result<ResultEnvelope<SymbolSearchResponse>> {
+        search::search_symbols(
+            repo_id,
+            query,
+            kind_filter,
+            self.run_manager.persistence(),
+            &self.run_manager,
+        )
+    }
+
+    pub fn get_file_outline(
+        &self,
+        repo_id: &str,
+        relative_path: &str,
+    ) -> Result<ResultEnvelope<FileOutlineResponse>> {
+        search::get_file_outline(
+            repo_id,
+            relative_path,
+            self.run_manager.persistence(),
+            &self.run_manager,
+        )
+    }
+
+    pub fn get_repo_outline(&self, repo_id: &str) -> Result<ResultEnvelope<RepoOutlineResponse>> {
+        search::get_repo_outline(repo_id, self.run_manager.persistence(), &self.run_manager)
+    }
+
+    pub fn get_symbol(
+        &self,
+        repo_id: &str,
+        relative_path: &str,
+        symbol_name: &str,
+        kind_filter: Option<SymbolKind>,
+    ) -> Result<ResultEnvelope<VerifiedSourceResponse>> {
+        search::get_symbol(
+            repo_id,
+            relative_path,
+            symbol_name,
+            kind_filter,
+            self.run_manager.persistence(),
+            &self.run_manager,
+            self.blob_store.as_ref(),
+        )
+    }
+
+    pub fn get_symbols(
+        &self,
+        repo_id: &str,
+        requests: &[BatchRetrievalRequest],
+    ) -> Result<ResultEnvelope<GetSymbolsResponse>> {
+        search::get_symbols(
+            repo_id,
+            requests,
+            self.run_manager.persistence(),
+            &self.run_manager,
+            self.blob_store.as_ref(),
+        )
     }
 
     pub fn run_manager(&self) -> &Arc<RunManager> {
