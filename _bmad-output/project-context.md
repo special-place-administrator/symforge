@@ -11,13 +11,13 @@ sections_completed:
   - workflow_rules
   - critical_rules
 status: 'complete'
-rule_count: 87
+rule_count: 93
 optimized_for_llm: true
 ---
 
 # Project Context for AI Agents
 
-_This file contains critical rules and patterns that AI agents must follow when implementing code in this project. Focus on unobvious details that agents might otherwise miss. Scoped to Epic 2: Durable Indexing and Run Control._
+_This file contains critical rules and patterns that AI agents must follow when implementing code in this project. Focus on unobvious details that agents might otherwise miss. Scoped to Epic 2: Durable Indexing and Run Control + Epic 3: Trusted Code Discovery and Verified Retrieval._
 
 ---
 
@@ -154,6 +154,19 @@ _This file contains critical rules and patterns that AI agents must follow when 
 
 ---
 
+## Epic 3 Retrieval Architecture
+
+_Epic 3 is read-heavy. The blind spot profile shifts from write-correctness (Epic 2) to trust-boundary enforcement and response disambiguation. These rules are mandatory for all retrieval and search code._
+
+1. **Never return blob content without verifying blob_id matches.** Every retrieval path must re-verify that the blob_id stored in the `FileRecord` matches the content-addressed hash of the bytes returned from CAS. A mismatch means the data is suspect — return an integrity error, never stale bytes.
+2. **Every retrieval function must check repository status before returning trusted content.** If `RepositoryStatus` is `Invalidated`, `Failed`, or `Degraded`, retrieval must refuse the request with an explicit status-based rejection. Never silently return data from an unhealthy repository.
+3. **Search results must include provenance metadata.** Every result must carry `run_id` and `committed_at_unix_ms` from the originating `FileRecord` so consumers can observe staleness. Omitting provenance violates the trust contract.
+4. **"No results" responses must disambiguate three states.** Empty (searched, nothing matched) vs missing (target not indexed) vs stale (repository invalidated or unhealthy). A generic empty response that collapses these three cases violates Epic 3 acceptance criteria.
+5. **Retrieval paths must reject requests against invalidated or unhealthy repositories.** This is the read-side counterpart of Story 2.10's write-side invalidation. The gate check happens early — before any CAS reads or search queries execute.
+6. **Quarantined file records must never appear in search results.** Files with `PersistedFileOutcome::Quarantined` are excluded from all retrieval and search paths. They exist in the registry for audit/repair purposes only.
+
+---
+
 ## Rust Language Rules
 
 **Error Handling:**
@@ -253,4 +266,4 @@ _This file contains critical rules and patterns that AI agents must follow when 
 - Update when technology stack or architectural decisions change
 - Remove rules that become obvious over time
 
-Last Updated: 2026-03-07
+Last Updated: 2026-03-08
