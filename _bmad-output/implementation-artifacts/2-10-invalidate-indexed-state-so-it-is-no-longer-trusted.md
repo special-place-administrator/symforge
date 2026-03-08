@@ -1,6 +1,6 @@
 # Story 2.10: Invalidate Indexed State So It Is No Longer Trusted
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -208,14 +208,24 @@ Claude Opus 4.6
 - Domain-level idempotency ("already invalidated") fires BEFORE key-based idempotency to prevent false conflicting-replay errors when re-invalidating with different reasons
 - Pipeline completion handler clears invalidation on successful run (Invalidated → Ready), restoring trust
 - `save_repository` added to `RegistryPersistence` for integration test seeding, ensures `schema_version >= 2`
-- Test count: 321 → 348 (+27 tests: 19 unit + 8 integration)
+- Test count: 321 → 350 (+29 tests: 21 unit + 8 integration)
+
+### Code Review Findings (AI)
+
+Reviewed by Claude Opus 4.6 on 2026-03-08. 3 issues fixed:
+
+- **H1 FIXED**: Stale idempotency record caused silent invalidation failure after re-index. The idempotent replay path returned success without re-applying invalidation when the repo had been re-indexed back to Ready. Fix: when domain-level check confirms repo is NOT Invalidated, treat any existing idempotency record as stale and fall through to re-apply. Added TODO comment on `reindex_repository` flagging the same class of bug (Story 2.9).
+- **M1 FIXED**: `InvalidationResult` was missing `PartialEq, Eq` derives per project convention.
+- **M2 FIXED**: Removed unnecessary `pub(crate)` visibility on `path()` and `save_registry_data` in `RegistryPersistence`. Refactored unit test helpers to use the public `save_repository()` API.
+
+2 LOW issues accepted as-is: L1 (inconsistent test seeding — resolved by M2), L2 (`unwrap_or(0)` for timestamp — acceptable defensive default).
 
 ### File List
 
-- `src/domain/repository.rs` — `Invalidated` variant, `InvalidationResult` struct, 4 unit tests
+- `src/domain/repository.rs` — `Invalidated` variant, `InvalidationResult` struct (with `PartialEq, Eq`), 4 unit tests
 - `src/domain/mod.rs` — `InvalidationResult` export
-- `src/storage/registry_persistence.rs` — `get_repository`, `update_repository_status`, `save_repository`, 5 unit tests
-- `src/application/run_manager.rs` — `invalidate_repository` orchestration, `build_run_report` invalidation surfacing, pipeline completion invalidation clearing, 11 unit tests
+- `src/storage/registry_persistence.rs` — `get_repository`, `update_repository_status`, `save_repository`, 5 unit tests; reverted `save_registry_data` to private, removed `path()` accessor
+- `src/application/run_manager.rs` — `invalidate_repository` orchestration (stale idempotency fix), `build_run_report` invalidation surfacing, pipeline completion invalidation clearing, TODO on reindex idempotency, 12 unit tests
 - `src/application/mod.rs` — `invalidate_repository` delegation
 - `src/application/init.rs` — Updated Repository struct literals with new fields
 - `src/protocol/mcp.rs` — `invalidate_indexed_state` MCP tool

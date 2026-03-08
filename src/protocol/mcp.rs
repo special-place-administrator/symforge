@@ -340,6 +340,12 @@ fn to_mcp_error(error: TokenizorError) -> McpError {
         TokenizorError::Config(message) | TokenizorError::InvalidArgument(message) => {
             McpError::invalid_params(message, None)
         }
+        TokenizorError::ConflictingReplay(message) => McpError::invalid_params(
+            format!(
+                "conflicting replay: {message} — retry with identical inputs or use a new idempotency key"
+            ),
+            None,
+        ),
         TokenizorError::InvalidOperation(message) => {
             McpError::invalid_params(format!("invalid operation: {message}"), None)
         }

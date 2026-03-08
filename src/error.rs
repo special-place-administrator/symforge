@@ -16,6 +16,8 @@ pub enum TokenizorError {
     InvalidOperation(String),
     #[error("storage error: {0}")]
     Storage(String),
+    #[error("conflicting replay: {0}")]
+    ConflictingReplay(String),
     #[error("integrity check failed: {0}")]
     Integrity(String),
     #[error("control plane error: {0}")]
@@ -48,6 +50,7 @@ impl TokenizorError {
             Self::Config(_) => false,
             Self::InvalidArgument(_) => false,
             Self::InvalidOperation(_) => false,
+            Self::ConflictingReplay(_) => false,
             Self::NotFound(_) => false,
         }
     }
@@ -102,5 +105,16 @@ mod tests {
     #[test]
     fn test_is_systemic_returns_false_for_not_found_errors() {
         assert!(!TokenizorError::NotFound("missing".into()).is_systemic());
+    }
+
+    #[test]
+    fn test_conflicting_replay_display_formats_correctly() {
+        let err = TokenizorError::ConflictingReplay("key `k1`: hash mismatch".into());
+        assert_eq!(err.to_string(), "conflicting replay: key `k1`: hash mismatch");
+    }
+
+    #[test]
+    fn test_is_systemic_returns_false_for_conflicting_replay() {
+        assert!(!TokenizorError::ConflictingReplay("test".into()).is_systemic());
     }
 }

@@ -145,17 +145,40 @@ impl RunManager {
         let request_hash = compute_request_hash(repo_id, workspace_id, &mode);
 
         if let Some(existing) = self.persistence.find_idempotency_record(&idempotency_key)? {
+            let run_id = existing.result_ref.as_deref().unwrap_or("");
+            let referenced_run = self.persistence.find_run(run_id)?;
+            let is_stale = match &referenced_run {
+                Some(run) => run.status.is_terminal(),
+                None => true, // orphaned record
+            };
+
             if existing.request_hash == request_hash {
+                if is_stale {
+                    info!(
+                        idempotency_key = %idempotency_key,
+                        "stale idempotent record — referenced run is terminal, proceeding with new run"
+                    );
+                    // Fall through to new run creation
+                } else {
+                    // Same hash + active run → idempotent replay
+                    info!(
+                        idempotency_key = %idempotency_key,
+                        "idempotent replay detected, returning stored result"
+                    );
+                    return Ok(IdempotentRunResult::ExistingRun {
+                        run_id: run_id.to_string(),
+                    });
+                }
+            } else if is_stale {
                 info!(
                     idempotency_key = %idempotency_key,
-                    "idempotent replay detected, returning stored result"
+                    "stale conflicting record — referenced run is terminal, allowing new run"
                 );
-                return Ok(IdempotentRunResult::ExistingRun {
-                    run_id: existing.result_ref.unwrap_or_default(),
-                });
+                // Fall through to new run creation
             } else {
-                return Err(TokenizorError::InvalidArgument(format!(
-                    "conflicting replay for idempotency key `{idempotency_key}`: \
+                // Different hash + active run → conflicting replay
+                return Err(TokenizorError::ConflictingReplay(format!(
+                    "idempotency key `{idempotency_key}`: \
                      request hash differs from stored record"
                 )));
             }
@@ -193,30 +216,39 @@ impl RunManager {
         let mode = IndexRunMode::Reindex;
         let request_hash = compute_request_hash(repo_id, ws_id, &mode);
 
-        // TODO(Story 2.9 bug): Same class of stale-record issue as invalidate_repository.
-        // If a reindex completes, the run terminates, and a new reindex with the same params
-        // is attempted, this idempotent replay returns the old (terminal) run without launching
-        // a new one. A different-param reindex is rejected as conflicting replay even though
-        // the old run is finished. Fix: verify the referenced run is still active/relevant
-        // before returning the idempotent replay result; fall through if stale.
         if let Some(existing) = self.persistence.find_idempotency_record(&idempotency_key)? {
+            let run_id = existing.result_ref.as_deref().unwrap_or("");
+            let referenced_run = self.persistence.find_run(run_id)?;
+            let is_stale = match &referenced_run {
+                Some(run) => run.status.is_terminal(),
+                None => true, // orphaned record
+            };
+
             if existing.request_hash == request_hash {
+                if is_stale {
+                    info!(
+                        idempotency_key = %idempotency_key,
+                        "stale idempotent reindex record — referenced run is terminal, proceeding with new run"
+                    );
+                    // Fall through to new run creation
+                } else {
+                    // Same hash + active run → idempotent replay
+                    info!(
+                        idempotency_key = %idempotency_key,
+                        "idempotent reindex replay detected, returning stored result"
+                    );
+                    return Ok(referenced_run.unwrap());
+                }
+            } else if is_stale {
                 info!(
                     idempotency_key = %idempotency_key,
-                    "idempotent reindex replay detected, returning stored result"
+                    "stale conflicting reindex record — referenced run is terminal, allowing new run"
                 );
-                let run_id = existing.result_ref.unwrap_or_default();
-                return self
-                    .persistence
-                    .find_run(&run_id)?
-                    .ok_or_else(|| {
-                        TokenizorError::Integrity(format!(
-                            "idempotency record references run `{run_id}` but run not found"
-                        ))
-                    });
+                // Fall through to new run creation
             } else {
-                return Err(TokenizorError::InvalidArgument(format!(
-                    "conflicting replay for idempotency key `{idempotency_key}`: \
+                // Different hash + active run → conflicting replay
+                return Err(TokenizorError::ConflictingReplay(format!(
+                    "idempotency key `{idempotency_key}`: \
                      request hash differs from stored record"
                 )));
             }
@@ -1100,8 +1132,12 @@ mod tests {
 
         let result = manager.start_run_idempotent("repo-1", "ws-1", IndexRunMode::Incremental);
         assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("conflicting replay"));
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, TokenizorError::ConflictingReplay(_)),
+            "expected ConflictingReplay, got: {err:?}"
+        );
+        assert!(err.to_string().contains("conflicting replay"));
     }
 
     #[test]
@@ -1119,6 +1155,110 @@ mod tests {
         let record = record.unwrap();
         assert_eq!(record.operation, "index");
         assert!(record.result_ref.is_some());
+    }
+
+    #[test]
+    fn test_idempotent_same_hash_terminal_run_creates_new_run() {
+        let (_dir, manager) = temp_run_manager();
+        let result = manager
+            .start_run_idempotent("repo-1", "ws-1", IndexRunMode::Full)
+            .unwrap();
+        let first_run_id = match &result {
+            IdempotentRunResult::NewRun { run } => run.run_id.clone(),
+            _ => panic!("expected NewRun"),
+        };
+
+        // Terminate the run
+        manager
+            .persistence
+            .update_run_status(&first_run_id, IndexRunStatus::Succeeded, None)
+            .unwrap();
+
+        // Same params replay after terminal → should create new run
+        let replay = manager
+            .start_run_idempotent("repo-1", "ws-1", IndexRunMode::Full)
+            .unwrap();
+        match replay {
+            IdempotentRunResult::NewRun { run } => {
+                assert_ne!(run.run_id, first_run_id, "should be a new run, not the old one");
+            }
+            IdempotentRunResult::ExistingRun { .. } => panic!("expected NewRun for stale record"),
+        }
+    }
+
+    #[test]
+    fn test_idempotent_different_hash_active_run_returns_conflicting_replay() {
+        let (_dir, manager) = temp_run_manager();
+        manager
+            .start_run_idempotent("repo-1", "ws-1", IndexRunMode::Full)
+            .unwrap();
+
+        // Different params while run is active → ConflictingReplay
+        let result = manager.start_run_idempotent("repo-1", "ws-1", IndexRunMode::Incremental);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            TokenizorError::ConflictingReplay(_)
+        ));
+    }
+
+    #[test]
+    fn test_idempotent_different_hash_terminal_run_creates_new_run() {
+        let (_dir, manager) = temp_run_manager();
+        let result = manager
+            .start_run_idempotent("repo-1", "ws-1", IndexRunMode::Full)
+            .unwrap();
+        let first_run_id = match &result {
+            IdempotentRunResult::NewRun { run } => run.run_id.clone(),
+            _ => panic!("expected NewRun"),
+        };
+
+        // Terminate the run
+        manager
+            .persistence
+            .update_run_status(&first_run_id, IndexRunStatus::Failed, None)
+            .unwrap();
+
+        // Different params after terminal → should create new run (stale record)
+        let replay = manager
+            .start_run_idempotent("repo-1", "ws-1", IndexRunMode::Incremental)
+            .unwrap();
+        match replay {
+            IdempotentRunResult::NewRun { run } => {
+                assert_ne!(run.run_id, first_run_id);
+                assert_eq!(run.mode, IndexRunMode::Incremental);
+            }
+            IdempotentRunResult::ExistingRun { .. } => panic!("expected NewRun for stale record"),
+        }
+    }
+
+    #[test]
+    fn test_idempotent_orphaned_record_creates_new_run() {
+        let (_dir, manager) = temp_run_manager();
+
+        // Seed an orphaned idempotency record (run doesn't exist)
+        let hash = compute_request_hash("repo-1", "ws-1", &IndexRunMode::Full);
+        let record = IdempotencyRecord {
+            operation: "index".to_string(),
+            idempotency_key: "index::repo-1::ws-1".to_string(),
+            request_hash: hash,
+            status: IdempotencyStatus::Pending,
+            result_ref: Some("nonexistent-run".to_string()),
+            created_at_unix_ms: 1000,
+            expires_at_unix_ms: None,
+        };
+        manager.persistence.save_idempotency_record(&record).unwrap();
+
+        // Same params replay with orphaned record → new run
+        let result = manager
+            .start_run_idempotent("repo-1", "ws-1", IndexRunMode::Full)
+            .unwrap();
+        match result {
+            IdempotentRunResult::NewRun { run } => {
+                assert_ne!(run.run_id, "nonexistent-run");
+            }
+            IdempotentRunResult::ExistingRun { .. } => panic!("expected NewRun for orphaned record"),
+        }
     }
 
     #[test]
@@ -1621,14 +1761,14 @@ mod tests {
     async fn test_reindex_conflicting_replay_returns_error() {
         let (_dir, manager, _cas_dir, cas) = temp_reindex_env();
         let repo_dir = reindex_repo_root();
-        // Manually insert an idempotency record with different request_hash
-        // to simulate a conflicting replay scenario
+        // Create an active run so the idempotency record references a non-terminal run
+        let active_run = manager.start_run("repo-1", IndexRunMode::Reindex).unwrap();
         let record = IdempotencyRecord {
             operation: "reindex".to_string(),
             idempotency_key: "reindex::repo-1::".to_string(),
             request_hash: "different-hash-from-prior-request".to_string(),
             status: IdempotencyStatus::Pending,
-            result_ref: Some("old-run-id".to_string()),
+            result_ref: Some(active_run.run_id.clone()),
             created_at_unix_ms: 1000,
             expires_at_unix_ms: None,
         };
@@ -1641,8 +1781,12 @@ mod tests {
             "repo-1", None, None, repo_dir.path().to_path_buf(), cas,
         );
         assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("conflicting replay"));
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, TokenizorError::ConflictingReplay(_)),
+            "expected ConflictingReplay, got: {err:?}"
+        );
+        assert!(err.to_string().contains("conflicting replay"));
     }
 
     #[tokio::test]
@@ -1679,6 +1823,118 @@ mod tests {
             .unwrap();
         // Should pick run1 (succeeded), not run2 (failed)
         assert_eq!(reindex.prior_run_id, Some(run1.run_id));
+    }
+
+    #[tokio::test]
+    async fn test_reindex_same_hash_terminal_run_creates_new_run() {
+        let (_dir, manager, _cas_dir, cas) = temp_reindex_env();
+        let repo_dir = reindex_repo_root();
+        // Create and complete a prior run
+        let prior = manager.start_run("repo-1", IndexRunMode::Full).unwrap();
+        manager
+            .persistence
+            .update_run_status_with_finish(&prior.run_id, IndexRunStatus::Succeeded, None, 2000, None)
+            .unwrap();
+
+        // First reindex
+        let first = manager
+            .reindex_repository("repo-1", None, None, repo_dir.path().to_path_buf(), cas.clone())
+            .unwrap();
+        let first_id = first.run_id.clone();
+
+        // Terminate the reindex run
+        manager
+            .persistence
+            .update_run_status_with_finish(&first_id, IndexRunStatus::Succeeded, None, 3000, None)
+            .unwrap();
+        manager.deregister_active_run("repo-1");
+
+        // Same params replay after terminal → new run (stale record bypassed)
+        let second = manager
+            .reindex_repository("repo-1", None, None, repo_dir.path().to_path_buf(), cas)
+            .unwrap();
+        assert_ne!(second.run_id, first_id, "should be a new run, not the old one");
+        assert_eq!(second.mode, IndexRunMode::Reindex);
+    }
+
+    #[tokio::test]
+    async fn test_reindex_different_hash_active_run_returns_conflicting_replay() {
+        let (_dir, manager, _cas_dir, cas) = temp_reindex_env();
+        let repo_dir = reindex_repo_root();
+        // Seed an idempotency record with different hash + active run
+        let run = manager.start_run("repo-1", IndexRunMode::Reindex).unwrap();
+        let record = IdempotencyRecord {
+            operation: "reindex".to_string(),
+            idempotency_key: "reindex::repo-1::".to_string(),
+            request_hash: "different-hash-from-new-request".to_string(),
+            status: IdempotencyStatus::Pending,
+            result_ref: Some(run.run_id.clone()),
+            created_at_unix_ms: 1000,
+            expires_at_unix_ms: None,
+        };
+        manager.persistence.save_idempotency_record(&record).unwrap();
+
+        let result = manager.reindex_repository(
+            "repo-1", None, None, repo_dir.path().to_path_buf(), cas,
+        );
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            TokenizorError::ConflictingReplay(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_reindex_different_hash_terminal_run_creates_new_run() {
+        let (_dir, manager, _cas_dir, cas) = temp_reindex_env();
+        let repo_dir = reindex_repo_root();
+        // Seed a completed run + idempotency record with different hash
+        let run = manager.start_run("repo-1", IndexRunMode::Reindex).unwrap();
+        manager
+            .persistence
+            .update_run_status_with_finish(&run.run_id, IndexRunStatus::Succeeded, None, 2000, None)
+            .unwrap();
+        let record = IdempotencyRecord {
+            operation: "reindex".to_string(),
+            idempotency_key: "reindex::repo-1::".to_string(),
+            request_hash: "old-hash-differs-from-new".to_string(),
+            status: IdempotencyStatus::Pending,
+            result_ref: Some(run.run_id.clone()),
+            created_at_unix_ms: 1000,
+            expires_at_unix_ms: None,
+        };
+        manager.persistence.save_idempotency_record(&record).unwrap();
+
+        // Different hash + terminal run → new run (stale record bypassed)
+        let result = manager
+            .reindex_repository("repo-1", None, None, repo_dir.path().to_path_buf(), cas)
+            .unwrap();
+        assert_ne!(result.run_id, run.run_id, "should be a new run");
+        assert_eq!(result.mode, IndexRunMode::Reindex);
+    }
+
+    #[tokio::test]
+    async fn test_reindex_orphaned_record_creates_new_run() {
+        let (_dir, manager, _cas_dir, cas) = temp_reindex_env();
+        let repo_dir = reindex_repo_root();
+        // Seed an orphaned idempotency record (referenced run doesn't exist)
+        let hash = compute_request_hash("repo-1", "", &IndexRunMode::Reindex);
+        let record = IdempotencyRecord {
+            operation: "reindex".to_string(),
+            idempotency_key: "reindex::repo-1::".to_string(),
+            request_hash: hash,
+            status: IdempotencyStatus::Pending,
+            result_ref: Some("nonexistent-run-id".to_string()),
+            created_at_unix_ms: 1000,
+            expires_at_unix_ms: None,
+        };
+        manager.persistence.save_idempotency_record(&record).unwrap();
+
+        let result = manager
+            .reindex_repository("repo-1", None, None, repo_dir.path().to_path_buf(), cas)
+            .unwrap();
+        assert_ne!(result.run_id, "nonexistent-run-id");
+        assert_eq!(result.mode, IndexRunMode::Reindex);
     }
 
     fn seed_repo(manager: &RunManager, repo_id: &str) {

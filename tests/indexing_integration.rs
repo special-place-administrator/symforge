@@ -1324,14 +1324,15 @@ async fn test_reindex_conflicting_replay_returns_error() {
     let repo_dir = tempfile::tempdir().unwrap();
     fs::write(repo_dir.path().join("main.rs"), "fn main() {}").unwrap();
 
-    // Manually insert an idempotency record to create a conflict
+    // Create an active (non-terminal) run that the idempotency record references
     use tokenizor_agentic_mcp::domain::{IdempotencyRecord, IdempotencyStatus};
+    let active_run = manager.start_run("test-repo", IndexRunMode::Reindex).unwrap();
     let record = IdempotencyRecord {
         operation: "reindex".to_string(),
         idempotency_key: "reindex::test-repo::".to_string(),
         request_hash: "fake-hash-that-wont-match".to_string(),
         status: IdempotencyStatus::Pending,
-        result_ref: Some("old-run".to_string()),
+        result_ref: Some(active_run.run_id.clone()),
         created_at_unix_ms: 1000,
         expires_at_unix_ms: None,
     };
@@ -1602,4 +1603,304 @@ async fn test_invalidation_already_invalidated_repo() {
         .unwrap();
     assert_eq!(second.previous_status, RepositoryStatus::Invalidated);
     assert_eq!(second.reason.as_deref(), Some("reason-1"), "original reason preserved");
+}
+
+// ============================================================
+// Story 2.11: Cross-operation conflicting replay lifecycle tests
+// ============================================================
+
+use tokenizor_agentic_mcp::application::run_manager::IdempotentRunResult;
+
+#[test]
+fn test_index_run_completes_then_same_param_retry_creates_new_run() {
+    let (_dir, manager, _cas_dir, _cas) = setup_test_env();
+
+    // Create run via idempotent path
+    let result = manager.start_run_idempotent("repo-stale", "", IndexRunMode::Full).unwrap();
+    let first_id = match &result {
+        IdempotentRunResult::NewRun { run } => run.run_id.clone(),
+        _ => panic!("expected NewRun"),
+    };
+
+    // Complete the run
+    manager.persistence()
+        .update_run_status_with_finish(&first_id, IndexRunStatus::Succeeded, None, 2000, None)
+        .unwrap();
+
+    // Same-param retry → should create a new run (stale record bypassed)
+    let retry = manager.start_run_idempotent("repo-stale", "", IndexRunMode::Full).unwrap();
+    match retry {
+        IdempotentRunResult::NewRun { run } => {
+            assert_ne!(run.run_id, first_id, "should be a new run, not the old one");
+            assert_eq!(run.status, IndexRunStatus::Queued);
+        }
+        IdempotentRunResult::ExistingRun { .. } => panic!("expected NewRun for stale record"),
+    }
+}
+
+#[test]
+fn test_index_run_completes_then_different_param_retry_creates_new_run() {
+    let (_dir, manager, _cas_dir, _cas) = setup_test_env();
+
+    // Create Full run via idempotent path
+    let result = manager.start_run_idempotent("repo-stale2", "", IndexRunMode::Full).unwrap();
+    let first_id = match &result {
+        IdempotentRunResult::NewRun { run } => run.run_id.clone(),
+        _ => panic!("expected NewRun"),
+    };
+
+    // Complete the run
+    manager.persistence()
+        .update_run_status_with_finish(&first_id, IndexRunStatus::Succeeded, None, 2000, None)
+        .unwrap();
+
+    // Different-param retry (Incremental) → should create new run (stale record)
+    let retry = manager.start_run_idempotent("repo-stale2", "", IndexRunMode::Incremental).unwrap();
+    match retry {
+        IdempotentRunResult::NewRun { run } => {
+            assert_ne!(run.run_id, first_id);
+            assert_eq!(run.mode, IndexRunMode::Incremental);
+        }
+        IdempotentRunResult::ExistingRun { .. } => panic!("expected NewRun for stale record"),
+    }
+}
+
+#[test]
+fn test_index_active_then_different_param_retry_returns_conflicting_replay() {
+    let (_dir, manager, _cas_dir, _cas) = setup_test_env();
+
+    // Create active run via idempotent path (Queued = non-terminal)
+    let result = manager.start_run_idempotent("repo-conflict", "", IndexRunMode::Full).unwrap();
+    assert!(matches!(result, IdempotentRunResult::NewRun { .. }));
+
+    // Different-param retry while active → ConflictingReplay
+    let retry = manager.start_run_idempotent("repo-conflict", "", IndexRunMode::Incremental);
+    assert!(retry.is_err());
+    let err = retry.unwrap_err();
+    assert!(
+        matches!(err, TokenizorError::ConflictingReplay(_)),
+        "expected ConflictingReplay, got: {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_reindex_completes_then_same_param_retry_creates_new_run() {
+    let (_dir, manager, _cas_dir, cas) = setup_test_env();
+    let repo_dir = tempfile::tempdir().unwrap();
+    fs::write(repo_dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+    // Create and complete an initial run
+    let (initial, _) = manager
+        .launch_run("repo-ri", IndexRunMode::Full, repo_dir.path().to_path_buf(), cas.clone())
+        .unwrap();
+    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+    assert!(manager.inspect_run(&initial.run_id).unwrap().run.status.is_terminal());
+
+    // First reindex
+    let first = manager
+        .reindex_repository("repo-ri", None, None, repo_dir.path().to_path_buf(), cas.clone())
+        .unwrap();
+    let first_id = first.run_id.clone();
+    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+    assert!(manager.inspect_run(&first_id).unwrap().run.status.is_terminal());
+
+    // Same-param reindex retry → new run (stale record bypassed)
+    let second = manager
+        .reindex_repository("repo-ri", None, None, repo_dir.path().to_path_buf(), cas)
+        .unwrap();
+    assert_ne!(second.run_id, first_id, "should be a new reindex run");
+    assert_eq!(second.mode, IndexRunMode::Reindex);
+}
+
+#[tokio::test]
+async fn test_reindex_completes_then_different_param_retry_creates_new_run() {
+    let (_dir, manager, _cas_dir, cas) = setup_test_env();
+    let repo_dir = tempfile::tempdir().unwrap();
+    fs::write(repo_dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+    // Create and complete an initial run
+    let (initial, _) = manager
+        .launch_run("repo-ri2", IndexRunMode::Full, repo_dir.path().to_path_buf(), cas.clone())
+        .unwrap();
+    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+    assert!(manager.inspect_run(&initial.run_id).unwrap().run.status.is_terminal());
+
+    // First reindex with no workspace
+    let first = manager
+        .reindex_repository("repo-ri2", None, None, repo_dir.path().to_path_buf(), cas.clone())
+        .unwrap();
+    let first_id = first.run_id.clone();
+    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+    assert!(manager.inspect_run(&first_id).unwrap().run.status.is_terminal());
+
+    // Different-param reindex (with workspace_id) → new run (stale record bypassed)
+    let second = manager
+        .reindex_repository("repo-ri2", Some("ws-new"), None, repo_dir.path().to_path_buf(), cas)
+        .unwrap();
+    assert_ne!(second.run_id, first_id);
+    assert_eq!(second.mode, IndexRunMode::Reindex);
+}
+
+#[test]
+fn test_reindex_active_then_different_hash_returns_conflicting_replay() {
+    use tokenizor_agentic_mcp::domain::{IdempotencyRecord, IdempotencyStatus};
+    let (_dir, manager, _cas_dir, _cas) = setup_test_env();
+
+    // Create an active run and seed an idempotency record with different hash
+    let active_run = manager.start_run("repo-ri3", IndexRunMode::Reindex).unwrap();
+    let record = IdempotencyRecord {
+        operation: "reindex".to_string(),
+        idempotency_key: "reindex::repo-ri3::".to_string(),
+        request_hash: "different-hash-from-actual-request".to_string(),
+        status: IdempotencyStatus::Pending,
+        result_ref: Some(active_run.run_id.clone()),
+        created_at_unix_ms: 1000,
+        expires_at_unix_ms: None,
+    };
+    manager.persistence().save_idempotency_record(&record).unwrap();
+
+    let repo_dir = tempfile::tempdir().unwrap();
+    fs::write(repo_dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+    // Reindex with same key but hash mismatches stored record → ConflictingReplay
+    let result = manager.reindex_repository(
+        "repo-ri3", None, None, repo_dir.path().to_path_buf(), _cas,
+    );
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(
+        matches!(err, TokenizorError::ConflictingReplay(_)),
+        "expected ConflictingReplay, got: {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_invalidate_reindex_invalidate_different_reason_succeeds() {
+    let (_dir, manager, _cas_dir, cas) = setup_test_env();
+    let repo_dir = tempfile::tempdir().unwrap();
+    fs::write(repo_dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+    seed_integration_repo(&manager, "repo-inv");
+
+    // Invalidate with reason A
+    let first = manager
+        .invalidate_repository("repo-inv", None, Some("reason-A"))
+        .unwrap();
+    assert_eq!(first.previous_status, RepositoryStatus::Ready);
+
+    // Re-index to clear invalidation
+    let reindex = manager
+        .reindex_repository("repo-inv", None, Some("restore"), repo_dir.path().to_path_buf(), cas)
+        .unwrap();
+    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+    assert!(manager.inspect_run(&reindex.run_id).unwrap().run.status.is_terminal());
+
+    // Verify repo status is back to Ready (pipeline completion handler does this)
+    let repo = manager.persistence().get_repository("repo-inv").unwrap().unwrap();
+    assert_eq!(repo.status, RepositoryStatus::Ready, "re-index should restore Ready status");
+
+    // Re-invalidate with different reason → succeeds (stale record handled)
+    let second = manager
+        .invalidate_repository("repo-inv", None, Some("reason-B"))
+        .unwrap();
+    assert_eq!(second.previous_status, RepositoryStatus::Ready);
+    assert_eq!(second.reason.as_deref(), Some("reason-B"));
+}
+
+#[tokio::test]
+async fn test_invalidate_reindex_invalidate_same_reason_succeeds() {
+    let (_dir, manager, _cas_dir, cas) = setup_test_env();
+    let repo_dir = tempfile::tempdir().unwrap();
+    fs::write(repo_dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+    seed_integration_repo(&manager, "repo-inv2");
+
+    // Invalidate with reason A
+    let first = manager
+        .invalidate_repository("repo-inv2", None, Some("reason-A"))
+        .unwrap();
+    assert_eq!(first.previous_status, RepositoryStatus::Ready);
+
+    // Re-index to clear invalidation
+    let reindex = manager
+        .reindex_repository("repo-inv2", None, Some("restore"), repo_dir.path().to_path_buf(), cas)
+        .unwrap();
+    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+    assert!(manager.inspect_run(&reindex.run_id).unwrap().run.status.is_terminal());
+
+    // Verify repo status is back to Ready
+    let repo = manager.persistence().get_repository("repo-inv2").unwrap().unwrap();
+    assert_eq!(repo.status, RepositoryStatus::Ready, "re-index should restore Ready status");
+
+    // Re-invalidate with same reason → succeeds (stale record handled)
+    let second = manager
+        .invalidate_repository("repo-inv2", None, Some("reason-A"))
+        .unwrap();
+    assert_eq!(second.previous_status, RepositoryStatus::Ready);
+    assert_eq!(second.reason.as_deref(), Some("reason-A"));
+}
+
+#[test]
+fn test_idempotency_key_space_isolation() {
+    let (_dir, manager, _cas_dir, _cas) = setup_test_env();
+    seed_integration_repo(&manager, "repo-iso");
+
+    // Create index idempotency record
+    let index_result = manager
+        .start_run_idempotent("repo-iso", "", IndexRunMode::Full)
+        .unwrap();
+    let index_run_id = match &index_result {
+        IdempotentRunResult::NewRun { run } => run.run_id.clone(),
+        _ => panic!("expected NewRun"),
+    };
+
+    // Complete the run so it doesn't block invalidation
+    manager.persistence()
+        .update_run_status_with_finish(&index_run_id, IndexRunStatus::Succeeded, None, 2000, None)
+        .unwrap();
+
+    // Verify index:: key space
+    let index_record = manager
+        .persistence()
+        .find_idempotency_record("index::repo-iso::")
+        .unwrap();
+    assert!(index_record.is_some(), "index idempotency record should exist");
+
+    // Verify reindex:: key space is separate
+    let reindex_record = manager
+        .persistence()
+        .find_idempotency_record("reindex::repo-iso::")
+        .unwrap();
+    assert!(reindex_record.is_none(), "reindex key space should be empty");
+
+    // Verify invalidate:: key space is separate
+    let invalidate_record = manager
+        .persistence()
+        .find_idempotency_record("invalidate::repo-iso::")
+        .unwrap();
+    assert!(invalidate_record.is_none(), "invalidate key space should be empty");
+
+    // Create invalidation record
+    manager
+        .invalidate_repository("repo-iso", None, Some("test"))
+        .unwrap();
+
+    // Verify invalidate:: key exists now but doesn't interfere with index::
+    let invalidate_record = manager
+        .persistence()
+        .find_idempotency_record("invalidate::repo-iso::")
+        .unwrap();
+    assert!(invalidate_record.is_some(), "invalidate record should exist");
+
+    // Index key still intact
+    let index_record = manager
+        .persistence()
+        .find_idempotency_record("index::repo-iso::")
+        .unwrap();
+    assert!(index_record.is_some(), "index record should still exist");
+    assert_eq!(
+        index_record.unwrap().result_ref.as_deref(),
+        Some(index_run_id.as_str()),
+        "index record should still reference original run"
+    );
 }
