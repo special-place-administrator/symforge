@@ -11,15 +11,18 @@ mod workspace;
 
 pub use context::{ActiveWorkspaceContext, ContextResolutionMode};
 pub use health::{
-    ComponentHealth, DeploymentReport, HealthIssueCategory, HealthReport, HealthSeverity,
-    HealthStatus, ServiceIdentity, aggregate_status, unix_timestamp_ms,
+    ComponentHealth, DeploymentReport, FileHealthSummary, HealthIssueCategory, HealthReport,
+    HealthSeverity, HealthStatus, RepositoryHealthReport, RunHealthSummary, ServiceIdentity,
+    StatusContext, aggregate_status, unix_timestamp_ms,
 };
 pub use idempotency::{IdempotencyRecord, IdempotencyStatus};
 pub use index::{
     Checkpoint, DiscoveryManifest, FileOutcome, FileOutcomeSummary, FileProcessingResult,
-    FileRecord, IndexRun, IndexRunMode, IndexRunStatus, LanguageId, PersistedFileOutcome,
-    RecoveryStateKind, ResumeRejectReason, ResumeRunOutcome, RunHealth, RunPhase,
-    RunProgressSnapshot, RunRecoveryState, RunStatusReport, SupportTier, SymbolKind, SymbolRecord,
+    FileRecord, IndexRun, IndexRunMode, IndexRunStatus, IntegrityEventKind, LanguageId,
+    OperationalEvent, OperationalEventFilter, OperationalEventKind, PersistedFileOutcome,
+    RecoveryStateKind, RepairEvent, RepairOutcome, RepairResult, RepairScope, ResumeRejectReason,
+    ResumeRunOutcome, RunHealth, RunPhase, RunProgressSnapshot, RunRecoveryState, RunStatusReport,
+    SupportTier, SymbolKind, SymbolRecord,
 };
 pub use init::{InitializationReport, RegistrationAction, RegistrationResult};
 pub use migration::{

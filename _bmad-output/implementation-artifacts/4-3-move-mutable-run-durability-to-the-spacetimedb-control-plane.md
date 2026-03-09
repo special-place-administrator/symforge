@@ -1,6 +1,6 @@
 # Story 4.3: Move Mutable Run Durability to the SpacetimeDB Control Plane
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -315,6 +315,23 @@ GPT-5 Codex (exception to the default Epic 4 primary-model policy because the us
 - 2026-03-09: Added migration-safety and authority-boundary coverage in `src/storage/control_plane.rs`, adapter/bootstrap-mirror coverage in `src/application/run_manager.rs`, and fixed the startup-recovery integration regression so the full workspace test suite now passes
 - 2026-03-09: Review follow-up fixes closed the BMAD code-review findings: only fully healthy succeeded reindex runs now clear repository invalidation, the migration remediation and CLI now expose `tokenizor_agentic_mcp migrate control-plane`, and `SdkSpacetimeStateStore` now reuses a cached SpacetimeDB mutation connection with regression tests covering reuse and reconnect-on-failure
 - 2026-03-09: Verification results: `cargo check --workspace` passed; `cargo test --test indexing_integration test_application_context_from_config_transitions_running_runs_before_runtime_ready` passed after the adapter fallback fix; `cargo fmt` passed; `cargo test --workspace` passed (488 library tests, 3 main-binary tests, 2 MCP hardening tests with 1 ignored benchmark, 71 indexing integration tests, 38 retrieval conformance tests, 34 retrieval integration tests, and 6 grammar tests)
+- 2026-03-09: BMAD adversarial code review completed. 6 fixes applied (all verified with `cargo test --workspace`, 642 tests pass):
+  - **M4 (MEDIUM)**: Aligned `spacetimedb-sdk` version in root `Cargo.toml` from `2.0.1` → `2.0.3` to match module
+  - **H5 (HIGH)**: Added `run_id` cross-check before `validate_discovery_manifest` to reject manifest/run_id mismatches
+  - **H1 (HIGH)**: Changed `find_runs_by_status` and `list_runs` in `RunManagerPersistenceAdapter` from all-or-nothing fallback to merge+dedup, preventing data loss when both control plane and registry hold runs
+  - **H2 (HIGH)**: Added `AtomicBool` caching to `SpacetimeControlPlane::ensure_mutable_state_ready()` to avoid repeated migration checks on every write
+  - **M7 (MEDIUM)**: Added `NotFound` suppression to 5 adapter write methods (`save_run`, `save_file_records`, `save_checkpoint`, `save_idempotency_record`, `save_discovery_manifest`) to match existing pattern in `update_run_status`/`transition_to_running`
+  - **M6 (MEDIUM)**: Added `files_failed` field (`#[serde(default)]`) to `Checkpoint` struct, wired it into checkpoint creation from `PipelineProgress` and resume from `PipelineResumeState`, enabling failed-file count restoration on resume
+
+### Deferred Action Items (from code review)
+
+- **H3 (HIGH)**: TOCTOU gap in `SpacetimeControlPlane` — `ensure_mutable_state_ready()` caches result but doesn't invalidate on concurrent migration. Low risk in practice (single-operator system), but a future story should address.
+- **H4 (HIGH)**: `InMemoryControlPlane` lifecycle tests should verify that `start_run` → `checkpoint` → `resume` → `cancel` lifecycle produces correct state transitions through the in-memory backend, independent of `RunManager`. Currently only tested through RunManager integration.
+- **M1 (MEDIUM)**: `save_file_records` atomicity — SpacetimeDB per-file upserts are not transactional across a batch; partial failures leave partial state. Future story should add batch reducer or compensating logic.
+- **M2 (MEDIUM)**: `MissingDiscoveryManifest` resume rejection lacks direct test coverage through the full RunManager flow. Integration tests exist for manifest-based resume but don't exercise the missing-manifest error path end-to-end.
+- **M3 (MEDIUM)**: Error messages for repository operations when SpacetimeDB backend + un-migrated state could be more specific about which operation triggered the gate.
+- **M5 (MEDIUM)**: No manifest cleanup — old discovery manifests are never deleted. Future story should add TTL or cleanup-on-completion logic.
+- **M8 (MEDIUM)**: TOCTOU in `start_run` — concurrent `start_run` calls for the same repo could race past the active-run check. Low risk (single-operator, sequential CLI usage) but should be addressed if multi-client access is planned.
 
 ### File List
 

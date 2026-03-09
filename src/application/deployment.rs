@@ -1,6 +1,7 @@
 use crate::config::ServerConfig;
 use crate::domain::{ComponentHealth, DeploymentReport, HealthIssueCategory};
 use crate::error::Result;
+#[allow(unused_imports)]
 use crate::storage::{BlobStore, ControlPlane};
 
 pub struct DeploymentService<'a> {
@@ -64,7 +65,7 @@ mod tests {
     use crate::config::ServerConfig;
     use crate::domain::{
         Checkpoint, ComponentHealth, DiscoveryManifest, FileRecord, HealthIssueCategory,
-        IdempotencyRecord, IndexRun, IndexRunStatus, Repository, RepositoryStatus,
+        IdempotencyRecord, IndexRun, IndexRunStatus, RepairEvent, Repository, RepositoryStatus,
     };
     use crate::error::Result;
     use crate::storage::{BlobStore, ControlPlane, InMemoryControlPlane, StoredBlob};
@@ -286,6 +287,31 @@ mod tests {
         fn save_discovery_manifest(&self, manifest: &DiscoveryManifest) -> Result<()> {
             self.write_calls.fetch_add(1, Ordering::SeqCst);
             self.backing.save_discovery_manifest(manifest)
+        }
+
+        fn save_repair_event(&self, event: &RepairEvent) -> Result<()> {
+            self.write_calls.fetch_add(1, Ordering::SeqCst);
+            self.backing.save_repair_event(event)
+        }
+
+        fn get_repair_events(&self, repo_id: &str) -> Result<Vec<RepairEvent>> {
+            self.backing.get_repair_events(repo_id)
+        }
+
+        fn save_operational_event(
+            &self,
+            event: &crate::domain::OperationalEvent,
+        ) -> Result<()> {
+            self.write_calls.fetch_add(1, Ordering::SeqCst);
+            self.backing.save_operational_event(event)
+        }
+
+        fn get_operational_events(
+            &self,
+            repo_id: &str,
+            filter: &crate::domain::OperationalEventFilter,
+        ) -> Result<Vec<crate::domain::OperationalEvent>> {
+            self.backing.get_operational_events(repo_id, filter)
         }
     }
 

@@ -14,9 +14,11 @@ use tracing::{info, warn};
 use crate::domain::{
     ActiveWorkspaceContext, BatchRetrievalRequest, ComponentHealth, DeploymentReport,
     FileOutlineResponse, GetSymbolsResponse, HealthReport, IndexRun, IndexRunMode,
-    InitializationReport, InvalidationResult, MigrationReport, RegistryView, RepoOutlineResponse,
-    ResultEnvelope, ResumeRunOutcome, SearchResultItem, SymbolKind, SymbolSearchResponse,
-    VerifiedSourceResponse,
+    InitializationReport, IntegrityEventKind, InvalidationResult, MigrationReport,
+    OperationalEvent, OperationalEventKind, RegistryView, RepairResult, RepairScope,
+    RepoOutlineResponse, RepositoryHealthReport, ResultEnvelope, ResumeRunOutcome,
+    SearchResultItem, SymbolKind, SymbolSearchResponse, TrustLevel, VerifiedSourceResponse,
+    unix_timestamp_ms,
 };
 use crate::error::{Result, TokenizorError};
 use crate::indexing::pipeline::PipelineProgress;
@@ -221,6 +223,31 @@ impl ApplicationContext {
             .invalidate_repository(repo_id, workspace_id, reason)
     }
 
+    pub fn repair_repository(
+        &self,
+        repo_id: &str,
+        scope: RepairScope,
+        repo_root: PathBuf,
+    ) -> Result<RepairResult> {
+        self.run_manager
+            .repair_repository(repo_id, scope, repo_root, self.blob_store.clone())
+    }
+
+    pub fn inspect_repository_health(
+        &self,
+        repo_id: &str,
+    ) -> Result<RepositoryHealthReport> {
+        self.run_manager.inspect_repository_health(repo_id)
+    }
+
+    pub fn get_operational_history(
+        &self,
+        repo_id: &str,
+        filter: &crate::domain::OperationalEventFilter,
+    ) -> Result<Vec<crate::domain::OperationalEvent>> {
+        self.run_manager.get_operational_history(repo_id, filter)
+    }
+
     pub fn search_text(
         &self,
         repo_id: &str,
@@ -278,7 +305,7 @@ impl ApplicationContext {
         symbol_name: &str,
         kind_filter: Option<SymbolKind>,
     ) -> Result<ResultEnvelope<VerifiedSourceResponse>> {
-        search::get_symbol(
+        let result = search::get_symbol(
             repo_id,
             relative_path,
             symbol_name,
@@ -286,7 +313,28 @@ impl ApplicationContext {
             self.run_manager.registry_query(),
             &self.run_manager,
             self.blob_store.as_ref(),
-        )
+        )?;
+        if result.trust == TrustLevel::Suspect {
+            let detail = match &result.outcome {
+                crate::domain::RetrievalOutcome::Blocked { reason } => reason.clone(),
+                other => format!("{other:?}"),
+            };
+            if let Err(e) = self.run_manager.persistence().save_operational_event(
+                &OperationalEvent {
+                    repo_id: repo_id.to_string(),
+                    kind: OperationalEventKind::IntegrityEvent {
+                        run_id: result.provenance.as_ref().map(|p| p.run_id.clone()),
+                        relative_path: Some(relative_path.to_string()),
+                        kind: IntegrityEventKind::VerificationFailed,
+                        detail,
+                    },
+                    timestamp_unix_ms: unix_timestamp_ms(),
+                },
+            ) {
+                warn!(repo_id = %repo_id, error = %e, "failed to record verification failed event");
+            }
+        }
+        Ok(result)
     }
 
     pub fn get_symbols(
@@ -294,13 +342,50 @@ impl ApplicationContext {
         repo_id: &str,
         requests: &[BatchRetrievalRequest],
     ) -> Result<ResultEnvelope<GetSymbolsResponse>> {
-        search::get_symbols(
+        let result = search::get_symbols(
             repo_id,
             requests,
             self.run_manager.registry_query(),
             &self.run_manager,
             self.blob_store.as_ref(),
-        )
+        )?;
+        if let Some(ref data) = result.data {
+            for item in &data.results {
+                let (trust, outcome, path) = match item {
+                    crate::domain::BatchRetrievalResultItem::Symbol {
+                        relative_path,
+                        result: r,
+                        ..
+                    } => (&r.trust, &r.outcome, relative_path.as_str()),
+                    crate::domain::BatchRetrievalResultItem::CodeSlice {
+                        relative_path,
+                        result: r,
+                        ..
+                    } => (&r.trust, &r.outcome, relative_path.as_str()),
+                };
+                if *trust == TrustLevel::Suspect {
+                    let detail = match outcome {
+                        crate::domain::RetrievalOutcome::Blocked { reason } => reason.clone(),
+                        other => format!("{other:?}"),
+                    };
+                    if let Err(e) = self.run_manager.persistence().save_operational_event(
+                        &OperationalEvent {
+                            repo_id: repo_id.to_string(),
+                            kind: OperationalEventKind::IntegrityEvent {
+                                run_id: result.provenance.as_ref().map(|p| p.run_id.clone()),
+                                relative_path: Some(path.to_string()),
+                                kind: IntegrityEventKind::VerificationFailed,
+                                detail,
+                            },
+                            timestamp_unix_ms: unix_timestamp_ms(),
+                        },
+                    ) {
+                        warn!(repo_id = %repo_id, error = %e, "failed to record verification failed event");
+                    }
+                }
+            }
+        }
+        Ok(result)
     }
 
     pub fn run_manager(&self) -> &Arc<RunManager> {
@@ -336,7 +421,7 @@ mod tests {
     use crate::config::ServerConfig;
     use crate::domain::{
         Checkpoint, ComponentHealth, DiscoveryManifest, FileRecord, HealthIssueCategory,
-        IdempotencyRecord, IndexRun, IndexRunStatus, Repository, RepositoryStatus,
+        IdempotencyRecord, IndexRun, IndexRunStatus, RepairEvent, Repository, RepositoryStatus,
     };
     use crate::error::{Result, TokenizorError};
     use crate::storage::{
@@ -550,6 +635,29 @@ mod tests {
 
         fn save_discovery_manifest(&self, manifest: &DiscoveryManifest) -> Result<()> {
             self.backing.save_discovery_manifest(manifest)
+        }
+
+        fn save_repair_event(&self, event: &RepairEvent) -> Result<()> {
+            self.backing.save_repair_event(event)
+        }
+
+        fn get_repair_events(&self, repo_id: &str) -> Result<Vec<RepairEvent>> {
+            self.backing.get_repair_events(repo_id)
+        }
+
+        fn save_operational_event(
+            &self,
+            event: &crate::domain::OperationalEvent,
+        ) -> Result<()> {
+            self.backing.save_operational_event(event)
+        }
+
+        fn get_operational_events(
+            &self,
+            repo_id: &str,
+            filter: &crate::domain::OperationalEventFilter,
+        ) -> Result<Vec<crate::domain::OperationalEvent>> {
+            self.backing.get_operational_events(repo_id, filter)
         }
     }
 

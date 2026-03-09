@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::repository::RepositoryStatus;
 use super::retrieval::NextAction;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -204,6 +205,8 @@ pub struct Checkpoint {
     pub cursor: String,
     pub files_processed: u64,
     pub symbols_written: u64,
+    #[serde(default)]
+    pub files_failed: u64,
     pub created_at_unix_ms: u64,
 }
 
@@ -357,6 +360,173 @@ pub struct RunStatusReport {
     pub progress: Option<RunProgressSnapshot>,
     pub file_outcome_summary: Option<FileOutcomeSummary>,
     pub action_required: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", tag = "scope")]
+pub enum RepairScope {
+    Repository,
+    Run { run_id: String },
+    File { run_id: String, relative_path: String },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", tag = "outcome")]
+pub enum RepairOutcome {
+    Restored,
+    AlreadyHealthy,
+    CannotRestore { reason: String },
+    RequiresReindex,
+    InProgress { run_id: String },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RepairResult {
+    pub repo_id: String,
+    pub scope: RepairScope,
+    pub previous_status: RepositoryStatus,
+    pub outcome: RepairOutcome,
+    pub next_action: Option<NextAction>,
+    pub detail: String,
+    pub recorded_at_unix_ms: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RepairEvent {
+    pub repo_id: String,
+    pub scope: RepairScope,
+    pub previous_status: RepositoryStatus,
+    pub outcome: RepairOutcome,
+    pub detail: String,
+    pub timestamp_unix_ms: u64,
+}
+
+impl RepairEvent {
+    pub fn to_operational_event(&self) -> OperationalEvent {
+        OperationalEvent {
+            repo_id: self.repo_id.clone(),
+            kind: OperationalEventKind::RepairPerformed {
+                scope: self.scope.clone(),
+                previous_status: self.previous_status.clone(),
+                outcome: self.outcome.clone(),
+                detail: self.detail.clone(),
+            },
+            timestamp_unix_ms: self.timestamp_unix_ms,
+        }
+    }
+}
+
+// --- Operational history types (Story 4.6) ---
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum IntegrityEventKind {
+    Quarantined,
+    VerificationFailed,
+    SuspectDetected,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationalEventKind {
+    RunStarted {
+        run_id: String,
+        mode: IndexRunMode,
+    },
+    RunCompleted {
+        run_id: String,
+        status: IndexRunStatus,
+        files_processed: usize,
+        error_summary: Option<String>,
+    },
+    RunInterrupted {
+        run_id: String,
+        reason: String,
+    },
+    CheckpointCreated {
+        run_id: String,
+        cursor: String,
+        files_committed: usize,
+    },
+    RepairPerformed {
+        scope: RepairScope,
+        previous_status: RepositoryStatus,
+        outcome: RepairOutcome,
+        detail: String,
+    },
+    RepositoryStatusChanged {
+        previous: RepositoryStatus,
+        current: RepositoryStatus,
+        trigger: String,
+    },
+    IntegrityEvent {
+        run_id: Option<String>,
+        relative_path: Option<String>,
+        kind: IntegrityEventKind,
+        detail: String,
+    },
+    StartupSweepCompleted {
+        stale_runs_found: usize,
+        actions_taken: Vec<String>,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperationalEvent {
+    pub repo_id: String,
+    pub kind: OperationalEventKind,
+    pub timestamp_unix_ms: u64,
+}
+
+impl OperationalEvent {
+    pub fn to_repair_event(&self) -> Option<RepairEvent> {
+        match &self.kind {
+            OperationalEventKind::RepairPerformed {
+                scope,
+                previous_status,
+                outcome,
+                detail,
+            } => Some(RepairEvent {
+                repo_id: self.repo_id.clone(),
+                scope: scope.clone(),
+                previous_status: previous_status.clone(),
+                outcome: outcome.clone(),
+                detail: detail.clone(),
+                timestamp_unix_ms: self.timestamp_unix_ms,
+            }),
+            _ => None,
+        }
+    }
+
+    pub fn event_name(&self) -> &'static str {
+        match &self.kind {
+            OperationalEventKind::RunStarted { .. } => "run.started",
+            OperationalEventKind::RunCompleted { status, .. } => match status {
+                IndexRunStatus::Succeeded => "run.succeeded",
+                IndexRunStatus::Failed => "run.failed",
+                IndexRunStatus::Cancelled => "run.cancelled",
+                IndexRunStatus::Aborted => "run.aborted",
+                _ => "run.completed",
+            },
+            OperationalEventKind::RunInterrupted { .. } => "run.interrupted",
+            OperationalEventKind::CheckpointCreated { .. } => "checkpoint.created",
+            OperationalEventKind::RepairPerformed { .. } => "repair.completed",
+            OperationalEventKind::RepositoryStatusChanged { .. } => "repository.status_changed",
+            OperationalEventKind::IntegrityEvent { kind, .. } => match kind {
+                IntegrityEventKind::Quarantined => "integrity.quarantined",
+                IntegrityEventKind::VerificationFailed => "integrity.verification_failed",
+                IntegrityEventKind::SuspectDetected => "integrity.suspect_detected",
+            },
+            OperationalEventKind::StartupSweepCompleted { .. } => "startup.sweep_completed",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct OperationalEventFilter {
+    pub category: Option<String>,
+    pub since_unix_ms: Option<u64>,
+    pub limit: Option<usize>,
 }
 
 #[cfg(test)]
@@ -1147,6 +1317,7 @@ mod tests {
                 cursor: "src/main.rs".to_string(),
                 files_processed: 1,
                 symbols_written: 2,
+                files_failed: 0,
                 created_at_unix_ms: 1100,
             },
             durable_files_skipped: 1,
@@ -1163,5 +1334,310 @@ mod tests {
         assert_eq!(json, "\"reindex\"");
         let deserialized: IndexRunMode = serde_json::from_str(&json).unwrap();
         assert_eq!(mode, deserialized);
+    }
+
+    // --- Operational history tests (Story 4.6) ---
+
+    #[test]
+    fn test_event_name_run_started() {
+        let event = OperationalEvent {
+            repo_id: "r1".to_string(),
+            kind: OperationalEventKind::RunStarted {
+                run_id: "run-1".to_string(),
+                mode: IndexRunMode::Full,
+            },
+            timestamp_unix_ms: 1000,
+        };
+        assert_eq!(event.event_name(), "run.started");
+    }
+
+    #[test]
+    fn test_event_name_run_completed_variants() {
+        let make = |status: IndexRunStatus| OperationalEvent {
+            repo_id: "r1".to_string(),
+            kind: OperationalEventKind::RunCompleted {
+                run_id: "run-1".to_string(),
+                status,
+                files_processed: 10,
+                error_summary: None,
+            },
+            timestamp_unix_ms: 2000,
+        };
+        assert_eq!(make(IndexRunStatus::Succeeded).event_name(), "run.succeeded");
+        assert_eq!(make(IndexRunStatus::Failed).event_name(), "run.failed");
+        assert_eq!(make(IndexRunStatus::Cancelled).event_name(), "run.cancelled");
+        assert_eq!(make(IndexRunStatus::Aborted).event_name(), "run.aborted");
+        assert_eq!(make(IndexRunStatus::Running).event_name(), "run.completed");
+    }
+
+    #[test]
+    fn test_event_name_checkpoint() {
+        let event = OperationalEvent {
+            repo_id: "r1".to_string(),
+            kind: OperationalEventKind::CheckpointCreated {
+                run_id: "run-1".to_string(),
+                cursor: "file-5".to_string(),
+                files_committed: 5,
+            },
+            timestamp_unix_ms: 3000,
+        };
+        assert_eq!(event.event_name(), "checkpoint.created");
+    }
+
+    #[test]
+    fn test_event_name_repair() {
+        let event = OperationalEvent {
+            repo_id: "r1".to_string(),
+            kind: OperationalEventKind::RepairPerformed {
+                scope: RepairScope::Repository,
+                previous_status: RepositoryStatus::Degraded,
+                outcome: RepairOutcome::Restored,
+                detail: "ok".to_string(),
+            },
+            timestamp_unix_ms: 4000,
+        };
+        assert_eq!(event.event_name(), "repair.completed");
+    }
+
+    #[test]
+    fn test_event_name_integrity_variants() {
+        let make = |kind: IntegrityEventKind| OperationalEvent {
+            repo_id: "r1".to_string(),
+            kind: OperationalEventKind::IntegrityEvent {
+                run_id: None,
+                relative_path: None,
+                kind,
+                detail: "test".to_string(),
+            },
+            timestamp_unix_ms: 5000,
+        };
+        assert_eq!(
+            make(IntegrityEventKind::Quarantined).event_name(),
+            "integrity.quarantined"
+        );
+        assert_eq!(
+            make(IntegrityEventKind::VerificationFailed).event_name(),
+            "integrity.verification_failed"
+        );
+        assert_eq!(
+            make(IntegrityEventKind::SuspectDetected).event_name(),
+            "integrity.suspect_detected"
+        );
+    }
+
+    #[test]
+    fn test_event_name_startup_sweep() {
+        let event = OperationalEvent {
+            repo_id: "r1".to_string(),
+            kind: OperationalEventKind::StartupSweepCompleted {
+                stale_runs_found: 2,
+                actions_taken: vec!["a".to_string()],
+            },
+            timestamp_unix_ms: 6000,
+        };
+        assert_eq!(event.event_name(), "startup.sweep_completed");
+    }
+
+    #[test]
+    fn test_event_name_repository_status_changed() {
+        let event = OperationalEvent {
+            repo_id: "r1".to_string(),
+            kind: OperationalEventKind::RepositoryStatusChanged {
+                previous: RepositoryStatus::Ready,
+                current: RepositoryStatus::Invalidated,
+                trigger: "user request".to_string(),
+            },
+            timestamp_unix_ms: 7000,
+        };
+        assert_eq!(event.event_name(), "repository.status_changed");
+    }
+
+    #[test]
+    fn test_event_name_run_interrupted() {
+        let event = OperationalEvent {
+            repo_id: "r1".to_string(),
+            kind: OperationalEventKind::RunInterrupted {
+                run_id: "run-1".to_string(),
+                reason: "stale".to_string(),
+            },
+            timestamp_unix_ms: 8000,
+        };
+        assert_eq!(event.event_name(), "run.interrupted");
+    }
+
+    #[test]
+    fn test_operational_event_serde_roundtrip() {
+        let event = OperationalEvent {
+            repo_id: "repo-1".to_string(),
+            kind: OperationalEventKind::RunStarted {
+                run_id: "run-1".to_string(),
+                mode: IndexRunMode::Full,
+            },
+            timestamp_unix_ms: 1000,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let deserialized: OperationalEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, deserialized);
+    }
+
+    #[test]
+    fn test_operational_event_repair_serde_roundtrip() {
+        let event = OperationalEvent {
+            repo_id: "repo-1".to_string(),
+            kind: OperationalEventKind::RepairPerformed {
+                scope: RepairScope::Repository,
+                previous_status: RepositoryStatus::Degraded,
+                outcome: RepairOutcome::Restored,
+                detail: "fixed".to_string(),
+            },
+            timestamp_unix_ms: 2000,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let deserialized: OperationalEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, deserialized);
+    }
+
+    #[test]
+    fn test_repair_event_to_operational_event_roundtrip() {
+        let repair = RepairEvent {
+            repo_id: "repo-1".to_string(),
+            scope: RepairScope::Repository,
+            previous_status: RepositoryStatus::Degraded,
+            outcome: RepairOutcome::Restored,
+            detail: "fixed".to_string(),
+            timestamp_unix_ms: 3000,
+        };
+        let op_event = repair.to_operational_event();
+        assert_eq!(op_event.repo_id, "repo-1");
+        assert_eq!(op_event.timestamp_unix_ms, 3000);
+        assert_eq!(op_event.event_name(), "repair.completed");
+
+        let back = op_event.to_repair_event().unwrap();
+        assert_eq!(back, repair);
+    }
+
+    #[test]
+    fn test_to_repair_event_returns_none_for_non_repair() {
+        let event = OperationalEvent {
+            repo_id: "repo-1".to_string(),
+            kind: OperationalEventKind::RunStarted {
+                run_id: "run-1".to_string(),
+                mode: IndexRunMode::Full,
+            },
+            timestamp_unix_ms: 1000,
+        };
+        assert!(event.to_repair_event().is_none());
+    }
+
+    #[test]
+    fn test_operational_event_filter_defaults() {
+        let filter = OperationalEventFilter::default();
+        assert!(filter.category.is_none());
+        assert!(filter.since_unix_ms.is_none());
+        assert!(filter.limit.is_none());
+    }
+
+    #[test]
+    fn test_event_no_raw_source_content() {
+        // Privacy: operational events must not contain raw source code
+        let event = OperationalEvent {
+            repo_id: "repo-1".to_string(),
+            kind: OperationalEventKind::RunCompleted {
+                run_id: "run-1".to_string(),
+                status: IndexRunStatus::Succeeded,
+                files_processed: 42,
+                error_summary: None,
+            },
+            timestamp_unix_ms: 1000,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        // Should only contain identifiers, not file contents
+        assert!(!json.contains("fn "));
+        assert!(!json.contains("pub struct"));
+        assert!(json.contains("run-1"));
+        assert!(json.contains("repo-1"));
+    }
+
+    #[test]
+    fn test_integrity_event_does_not_contain_source_content() {
+        // Task 6.4.1: IntegrityEvent detail uses blob_id and path, not raw bytes
+        let events = vec![
+            OperationalEvent {
+                repo_id: "repo-1".to_string(),
+                kind: OperationalEventKind::IntegrityEvent {
+                    run_id: Some("run-1".to_string()),
+                    relative_path: Some("src/main.rs".to_string()),
+                    kind: IntegrityEventKind::Quarantined,
+                    detail: "blob_id/content_hash mismatch".to_string(),
+                },
+                timestamp_unix_ms: 1000,
+            },
+            OperationalEvent {
+                repo_id: "repo-1".to_string(),
+                kind: OperationalEventKind::IntegrityEvent {
+                    run_id: Some("run-2".to_string()),
+                    relative_path: Some("src/lib.rs".to_string()),
+                    kind: IntegrityEventKind::VerificationFailed,
+                    detail: "blob integrity verification failed: content hash mismatch".to_string(),
+                },
+                timestamp_unix_ms: 2000,
+            },
+            OperationalEvent {
+                repo_id: "repo-1".to_string(),
+                kind: OperationalEventKind::IntegrityEvent {
+                    run_id: Some("run-3".to_string()),
+                    relative_path: Some("src/app.rs".to_string()),
+                    kind: IntegrityEventKind::SuspectDetected,
+                    detail: "quarantined file failed re-verification during repair".to_string(),
+                },
+                timestamp_unix_ms: 3000,
+            },
+        ];
+
+        for event in &events {
+            let json = serde_json::to_string(event).unwrap();
+            // Must contain identifiers
+            assert!(json.contains("repo-1"));
+            // Must NOT contain source code patterns
+            assert!(!json.contains("fn "), "event detail must not contain source code");
+            assert!(!json.contains("pub struct"), "event detail must not contain source code");
+            assert!(!json.contains("import "), "event detail must not contain source code");
+            assert!(!json.contains("class "), "event detail must not contain source code");
+        }
+    }
+
+    #[test]
+    fn test_event_serialization_excludes_raw_content_fields() {
+        // Task 6.4.2: serialized event JSON contains no field named content, source, or bytes
+        let event = OperationalEvent {
+            repo_id: "repo-1".to_string(),
+            kind: OperationalEventKind::IntegrityEvent {
+                run_id: Some("run-1".to_string()),
+                relative_path: Some("src/main.rs".to_string()),
+                kind: IntegrityEventKind::Quarantined,
+                detail: "blob_id/content_hash mismatch".to_string(),
+            },
+            timestamp_unix_ms: 1000,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        // Recursively check no field is named "content", "source", or "bytes"
+        fn check_no_forbidden_keys(val: &serde_json::Value) {
+            if let serde_json::Value::Object(map) = val {
+                for (key, child) in map {
+                    assert_ne!(key, "content", "serialized event must not have a 'content' field");
+                    assert_ne!(key, "source", "serialized event must not have a 'source' field");
+                    assert_ne!(key, "bytes", "serialized event must not have a 'bytes' field");
+                    assert_ne!(key, "source_bytes", "serialized event must not have a 'source_bytes' field");
+                    check_no_forbidden_keys(child);
+                }
+            } else if let serde_json::Value::Array(arr) = val {
+                for child in arr {
+                    check_no_forbidden_keys(child);
+                }
+            }
+        }
+        check_no_forbidden_keys(&parsed);
     }
 }

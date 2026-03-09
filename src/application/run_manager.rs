@@ -10,12 +10,12 @@ use tracing::{debug, error, info, warn};
 use crate::domain::{
     Checkpoint, ComponentHealth, DiscoveryManifest, FileHealthSummary, FileOutcome,
     FileOutcomeSummary, FileProcessingResult, FileRecord, HealthIssueCategory, IdempotencyRecord,
-    IdempotencyStatus, IndexRun, IndexRunMode, IndexRunStatus, InvalidationResult, LanguageId,
-    NextAction, OperationalEvent, OperationalEventFilter, OperationalEventKind,
-    PersistedFileOutcome, RecoveryStateKind, RepairEvent, RepairOutcome, RepairResult, RepairScope,
-    RepositoryHealthReport, RepositoryStatus, ResumeRejectReason, ResumeRunOutcome, RunHealth,
-    RunHealthSummary, RunPhase, RunProgressSnapshot, RunRecoveryState, RunStatusReport,
-    StatusContext, unix_timestamp_ms,
+    IdempotencyStatus, IndexRun, IndexRunMode, IndexRunStatus, IntegrityEventKind,
+    InvalidationResult, LanguageId, NextAction, OperationalEvent, OperationalEventFilter,
+    OperationalEventKind, PersistedFileOutcome, RecoveryStateKind, RepairEvent, RepairOutcome,
+    RepairResult, RepairScope, RepositoryHealthReport, RepositoryStatus, ResumeRejectReason,
+    ResumeRunOutcome, RunHealth, RunHealthSummary, RunPhase, RunProgressSnapshot,
+    RunRecoveryState, RunStatusReport, StatusContext, unix_timestamp_ms,
 };
 use crate::error::{Result, TokenizorError};
 use crate::indexing::pipeline::{IndexingPipeline, PipelineProgress, PipelineResumeState};
@@ -1837,11 +1837,30 @@ impl RunManager {
                 .control_plane
                 .save_discovery_manifest(manifest)
         });
+        let manager_for_integrity = Arc::clone(self);
+        let run_id_for_integrity = run_id.clone();
+        let repo_id_for_integrity = repo_id_owned.clone();
+        let integrity_event_callback =
+            Box::new(move |relative_path: &str, reason: &str| {
+                manager_for_integrity
+                    .control_plane
+                    .save_operational_event(&OperationalEvent {
+                        repo_id: repo_id_for_integrity.clone(),
+                        kind: OperationalEventKind::IntegrityEvent {
+                            run_id: Some(run_id_for_integrity.clone()),
+                            relative_path: Some(relative_path.to_string()),
+                            kind: IntegrityEventKind::Quarantined,
+                            detail: reason.to_string(),
+                        },
+                        timestamp_unix_ms: unix_timestamp_ms(),
+                    })
+            });
 
         let mut pipeline = IndexingPipeline::new(run_id.clone(), repo_root, token.clone())
             .with_cas(blob_store, repo_id_owned.clone())
             .with_discovery_manifest_callback(discovery_manifest_callback)
             .with_durable_record_callback(durable_record_callback)
+            .with_integrity_event_callback(integrity_event_callback)
             .with_checkpoint_callback(checkpoint_callback, 100);
         if let Some(resume_state) = resume_from {
             pipeline = pipeline.with_resume_state(resume_state);
@@ -2429,6 +2448,20 @@ impl RunManager {
                             verified_indices.push(i);
                         } else {
                             failed_paths.push(record.relative_path.clone());
+                            if let Err(e) = self.control_plane.save_operational_event(
+                                &OperationalEvent {
+                                    repo_id: repo_id.to_string(),
+                                    kind: OperationalEventKind::IntegrityEvent {
+                                        run_id: Some(run.run_id.clone()),
+                                        relative_path: Some(record.relative_path.clone()),
+                                        kind: IntegrityEventKind::SuspectDetected,
+                                        detail: "quarantined file failed re-verification during repair".to_string(),
+                                    },
+                                    timestamp_unix_ms: unix_timestamp_ms(),
+                                },
+                            ) {
+                                warn!(repo_id = %repo_id, path = %record.relative_path, error = %e, "failed to record suspect detected event");
+                            }
                         }
                     }
 

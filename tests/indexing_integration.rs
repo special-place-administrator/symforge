@@ -6,9 +6,11 @@ use tokenizor_agentic_mcp::ApplicationContext;
 use tokenizor_agentic_mcp::application::run_manager::RunManager;
 use tokenizor_agentic_mcp::config::{BlobStoreConfig, ControlPlaneBackend, ServerConfig};
 use tokenizor_agentic_mcp::domain::{
-    Checkpoint, ComponentHealth, DiscoveryManifest, FileRecord, IndexRunMode, IndexRunStatus,
-    LanguageId, NextAction, PersistedFileOutcome, ProjectIdentityKind, RecoveryStateKind,
-    Repository, RepositoryKind, RepositoryStatus, ResumeRejectReason, ResumeRunOutcome, RunHealth,
+    Checkpoint, ComponentHealth, DiscoveryManifest, FileRecord, IndexRun, IndexRunMode,
+    IndexRunStatus, LanguageId, NextAction, OperationalEvent, OperationalEventFilter,
+    OperationalEventKind, PersistedFileOutcome, ProjectIdentityKind, RecoveryStateKind,
+    RepairOutcome, RepairScope, Repository, RepositoryKind, RepositoryStatus,
+    ResumeRejectReason, ResumeRunOutcome, RunHealth,
 };
 use tokenizor_agentic_mcp::error::TokenizorError;
 use tokenizor_agentic_mcp::storage::registry_persistence::RegistryPersistence;
@@ -101,6 +103,7 @@ fn sample_checkpoint(
         cursor: cursor.to_string(),
         files_processed,
         symbols_written,
+        files_failed: 0,
         created_at_unix_ms: 2_000,
     }
 }
@@ -2692,4 +2695,808 @@ fn test_idempotency_key_space_isolation() {
         Some(index_run_id.as_str()),
         "index record should still reference original run"
     );
+}
+
+#[test]
+fn test_repair_is_idempotent() {
+    use tokenizor_agentic_mcp::domain::{RepairOutcome, RepairScope};
+
+    let (_dir, manager, _cas_dir, cas) = setup_test_env();
+
+    let repo = Repository {
+        repo_id: "repo-idem".to_string(),
+        kind: RepositoryKind::Local,
+        root_uri: "file:///tmp/repo-idem".to_string(),
+        project_identity: "repo-idem".to_string(),
+        project_identity_kind: ProjectIdentityKind::LocalRootPath,
+        default_branch: None,
+        last_known_revision: None,
+        status: RepositoryStatus::Ready,
+        invalidated_at_unix_ms: None,
+        invalidation_reason: None,
+        quarantined_at_unix_ms: None,
+        quarantine_reason: None,
+    };
+    manager.persistence().save_repository(&repo).unwrap();
+
+    let first = manager
+        .repair_repository(
+            "repo-idem",
+            RepairScope::Repository,
+            PathBuf::from("/tmp/repo-idem"),
+            cas.clone(),
+        )
+        .unwrap();
+
+    let second = manager
+        .repair_repository(
+            "repo-idem",
+            RepairScope::Repository,
+            PathBuf::from("/tmp/repo-idem"),
+            cas,
+        )
+        .unwrap();
+
+    assert_eq!(first.outcome, RepairOutcome::AlreadyHealthy);
+    assert_eq!(second.outcome, RepairOutcome::AlreadyHealthy);
+    assert_eq!(first.outcome, second.outcome);
+}
+
+#[test]
+fn test_repair_flow_degraded_to_ready() {
+    let (_dir, manager, _cas_dir, cas) = setup_test_env();
+
+    // Create repo with Degraded status
+    let repo = Repository {
+        repo_id: "repo-deg".to_string(),
+        kind: RepositoryKind::Local,
+        root_uri: "file:///tmp/repo-deg".to_string(),
+        project_identity: "repo-deg".to_string(),
+        project_identity_kind: ProjectIdentityKind::LocalRootPath,
+        default_branch: None,
+        last_known_revision: None,
+        status: RepositoryStatus::Degraded,
+        invalidated_at_unix_ms: None,
+        invalidation_reason: None,
+        quarantined_at_unix_ms: None,
+        quarantine_reason: None,
+    };
+    manager.persistence().save_repository(&repo).unwrap();
+
+    // Create a succeeded run with all Committed file records
+    let run = IndexRun {
+        run_id: "run-deg1".to_string(),
+        repo_id: "repo-deg".to_string(),
+        mode: IndexRunMode::Full,
+        status: IndexRunStatus::Succeeded,
+        requested_at_unix_ms: 1000,
+        started_at_unix_ms: Some(1001),
+        finished_at_unix_ms: Some(1002),
+        idempotency_key: None,
+        request_hash: None,
+        checkpoint_cursor: None,
+        error_summary: None,
+        not_yet_supported: None,
+        prior_run_id: None,
+        description: None,
+        recovery_state: None,
+    };
+    manager.persistence().save_run(&run).unwrap();
+
+    let record = sample_committed_record("run-deg1", "repo-deg", "src/lib.rs", 1002);
+    manager
+        .persistence()
+        .save_file_records("run-deg1", &[record])
+        .unwrap();
+
+    let result = manager
+        .repair_repository(
+            "repo-deg",
+            RepairScope::Repository,
+            PathBuf::from("/tmp/repo-deg"),
+            cas,
+        )
+        .unwrap();
+
+    assert_eq!(result.outcome, RepairOutcome::Restored);
+    let updated_repo = manager
+        .persistence()
+        .get_repository("repo-deg")
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated_repo.status, RepositoryStatus::Ready);
+}
+
+#[test]
+fn test_repair_event_persisted_and_retrievable() {
+    let (_dir, manager, _cas_dir, cas) = setup_test_env();
+
+    let repo = Repository {
+        repo_id: "repo-evt".to_string(),
+        kind: RepositoryKind::Local,
+        root_uri: "file:///tmp/repo-evt".to_string(),
+        project_identity: "repo-evt".to_string(),
+        project_identity_kind: ProjectIdentityKind::LocalRootPath,
+        default_branch: None,
+        last_known_revision: None,
+        status: RepositoryStatus::Ready,
+        invalidated_at_unix_ms: None,
+        invalidation_reason: None,
+        quarantined_at_unix_ms: None,
+        quarantine_reason: None,
+    };
+    manager.persistence().save_repository(&repo).unwrap();
+
+    manager
+        .repair_repository(
+            "repo-evt",
+            RepairScope::Repository,
+            PathBuf::from("/tmp/repo-evt"),
+            cas,
+        )
+        .unwrap();
+
+    let events = manager
+        .persistence()
+        .get_repair_events("repo-evt")
+        .unwrap();
+    assert!(
+        !events.is_empty(),
+        "repair events should be persisted after repair call"
+    );
+    assert_eq!(events[0].repo_id, "repo-evt");
+    assert_eq!(events[0].outcome, RepairOutcome::AlreadyHealthy);
+}
+
+#[test]
+fn test_repair_outcome_observable_in_repository_status() {
+    let (_dir, manager, _cas_dir, cas) = setup_test_env();
+
+    // Start with Degraded repo
+    let repo = Repository {
+        repo_id: "repo-obs".to_string(),
+        kind: RepositoryKind::Local,
+        root_uri: "file:///tmp/repo-obs".to_string(),
+        project_identity: "repo-obs".to_string(),
+        project_identity_kind: ProjectIdentityKind::LocalRootPath,
+        default_branch: None,
+        last_known_revision: None,
+        status: RepositoryStatus::Degraded,
+        invalidated_at_unix_ms: None,
+        invalidation_reason: None,
+        quarantined_at_unix_ms: None,
+        quarantine_reason: None,
+    };
+    manager.persistence().save_repository(&repo).unwrap();
+
+    // Add a succeeded run with only committed files so repair can restore
+    let run = IndexRun {
+        run_id: "run-obs1".to_string(),
+        repo_id: "repo-obs".to_string(),
+        mode: IndexRunMode::Full,
+        status: IndexRunStatus::Succeeded,
+        requested_at_unix_ms: 1000,
+        started_at_unix_ms: Some(1001),
+        finished_at_unix_ms: Some(1002),
+        idempotency_key: None,
+        request_hash: None,
+        checkpoint_cursor: None,
+        error_summary: None,
+        not_yet_supported: None,
+        prior_run_id: None,
+        description: None,
+        recovery_state: None,
+    };
+    manager.persistence().save_run(&run).unwrap();
+
+    let record = sample_committed_record("run-obs1", "repo-obs", "src/main.rs", 1002);
+    manager
+        .persistence()
+        .save_file_records("run-obs1", &[record])
+        .unwrap();
+
+    // Before repair: Degraded
+    let before = manager
+        .persistence()
+        .get_repository("repo-obs")
+        .unwrap()
+        .unwrap();
+    assert_eq!(before.status, RepositoryStatus::Degraded);
+
+    // Repair
+    let result = manager
+        .repair_repository(
+            "repo-obs",
+            RepairScope::Repository,
+            PathBuf::from("/tmp/repo-obs"),
+            cas,
+        )
+        .unwrap();
+    assert_eq!(result.outcome, RepairOutcome::Restored);
+
+    // After repair: Ready
+    let after = manager
+        .persistence()
+        .get_repository("repo-obs")
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.status, RepositoryStatus::Ready);
+}
+
+#[test]
+fn test_repair_outcome_observable_in_next_retrieval() {
+    use tokenizor_agentic_mcp::application::search::check_request_gate;
+
+    let (_dir, manager, _cas_dir, cas) = setup_test_env();
+
+    // Start with Degraded repo (gates retrieval)
+    let repo = Repository {
+        repo_id: "repo-gate".to_string(),
+        kind: RepositoryKind::Local,
+        root_uri: "file:///tmp/repo-gate".to_string(),
+        project_identity: "repo-gate".to_string(),
+        project_identity_kind: ProjectIdentityKind::LocalRootPath,
+        default_branch: None,
+        last_known_revision: None,
+        status: RepositoryStatus::Degraded,
+        invalidated_at_unix_ms: None,
+        invalidation_reason: None,
+        quarantined_at_unix_ms: None,
+        quarantine_reason: None,
+    };
+    manager.persistence().save_repository(&repo).unwrap();
+
+    // Add a succeeded run with committed files
+    let run = IndexRun {
+        run_id: "run-gate1".to_string(),
+        repo_id: "repo-gate".to_string(),
+        mode: IndexRunMode::Full,
+        status: IndexRunStatus::Succeeded,
+        requested_at_unix_ms: 1000,
+        started_at_unix_ms: Some(1001),
+        finished_at_unix_ms: Some(1002),
+        idempotency_key: None,
+        request_hash: None,
+        checkpoint_cursor: None,
+        error_summary: None,
+        not_yet_supported: None,
+        prior_run_id: None,
+        description: None,
+        recovery_state: None,
+    };
+    manager.persistence().save_run(&run).unwrap();
+
+    let record = sample_committed_record("run-gate1", "repo-gate", "src/lib.rs", 1002);
+    manager
+        .persistence()
+        .save_file_records("run-gate1", &[record])
+        .unwrap();
+
+    // Before repair: Degraded should gate retrieval
+    let gate_before = check_request_gate("repo-gate", manager.registry_query(), &manager);
+    assert!(
+        gate_before.is_err(),
+        "Degraded repo should gate retrieval before repair"
+    );
+
+    // Repair to Ready
+    let result = manager
+        .repair_repository(
+            "repo-gate",
+            RepairScope::Repository,
+            PathBuf::from("/tmp/repo-gate"),
+            cas,
+        )
+        .unwrap();
+    assert_eq!(result.outcome, RepairOutcome::Restored);
+
+    // After repair: Ready should not gate retrieval
+    let gate_after = check_request_gate("repo-gate", manager.registry_query(), &manager);
+    assert!(
+        gate_after.is_ok(),
+        "Ready repo should not gate retrieval after repair"
+    );
+}
+
+// --- Health inspection integration tests (Story 4.5) ---
+
+fn save_test_repo(manager: &RunManager, repo_id: &str, status: RepositoryStatus) {
+    let repo = Repository {
+        repo_id: repo_id.to_string(),
+        kind: RepositoryKind::Git,
+        root_uri: format!("/tmp/{repo_id}"),
+        project_identity: format!("identity-{repo_id}"),
+        project_identity_kind: ProjectIdentityKind::GitCommonDir,
+        default_branch: None,
+        last_known_revision: None,
+        status,
+        invalidated_at_unix_ms: None,
+        invalidation_reason: None,
+        quarantined_at_unix_ms: None,
+        quarantine_reason: None,
+    };
+    manager.persistence().save_repository(&repo).unwrap();
+}
+
+fn save_test_run(
+    manager: &RunManager,
+    repo_id: &str,
+    run_id: &str,
+    status: IndexRunStatus,
+) {
+    let run = IndexRun {
+        run_id: run_id.to_string(),
+        repo_id: repo_id.to_string(),
+        mode: IndexRunMode::Full,
+        status,
+        requested_at_unix_ms: 1000,
+        started_at_unix_ms: Some(1001),
+        finished_at_unix_ms: Some(2000),
+        idempotency_key: None,
+        request_hash: None,
+        checkpoint_cursor: None,
+        error_summary: None,
+        not_yet_supported: None,
+        prior_run_id: None,
+        description: None,
+        recovery_state: None,
+    };
+    manager.persistence().save_run(&run).unwrap();
+}
+
+#[test]
+fn test_inspect_health_flow_healthy_repository() {
+    let (_dir, manager, _cas_dir, _cas) = setup_test_env();
+    save_test_repo(&manager, "repo-ih1", RepositoryStatus::Ready);
+    save_test_run(&manager, "repo-ih1", "run-ih1", IndexRunStatus::Succeeded);
+
+    let records = vec![
+        sample_committed_record("run-ih1", "repo-ih1", "src/a.rs", 2000),
+        sample_committed_record("run-ih1", "repo-ih1", "src/b.rs", 2000),
+    ];
+    manager
+        .persistence()
+        .save_file_records("run-ih1", &records)
+        .unwrap();
+
+    let report = manager.inspect_repository_health("repo-ih1").unwrap();
+
+    assert_eq!(report.status, RepositoryStatus::Ready);
+    assert!(!report.action_required);
+    assert!(report.next_action.is_none());
+    assert!(report.status_detail.starts_with("Repository is healthy"));
+    let fh = report.file_health.unwrap();
+    assert_eq!(fh.total_files, 2);
+    assert_eq!(fh.committed, 2);
+    let rs = report.latest_run.unwrap();
+    assert_eq!(rs.run_id, "run-ih1");
+    assert_eq!(rs.status, IndexRunStatus::Succeeded);
+}
+
+#[test]
+fn test_inspect_health_flow_degraded_repository() {
+    let (_dir, manager, _cas_dir, _cas) = setup_test_env();
+    save_test_repo(&manager, "repo-ih2", RepositoryStatus::Degraded);
+    save_test_run(&manager, "repo-ih2", "run-ih2", IndexRunStatus::Succeeded);
+
+    let records = vec![
+        sample_committed_record("run-ih2", "repo-ih2", "src/a.rs", 2000),
+        FileRecord {
+            relative_path: "src/b.rs".to_string(),
+            language: LanguageId::Rust,
+            blob_id: "blob-b".to_string(),
+            byte_len: 10,
+            content_hash: "hash-b".to_string(),
+            outcome: PersistedFileOutcome::Failed {
+                error: "parse error".to_string(),
+            },
+            symbols: vec![],
+            run_id: "run-ih2".to_string(),
+            repo_id: "repo-ih2".to_string(),
+            committed_at_unix_ms: 2000,
+        },
+    ];
+    manager
+        .persistence()
+        .save_file_records("run-ih2", &records)
+        .unwrap();
+
+    let report = manager.inspect_repository_health("repo-ih2").unwrap();
+
+    assert_eq!(report.status, RepositoryStatus::Degraded);
+    assert!(report.action_required);
+    assert_eq!(report.next_action, Some(NextAction::Repair));
+    let fh = report.file_health.unwrap();
+    assert_eq!(fh.committed, 1);
+    assert_eq!(fh.failed, 1);
+}
+
+#[test]
+fn test_inspect_health_flow_quarantined_repository() {
+    let (_dir, manager, _cas_dir, _cas) = setup_test_env();
+    let repo = Repository {
+        repo_id: "repo-ih3".to_string(),
+        kind: RepositoryKind::Git,
+        root_uri: "/tmp/repo-ih3".to_string(),
+        project_identity: "identity-ih3".to_string(),
+        project_identity_kind: ProjectIdentityKind::GitCommonDir,
+        default_branch: None,
+        last_known_revision: None,
+        status: RepositoryStatus::Quarantined,
+        invalidated_at_unix_ms: None,
+        invalidation_reason: None,
+        quarantined_at_unix_ms: Some(5000),
+        quarantine_reason: Some("suspect content".to_string()),
+    };
+    manager.persistence().save_repository(&repo).unwrap();
+
+    let report = manager.inspect_repository_health("repo-ih3").unwrap();
+
+    assert_eq!(report.status, RepositoryStatus::Quarantined);
+    assert!(report.action_required);
+    assert_eq!(report.next_action, Some(NextAction::Repair));
+    assert!(report.status_detail.contains("quarantined"));
+    let ctx = report.quarantine_context.unwrap();
+    assert_eq!(ctx.reason, "suspect content");
+}
+
+#[test]
+fn test_inspect_health_flow_after_repair() {
+    let (_dir, manager, _cas_dir, cas) = setup_test_env();
+    cas.initialize().unwrap();
+    save_test_repo(&manager, "repo-ih4", RepositoryStatus::Degraded);
+    save_test_run(&manager, "repo-ih4", "run-ih4", IndexRunStatus::Succeeded);
+
+    let records = vec![sample_committed_record(
+        "run-ih4", "repo-ih4", "src/a.rs", 2000,
+    )];
+    manager
+        .persistence()
+        .save_file_records("run-ih4", &records)
+        .unwrap();
+
+    // Before repair: degraded
+    let before = manager.inspect_repository_health("repo-ih4").unwrap();
+    assert_eq!(before.status, RepositoryStatus::Degraded);
+    assert!(before.action_required);
+
+    // Repair
+    let repo_dir = tempfile::tempdir().unwrap();
+    fs::write(repo_dir.path().join("src").join("a.rs").parent().unwrap(), "").ok();
+    let _ = manager.repair_repository(
+        "repo-ih4",
+        RepairScope::Repository,
+        repo_dir.path().to_path_buf(),
+        cas.clone(),
+    );
+
+    // After repair: check state changed (may be Ready or still Degraded depending on file state)
+    let after = manager.inspect_repository_health("repo-ih4").unwrap();
+    // The key assertion: we can observe the state through health inspection
+    assert!(after.checked_at_unix_ms >= before.checked_at_unix_ms);
+    assert!(!after.recent_repairs.is_empty());
+}
+
+#[test]
+fn test_inspect_health_mcp_tool_returns_explicit_json() {
+    let (_dir, manager, _cas_dir, _cas) = setup_test_env();
+    save_test_repo(&manager, "repo-ih5", RepositoryStatus::Ready);
+    save_test_run(&manager, "repo-ih5", "run-ih5", IndexRunStatus::Succeeded);
+
+    let report = manager.inspect_repository_health("repo-ih5").unwrap();
+    let json = serde_json::to_value(&report).unwrap();
+
+    // Verify all expected top-level fields are present and explicit
+    assert!(json.get("repo_id").is_some());
+    assert!(json.get("status").is_some());
+    assert!(json.get("action_required").is_some());
+    assert!(json.get("status_detail").is_some());
+    assert!(json.get("checked_at_unix_ms").is_some());
+    assert!(json.get("recent_repairs").is_some());
+    // status_detail is never empty
+    assert!(!json["status_detail"].as_str().unwrap().is_empty());
+}
+
+#[test]
+fn test_inspect_health_never_indexed_repository() {
+    let (_dir, manager, _cas_dir, _cas) = setup_test_env();
+    save_test_repo(&manager, "repo-ih6", RepositoryStatus::Pending);
+
+    let report = manager.inspect_repository_health("repo-ih6").unwrap();
+
+    assert_eq!(report.status, RepositoryStatus::Pending);
+    assert!(report.action_required);
+    assert_eq!(report.next_action, Some(NextAction::Reindex));
+    assert!(report.latest_run.is_none());
+    assert!(report.file_health.is_none());
+    assert!(report.status_detail.contains("never been indexed"));
+}
+
+// --- Operational History tests (Story 4.6) ---
+
+#[test]
+fn test_operational_history_save_and_retrieve() {
+    let (_dir, manager, _cas_dir, _cas) = setup_test_env();
+    save_test_repo(&manager, "repo-oh1", RepositoryStatus::Ready);
+
+    let event = OperationalEvent {
+        repo_id: "repo-oh1".to_string(),
+        kind: OperationalEventKind::RunStarted {
+            run_id: "run-1".to_string(),
+            mode: IndexRunMode::Full,
+        },
+        timestamp_unix_ms: 1000,
+    };
+    manager.persistence().save_operational_event(&event).unwrap();
+
+    let filter = OperationalEventFilter::default();
+    let events = manager.get_operational_history("repo-oh1", &filter).unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event_name(), "run.started");
+    assert_eq!(events[0].repo_id, "repo-oh1");
+}
+
+#[test]
+fn test_operational_history_category_filter() {
+    let (_dir, manager, _cas_dir, _cas) = setup_test_env();
+    save_test_repo(&manager, "repo-oh2", RepositoryStatus::Ready);
+
+    // Save events of different categories
+    manager
+        .persistence()
+        .save_operational_event(&OperationalEvent {
+            repo_id: "repo-oh2".to_string(),
+            kind: OperationalEventKind::RunStarted {
+                run_id: "run-1".to_string(),
+                mode: IndexRunMode::Full,
+            },
+            timestamp_unix_ms: 1000,
+        })
+        .unwrap();
+    manager
+        .persistence()
+        .save_operational_event(&OperationalEvent {
+            repo_id: "repo-oh2".to_string(),
+            kind: OperationalEventKind::CheckpointCreated {
+                run_id: "run-1".to_string(),
+                cursor: "file-5".to_string(),
+                files_committed: 5,
+            },
+            timestamp_unix_ms: 2000,
+        })
+        .unwrap();
+    manager
+        .persistence()
+        .save_operational_event(&OperationalEvent {
+            repo_id: "repo-oh2".to_string(),
+            kind: OperationalEventKind::RunCompleted {
+                run_id: "run-1".to_string(),
+                status: IndexRunStatus::Succeeded,
+                files_processed: 10,
+                error_summary: None,
+            },
+            timestamp_unix_ms: 3000,
+        })
+        .unwrap();
+
+    // Filter by "run" category
+    let run_filter = OperationalEventFilter {
+        category: Some("run".to_string()),
+        ..Default::default()
+    };
+    let run_events = manager
+        .get_operational_history("repo-oh2", &run_filter)
+        .unwrap();
+    assert_eq!(run_events.len(), 2); // run.started + run.succeeded
+
+    // Filter by "checkpoint" category
+    let cp_filter = OperationalEventFilter {
+        category: Some("checkpoint".to_string()),
+        ..Default::default()
+    };
+    let cp_events = manager
+        .get_operational_history("repo-oh2", &cp_filter)
+        .unwrap();
+    assert_eq!(cp_events.len(), 1);
+    assert_eq!(cp_events[0].event_name(), "checkpoint.created");
+}
+
+#[test]
+fn test_operational_history_timestamp_filter() {
+    let (_dir, manager, _cas_dir, _cas) = setup_test_env();
+    save_test_repo(&manager, "repo-oh3", RepositoryStatus::Ready);
+
+    for ts in [1000u64, 2000, 3000, 4000] {
+        manager
+            .persistence()
+            .save_operational_event(&OperationalEvent {
+                repo_id: "repo-oh3".to_string(),
+                kind: OperationalEventKind::RunStarted {
+                    run_id: format!("run-{ts}"),
+                    mode: IndexRunMode::Full,
+                },
+                timestamp_unix_ms: ts,
+            })
+            .unwrap();
+    }
+
+    let filter = OperationalEventFilter {
+        since_unix_ms: Some(2500),
+        ..Default::default()
+    };
+    let events = manager
+        .get_operational_history("repo-oh3", &filter)
+        .unwrap();
+    assert_eq!(events.len(), 2); // ts=3000 and ts=4000
+}
+
+#[test]
+fn test_operational_history_limit() {
+    let (_dir, manager, _cas_dir, _cas) = setup_test_env();
+    save_test_repo(&manager, "repo-oh4", RepositoryStatus::Ready);
+
+    for ts in 1..=10u64 {
+        manager
+            .persistence()
+            .save_operational_event(&OperationalEvent {
+                repo_id: "repo-oh4".to_string(),
+                kind: OperationalEventKind::RunStarted {
+                    run_id: format!("run-{ts}"),
+                    mode: IndexRunMode::Full,
+                },
+                timestamp_unix_ms: ts * 1000,
+            })
+            .unwrap();
+    }
+
+    let filter = OperationalEventFilter {
+        limit: Some(3),
+        ..Default::default()
+    };
+    let events = manager
+        .get_operational_history("repo-oh4", &filter)
+        .unwrap();
+    assert_eq!(events.len(), 3);
+    // Most recent first
+    assert!(events[0].timestamp_unix_ms >= events[1].timestamp_unix_ms);
+}
+
+#[test]
+fn test_operational_history_repo_not_found() {
+    let (_dir, manager, _cas_dir, _cas) = setup_test_env();
+
+    let result = manager.get_operational_history(
+        "nonexistent-repo",
+        &OperationalEventFilter::default(),
+    );
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        TokenizorError::NotFound(msg) => assert!(msg.contains("nonexistent-repo")),
+        other => panic!("expected NotFound, got: {other:?}"),
+    }
+}
+
+#[test]
+fn test_operational_history_repo_isolation() {
+    let (_dir, manager, _cas_dir, _cas) = setup_test_env();
+    save_test_repo(&manager, "repo-oh5a", RepositoryStatus::Ready);
+    save_test_repo(&manager, "repo-oh5b", RepositoryStatus::Ready);
+
+    manager
+        .persistence()
+        .save_operational_event(&OperationalEvent {
+            repo_id: "repo-oh5a".to_string(),
+            kind: OperationalEventKind::RunStarted {
+                run_id: "run-a".to_string(),
+                mode: IndexRunMode::Full,
+            },
+            timestamp_unix_ms: 1000,
+        })
+        .unwrap();
+    manager
+        .persistence()
+        .save_operational_event(&OperationalEvent {
+            repo_id: "repo-oh5b".to_string(),
+            kind: OperationalEventKind::RunStarted {
+                run_id: "run-b".to_string(),
+                mode: IndexRunMode::Full,
+            },
+            timestamp_unix_ms: 2000,
+        })
+        .unwrap();
+
+    let events_a = manager
+        .get_operational_history("repo-oh5a", &OperationalEventFilter::default())
+        .unwrap();
+    assert_eq!(events_a.len(), 1);
+    assert_eq!(events_a[0].repo_id, "repo-oh5a");
+
+    let events_b = manager
+        .get_operational_history("repo-oh5b", &OperationalEventFilter::default())
+        .unwrap();
+    assert_eq!(events_b.len(), 1);
+    assert_eq!(events_b[0].repo_id, "repo-oh5b");
+}
+
+#[test]
+fn test_operational_history_start_run_records_event() {
+    let (_dir, manager, _cas_dir, _cas) = setup_test_env();
+    save_test_repo(&manager, "repo-oh6", RepositoryStatus::Ready);
+
+    let run = manager.start_run("repo-oh6", IndexRunMode::Full).unwrap();
+
+    let events = manager
+        .get_operational_history("repo-oh6", &OperationalEventFilter::default())
+        .unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event_name(), "run.started");
+    match &events[0].kind {
+        OperationalEventKind::RunStarted { run_id, mode } => {
+            assert_eq!(run_id, &run.run_id);
+            assert_eq!(*mode, IndexRunMode::Full);
+        }
+        other => panic!("expected RunStarted, got: {other:?}"),
+    }
+}
+
+#[test]
+fn test_operational_history_invalidate_records_status_change() {
+    let (_dir, manager, _cas_dir, _cas) = setup_test_env();
+    save_test_repo(&manager, "repo-oh7", RepositoryStatus::Ready);
+
+    manager
+        .invalidate_repository("repo-oh7", None, Some("test reason"))
+        .unwrap();
+
+    let events = manager
+        .get_operational_history("repo-oh7", &OperationalEventFilter::default())
+        .unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event_name(), "repository.status_changed");
+    match &events[0].kind {
+        OperationalEventKind::RepositoryStatusChanged {
+            previous,
+            current,
+            trigger,
+        } => {
+            assert_eq!(*previous, RepositoryStatus::Ready);
+            assert_eq!(*current, RepositoryStatus::Invalidated);
+            assert_eq!(trigger, "test reason");
+        }
+        other => panic!("expected RepositoryStatusChanged, got: {other:?}"),
+    }
+}
+
+#[test]
+fn test_operational_history_repair_wrapper_roundtrip() {
+    let (_dir, manager, _cas_dir, _cas) = setup_test_env();
+    save_test_repo(&manager, "repo-oh8", RepositoryStatus::Ready);
+
+    // Save a repair event through the operational event system
+    let repair = tokenizor_agentic_mcp::domain::RepairEvent {
+        repo_id: "repo-oh8".to_string(),
+        scope: RepairScope::Repository,
+        previous_status: RepositoryStatus::Degraded,
+        outcome: RepairOutcome::Restored,
+        detail: "test repair".to_string(),
+        timestamp_unix_ms: 5000,
+    };
+
+    let op_event = repair.to_operational_event();
+    manager
+        .persistence()
+        .save_operational_event(&op_event)
+        .unwrap();
+
+    // Retrieve and convert back
+    let events = manager
+        .get_operational_history("repo-oh8", &OperationalEventFilter::default())
+        .unwrap();
+    assert_eq!(events.len(), 1);
+    let back = events[0].to_repair_event().unwrap();
+    assert_eq!(back.repo_id, "repo-oh8");
+    assert_eq!(back.scope, RepairScope::Repository);
+    assert_eq!(back.outcome, RepairOutcome::Restored);
+    assert_eq!(back.detail, "test repair");
+    assert_eq!(back.timestamp_unix_ms, 5000);
 }

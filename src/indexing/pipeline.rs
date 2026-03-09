@@ -140,6 +140,8 @@ pub struct IndexingPipeline {
     discovery_manifest_callback:
         Option<Box<dyn Fn(&DiscoveryManifest) -> Result<()> + Send + Sync>>,
     durable_record_callback: Option<Box<dyn Fn(&FileRecord) -> Result<()> + Send + Sync>>,
+    integrity_event_callback:
+        Option<Box<dyn Fn(&str, &str) -> Result<()> + Send + Sync>>,
     checkpoint_callback: Option<Box<dyn Fn() + Send + Sync>>,
     checkpoint_interval: u64,
     resume_from: Option<PipelineResumeState>,
@@ -160,6 +162,7 @@ impl IndexingPipeline {
             checkpoint_tracker: Arc::new(CheckpointTracker::new()),
             discovery_manifest_callback: None,
             durable_record_callback: None,
+            integrity_event_callback: None,
             checkpoint_callback: None,
             checkpoint_interval: 100,
             resume_from: None,
@@ -197,6 +200,14 @@ impl IndexingPipeline {
         callback: Box<dyn Fn(&FileRecord) -> Result<()> + Send + Sync>,
     ) -> Self {
         self.durable_record_callback = Some(callback);
+        self
+    }
+
+    pub fn with_integrity_event_callback(
+        mut self,
+        callback: Box<dyn Fn(&str, &str) -> Result<()> + Send + Sync>,
+    ) -> Self {
+        self.integrity_event_callback = Some(callback);
         self
     }
 
@@ -406,6 +417,9 @@ impl IndexingPipeline {
         let checkpoint_tracker = self.checkpoint_tracker.clone();
         let durable_record_callback: Option<Arc<dyn Fn(&FileRecord) -> Result<()> + Send + Sync>> =
             self.durable_record_callback.take().map(Arc::from);
+        let integrity_event_callback: Option<
+            Arc<dyn Fn(&str, &str) -> Result<()> + Send + Sync>,
+        > = self.integrity_event_callback.take().map(Arc::from);
         let checkpoint_callback: Option<Arc<dyn Fn() + Send + Sync>> =
             self.checkpoint_callback.take().map(|cb| Arc::from(cb));
         let checkpoint_interval = self.checkpoint_interval;
@@ -434,6 +448,7 @@ impl IndexingPipeline {
             let cas = cas.clone();
             let tracker = checkpoint_tracker.clone();
             let durable_record_callback = durable_record_callback.clone();
+            let integrity_event_callback = integrity_event_callback.clone();
             let cb = checkpoint_callback.clone();
             let cb_interval = checkpoint_interval;
 
@@ -525,6 +540,21 @@ impl IndexingPipeline {
                         circuit_broken.store(true, Ordering::Relaxed);
                         drop(permit);
                         return Some((result, file_record));
+                    }
+                }
+
+                if let Some(record) = file_record.as_ref() {
+                    if let PersistedFileOutcome::Quarantined { reason } = &record.outcome {
+                        if let Some(ref cb) = integrity_event_callback {
+                            if let Err(err) = cb(&record.relative_path, reason) {
+                                warn!(
+                                    run_id = %run_id,
+                                    path = %record.relative_path,
+                                    error = %err,
+                                    "failed to record quarantine integrity event"
+                                );
+                            }
+                        }
                     }
                 }
 
@@ -1185,6 +1215,76 @@ mod tests {
             count, 2,
             "expected callback at processed=2 and processed=4, got {count} calls"
         );
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_integrity_event_callback_fires_on_quarantine() {
+        use crate::storage::StoredBlob;
+
+        // CAS that returns a deliberately wrong blob_id to trigger quarantine
+        struct MismatchCas {
+            root: PathBuf,
+        }
+
+        impl BlobStore for MismatchCas {
+            fn backend_name(&self) -> &'static str {
+                "mismatch"
+            }
+            fn root_dir(&self) -> &std::path::Path {
+                &self.root
+            }
+            fn initialize(&self) -> crate::error::Result<crate::domain::ComponentHealth> {
+                unreachable!()
+            }
+            fn health_check(&self) -> crate::error::Result<crate::domain::ComponentHealth> {
+                unreachable!()
+            }
+            fn store_bytes(&self, bytes: &[u8]) -> crate::error::Result<StoredBlob> {
+                // Return wrong blob_id to trigger hash mismatch → quarantine
+                Ok(StoredBlob {
+                    blob_id: "deliberately_wrong_hash".to_string(),
+                    byte_len: bytes.len() as u64,
+                    was_created: true,
+                })
+            }
+            fn read_bytes(&self, _blob_id: &str) -> crate::error::Result<Vec<u8>> {
+                unreachable!()
+            }
+        }
+
+        let dir = temp_repo_with_files(&[("main.rs", "fn main() {}")]);
+        let cas: Arc<dyn BlobStore> = Arc::new(MismatchCas {
+            root: dir.path().to_path_buf(),
+        });
+
+        let quarantine_events: Arc<Mutex<Vec<(String, String)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let events_clone = quarantine_events.clone();
+
+        let callback = Box::new(move |path: &str, reason: &str| -> crate::error::Result<()> {
+            events_clone
+                .lock()
+                .unwrap()
+                .push((path.to_string(), reason.to_string()));
+            Ok(())
+        });
+
+        let pipeline = IndexingPipeline::new(
+            "test-integrity-cb".into(),
+            dir.path().to_path_buf(),
+            CancellationToken::new(),
+        )
+        .with_cas(cas, "repo-1".to_string())
+        .with_integrity_event_callback(callback)
+        .with_concurrency(1);
+
+        let result = pipeline.execute().await;
+        assert_eq!(result.status, IndexRunStatus::Succeeded);
+
+        let events = quarantine_events.lock().unwrap();
+        assert_eq!(events.len(), 1, "expected one quarantine integrity event");
+        assert_eq!(events[0].0, "main.rs");
+        assert!(events[0].1.contains("mismatch"));
     }
 
     #[tokio::test]

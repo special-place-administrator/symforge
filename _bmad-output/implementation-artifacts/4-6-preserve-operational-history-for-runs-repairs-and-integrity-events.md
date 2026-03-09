@@ -1,6 +1,6 @@
 # Story 4.6: Preserve Operational History for Runs, Repairs, and Integrity Events
 
-Status: in-progress
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -23,8 +23,8 @@ so that I can understand what happened and why the current state should or shoul
 
 ### Phase 1: Domain types for operational history
 
-- [ ] Task 1.1: Define `OperationalEvent` and `OperationalEventKind` in `src/domain/index.rs` (AC: 1, 2)
-  - [ ] 1.1.1: Define `OperationalEventKind` enum with variants:
+- [x] Task 1.1: Define `OperationalEvent` and `OperationalEventKind` in `src/domain/index.rs` (AC: 1, 2)
+  - [x]1.1.1: Define `OperationalEventKind` enum with variants:
     - `RunStarted { run_id: String, mode: IndexRunMode }` — run transitioned to Running
     - `RunCompleted { run_id: String, status: IndexRunStatus, files_processed: usize, error_summary: Option<String> }` — run reached a terminal state (Succeeded, Failed, Cancelled, Aborted)
     - `RunInterrupted { run_id: String, reason: String }` — run transitioned to Interrupted (startup sweep or signal)
@@ -33,9 +33,9 @@ so that I can understand what happened and why the current state should or shoul
     - `RepositoryStatusChanged { previous: RepositoryStatus, current: RepositoryStatus, trigger: String }` — repository status transition (invalidation, quarantine, reindex-completion, repair-restoration)
     - `IntegrityEvent { run_id: Option<String>, relative_path: Option<String>, kind: IntegrityEventKind, detail: String }` — integrity-significant occurrence (quarantine, verification failure, suspect detection)
     - `StartupSweepCompleted { stale_runs_found: usize, actions_taken: Vec<String> }` — startup recovery sweep finished
-  - [ ] 1.1.2: Define `IntegrityEventKind` enum with variants: `Quarantined`, `VerificationFailed`, `SuspectDetected`
-  - [ ] 1.1.3: Define `OperationalEvent` struct with fields: `repo_id: String`, `kind: OperationalEventKind`, `timestamp_unix_ms: u64`
-  - [ ] 1.1.4: Implement `OperationalEvent::event_name(&self) -> &'static str` method returning dot-separated names per architecture convention:
+  - [x]1.1.2: Define `IntegrityEventKind` enum with variants: `Quarantined`, `VerificationFailed`, `SuspectDetected`
+  - [x]1.1.3: Define `OperationalEvent` struct with fields: `repo_id: String`, `kind: OperationalEventKind`, `timestamp_unix_ms: u64`
+  - [x]1.1.4: Implement `OperationalEvent::event_name(&self) -> &'static str` method returning dot-separated names per architecture convention:
     - `RunStarted` → `"run.started"`
     - `RunCompleted` with Succeeded → `"run.succeeded"`, with Failed → `"run.failed"`, with Cancelled → `"run.cancelled"`, with Aborted → `"run.aborted"`
     - `RunInterrupted` → `"run.interrupted"`
@@ -44,130 +44,130 @@ so that I can understand what happened and why the current state should or shoul
     - `RepositoryStatusChanged` → `"repository.status_changed"`
     - `IntegrityEvent` with Quarantined → `"integrity.quarantined"`, with VerificationFailed → `"integrity.verification_failed"`, with SuspectDetected → `"integrity.suspect_detected"`
     - `StartupSweepCompleted` → `"startup.sweep_completed"`
-  - [ ] 1.1.5: All new types derive `Clone, Debug, Serialize, Deserialize, PartialEq, Eq` and follow existing domain type conventions; serde `rename_all = "snake_case"` on enums
+  - [x]1.1.5: All new types derive `Clone, Debug, Serialize, Deserialize, PartialEq, Eq` and follow existing domain type conventions; serde `rename_all = "snake_case"` on enums
 
-- [ ] Task 1.2: Define `OperationalEventFilter` struct (AC: 2)
-  - [ ] 1.2.1: Fields: `category: Option<String>` (filter by event_name prefix, e.g. `"run"`, `"repair"`, `"integrity"`), `since_unix_ms: Option<u64>` (events after this timestamp), `limit: Option<usize>` (max events returned, default 50)
-  - [ ] 1.2.2: Derive `Clone, Debug, Default`
+- [x] Task 1.2: Define `OperationalEventFilter` struct (AC: 2)
+  - [x]1.2.1: Fields: `category: Option<String>` (filter by event_name prefix, e.g. `"run"`, `"repair"`, `"integrity"`), `since_unix_ms: Option<u64>` (events after this timestamp), `limit: Option<usize>` (max events returned, default 50)
+  - [x]1.2.2: Derive `Clone, Debug, Default`
 
 ### Phase 2: ControlPlane trait extension for operational history
 
-- [ ] Task 2.1: Add operational event methods to `ControlPlane` trait (AC: 1)
-  - [ ] 2.1.1: Add `fn save_operational_event(&self, event: &OperationalEvent) -> Result<()>` to the `ControlPlane` trait
-  - [ ] 2.1.2: Add `fn get_operational_events(&self, repo_id: &str, filter: &OperationalEventFilter) -> Result<Vec<OperationalEvent>>` to the `ControlPlane` trait
+- [x] Task 2.1: Add operational event methods to `ControlPlane` trait (AC: 1)
+  - [x]2.1.1: Add `fn save_operational_event(&self, event: &OperationalEvent) -> Result<()>` to the `ControlPlane` trait
+  - [x]2.1.2: Add `fn get_operational_events(&self, repo_id: &str, filter: &OperationalEventFilter) -> Result<Vec<OperationalEvent>>` to the `ControlPlane` trait
 
-- [ ] Task 2.2: Implement on `InMemoryControlPlane` (AC: 1)
-  - [ ] 2.2.1: Add `operational_events: Vec<OperationalEvent>` field to `InMemoryState`
-  - [ ] 2.2.2: `save_operational_event`: push event to vec
-  - [ ] 2.2.3: `get_operational_events`: filter by repo_id, apply category prefix filter on `event_name()`, apply `since_unix_ms` filter, sort by timestamp descending, apply limit
+- [x] Task 2.2: Implement on `InMemoryControlPlane` (AC: 1)
+  - [x]2.2.1: Add `operational_events: Vec<OperationalEvent>` field to `InMemoryState`
+  - [x]2.2.2: `save_operational_event`: push event to vec
+  - [x]2.2.3: `get_operational_events`: filter by repo_id, apply category prefix filter on `event_name()`, apply `since_unix_ms` filter, sort by timestamp descending, apply limit
 
-- [ ] Task 2.3: Implement on `RegistryBackedControlPlane` (AC: 1)
-  - [ ] 2.3.1: Add `operational_events: Vec<OperationalEvent>` field to `RegistryData` with `#[serde(default)]` for backward compatibility
-  - [ ] 2.3.2: `save_operational_event`: append to vec, persist to registry JSON
-  - [ ] 2.3.3: `get_operational_events`: filter by repo_id, apply filters, sort, limit
+- [x] Task 2.3: Implement on `RegistryBackedControlPlane` (AC: 1)
+  - [x]2.3.1: Add `operational_events: Vec<OperationalEvent>` field to `RegistryData` with `#[serde(default)]` for backward compatibility
+  - [x]2.3.2: `save_operational_event`: append to vec, persist to registry JSON
+  - [x]2.3.3: `get_operational_events`: filter by repo_id, apply filters, sort, limit
 
-- [ ] Task 2.4: Implement on `SpacetimeControlPlane` (AC: 1)
-  - [ ] 2.4.1: `save_operational_event`: serialize event to JSON and write via SpacetimeDB reducer call (follow the pattern from existing `insert_run` / `update_run_status` SpacetimeDB writes)
-  - [ ] 2.4.2: `get_operational_events`: query SpacetimeDB for events matching repo_id and filters
-  - [ ] 2.4.3: If SpacetimeDB table does not yet have an `operational_events` schema, use the existing `pending_write_warning` pattern and persist to the registry fallback path — document as known technical debt for SpacetimeDB schema migration
+- [x] Task 2.4: Implement on `SpacetimeControlPlane` (AC: 1)
+  - [x]2.4.1: `save_operational_event`: serialize event to JSON and write via SpacetimeDB reducer call (follow the pattern from existing `insert_run` / `update_run_status` SpacetimeDB writes)
+  - [x]2.4.2: `get_operational_events`: query SpacetimeDB for events matching repo_id and filters
+  - [x]2.4.3: If SpacetimeDB table does not yet have an `operational_events` schema, use the existing `pending_write_warning` pattern and persist to the registry fallback path — document as known technical debt for SpacetimeDB schema migration
 
-- [ ] Task 2.5: Implement on `RunManagerPersistenceAdapter` (AC: 1)
-  - [ ] 2.5.1: Delegate `save_operational_event` to inner control plane with `NotFound` suppression matching the pattern from 4.3 review fix M7
-  - [ ] 2.5.2: Delegate `get_operational_events` to inner control plane
+- [x] Task 2.5: Implement on `RunManagerPersistenceAdapter` (AC: 1)
+  - [x]2.5.1: Delegate `save_operational_event` to inner control plane with `NotFound` suppression matching the pattern from 4.3 review fix M7
+  - [x]2.5.2: Delegate `get_operational_events` to inner control plane
 
-- [ ] Task 2.6: Refactor `save_repair_event` / `get_repair_events` as wrappers (AC: 1)
-  - [ ] 2.6.1: Implement `save_repair_event` as: convert `RepairEvent` to `OperationalEvent` with `OperationalEventKind::RepairPerformed`, delegate to `save_operational_event`
-  - [ ] 2.6.2: Implement `get_repair_events` as: call `get_operational_events` with category filter `"repair"`, convert back to `Vec<RepairEvent>`
-  - [ ] 2.6.3: Keep `save_repair_event` / `get_repair_events` signatures on the trait for backward compatibility — callers like `repair_repository()` and `inspect_repository_health()` do not change
-  - [ ] 2.6.4: Migrate InMemoryControlPlane's standalone `repair_events: Vec<RepairEvent>` to the unified `operational_events` vec
-  - [ ] 2.6.5: Migrate RegistryBackedControlPlane's `repair_events` section to `operational_events` — keep `repair_events` deserialization with `#[serde(default)]` for backward-compatible reads from older registry files; new writes go through `operational_events`
+- [x] Task 2.6: Refactor `save_repair_event` / `get_repair_events` as wrappers (AC: 1)
+  - [x]2.6.1: Implement `save_repair_event` as: convert `RepairEvent` to `OperationalEvent` with `OperationalEventKind::RepairPerformed`, delegate to `save_operational_event`
+  - [x]2.6.2: Implement `get_repair_events` as: call `get_operational_events` with category filter `"repair"`, convert back to `Vec<RepairEvent>`
+  - [x]2.6.3: Keep `save_repair_event` / `get_repair_events` signatures on the trait for backward compatibility — callers like `repair_repository()` and `inspect_repository_health()` do not change
+  - [x]2.6.4: Migrate InMemoryControlPlane's standalone `repair_events: Vec<RepairEvent>` to the unified `operational_events` vec
+  - [x]2.6.5: Migrate RegistryBackedControlPlane's `repair_events` section to `operational_events` — keep `repair_events` deserialization with `#[serde(default)]` for backward-compatible reads from older registry files; new writes go through `operational_events`
 
-- [ ] Task 2.7: Update test fakes in `src/application/deployment.rs` (AC: 1)
-  - [ ] 2.7.1: Add `save_operational_event` and `get_operational_events` stubs to the ControlPlane fake used in deployment tests (pattern: `unreachable!("not used in deployment tests")` or minimal stub)
+- [x] Task 2.7: Update test fakes in `src/application/deployment.rs` (AC: 1)
+  - [x]2.7.1: Add `save_operational_event` and `get_operational_events` stubs to the ControlPlane fake used in deployment tests (pattern: `unreachable!("not used in deployment tests")` or minimal stub)
 
 ### Phase 3: Instrument state transitions in RunManager
 
-- [ ] Task 3.1: Record run lifecycle events (AC: 1)
-  - [ ] 3.1.1: In `start_indexing_run()` (or wherever the run transitions to `Running`): record `OperationalEventKind::RunStarted { run_id, mode }`
-  - [ ] 3.1.2: In the indexing pipeline completion path (where run transitions to `Succeeded` / `Failed` / `Aborted`): record `OperationalEventKind::RunCompleted { run_id, status, files_processed, error_summary }`
-  - [ ] 3.1.3: In `cancel_run()`: record `RunCompleted` with status `Cancelled`
-  - [ ] 3.1.4: In `startup_sweep()` where runs transition to `Interrupted`: record `OperationalEventKind::RunInterrupted { run_id, reason }` for each stale run transitioned
-  - [ ] 3.1.5: At the end of `startup_sweep()`: record `OperationalEventKind::StartupSweepCompleted { stale_runs_found, actions_taken }`
+- [x] Task 3.1: Record run lifecycle events (AC: 1)
+  - [x]3.1.1: In `start_indexing_run()` (or wherever the run transitions to `Running`): record `OperationalEventKind::RunStarted { run_id, mode }`
+  - [x]3.1.2: In the indexing pipeline completion path (where run transitions to `Succeeded` / `Failed` / `Aborted`): record `OperationalEventKind::RunCompleted { run_id, status, files_processed, error_summary }`
+  - [x]3.1.3: In `cancel_run()`: record `RunCompleted` with status `Cancelled`
+  - [x]3.1.4: In `startup_sweep()` where runs transition to `Interrupted`: record `OperationalEventKind::RunInterrupted { run_id, reason }` for each stale run transitioned
+  - [x]3.1.5: At the end of `startup_sweep()`: record `OperationalEventKind::StartupSweepCompleted { stale_runs_found, actions_taken }`
 
-- [ ] Task 3.2: Record checkpoint events (AC: 1)
-  - [ ] 3.2.1: In `checkpoint_run()` after successful checkpoint write: record `OperationalEventKind::CheckpointCreated { run_id, cursor, files_committed }`
+- [x] Task 3.2: Record checkpoint events (AC: 1)
+  - [x]3.2.1: In `checkpoint_run()` after successful checkpoint write: record `OperationalEventKind::CheckpointCreated { run_id, cursor, files_committed }`
 
-- [ ] Task 3.3: Record repository status change events (AC: 1)
-  - [ ] 3.3.1: In `invalidate_repository()`: record `OperationalEventKind::RepositoryStatusChanged { previous, current: Invalidated, trigger: reason }`
-  - [ ] 3.3.2: In repair paths where repo status transitions (Degraded→Ready, Quarantined→Ready, etc.): record `RepositoryStatusChanged`
-  - [ ] 3.3.3: In indexing completion where repo status transitions to Ready or Degraded: record `RepositoryStatusChanged`
+- [x] Task 3.3: Record repository status change events (AC: 1)
+  - [x]3.3.1: In `invalidate_repository()`: record `OperationalEventKind::RepositoryStatusChanged { previous, current: Invalidated, trigger: reason }`
+  - [x]3.3.2: In repair paths where repo status transitions (Degraded→Ready, Quarantined→Ready, etc.): record `RepositoryStatusChanged`
+  - [x]3.3.3: In indexing completion where repo status transitions to Ready or Degraded: record `RepositoryStatusChanged`
 
-- [ ] Task 3.4: Record integrity events (AC: 1, 2)
-  - [ ] 3.4.1: Where files are quarantined during indexing or verification: record `OperationalEventKind::IntegrityEvent { kind: Quarantined, ... }` — **do NOT include raw source content in the event detail; use file path, blob_id, and reason only**
-  - [ ] 3.4.2: Where verification failures occur in retrieval paths: record `IntegrityEvent { kind: VerificationFailed, ... }` — **detail includes blob_id mismatch info, NOT file content**
-  - [ ] 3.4.3: Where suspect state is detected during health inspection or repair: record `IntegrityEvent { kind: SuspectDetected, ... }`
+- [x] Task 3.4: Record integrity events (AC: 1, 2)
+  - [x] 3.4.1: Where files are quarantined during indexing or verification: record `OperationalEventKind::IntegrityEvent { kind: Quarantined, ... }` — **do NOT include raw source content in the event detail; use file path, blob_id, and reason only**
+  - [x] 3.4.2: Where verification failures occur in retrieval paths: record `IntegrityEvent { kind: VerificationFailed, ... }` — **detail includes blob_id mismatch info, NOT file content**
+  - [x] 3.4.3: Where suspect state is detected during health inspection or repair: record `IntegrityEvent { kind: SuspectDetected, ... }`
 
-- [ ] Task 3.5: Ensure durability-before-acknowledgment rule (AC: 1)
-  - [ ] 3.5.1: Every `save_operational_event` call must occur BEFORE the method returns success to the caller. Operational history write failures must propagate as errors (not swallowed) — matching the pattern from 4.4 review fix C3
-  - [ ] 3.5.2: For background tasks (indexing pipeline): event recording happens in the task context before status is reported to the progress/completion path. If event recording fails in a background task context, log `warn!` but do not crash the pipeline
+- [x] Task 3.5: Ensure durability-before-acknowledgment rule (AC: 1)
+  - [x]3.5.1: Every `save_operational_event` call must occur BEFORE the method returns success to the caller. Operational history write failures must propagate as errors (not swallowed) — matching the pattern from 4.4 review fix C3
+  - [x]3.5.2: For background tasks (indexing pipeline): event recording happens in the task context before status is reported to the progress/completion path. If event recording fails in a background task context, log `warn!` but do not crash the pipeline
 
 ### Phase 4: ApplicationContext bridge
 
-- [ ] Task 4.1: Add `get_operational_history` bridge on `ApplicationContext` (AC: 2)
-  - [ ] 4.1.1: Signature: `pub fn get_operational_history(&self, repo_id: &str, filter: &OperationalEventFilter) -> Result<Vec<OperationalEvent>>`
-  - [ ] 4.1.2: Delegate to `self.run_manager.get_operational_history(repo_id, filter)` — RunManager delegates to control plane
+- [x] Task 4.1: Add `get_operational_history` bridge on `ApplicationContext` (AC: 2)
+  - [x]4.1.1: Signature: `pub fn get_operational_history(&self, repo_id: &str, filter: &OperationalEventFilter) -> Result<Vec<OperationalEvent>>`
+  - [x]4.1.2: Delegate to `self.run_manager.get_operational_history(repo_id, filter)` — RunManager delegates to control plane
 
-- [ ] Task 4.2: Add `get_operational_history` on `RunManager` (AC: 2)
-  - [ ] 4.2.1: Delegate to `self.persistence.get_operational_events(repo_id, filter)`
-  - [ ] 4.2.2: Validate that repo_id exists via `get_repository(repo_id)` before querying — return `NotFound` if missing
+- [x] Task 4.2: Add `get_operational_history` on `RunManager` (AC: 2)
+  - [x]4.2.1: Delegate to `self.persistence.get_operational_events(repo_id, filter)`
+  - [x]4.2.2: Validate that repo_id exists via `get_repository(repo_id)` before querying — return `NotFound` if missing
 
 ### Phase 5: MCP tool exposure
 
-- [ ] Task 5.1: Add `get_operational_history` MCP tool to `src/protocol/mcp.rs` (AC: 2)
-  - [ ] 5.1.1: Define tool with description: "Inspect operational history for a repository. Returns an audit-friendly event log of run transitions, checkpoint events, repair actions, and integrity events. Does not expose raw source content."
-  - [ ] 5.1.2: Parameters: `repository_id: String` (required), `category: Option<String>` (optional, filter by event category: "run", "checkpoint", "repair", "integrity", "repository", "startup"), `since_unix_ms: Option<u64>` (optional, events after this timestamp), `limit: Option<u64>` (optional, max events, default 50, max 200)
-  - [ ] 5.1.3: Build `OperationalEventFilter` from parameters, delegate to `self.application.get_operational_history(repo_id, &filter)`
-  - [ ] 5.1.4: Serialize `Vec<OperationalEvent>` to JSON response — each event includes `event_name`, `kind`, `timestamp_unix_ms`, `repo_id`
-  - [ ] 5.1.5: Error handling: `NotFound` → `invalid_params` ("Repository not found: {repo_id}"); internal failures → `server_error` with detail
-  - [ ] 5.1.6: Privacy enforcement: before serializing, assert no event detail contains raw source content (this is enforced by design at recording time, but the MCP layer double-checks by not including any `content` or `source_bytes` fields in the response schema)
+- [x] Task 5.1: Add `get_operational_history` MCP tool to `src/protocol/mcp.rs` (AC: 2)
+  - [x]5.1.1: Define tool with description: "Inspect operational history for a repository. Returns an audit-friendly event log of run transitions, checkpoint events, repair actions, and integrity events. Does not expose raw source content."
+  - [x]5.1.2: Parameters: `repository_id: String` (required), `category: Option<String>` (optional, filter by event category: "run", "checkpoint", "repair", "integrity", "repository", "startup"), `since_unix_ms: Option<u64>` (optional, events after this timestamp), `limit: Option<u64>` (optional, max events, default 50, max 200)
+  - [x]5.1.3: Build `OperationalEventFilter` from parameters, delegate to `self.application.get_operational_history(repo_id, &filter)`
+  - [x]5.1.4: Serialize `Vec<OperationalEvent>` to JSON response — each event includes `event_name`, `kind`, `timestamp_unix_ms`, `repo_id`
+  - [x]5.1.5: Error handling: `NotFound` → `invalid_params` ("Repository not found: {repo_id}"); internal failures → `server_error` with detail
+  - [x]5.1.6: Privacy enforcement: before serializing, assert no event detail contains raw source content (this is enforced by design at recording time, but the MCP layer double-checks by not including any `content` or `source_bytes` fields in the response schema)
 
 ### Phase 6: Testing
 
-- [ ] Task 6.1: Unit tests for operational event types (AC: 1, 2)
-  - [ ] 6.1.1: `test_operational_event_names_follow_dot_convention` — each OperationalEventKind variant returns correct dot-separated name
-  - [ ] 6.1.2: `test_operational_event_serialization_roundtrip` — serialize/deserialize each variant preserves all fields
-  - [ ] 6.1.3: `test_operational_event_filter_by_category` — category filter correctly matches event_name prefixes
-  - [ ] 6.1.4: `test_operational_event_filter_by_timestamp` — since_unix_ms filter excludes older events
-  - [ ] 6.1.5: `test_operational_event_filter_limit` — limit caps result count
+- [x] Task 6.1: Unit tests for operational event types (AC: 1, 2)
+  - [x]6.1.1: `test_operational_event_names_follow_dot_convention` — each OperationalEventKind variant returns correct dot-separated name
+  - [x]6.1.2: `test_operational_event_serialization_roundtrip` — serialize/deserialize each variant preserves all fields
+  - [x]6.1.3: `test_operational_event_filter_by_category` — category filter correctly matches event_name prefixes
+  - [x]6.1.4: `test_operational_event_filter_by_timestamp` — since_unix_ms filter excludes older events
+  - [x]6.1.5: `test_operational_event_filter_limit` — limit caps result count
 
-- [ ] Task 6.2: Unit tests for event recording at transition points (AC: 1)
-  - [ ] 6.2.1: `test_run_started_records_event` — starting an indexing run records a `run.started` event
-  - [ ] 6.2.2: `test_run_completed_records_event` — successful run completion records a `run.succeeded` event
-  - [ ] 6.2.3: `test_run_failed_records_event` — failed run records a `run.failed` event
-  - [ ] 6.2.4: `test_run_cancelled_records_event` — cancelled run records a `run.cancelled` event
-  - [ ] 6.2.5: `test_run_interrupted_records_event` — startup sweep interruption records a `run.interrupted` event
-  - [ ] 6.2.6: `test_checkpoint_created_records_event` — checkpoint creation records a `checkpoint.created` event
-  - [ ] 6.2.7: `test_repair_records_operational_event` — repair records a `repair.completed` event through the unified path
-  - [ ] 6.2.8: `test_invalidation_records_status_change_event` — invalidation records a `repository.status_changed` event
-  - [ ] 6.2.9: `test_startup_sweep_records_event` — startup sweep records a `startup.sweep_completed` event
-  - [ ] 6.2.10: `test_event_recorded_before_return` — event is persisted before the operation reports success (verify with fake that tracks save order)
+- [x] Task 6.2: Unit tests for event recording at transition points (AC: 1)
+  - [x]6.2.1: `test_run_started_records_event` — starting an indexing run records a `run.started` event
+  - [x]6.2.2: `test_run_completed_records_event` — successful run completion records a `run.succeeded` event
+  - [x]6.2.3: `test_run_failed_records_event` — failed run records a `run.failed` event
+  - [x]6.2.4: `test_run_cancelled_records_event` — cancelled run records a `run.cancelled` event
+  - [x]6.2.5: `test_run_interrupted_records_event` — startup sweep interruption records a `run.interrupted` event
+  - [x]6.2.6: `test_checkpoint_created_records_event` — checkpoint creation records a `checkpoint.created` event
+  - [x]6.2.7: `test_repair_records_operational_event` — repair records a `repair.completed` event through the unified path
+  - [x]6.2.8: `test_invalidation_records_status_change_event` — invalidation records a `repository.status_changed` event
+  - [x]6.2.9: `test_startup_sweep_records_event` — startup sweep records a `startup.sweep_completed` event
+  - [x]6.2.10: `test_event_recorded_before_return` — event is persisted before the operation reports success (verify with fake that tracks save order)
 
-- [ ] Task 6.3: Unit tests for backward compatibility (AC: 1)
-  - [ ] 6.3.1: `test_save_repair_event_wrapper_creates_operational_event` — calling save_repair_event stores an OperationalEvent with RepairPerformed kind
-  - [ ] 6.3.2: `test_get_repair_events_wrapper_filters_correctly` — calling get_repair_events returns only repair events from the unified store
-  - [ ] 6.3.3: `test_health_report_recent_repairs_still_works` — RepositoryHealthReport.recent_repairs populated correctly through the new unified path
+- [x] Task 6.3: Unit tests for backward compatibility (AC: 1)
+  - [x]6.3.1: `test_save_repair_event_wrapper_creates_operational_event` — calling save_repair_event stores an OperationalEvent with RepairPerformed kind
+  - [x]6.3.2: `test_get_repair_events_wrapper_filters_correctly` — calling get_repair_events returns only repair events from the unified store
+  - [x]6.3.3: `test_health_report_recent_repairs_still_works` — RepositoryHealthReport.recent_repairs populated correctly through the new unified path
 
-- [ ] Task 6.4: Unit tests for privacy (AC: 2)
-  - [ ] 6.4.1: `test_integrity_event_does_not_contain_source_content` — IntegrityEvent detail uses blob_id and path, not raw bytes or source strings
-  - [ ] 6.4.2: `test_event_serialization_excludes_raw_content` — serialized event JSON contains no field named `content`, `source`, or `bytes`
+- [x] Task 6.4: Unit tests for privacy (AC: 2)
+  - [x] 6.4.1: `test_integrity_event_does_not_contain_source_content` — IntegrityEvent detail uses blob_id and path, not raw bytes or source strings
+  - [x] 6.4.2: `test_event_serialization_excludes_raw_content` — serialized event JSON contains no field named `content`, `source`, or `bytes`
 
-- [ ] Task 6.5: Integration tests for end-to-end operational history flows (AC: 1, 2)
-  - [ ] 6.5.1: `test_operational_history_full_lifecycle` — create repo → index → checkpoint → complete → inspect history → events in correct chronological order with correct event_names
-  - [ ] 6.5.2: `test_operational_history_repair_flow` — degrade repo → repair → inspect history → includes both repository.status_changed and repair.completed events
-  - [ ] 6.5.3: `test_operational_history_category_filter` — record mix of events → filter by "run" → only run events returned
-  - [ ] 6.5.4: `test_operational_history_timestamp_filter` — record events at different times → filter by since_unix_ms → only recent events returned
-  - [ ] 6.5.5: `test_operational_history_mcp_tool_returns_structured_json` — call get_operational_history through MCP handler → JSON contains event_name, timestamp, structured kind fields
-  - [ ] 6.5.6: `test_operational_history_not_found_repository` — query history for non-existent repo → NotFound error
+- [x] Task 6.5: Integration tests for end-to-end operational history flows (AC: 1, 2)
+  - [x]6.5.1: `test_operational_history_full_lifecycle` — create repo → index → checkpoint → complete → inspect history → events in correct chronological order with correct event_names
+  - [x]6.5.2: `test_operational_history_repair_flow` — degrade repo → repair → inspect history → includes both repository.status_changed and repair.completed events
+  - [x]6.5.3: `test_operational_history_category_filter` — record mix of events → filter by "run" → only run events returned
+  - [x]6.5.4: `test_operational_history_timestamp_filter` — record events at different times → filter by since_unix_ms → only recent events returned
+  - [x]6.5.5: `test_operational_history_mcp_tool_returns_structured_json` — call get_operational_history through MCP handler → JSON contains event_name, timestamp, structured kind fields
+  - [x]6.5.6: `test_operational_history_not_found_repository` — query history for non-existent repo → NotFound error
 
 ## Dev Notes
 
@@ -455,11 +455,10 @@ Claude Opus 4.6
 
 ### Review Follow-ups
 
-- [ ] [AI-Review][HIGH] Task 3.4: IntegrityEvent instrumentation requires architectural change. Specific instrumentation points:
-  - **Quarantine (3.4.1)**: `src/indexing/commit.rs:validate_for_commit()` is a pure function returning `PersistedFileOutcome::Quarantined` — no control plane access. Instrument at the call site in the pipeline's durable_record_callback or after `commit_file_result()`. The callback already has access to RunManager via `manager_for_records`.
-  - **Verification failure (3.4.2)**: `src/application/search.rs:626` detects blob hash mismatch during `get_verified_symbol_source()`. This function does not hold a control plane reference — thread it through the search path or record at the MCP handler level after receiving a Suspect/Blocked result.
-  - **Suspect detection (3.4.3)**: `repair_repository_state()` in `run_manager.rs` already has control plane access — add IntegrityEvent recording where quarantined files are identified during repair (line ~2378-2403).
-  - **Design note**: Consider adding an `event_recorder: Option<Arc<dyn Fn(OperationalEvent)>>` callback to the pipeline, similar to `durable_record_callback`, to avoid threading the full control plane.
+- [x] [AI-Review][HIGH] Task 3.4: IntegrityEvent instrumentation — implemented all 3 sites:
+  - **Quarantine (3.4.1)**: Added `integrity_event_callback` to `IndexingPipeline` (like `durable_record_callback`). Wired in `spawn_pipeline_for_run_with_resume()`. Fires when `commit_file_result()` returns `PersistedFileOutcome::Quarantined`.
+  - **Verification failure (3.4.2)**: Recorded at `Application::get_symbol()`/`get_symbols()` after search returns `TrustLevel::Suspect`. Uses `RunManagerPersistenceAdapter::save_operational_event()`.
+  - **Suspect detection (3.4.3)**: Added in `repair_repository_state()` where files fail re-verification during repair.
 - [x] [AI-Review][LOW] OperationalEventKind serde tagging — current default external tagging preserved; changing requires migration of persisted data
 - [x] [AI-Review][LOW] Cargo.toml spacetimedb-sdk bump documented in File List
 - [x] [AI-Review][LOW] files_failed field on Checkpoint documented in File List; has #[serde(default)] for backward compat
@@ -471,8 +470,9 @@ Claude Opus 4.6
 - src/domain/health.rs — RepositoryHealthReport, FileHealthSummary, RunHealthSummary, StatusContext
 - src/storage/control_plane.rs — ControlPlane trait with save/get operational event methods; wrapper refactoring on all backends
 - src/storage/registry_persistence.rs — RegistryData with operational_events; wrapper save/get_repair_events
-- src/application/run_manager.rs — Event instrumentation at all state transitions; repair, health inspection, get_operational_history
-- src/application/mod.rs — ApplicationContext bridge for repair, health, operational history
+- src/indexing/pipeline.rs — Added integrity_event_callback for quarantine event recording
+- src/application/run_manager.rs — Event instrumentation at all state transitions; repair, health inspection, get_operational_history; IntegrityEvent wiring for pipeline and repair
+- src/application/mod.rs — ApplicationContext bridge for repair, health, operational history; IntegrityEvent recording on get_symbol/get_symbols suspect results
 - src/application/deployment.rs — Test fake updated with new ControlPlane methods
 - src/protocol/mcp.rs — repair_index, inspect_repository_health, get_operational_history MCP tools
 - tests/indexing_integration.rs — Integration tests for repair, health inspection, operational history

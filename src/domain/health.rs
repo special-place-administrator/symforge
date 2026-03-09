@@ -3,6 +3,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use super::index::{IndexRunMode, IndexRunStatus, RepairEvent};
+use super::repository::RepositoryStatus;
+use super::retrieval::NextAction;
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum HealthStatus {
@@ -254,12 +258,63 @@ pub fn unix_timestamp_ms() -> u64 {
         .as_millis() as u64
 }
 
+// --- Repository-level health inspection types (Story 4.5) ---
+
+/// Captures the reason and timestamp for invalidation or quarantine state.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StatusContext {
+    pub reason: String,
+    pub occurred_at_unix_ms: u64,
+}
+
+/// Summarizes file-level health from the latest completed run.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileHealthSummary {
+    pub total_files: usize,
+    pub committed: usize,
+    pub quarantined: usize,
+    pub failed: usize,
+    pub empty_symbols: usize,
+}
+
+/// Summarizes the latest completed run for health context.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RunHealthSummary {
+    pub run_id: String,
+    pub status: IndexRunStatus,
+    pub mode: IndexRunMode,
+    pub started_at_unix_ms: u64,
+    pub completed_at_unix_ms: Option<u64>,
+}
+
+/// Comprehensive repository health report synthesizing status, context, and guidance.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RepositoryHealthReport {
+    pub repo_id: String,
+    pub status: RepositoryStatus,
+    pub action_required: bool,
+    pub next_action: Option<NextAction>,
+    pub status_detail: String,
+    pub file_health: Option<FileHealthSummary>,
+    pub latest_run: Option<RunHealthSummary>,
+    pub active_run_id: Option<String>,
+    pub recent_repairs: Vec<RepairEvent>,
+    pub invalidation_context: Option<StatusContext>,
+    pub quarantine_context: Option<StatusContext>,
+    pub checked_at_unix_ms: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
 
     use super::{
-        ComponentHealth, DeploymentReport, HealthIssueCategory, HealthSeverity, HealthStatus,
+        ComponentHealth, DeploymentReport, FileHealthSummary, HealthIssueCategory, HealthSeverity,
+        HealthStatus, RepositoryHealthReport, RunHealthSummary, StatusContext,
+    };
+    use crate::domain::{
+        IndexRunMode, IndexRunStatus, NextAction, RepairEvent, RepairOutcome, RepairScope,
+        RepositoryStatus,
     };
 
     #[test]
@@ -327,5 +382,131 @@ mod tests {
             value["remediation"],
             "Run `tokenizor_agentic_mcp init` to create the CAS layout."
         );
+    }
+
+    #[test]
+    fn repository_health_report_serializes_all_fields() {
+        let report = RepositoryHealthReport {
+            repo_id: "repo-1".to_string(),
+            status: RepositoryStatus::Ready,
+            action_required: false,
+            next_action: None,
+            status_detail: "Repository is healthy. Retrieval is safe.".to_string(),
+            file_health: Some(FileHealthSummary {
+                total_files: 10,
+                committed: 8,
+                quarantined: 1,
+                failed: 0,
+                empty_symbols: 1,
+            }),
+            latest_run: Some(RunHealthSummary {
+                run_id: "run-1".to_string(),
+                status: IndexRunStatus::Succeeded,
+                mode: IndexRunMode::Full,
+                started_at_unix_ms: 1000,
+                completed_at_unix_ms: Some(2000),
+            }),
+            active_run_id: None,
+            recent_repairs: vec![],
+            invalidation_context: None,
+            quarantine_context: None,
+            checked_at_unix_ms: 3000,
+        };
+
+        let value =
+            serde_json::to_value(&report).expect("repository health report should serialize");
+        assert_eq!(value["repo_id"], "repo-1");
+        assert_eq!(value["status"], "ready");
+        assert_eq!(value["action_required"], false);
+        assert!(value["next_action"].is_null());
+        assert_eq!(
+            value["status_detail"],
+            "Repository is healthy. Retrieval is safe."
+        );
+        assert_eq!(value["file_health"]["total_files"], 10);
+        assert_eq!(value["file_health"]["committed"], 8);
+        assert_eq!(value["file_health"]["quarantined"], 1);
+        assert_eq!(value["latest_run"]["run_id"], "run-1");
+        assert_eq!(value["latest_run"]["status"], "succeeded");
+        assert_eq!(value["latest_run"]["mode"], "full");
+        assert_eq!(value["checked_at_unix_ms"], 3000);
+    }
+
+    #[test]
+    fn repository_health_report_roundtrip_with_contexts() {
+        let report = RepositoryHealthReport {
+            repo_id: "repo-2".to_string(),
+            status: RepositoryStatus::Invalidated,
+            action_required: true,
+            next_action: Some(NextAction::Reindex),
+            status_detail: "Repository has been invalidated: stale data.".to_string(),
+            file_health: None,
+            latest_run: None,
+            active_run_id: None,
+            recent_repairs: vec![RepairEvent {
+                repo_id: "repo-2".to_string(),
+                scope: RepairScope::Repository,
+                previous_status: RepositoryStatus::Degraded,
+                outcome: RepairOutcome::Restored,
+                detail: "repaired degraded state".to_string(),
+                timestamp_unix_ms: 5000,
+            }],
+            invalidation_context: Some(StatusContext {
+                reason: "stale data".to_string(),
+                occurred_at_unix_ms: 4000,
+            }),
+            quarantine_context: None,
+            checked_at_unix_ms: 6000,
+        };
+
+        let json = serde_json::to_string(&report).unwrap();
+        let deserialized: RepositoryHealthReport = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, report);
+    }
+
+    #[test]
+    fn file_health_summary_serializes_counts() {
+        let summary = FileHealthSummary {
+            total_files: 20,
+            committed: 15,
+            quarantined: 2,
+            failed: 1,
+            empty_symbols: 2,
+        };
+
+        let value =
+            serde_json::to_value(&summary).expect("file health summary should serialize");
+        assert_eq!(value["total_files"], 20);
+        assert_eq!(value["committed"], 15);
+        assert_eq!(value["quarantined"], 2);
+        assert_eq!(value["failed"], 1);
+        assert_eq!(value["empty_symbols"], 2);
+    }
+
+    #[test]
+    fn status_context_roundtrip() {
+        let ctx = StatusContext {
+            reason: "quarantine policy triggered".to_string(),
+            occurred_at_unix_ms: 7000,
+        };
+
+        let json = serde_json::to_string(&ctx).unwrap();
+        let deserialized: StatusContext = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, ctx);
+    }
+
+    #[test]
+    fn run_health_summary_roundtrip() {
+        let summary = RunHealthSummary {
+            run_id: "run-42".to_string(),
+            status: IndexRunStatus::Failed,
+            mode: IndexRunMode::Incremental,
+            started_at_unix_ms: 1000,
+            completed_at_unix_ms: Some(2000),
+        };
+
+        let json = serde_json::to_string(&summary).unwrap();
+        let deserialized: RunHealthSummary = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, summary);
     }
 }
