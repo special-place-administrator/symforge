@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: completed
-stopped_at: Completed 05-http-sidecar-hook-infrastructure/05-01-PLAN.md
-last_updated: "2026-03-10T20:35:20.268Z"
+stopped_at: Completed 05-02-PLAN.md
+last_updated: "2026-03-10T20:35:39.372Z"
 last_activity: "2026-03-10 — Phase 03 Plan 03 complete: watcher wired into MCP server, 8 integration tests prove all FRSH/RELY-03 reqs"
 progress:
   total_phases: 7
@@ -122,6 +122,9 @@ Recent decisions affecting current work:
 - [Phase 05-01]: CWD_LOCK Mutex in tests prevents parallel cwd-manipulation failures — process cwd is global state
 - [Phase 05-01]: spawn_sidecar reads TOKENIZOR_SIDECAR_BIND env var — bind host configurable without recompile
 - [Phase 05-01]: cleanup_files called inside spawned task after axum::serve completes — guarantees cleanup even on error exit
+- [Phase 05-02]: Rust 2024 edition requires unsafe {} for set_var/remove_var in tests — wrapped with SAFETY comment
+- [Phase 05-02]: run_hook uses env var shim for Phase 5 (TOKENIZOR_HOOK_FILE_PATH); Phase 6 replaces with stdin JSON parsing
+- [Phase 05-02]: is_tokenizor_entry identifies hook entries by 'tokenizor hook' substring — robust across binary path changes
 
 ### Pending Todos
 
@@ -135,6 +138,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-10T20:34:37.037Z
-Stopped at: Completed 05-http-sidecar-hook-infrastructure/05-01-PLAN.md
+Last session: 2026-03-10T20:35:39.369Z
+Stopped at: Completed 05-02-PLAN.md
 Resume file: None

@@ -62,14 +62,14 @@ Requirements for the v2 rewrite release. Each maps to roadmap phases.
 
 - [x] **HOOK-01**: HTTP sidecar (axum) on localhost:0, port written to .tokenizor/sidecar.port
 - [x] **HOOK-02**: Sidecar shares Arc<LiveIndex> with MCP tools — zero data duplication
-- [ ] **HOOK-03**: Hook response latency <100ms total (Python spawn + HTTP + query)
+- [x] **HOOK-03**: Hook response latency <100ms total (Python spawn + HTTP + query)
 - [ ] **HOOK-04**: PostToolUse(Read) — inject symbol outline + key references for indexed files
 - [ ] **HOOK-05**: PostToolUse(Edit) — trigger re-index + inject impact analysis (callers to review)
 - [ ] **HOOK-06**: PostToolUse(Write) — trigger index of new file + confirmation
 - [ ] **HOOK-07**: PostToolUse(Grep) — inject symbol context for matched lines
 - [ ] **HOOK-08**: SessionStart — inject compact repo map (~500 tokens)
 - [ ] **HOOK-09**: Hook output token budget enforced (<200 tokens for Read, <100 for Grep)
-- [ ] **HOOK-10**: Hook stdout is valid JSON only — no debug output corruption
+- [x] **HOOK-10**: Hook stdout is valid JSON only — no debug output corruption
 
 ### Infrastructure
 
@@ -168,14 +168,14 @@ Which phases cover which requirements. Updated during roadmap creation.
 | TOOL-13 | Phase 2 | Complete |
 | HOOK-01 | Phase 5 | Complete |
 | HOOK-02 | Phase 5 | Complete |
-| HOOK-03 | Phase 5 | Pending |
+| HOOK-03 | Phase 5 | Complete |
 | HOOK-04 | Phase 6 | Pending |
 | HOOK-05 | Phase 6 | Pending |
 | HOOK-06 | Phase 6 | Pending |
 | HOOK-07 | Phase 6 | Pending |
 | HOOK-08 | Phase 6 | Pending |
 | HOOK-09 | Phase 6 | Pending |
-| HOOK-10 | Phase 5 | Pending |
+| HOOK-10 | Phase 5 | Complete |
 | INFR-01 | Phase 6 | Pending |
 | INFR-02 | Phase 2 | Complete |
 | INFR-03 | Phase 2 | Complete |
