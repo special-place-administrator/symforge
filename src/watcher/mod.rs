@@ -647,4 +647,111 @@ mod tests {
         let path = Path::new("Makefile");
         assert_eq!(supported_language(path), None);
     }
+
+    // --- Plan 04-02: watcher incremental xref update (XREF-08) ---
+
+    /// Proves that after `maybe_reindex` re-parses a file, the reverse_index
+    /// reflects the new references and the old references are gone.
+    ///
+    /// We write a Rust file with an initial function call, confirm the reverse
+    /// index contains it, then overwrite the file with a different call, call
+    /// maybe_reindex again, and confirm the index now reflects the new call.
+    #[test]
+    fn test_maybe_reindex_updates_reverse_index_on_change() {
+        use std::sync::{Arc, RwLock};
+        use crate::live_index::store::IndexedFile;
+        use crate::domain::LanguageId;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let rs_path = tmp.path().join("src").join("lib.rs");
+        std::fs::create_dir_all(rs_path.parent().unwrap()).unwrap();
+
+        // --- Initial content: calls `old_function` ---
+        let initial_content = b"fn entry() { old_function(); }";
+        std::fs::write(&rs_path, initial_content).unwrap();
+
+        // Build the initial shared index by parsing the file directly.
+        let rel_path = "src/lib.rs";
+        let shared: crate::live_index::store::SharedIndex = {
+            let result = crate::parsing::process_file(rel_path, initial_content, LanguageId::Rust);
+            let indexed = IndexedFile::from_parse_result(result, initial_content.to_vec());
+            let mut index = crate::live_index::store::LiveIndex {
+                files: std::collections::HashMap::new(),
+                loaded_at: std::time::Instant::now(),
+                loaded_at_system: std::time::SystemTime::now(),
+                load_duration: std::time::Duration::ZERO,
+                cb_state: crate::live_index::store::CircuitBreakerState::new(0.20),
+                is_empty: false,
+                reverse_index: std::collections::HashMap::new(),
+            };
+            index.update_file(rel_path.to_string(), indexed);
+            Arc::new(RwLock::new(index))
+        };
+
+        // Confirm the reverse index contains "old_function".
+        {
+            let idx = shared.read().unwrap();
+            assert!(
+                idx.reverse_index.contains_key("old_function"),
+                "reverse_index should contain 'old_function' after initial parse"
+            );
+        }
+
+        // --- Updated content: calls `new_function` instead ---
+        let updated_content = b"fn entry() { new_function(); }";
+        std::fs::write(&rs_path, updated_content).unwrap();
+
+        // maybe_reindex detects a hash change and re-parses.
+        let result = maybe_reindex(rel_path, &rs_path, &shared, LanguageId::Rust);
+        assert_eq!(result, ReindexResult::Reindexed, "file should be re-parsed on content change");
+
+        // Confirm reverse index now has "new_function" and not "old_function".
+        {
+            let idx = shared.read().unwrap();
+            assert!(
+                idx.reverse_index.contains_key("new_function"),
+                "reverse_index should contain 'new_function' after re-index"
+            );
+            assert!(
+                !idx.reverse_index.contains_key("old_function"),
+                "reverse_index should NOT contain 'old_function' after re-index"
+            );
+        }
+    }
+
+    /// Confirms that maybe_reindex returns HashSkip when content has not changed.
+    #[test]
+    fn test_maybe_reindex_hash_skip_on_unchanged_content() {
+        use std::sync::{Arc, RwLock};
+        use crate::live_index::store::IndexedFile;
+        use crate::domain::LanguageId;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let rs_path = tmp.path().join("a.rs");
+        let content = b"fn foo() {}";
+        std::fs::write(&rs_path, content).unwrap();
+
+        let rel_path = "a.rs";
+        let shared: crate::live_index::store::SharedIndex = {
+            let result = crate::parsing::process_file(rel_path, content, LanguageId::Rust);
+            let indexed = IndexedFile::from_parse_result(result, content.to_vec());
+            let mut index = crate::live_index::store::LiveIndex {
+                files: std::collections::HashMap::new(),
+                loaded_at: std::time::Instant::now(),
+                loaded_at_system: std::time::SystemTime::now(),
+                load_duration: std::time::Duration::ZERO,
+                cb_state: crate::live_index::store::CircuitBreakerState::new(0.20),
+                is_empty: false,
+                reverse_index: std::collections::HashMap::new(),
+            };
+            index.update_file(rel_path.to_string(), indexed);
+            Arc::new(RwLock::new(index))
+        };
+
+        // File content unchanged — expect HashSkip.
+        let result = maybe_reindex(rel_path, &rs_path, &shared, LanguageId::Rust);
+        assert_eq!(result, ReindexResult::HashSkip, "unchanged content should produce HashSkip");
+    }
 }
