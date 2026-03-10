@@ -141,8 +141,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | FRSH-04 | Phase 3 | Pending |
 | FRSH-05 | Phase 3 | Pending |
 | FRSH-06 | Phase 3 | Pending |
-| RELY-01 | Phase 2 | Pending |
-| RELY-02 | Phase 2 | Pending |
+| RELY-01 | Phase 1 | Pending |
+| RELY-02 | Phase 1 | Pending |
 | RELY-03 | Phase 3 | Pending |
 | RELY-04 | Phase 1 | Pending |
 | XREF-01 | Phase 4 | Pending |
@@ -178,8 +178,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | HOOK-10 | Phase 5 | Pending |
 | INFR-01 | Phase 6 | Pending |
 | INFR-02 | Phase 2 | Pending |
-| INFR-03 | Phase 4 | Pending |
-| INFR-04 | Phase 4 | Pending |
+| INFR-03 | Phase 2 | Pending |
+| INFR-04 | Phase 6 | Pending |
 | INFR-05 | Phase 2 | Pending |
 | PLSH-01 | Phase 7 | Pending |
 | PLSH-02 | Phase 7 | Pending |
@@ -195,10 +195,19 @@ Which phases cover which requirements. Updated during roadmap creation.
 | LANG-07 | Phase 7 | Pending |
 
 **Coverage:**
-- v1 requirements: 60 total
-- Mapped to phases: 60
+- v1 requirements: 63 total
+- Mapped to phases: 63
 - Unmapped: 0 ✓
+
+**Phase breakdown:**
+- Phase 1 (LiveIndex Foundation): LIDX-01..04, RELY-01, RELY-02, RELY-04 — 7 requirements
+- Phase 2 (MCP Tools v1 Parity): LIDX-05, TOOL-01..08, TOOL-12, TOOL-13, INFR-02, INFR-03, INFR-05 — 14 requirements
+- Phase 3 (File Watcher + Freshness): FRSH-01..06, RELY-03 — 7 requirements
+- Phase 4 (Cross-Reference Extraction): XREF-01..08, TOOL-09, TOOL-10, TOOL-11 — 11 requirements
+- Phase 5 (HTTP Sidecar + Hook Infrastructure): HOOK-01, HOOK-02, HOOK-03, HOOK-10 — 4 requirements
+- Phase 6 (Hook Enrichment Integration): HOOK-04..09, INFR-01, INFR-04 — 8 requirements
+- Phase 7 (Polish and Persistence): PLSH-01..05, LANG-01..07 — 12 requirements
 
 ---
 *Requirements defined: 2026-03-10*
-*Last updated: 2026-03-10 after initial definition*
+*Last updated: 2026-03-10 — traceability updated after roadmap creation. RELY-01/02 moved to Phase 1 (belong with foundation), INFR-03 moved to Phase 2 (formatter needed for tool responses), INFR-04 moved to Phase 6 (token tracking only measurable after hooks are live). Total corrected to 63.*
