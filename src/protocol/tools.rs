@@ -117,6 +117,15 @@ pub struct FindDependentsInput {
     pub path: String,
 }
 
+/// Input for `get_file_tree`.
+#[derive(Deserialize, JsonSchema)]
+pub struct GetFileTreeInput {
+    /// Subtree path to browse (default: project root).
+    pub path: Option<String>,
+    /// Max depth levels to expand (default: 2, max: 5).
+    pub depth: Option<u32>,
+}
+
 /// Input for `get_context_bundle`.
 #[derive(Deserialize, JsonSchema)]
 pub struct GetContextBundleInput {
@@ -332,6 +341,18 @@ impl TokenizorServer {
         loading_guard!(guard);
         let input = &params.0;
         let result = format::find_dependents_result(&guard, &input.path);
+        drop(guard);
+        result
+    }
+
+    /// Browse the source file tree with symbol counts per file and directory.
+    #[tool(description = "Browse the source file tree with symbol counts per file and directory.")]
+    async fn get_file_tree(&self, params: Parameters<GetFileTreeInput>) -> String {
+        let guard = self.index.read().expect("lock poisoned");
+        loading_guard!(guard);
+        let path = params.0.path.as_deref().unwrap_or("");
+        let depth = params.0.depth.unwrap_or(2).min(5);
+        let result = format::file_tree(&guard, path, depth);
         drop(guard);
         result
     }
@@ -712,13 +733,46 @@ mod tests {
     }
 
     #[test]
-    fn test_exactly_13_tools_registered() {
+    fn test_exactly_14_tools_registered() {
         let server = make_server(make_live_index_ready(vec![]));
         let tool_count = server.tool_router.list_all().len();
         assert_eq!(
-            tool_count, 13,
-            "server must expose exactly 13 tools; found {tool_count}"
+            tool_count, 14,
+            "server must expose exactly 14 tools (including get_file_tree); found {tool_count}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_get_file_tree_returns_tree() {
+        let sym = make_symbol("main", SymbolKind::Function, 1, 5);
+        let (key, file) = make_file("src/main.rs", b"fn main() {}", vec![sym]);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let result = server
+            .get_file_tree(Parameters(super::GetFileTreeInput {
+                path: None,
+                depth: None,
+            }))
+            .await;
+        assert!(
+            result.contains("main.rs"),
+            "get_file_tree should include file name; got: {result}"
+        );
+        assert!(
+            result.contains("symbol"),
+            "get_file_tree should show symbol count; got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_file_tree_loading_guard_empty() {
+        let server = make_server(make_live_index_empty());
+        let result = server
+            .get_file_tree(Parameters(super::GetFileTreeInput {
+                path: None,
+                depth: None,
+            }))
+            .await;
+        assert_eq!(result, crate::protocol::format::empty_guard_message());
     }
 
     #[tokio::test]

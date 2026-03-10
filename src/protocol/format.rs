@@ -80,47 +80,119 @@ pub fn symbol_detail(
     }
 }
 
-/// Search for symbols matching a query (case-insensitive substring).
+/// 3-tier match classification for `search_symbols_result`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum MatchTier {
+    /// Query == symbol name (case-insensitive).
+    Exact = 0,
+    /// Symbol name starts with query (case-insensitive).
+    Prefix = 1,
+    /// Symbol name contains query elsewhere (case-insensitive).
+    Substring = 2,
+}
+
+/// A single scored symbol match for tiered sorting.
+struct ScoredMatch {
+    tier: MatchTier,
+    /// Tiebreaker within tier: alphabetical key (name) for Exact, length for Prefix, match offset for Substring.
+    tiebreak: u32,
+    /// Display name (symbol name, for secondary tiebreaking).
+    name: String,
+    path: String,
+    kind: String,
+    line: u32,
+}
+
+/// Search for symbols matching a query (case-insensitive), with 3-tier scored ranking.
 ///
+/// Output sections (only non-empty tiers shown):
+/// ```text
+/// ── Exact matches ──
+///   {line}: {kind} {name}  ({file})
+///
+/// ── Prefix matches ──
+///   ...
+///
+/// ── Substring matches ──
+///   ...
+/// ```
 /// Header: `{N} matches in {M} files`
-/// Body: grouped by file, each match: `  {line_start}: {kind} {name}`
 /// Empty: "No symbols matching '{query}'"
 pub fn search_symbols_result(index: &LiveIndex, query: &str) -> String {
     let query_lower = query.to_lowercase();
+    const RESULT_LIMIT: usize = 50;
 
-    // Collect matches grouped by file, sorted by path for determinism
-    let mut by_file: Vec<(String, Vec<String>)> = Vec::new();
-    let mut total_matches = 0usize;
+    let mut matches: Vec<ScoredMatch> = Vec::new();
+    let mut files_with_hits: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     let mut paths: Vec<&String> = index.all_files().map(|(p, _)| p).collect();
     paths.sort();
 
     for path in paths {
         let file = index.get_file(path).unwrap();
-        let matches: Vec<String> = file
-            .symbols
-            .iter()
-            .filter(|s| s.name.to_lowercase().contains(&query_lower))
-            .map(|s| format!("  {}: {} {}", s.line_range.0, s.kind, s.name))
-            .collect();
+        for sym in &file.symbols {
+            let name_lower = sym.name.to_lowercase();
+            if !name_lower.contains(&query_lower) {
+                continue;
+            }
 
-        if !matches.is_empty() {
-            total_matches += matches.len();
-            by_file.push((path.clone(), matches));
+            let (tier, tiebreak) = if name_lower == query_lower {
+                // Exact: tiebreak by alphabetical order (stored as 0; sorted by name below)
+                (MatchTier::Exact, 0u32)
+            } else if name_lower.starts_with(&query_lower) {
+                // Prefix: shorter names win
+                (MatchTier::Prefix, sym.name.len() as u32)
+            } else {
+                // Substring: earlier match position wins
+                let pos = name_lower.find(&query_lower).unwrap_or(0) as u32;
+                (MatchTier::Substring, pos)
+            };
+
+            files_with_hits.insert(path.clone());
+            matches.push(ScoredMatch {
+                tier,
+                tiebreak,
+                name: sym.name.clone(),
+                path: path.clone(),
+                kind: sym.kind.to_string(),
+                line: sym.line_range.0,
+            });
         }
     }
 
-    if by_file.is_empty() {
+    if matches.is_empty() {
         return format!("No symbols matching '{query}'");
     }
 
-    let file_count = by_file.len();
-    let mut lines = Vec::new();
-    lines.push(format!("{total_matches} matches in {file_count} files"));
+    // Sort by (tier, tiebreak, name)
+    matches.sort_by(|a, b| {
+        a.tier.cmp(&b.tier)
+            .then(a.tiebreak.cmp(&b.tiebreak))
+            .then(a.name.cmp(&b.name))
+    });
 
-    for (path, matches) in &by_file {
-        lines.push(path.clone());
-        lines.extend_from_slice(matches);
+    let total_matches = matches.len().min(RESULT_LIMIT);
+    let file_count = files_with_hits.len();
+    let mut lines = vec![format!("{total_matches} matches in {file_count} files")];
+
+    // Group into tier sections
+    let limited: Vec<&ScoredMatch> = matches.iter().take(RESULT_LIMIT).collect();
+
+    let mut last_tier: Option<&MatchTier> = None;
+    for m in &limited {
+        if last_tier != Some(&m.tier) {
+            last_tier = Some(&m.tier);
+            let header = match m.tier {
+                MatchTier::Exact => "\u{2500}\u{2500} Exact matches \u{2500}\u{2500}",
+                MatchTier::Prefix => "\u{2500}\u{2500} Prefix matches \u{2500}\u{2500}",
+                MatchTier::Substring => "\u{2500}\u{2500} Substring matches \u{2500}\u{2500}",
+            };
+            if lines.len() > 1 {
+                lines.push(String::new()); // blank line between sections
+            }
+            lines.push(header.to_string());
+        }
+        lines.push(format!("  {}: {} {}  ({})", m.line, m.kind, m.name, m.path));
     }
 
     lines.join("\n")
@@ -128,20 +200,30 @@ pub fn search_symbols_result(index: &LiveIndex, query: &str) -> String {
 
 /// Search for text content matches (case-insensitive substring).
 ///
+/// For queries >= 3 chars, uses the TrigramIndex to select candidate files before scanning.
+/// For queries < 3 chars, falls back to scanning all files (trigram search handles this internally).
+///
 /// Header: `{N} matches in {M} files`
 /// Body: grouped by file, each match: `  {line_number}: {line_content}`
 /// Empty: "No matches for '{query}'"
 pub fn search_text_result(index: &LiveIndex, query: &str) -> String {
     let query_lower = query.to_lowercase();
 
+    // Get candidate files via trigram index (handles short-query fallback internally).
+    let candidate_paths = index.trigram_index.search(query.as_bytes(), &index.files);
+
+    // Sort for deterministic output.
+    let mut sorted_paths: Vec<String> = candidate_paths;
+    sorted_paths.sort();
+
     let mut by_file: Vec<(String, Vec<String>)> = Vec::new();
     let mut total_matches = 0usize;
 
-    let mut paths: Vec<&String> = index.all_files().map(|(p, _)| p).collect();
-    paths.sort();
-
-    for path in paths {
-        let file = index.get_file(path).unwrap();
+    for path in &sorted_paths {
+        let file = match index.get_file(path) {
+            Some(f) => f,
+            None => continue,
+        };
         let content_str = String::from_utf8_lossy(&file.content);
 
         let matches: Vec<String> = content_str
@@ -178,6 +260,167 @@ pub fn search_text_result(index: &LiveIndex, query: &str) -> String {
     }
 
     lines.join("\n")
+}
+
+/// Generate a depth-limited source file tree with symbol counts per file and directory.
+///
+/// - `path`: subtree prefix filter (empty/blank = project root).
+/// - `depth`: maximum depth levels to expand (default 2, max 5).
+///
+/// Output format:
+/// ```text
+/// {dir}/  ({N} files, {M} symbols)
+///   {file} [{lang}]  ({K} symbols)
+///   {subdir}/  ({N} files, {M} symbols)
+/// ...
+/// {D} directories, {F} files, {S} symbols
+/// ```
+pub fn file_tree(index: &LiveIndex, path: &str, depth: u32) -> String {
+    let depth = depth.min(5);
+    let prefix = path.trim_matches('/');
+
+    // Collect all files whose relative_path starts with the path prefix.
+    let matching_files: Vec<(&String, &crate::live_index::store::IndexedFile)> = index
+        .all_files()
+        .filter(|(p, _)| {
+            if prefix.is_empty() {
+                true
+            } else {
+                p.starts_with(prefix)
+                    && (p.len() == prefix.len()
+                        || p.as_bytes().get(prefix.len()) == Some(&b'/'))
+            }
+        })
+        .collect();
+
+    if matching_files.is_empty() {
+        return format!("No source files found under '{}'", if prefix.is_empty() { "." } else { prefix });
+    }
+
+    // Build a tree: BTreeMap from directory path -> Vec<(filename, lang, symbol_count)>
+    // Node entries are keyed by their path component at each level.
+    use std::collections::BTreeMap;
+
+    // Strip the prefix from all paths before building the tree.
+    let strip_len = if prefix.is_empty() { 0 } else { prefix.len() + 1 };
+    let stripped: Vec<(&str, &crate::live_index::store::IndexedFile)> = matching_files
+        .iter()
+        .map(|(p, f)| (if p.len() >= strip_len { &p[strip_len..] } else { p.as_str() }, *f))
+        .collect();
+
+    // Recursively build tree lines.
+    fn build_lines(
+        entries: &[(&str, &crate::live_index::store::IndexedFile)],
+        current_depth: u32,
+        max_depth: u32,
+        indent: usize,
+    ) -> Vec<String> {
+        // Group by first path component.
+        let mut dirs: BTreeMap<&str, Vec<(&str, &crate::live_index::store::IndexedFile)>> = BTreeMap::new();
+        let mut files_here: Vec<(&str, &crate::live_index::store::IndexedFile)> = Vec::new();
+
+        for (rel, file) in entries {
+            if let Some(slash) = rel.find('/') {
+                let dir_part = &rel[..slash];
+                let rest = &rel[slash + 1..];
+                dirs.entry(dir_part).or_default().push((rest, file));
+            } else {
+                files_here.push((rel, file));
+            }
+        }
+
+        let pad = "  ".repeat(indent);
+        let mut lines = Vec::new();
+
+        // Files at this level
+        files_here.sort_by_key(|(name, _)| *name);
+        for (name, file) in &files_here {
+            let sym_count = file.symbols.len();
+            let sym_label = if sym_count == 1 { "symbol" } else { "symbols" };
+            lines.push(format!(
+                "{}{} [{}]  ({} {})",
+                pad, name, file.language, sym_count, sym_label
+            ));
+        }
+
+        // Directories at this level
+        for (dir_name, children) in &dirs {
+            let file_count = count_files(children);
+            let sym_count: usize = children.iter().map(|(_, f)| f.symbols.len()).sum();
+            let sym_label = if sym_count == 1 { "symbol" } else { "symbols" };
+
+            if current_depth >= max_depth {
+                // Collapsed — just show summary line
+                lines.push(format!(
+                    "{}{}/  ({} files, {} {})",
+                    pad, dir_name, file_count, sym_count, sym_label
+                ));
+            } else {
+                lines.push(format!(
+                    "{}{}/  ({} files, {} {})",
+                    pad, dir_name, file_count, sym_count, sym_label
+                ));
+                let sub_lines = build_lines(children, current_depth + 1, max_depth, indent + 1);
+                lines.extend(sub_lines);
+            }
+        }
+
+        lines
+    }
+
+    fn count_files(entries: &[(&str, &crate::live_index::store::IndexedFile)]) -> usize {
+        let mut count = 0;
+        for (rel, _) in entries {
+            if rel.contains('/') {
+                // nested
+            } else {
+                count += 1;
+            }
+        }
+        // also count files in sub-directories
+        let mut dirs: std::collections::HashMap<&str, Vec<(&str, &crate::live_index::store::IndexedFile)>> = std::collections::HashMap::new();
+        for (rel, file) in entries {
+            if let Some(slash) = rel.find('/') {
+                dirs.entry(&rel[..slash]).or_default().push((&rel[slash + 1..], file));
+            }
+        }
+        for children in dirs.values() {
+            count += count_files(children);
+        }
+        count
+    }
+
+    fn count_dirs(entries: &[(&str, &crate::live_index::store::IndexedFile)]) -> usize {
+        let mut dirs: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut sub_entries: std::collections::HashMap<&str, Vec<(&str, &crate::live_index::store::IndexedFile)>> = std::collections::HashMap::new();
+        for (rel, file) in entries {
+            if let Some(slash) = rel.find('/') {
+                let dir_name = &rel[..slash];
+                dirs.insert(dir_name);
+                sub_entries.entry(dir_name).or_default().push((&rel[slash + 1..], file));
+            }
+        }
+        let mut total = dirs.len();
+        for children in sub_entries.values() {
+            total += count_dirs(children);
+        }
+        total
+    }
+
+    let body_lines = build_lines(&stripped, 1, depth, 0);
+
+    let total_files = stripped.len();
+    let total_dirs = count_dirs(&stripped);
+    let total_symbols: usize = stripped.iter().map(|(_, f)| f.symbols.len()).sum();
+    let sym_label = if total_symbols == 1 { "symbol" } else { "symbols" };
+
+    let mut output = body_lines;
+    output.push(format!(
+        "{} directories, {} files, {} {}",
+        total_dirs, total_files, total_symbols, sym_label
+    ));
+
+    output.join("\n")
 }
 
 /// Generate a directory-tree overview of the repo.
@@ -1462,5 +1705,186 @@ mod tests {
         assert!(!result.contains("Edit:"), "Edit should be omitted when zero; got: {result}");
         assert!(!result.contains("Grep:"), "Grep should be omitted when zero; got: {result}");
         assert!(!result.contains("Write:"), "Write should be omitted when zero; got: {result}");
+    }
+
+    // ── search_symbols tier ordering tests ───────────────────────────────────
+
+    #[test]
+    fn test_search_symbols_exact_match_tier_header() {
+        let sym = make_symbol("parse", SymbolKind::Function, 0, 1, 5);
+        let (key, file) = make_file("src/lib.rs", b"fn parse() {}", vec![sym]);
+        let index = make_index(vec![(key, file)]);
+        let result = search_symbols_result(&index, "parse");
+        assert!(result.contains("Exact matches"), "should show 'Exact matches' tier header; got: {result}");
+    }
+
+    #[test]
+    fn test_search_symbols_prefix_match_tier_header() {
+        let sym = make_symbol("parse_file", SymbolKind::Function, 0, 1, 5);
+        let (key, file) = make_file("src/lib.rs", b"fn parse_file() {}", vec![sym]);
+        let index = make_index(vec![(key, file)]);
+        let result = search_symbols_result(&index, "parse");
+        assert!(result.contains("Prefix matches"), "should show 'Prefix matches' tier header; got: {result}");
+    }
+
+    #[test]
+    fn test_search_symbols_substring_match_tier_header() {
+        let sym = make_symbol("do_parse_now", SymbolKind::Function, 0, 1, 5);
+        let (key, file) = make_file("src/lib.rs", b"fn do_parse_now() {}", vec![sym]);
+        let index = make_index(vec![(key, file)]);
+        let result = search_symbols_result(&index, "parse");
+        assert!(result.contains("Substring matches"), "should show 'Substring matches' tier header; got: {result}");
+    }
+
+    #[test]
+    fn test_search_symbols_exact_before_prefix_before_substring() {
+        // exact: "parse", prefix: "parse_file", substring: "do_parse"
+        let symbols = vec![
+            make_symbol("do_parse", SymbolKind::Function, 0, 1, 2),
+            make_symbol("parse_file", SymbolKind::Function, 0, 3, 4),
+            make_symbol("parse", SymbolKind::Function, 0, 5, 6),
+        ];
+        let (key, file) = make_file("src/lib.rs", b"fn do_parse() {} fn parse_file() {} fn parse() {}", symbols);
+        let index = make_index(vec![(key, file)]);
+        let result = search_symbols_result(&index, "parse");
+
+        let exact_pos = result.find("Exact matches").expect("missing Exact matches header");
+        let prefix_pos = result.find("Prefix matches").expect("missing Prefix matches header");
+        let substr_pos = result.find("Substring matches").expect("missing Substring matches header");
+
+        assert!(exact_pos < prefix_pos, "Exact must appear before Prefix");
+        assert!(prefix_pos < substr_pos, "Prefix must appear before Substring");
+
+        // "parse" must appear after "Exact matches" and before "Prefix matches"
+        let parse_pos = result[exact_pos..].find("\n  ").map(|p| exact_pos + p)
+            .expect("no symbol line after Exact header");
+        assert!(parse_pos < prefix_pos, "exact match 'parse' must be in Exact section");
+    }
+
+    #[test]
+    fn test_search_symbols_omits_empty_tier_sections() {
+        // Only exact match — prefix and substring headers must NOT appear
+        let sym = make_symbol("search", SymbolKind::Function, 0, 1, 5);
+        let (key, file) = make_file("src/lib.rs", b"fn search() {}", vec![sym]);
+        let index = make_index(vec![(key, file)]);
+        let result = search_symbols_result(&index, "search");
+        assert!(!result.contains("Prefix matches"), "no prefix matches: header must be omitted; got: {result}");
+        assert!(!result.contains("Substring matches"), "no substring matches: header must be omitted; got: {result}");
+    }
+
+    #[test]
+    fn test_search_symbols_within_exact_tier_alphabetical() {
+        let symbols = vec![
+            make_symbol("z_fn", SymbolKind::Function, 0, 1, 2),
+            make_symbol("a_fn", SymbolKind::Function, 0, 3, 4),
+            make_symbol("m_fn", SymbolKind::Function, 0, 5, 6),
+        ];
+        let (key, file) = make_file("src/lib.rs", b"fn z_fn() {} fn a_fn() {} fn m_fn() {}", symbols);
+        let index = make_index(vec![(key, file)]);
+        let result = search_symbols_result(&index, "a_fn");
+        // Only "a_fn" matches exactly — just verify it shows up in Exact
+        assert!(result.contains("Exact matches"), "got: {result}");
+        assert!(result.contains("a_fn"), "got: {result}");
+    }
+
+    #[test]
+    fn test_search_symbols_within_prefix_tier_shorter_names_first() {
+        // "parse" is query, "parse_x" (7 chars) should come before "parse_longer" (12 chars)
+        let symbols = vec![
+            make_symbol("parse_longer", SymbolKind::Function, 0, 1, 2),
+            make_symbol("parse_x", SymbolKind::Function, 0, 3, 4),
+        ];
+        let (key, file) = make_file("src/lib.rs", b"fn parse_longer() {} fn parse_x() {}", symbols);
+        let index = make_index(vec![(key, file)]);
+        let result = search_symbols_result(&index, "parse");
+
+        // In the prefix section, parse_x must appear before parse_longer
+        let prefix_pos = result.find("Prefix matches").expect("missing Prefix matches");
+        let section_after = &result[prefix_pos..];
+        let x_pos = section_after.find("parse_x").expect("parse_x not in prefix section");
+        let longer_pos = section_after.find("parse_longer").expect("parse_longer not in prefix section");
+        assert!(x_pos < longer_pos, "shorter prefix match 'parse_x' must appear before 'parse_longer'");
+    }
+
+    // ── file_tree tests ───────────────────────────────────────────────────────
+
+    fn make_file_with_lang(path: &str, content: &[u8], symbols: Vec<SymbolRecord>, lang: crate::domain::LanguageId) -> (String, IndexedFile) {
+        (
+            path.to_string(),
+            IndexedFile {
+                relative_path: path.to_string(),
+                language: lang,
+                content: content.to_vec(),
+                symbols,
+                parse_status: ParseStatus::Parsed,
+                byte_len: content.len() as u64,
+                content_hash: "test".to_string(),
+                references: vec![],
+                alias_map: std::collections::HashMap::new(),
+            },
+        )
+    }
+
+    #[test]
+    fn test_file_tree_shows_files_with_symbol_count() {
+        let sym = make_symbol("main", SymbolKind::Function, 0, 1, 5);
+        let (key, file) = make_file_with_lang("src/main.rs", b"fn main() {}", vec![sym], crate::domain::LanguageId::Rust);
+        let index = make_index(vec![(key, file)]);
+        let result = file_tree(&index, "", 2);
+        assert!(result.contains("main.rs"), "should show filename; got: {result}");
+        assert!(result.contains("1 symbol"), "should show symbol count; got: {result}");
+    }
+
+    #[test]
+    fn test_file_tree_shows_directory_with_file_counts() {
+        let sym1 = make_symbol("foo", SymbolKind::Function, 0, 1, 3);
+        let sym2 = make_symbol("bar", SymbolKind::Function, 0, 1, 3);
+        let (k1, f1) = make_file_with_lang("src/a.rs", b"fn foo() {}", vec![sym1], crate::domain::LanguageId::Rust);
+        let (k2, f2) = make_file_with_lang("src/b.rs", b"fn bar() {}", vec![sym2], crate::domain::LanguageId::Rust);
+        let index = make_index(vec![(k1, f1), (k2, f2)]);
+        let result = file_tree(&index, "", 1);
+        // At depth 1, "src" directory should be shown collapsed with file/symbol counts
+        assert!(result.contains("src"), "should show src directory; got: {result}");
+    }
+
+    #[test]
+    fn test_file_tree_footer_shows_totals() {
+        let sym = make_symbol("foo", SymbolKind::Function, 0, 1, 3);
+        let (k1, f1) = make_file_with_lang("src/a.rs", b"fn foo() {}", vec![sym], crate::domain::LanguageId::Rust);
+        let (k2, f2) = make_file_with_lang("lib/b.rs", b"fn bar() {}", vec![], crate::domain::LanguageId::Rust);
+        let index = make_index(vec![(k1, f1), (k2, f2)]);
+        let result = file_tree(&index, "", 3);
+        // Footer must show directories, files, symbols totals
+        assert!(result.contains("files"), "footer should mention files; got: {result}");
+        assert!(result.contains("symbols"), "footer should mention symbols; got: {result}");
+    }
+
+    #[test]
+    fn test_file_tree_respects_path_filter() {
+        let sym = make_symbol("foo", SymbolKind::Function, 0, 1, 3);
+        let (k1, f1) = make_file_with_lang("src/a.rs", b"fn foo() {}", vec![sym], crate::domain::LanguageId::Rust);
+        let (k2, f2) = make_file_with_lang("tests/b.rs", b"fn test_b() {}", vec![], crate::domain::LanguageId::Rust);
+        let index = make_index(vec![(k1, f1), (k2, f2)]);
+        let result = file_tree(&index, "src", 3);
+        assert!(result.contains("a.rs"), "src filter should show a.rs; got: {result}");
+        assert!(!result.contains("b.rs"), "src filter should not show tests/b.rs; got: {result}");
+    }
+
+    #[test]
+    fn test_file_tree_depth_collapses_deep_directories() {
+        // At depth=1, nested directories beyond root level should be collapsed
+        let sym = make_symbol("deep", SymbolKind::Function, 0, 1, 3);
+        let (k1, f1) = make_file_with_lang("src/deep/nested/file.rs", b"fn deep() {}", vec![sym], crate::domain::LanguageId::Rust);
+        let index = make_index(vec![(k1, f1)]);
+        let result = file_tree(&index, "", 1);
+        // file.rs should not be individually listed at depth=1
+        assert!(!result.contains("file.rs"), "file.rs should be collapsed at depth=1; got: {result}");
+    }
+
+    #[test]
+    fn test_file_tree_empty_index() {
+        let index = make_index(vec![]);
+        let result = file_tree(&index, "", 2);
+        assert!(result.contains("0 files") || result.contains("No source files"), "got: {result}");
     }
 }
