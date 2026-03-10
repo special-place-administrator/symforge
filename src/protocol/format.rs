@@ -488,6 +488,8 @@ mod tests {
                 parse_status: ParseStatus::Parsed,
                 byte_len: content.len() as u64,
                 content_hash: "test".to_string(),
+                references: vec![],
+                alias_map: std::collections::HashMap::new(),
             },
         )
     }
@@ -501,6 +503,7 @@ mod tests {
             load_duration: Duration::from_millis(42),
             cb_state: cb,
             is_empty: false,
+            reverse_index: HashMap::new(),
         }
     }
 
@@ -748,6 +751,7 @@ mod tests {
             load_duration: Duration::from_millis(0),
             cb_state: CircuitBreakerState::new(0.20),
             is_empty: true,
+            reverse_index: HashMap::new(),
         };
         let result = health_report(&index);
         assert!(result.contains("Status: Empty"), "got: {result}");

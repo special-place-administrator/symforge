@@ -1,5 +1,6 @@
 pub mod languages;
 
+use std::collections::HashMap;
 use std::panic;
 
 use tree_sitter::Parser;
@@ -34,6 +35,8 @@ pub fn process_file(
                 symbols,
                 byte_len,
                 content_hash,
+                references: vec![],
+                alias_map: HashMap::new(),
             }
         }
         Ok(Err(err)) => FileProcessingResult {
@@ -45,6 +48,8 @@ pub fn process_file(
             symbols: vec![],
             byte_len,
             content_hash,
+            references: vec![],
+            alias_map: HashMap::new(),
         },
         Err(_panic) => FileProcessingResult {
             relative_path: relative_path.to_string(),
@@ -55,6 +60,8 @@ pub fn process_file(
             symbols: vec![],
             byte_len,
             content_hash,
+            references: vec![],
+            alias_map: HashMap::new(),
         },
     }
 }

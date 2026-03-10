@@ -1,5 +1,8 @@
 pub mod store;
 pub mod query;
 
-pub use store::{CircuitBreakerState, IndexState, IndexedFile, LiveIndex, ParseStatus, SharedIndex};
+pub use store::{
+    CircuitBreakerState, IndexState, IndexedFile, LiveIndex, ParseStatus, ReferenceLocation,
+    SharedIndex,
+};
 pub use query::HealthStats;

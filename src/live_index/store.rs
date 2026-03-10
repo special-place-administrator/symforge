@@ -7,7 +7,10 @@ use std::time::{Duration, Instant, SystemTime};
 use rayon::prelude::*;
 use tracing::{error, info, warn};
 
-use crate::domain::{FileOutcome, FileProcessingResult, LanguageId, SymbolRecord};
+use crate::domain::{
+    find_enclosing_symbol, FileOutcome, FileProcessingResult, LanguageId, ReferenceRecord,
+    SymbolRecord,
+};
 use crate::error::Result;
 use crate::{discovery, parsing};
 
@@ -34,6 +37,20 @@ pub struct IndexedFile {
     pub parse_status: ParseStatus,
     pub byte_len: u64,
     pub content_hash: String,
+    /// Cross-references extracted by xref::extract_references (Phase 4).
+    pub references: Vec<ReferenceRecord>,
+    /// Import alias map for this file: alias -> original name.
+    pub alias_map: HashMap<String, String>,
+}
+
+/// Identifies a single reference within a specific file.
+/// Used as a value in `LiveIndex::reverse_index`.
+#[derive(Clone, Debug)]
+pub struct ReferenceLocation {
+    /// Relative path of the file containing the reference.
+    pub file_path: String,
+    /// Index into `IndexedFile::references` for the specific `ReferenceRecord`.
+    pub reference_idx: u32,
 }
 
 impl IndexedFile {
@@ -54,14 +71,46 @@ impl IndexedFile {
             },
         };
 
+        // Destructure the result so we can consume references while borrowing symbols.
+        let FileProcessingResult {
+            relative_path,
+            language,
+            outcome: _,
+            symbols,
+            byte_len,
+            content_hash,
+            references: raw_references,
+            alias_map,
+        } = result;
+
+        // Build a set of symbol byte ranges so we can filter definition-site hits
+        // (Pitfall 1: a reference whose byte_range exactly matches a symbol's byte_range
+        // is the definition itself — not a usage site).
+        let symbol_byte_ranges: std::collections::HashSet<(u32, u32)> =
+            symbols.iter().map(|s| s.byte_range).collect();
+
+        // Assign enclosing_symbol_index for each reference and skip definition sites.
+        let references: Vec<ReferenceRecord> = raw_references
+            .into_iter()
+            .filter(|r| !symbol_byte_ranges.contains(&r.byte_range))
+            .map(|mut r| {
+                if r.enclosing_symbol_index.is_none() {
+                    r.enclosing_symbol_index = find_enclosing_symbol(&symbols, r.line_range.0);
+                }
+                r
+            })
+            .collect();
+
         IndexedFile {
-            relative_path: result.relative_path,
-            language: result.language,
+            relative_path,
+            language,
             content,
-            symbols: result.symbols,
+            symbols,
             parse_status,
-            byte_len: result.byte_len,
-            content_hash: result.content_hash,
+            byte_len,
+            content_hash,
+            references,
+            alias_map,
         }
     }
 }
@@ -185,6 +234,9 @@ pub struct LiveIndex {
     pub(crate) cb_state: CircuitBreakerState,
     /// True when constructed with empty() and reload() has not been called.
     pub(crate) is_empty: bool,
+    /// Repo-level reverse index: reference name -> all locations in the index.
+    /// Rebuilt synchronously after every mutation (update_file, add_file, remove_file, reload).
+    pub(crate) reverse_index: HashMap<String, Vec<ReferenceLocation>>,
 }
 
 /// Thread-safe shared handle to the index.
@@ -262,14 +314,16 @@ impl LiveIndex {
             load_duration
         );
 
-        let index = LiveIndex {
+        let mut index = LiveIndex {
             files,
             loaded_at: Instant::now(),
             loaded_at_system: SystemTime::now(),
             load_duration,
             cb_state,
             is_empty: false,
+            reverse_index: HashMap::new(),
         };
+        index.rebuild_reverse_index();
 
         Ok(Arc::new(RwLock::new(index)))
     }
@@ -286,6 +340,7 @@ impl LiveIndex {
             load_duration: Duration::ZERO,
             cb_state: CircuitBreakerState::new(0.20),
             is_empty: true,
+            reverse_index: HashMap::new(),
         };
         Arc::new(RwLock::new(index))
     }
@@ -377,6 +432,7 @@ impl LiveIndex {
         self.load_duration = load_duration;
         self.cb_state = new_cb;
         self.is_empty = false;
+        self.rebuild_reverse_index();
 
         Ok(())
     }
@@ -388,6 +444,7 @@ impl LiveIndex {
     pub fn update_file(&mut self, path: String, file: IndexedFile) {
         self.files.insert(path, file);
         self.loaded_at_system = SystemTime::now();
+        self.rebuild_reverse_index();
     }
 
     /// Insert a new file into the index (alias for `update_file`).
@@ -406,7 +463,27 @@ impl LiveIndex {
     pub fn remove_file(&mut self, path: &str) {
         if self.files.remove(path).is_some() {
             self.loaded_at_system = SystemTime::now();
+            self.rebuild_reverse_index();
         }
+    }
+
+    /// Rebuild `reverse_index` from scratch by iterating all files' references.
+    ///
+    /// Called synchronously after every mutation to keep the index consistent.
+    /// Maps reference name -> Vec of ReferenceLocation (file + index into references vec).
+    pub(crate) fn rebuild_reverse_index(&mut self) {
+        let mut idx: HashMap<String, Vec<ReferenceLocation>> = HashMap::new();
+        for (file_path, indexed_file) in &self.files {
+            for (reference_idx, reference) in indexed_file.references.iter().enumerate() {
+                idx.entry(reference.name.clone())
+                    .or_default()
+                    .push(ReferenceLocation {
+                        file_path: file_path.clone(),
+                        reference_idx: reference_idx as u32,
+                    });
+            }
+        }
+        self.reverse_index = idx;
     }
 
 }
@@ -414,7 +491,7 @@ impl LiveIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{FileOutcome, LanguageId, SymbolRecord, SymbolKind};
+    use crate::domain::{FileOutcome, LanguageId, ReferenceKind, ReferenceRecord, SymbolKind, SymbolRecord};
     use std::fs;
     use tempfile::TempDir;
 
@@ -437,6 +514,8 @@ mod tests {
             symbols,
             byte_len: 42,
             content_hash: "abc123".to_string(),
+            references: vec![],
+            alias_map: std::collections::HashMap::new(),
         }
     }
 
@@ -706,6 +785,8 @@ mod tests {
             parse_status: ParseStatus::Parsed,
             byte_len: 12,
             content_hash: "abc123".to_string(),
+            references: vec![],
+            alias_map: std::collections::HashMap::new(),
         }
     }
 
@@ -717,6 +798,7 @@ mod tests {
             load_duration: Duration::ZERO,
             cb_state: CircuitBreakerState::new(0.20),
             is_empty: false,
+            reverse_index: HashMap::new(),
         }
     }
 
@@ -745,6 +827,8 @@ mod tests {
             parse_status: ParseStatus::Parsed,
             byte_len: 11,
             content_hash: "old_hash".to_string(),
+            references: vec![],
+            alias_map: std::collections::HashMap::new(),
         };
         index.update_file("src/foo.rs".to_string(), file1);
 
@@ -756,6 +840,8 @@ mod tests {
             parse_status: ParseStatus::Parsed,
             byte_len: 11,
             content_hash: "new_hash".to_string(),
+            references: vec![],
+            alias_map: std::collections::HashMap::new(),
         };
         index.update_file("src/foo.rs".to_string(), file2);
 
@@ -823,5 +909,125 @@ mod tests {
 
         index.remove_file("nonexistent.rs");
         assert_eq!(index.file_count(), 1, "removing nonexistent does not change count");
+    }
+
+    // --- Cross-reference fields and reverse index ---
+
+    fn make_ref(name: &str, kind: ReferenceKind, line: u32) -> ReferenceRecord {
+        ReferenceRecord {
+            name: name.to_string(),
+            qualified_name: None,
+            kind,
+            byte_range: (0, 1),
+            line_range: (line, line),
+            enclosing_symbol_index: None,
+        }
+    }
+
+    fn make_indexed_file_with_refs(path: &str, refs: Vec<ReferenceRecord>) -> IndexedFile {
+        IndexedFile {
+            relative_path: path.to_string(),
+            language: LanguageId::Rust,
+            content: b"fn test() {}".to_vec(),
+            symbols: vec![],
+            parse_status: ParseStatus::Parsed,
+            byte_len: 12,
+            content_hash: "abc".to_string(),
+            references: refs,
+            alias_map: std::collections::HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn test_indexed_file_from_parse_result_transfers_refs_and_alias_map() {
+        use std::collections::HashMap;
+        let mut alias_map = HashMap::new();
+        alias_map.insert("Map".to_string(), "HashMap".to_string());
+        let refs = vec![make_ref("foo", ReferenceKind::Call, 1)];
+
+        let result = FileProcessingResult {
+            relative_path: "test.rs".to_string(),
+            language: LanguageId::Rust,
+            outcome: FileOutcome::Processed,
+            symbols: vec![],
+            byte_len: 0,
+            content_hash: "abc".to_string(),
+            references: refs.clone(),
+            alias_map: alias_map.clone(),
+        };
+
+        let indexed = IndexedFile::from_parse_result(result, vec![]);
+        assert_eq!(indexed.references.len(), 1);
+        assert_eq!(indexed.references[0].name, "foo");
+        assert_eq!(indexed.alias_map.get("Map").map(|s| s.as_str()), Some("HashMap"));
+    }
+
+    #[test]
+    fn test_rebuild_reverse_index_builds_name_to_locations() {
+        let mut index = make_empty_live_index();
+
+        let refs_a = vec![
+            make_ref("process", ReferenceKind::Call, 5),
+            make_ref("load", ReferenceKind::Call, 10),
+        ];
+        let refs_b = vec![
+            make_ref("process", ReferenceKind::Call, 3),
+        ];
+
+        index.add_file("a.rs".to_string(), make_indexed_file_with_refs("a.rs", refs_a));
+        index.add_file("b.rs".to_string(), make_indexed_file_with_refs("b.rs", refs_b));
+
+        // process appears in both files
+        let locs = index.reverse_index.get("process").expect("process should be in reverse index");
+        assert_eq!(locs.len(), 2, "process referenced in 2 files");
+
+        // load appears only in a.rs
+        let locs_load = index.reverse_index.get("load").expect("load should be in reverse index");
+        assert_eq!(locs_load.len(), 1);
+        assert_eq!(locs_load[0].file_path, "a.rs");
+        assert_eq!(locs_load[0].reference_idx, 1);
+    }
+
+    #[test]
+    fn test_rebuild_reverse_index_consistent_after_update_file() {
+        let mut index = make_empty_live_index();
+
+        let refs_old = vec![make_ref("old_func", ReferenceKind::Call, 1)];
+        index.add_file("src.rs".to_string(), make_indexed_file_with_refs("src.rs", refs_old));
+        assert!(index.reverse_index.contains_key("old_func"));
+
+        let refs_new = vec![make_ref("new_func", ReferenceKind::Call, 1)];
+        index.update_file("src.rs".to_string(), make_indexed_file_with_refs("src.rs", refs_new));
+
+        assert!(!index.reverse_index.contains_key("old_func"), "stale entry should be gone");
+        assert!(index.reverse_index.contains_key("new_func"), "new entry should be present");
+    }
+
+    #[test]
+    fn test_rebuild_reverse_index_excludes_removed_file() {
+        let mut index = make_empty_live_index();
+
+        let refs = vec![make_ref("target_fn", ReferenceKind::Call, 2)];
+        index.add_file("will_delete.rs".to_string(), make_indexed_file_with_refs("will_delete.rs", refs));
+        assert!(index.reverse_index.contains_key("target_fn"));
+
+        index.remove_file("will_delete.rs");
+        assert!(!index.reverse_index.contains_key("target_fn"), "removed file's refs should be gone");
+    }
+
+    #[test]
+    fn test_reference_location_fields() {
+        let loc = ReferenceLocation {
+            file_path: "src/main.rs".to_string(),
+            reference_idx: 3,
+        };
+        assert_eq!(loc.file_path, "src/main.rs");
+        assert_eq!(loc.reference_idx, 3);
+    }
+
+    #[test]
+    fn test_empty_live_index_has_empty_reverse_index() {
+        let index = make_empty_live_index();
+        assert!(index.reverse_index.is_empty(), "fresh index should have empty reverse index");
     }
 }

@@ -155,6 +155,8 @@ mod tests {
             parse_status: status,
             byte_len: 12,
             content_hash: "abc".to_string(),
+            references: vec![],
+            alias_map: std::collections::HashMap::new(),
         }
     }
 
@@ -182,6 +184,7 @@ mod tests {
             load_duration: Duration::from_millis(50),
             cb_state: cb,
             is_empty: false,
+            reverse_index: std::collections::HashMap::new(),
         }
     }
 
@@ -281,6 +284,7 @@ mod tests {
             load_duration: Duration::from_millis(10),
             cb_state: cb,
             is_empty: false,
+            reverse_index: std::collections::HashMap::new(),
         };
         assert!(!index.is_ready());
     }
@@ -305,6 +309,7 @@ mod tests {
             load_duration: Duration::from_millis(10),
             cb_state: cb,
             is_empty: false,
+            reverse_index: std::collections::HashMap::new(),
         };
 
         match index.index_state() {
