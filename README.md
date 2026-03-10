@@ -11,30 +11,14 @@ The product direction is not "just another MCP server." The goal is a trusted lo
 
 ## Quick Start
 
-Prerequisites: [Rust toolchain](https://rustup.rs) (edition 2024).
-
-**Windows:**
-
-```cmd
-setup.bat
-```
-
-**macOS / Linux:**
-
-```bash
-bash scripts/setup.sh
-```
-
-The setup script builds the binary, verifies readiness, and prints the MCP config to paste into your client. The MCP server is a standard stdio process — your CLI starts it on launch and kills it on exit. No daemons, no hooks, no background processes.
-
-**MCP config (after setup):**
+**No prerequisites.** Add this to your MCP client config (Claude Code, Cursor, Claude Desktop):
 
 ```json
 {
   "mcpServers": {
     "tokenizor": {
-      "command": "C:\\path\\to\\target\\release\\tokenizor_agentic_mcp.exe",
-      "args": ["run"],
+      "command": "npx",
+      "args": ["-y", "tokenizor-mcp"],
       "env": {
         "TOKENIZOR_CONTROL_PLANE_BACKEND": "local_registry"
       }
@@ -43,7 +27,17 @@ The setup script builds the binary, verifies readiness, and prints the MCP confi
 }
 ```
 
-Works with Claude Code, Claude Desktop, Cursor, or any MCP-compatible client.
+That's it. The npm package downloads the prebuilt binary for your platform automatically. The MCP server is a standard stdio process — your CLI starts it on launch and kills it on exit.
+
+**Building from source** (contributors only):
+
+```cmd
+setup.bat                           &:: Windows
+bash scripts/setup.sh               # macOS / Linux
+setup.bat --spacetimedb             &:: with SpacetimeDB backend
+```
+
+Requires [Rust toolchain](https://rustup.rs) (edition 2024).
 
 ## What Tokenizor Is
 

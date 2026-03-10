@@ -1,0 +1,31 @@
+{
+  "name": "tokenizor-mcp",
+  "version": "0.1.0",
+  "description": "Tokenizor MCP — trusted local code indexing, retrieval, recovery, and repair for AI coding workflows",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/special-place-administrator/tokenizor_agentic_mcp"
+  },
+  "bin": {
+    "tokenizor-mcp": "bin/tokenizor-mcp.js"
+  },
+  "scripts": {
+    "postinstall": "node scripts/install.js"
+  },
+  "files": [
+    "bin/",
+    "scripts/"
+  ],
+  "keywords": [
+    "mcp",
+    "code-indexing",
+    "code-retrieval",
+    "ai-coding",
+    "tree-sitter",
+    "spacetimedb"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}
