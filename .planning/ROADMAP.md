@@ -51,9 +51,9 @@ Plans:
 **Plans:** 3/3 plans complete
 
 Plans:
-- [ ] 02-01-PLAN.md — LiveIndex extensions (empty, reload, SystemTime) + response formatter module
-- [ ] 02-02-PLAN.md — MCP server struct + all 10 tool handlers with rmcp macros
-- [ ] 02-03-PLAN.md — main.rs rewrite (auto-index + serve) + integration tests
+- [x] 02-01-PLAN.md — LiveIndex extensions (empty, reload, SystemTime) + response formatter module
+- [x] 02-02-PLAN.md — MCP server struct + all 10 tool handlers with rmcp macros
+- [x] 02-03-PLAN.md — main.rs rewrite (auto-index + serve) + integration tests
 
 ### Phase 3: File Watcher + Freshness
 **Goal**: The LiveIndex always reflects current disk state — queries never return stale symbols after any file change
@@ -64,7 +64,12 @@ Plans:
   2. After editing a function name and saving, querying that symbol within 300ms returns the updated name, not the old one
   3. Creating a new source file causes it to appear in `get_repo_outline` within 200ms, with no manual reload
   4. Deleting a source file removes its symbols from the index within 200ms without crashing the server
-**Plans**: TBD
+**Plans:** 3 plans
+
+Plans:
+- [ ] 03-01-PLAN.md — LiveIndex mutation methods, watcher types, extended HealthStats, Cargo.toml deps
+- [ ] 03-02-PLAN.md — Watcher core: notify-debouncer-full, path normalization, content hash skip, event loop
+- [ ] 03-03-PLAN.md — Wire watcher into main.rs + tools, integration tests for all FRSH requirements
 
 ### Phase 4: Cross-Reference Extraction
 **Goal**: The index tracks call sites, imports, and type usages across all 6 languages so `find_references` returns accurate results with low false-positive rates
@@ -121,7 +126,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 |-------|----------------|--------|-----------|
 | 1. LiveIndex Foundation | 3/3 | Complete   | 2026-03-10 |
 | 2. MCP Tools v1 Parity | 3/3 | Complete   | 2026-03-10 |
-| 3. File Watcher + Freshness | 0/? | Not started | - |
+| 3. File Watcher + Freshness | 0/3 | Planning complete | - |
 | 4. Cross-Reference Extraction | 0/? | Not started | - |
 | 5. HTTP Sidecar + Hook Infrastructure | 0/? | Not started | - |
 | 6. Hook Enrichment Integration | 0/? | Not started | - |
