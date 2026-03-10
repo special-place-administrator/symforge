@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: in-progress
-stopped_at: "Completed 03-01-PLAN.md: watcher contracts and LiveIndex mutation API"
-last_updated: "2026-03-10T17:24:30Z"
-last_activity: 2026-03-10 — Phase 03 Plan 01 executed (watcher contracts, mutation API)
+status: executing
+stopped_at: "Completed 03-02-PLAN.md: watcher core — event processing, path normalization, lifecycle"
+last_updated: "2026-03-10T17:37:09.105Z"
+last_activity: "2026-03-10 — Phase 03 Plan 01 complete: watcher type contracts, LiveIndex mutation API, extended HealthStats"
 progress:
   total_phases: 7
   completed_phases: 2
-  total_plans: 6
-  completed_plans: 7
+  total_plans: 9
+  completed_plans: 8
   percent: 10
 ---
 
@@ -57,6 +57,7 @@ Progress: [█░░░░░░░░░] 10%
 | Phase 02-mcp-tools-v1-parity PP02 | 15 | 2 tasks | 3 files |
 | Phase 02-mcp-tools-v1-parity P03 | 15 | 2 tasks | 2 files |
 | Phase 03-file-watcher-freshness P01 | 5 | 2 tasks | 6 files |
+| Phase 03-file-watcher-freshness P02 | 4 | 2 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -95,6 +96,9 @@ Recent decisions affecting current work:
 - [Phase 03-01]: health_stats() always returns Off defaults — health_report remains correct without an active watcher
 - [Phase 03-01]: health_stats_with_watcher() is additive, not a replacement — callers choose which variant to use at the call site
 - [Phase 03-01]: remove_file only updates loaded_at_system if path was present — prevents spurious timestamp churn on phantom events
+- [Phase Phase 03-02]: ReindexResult is a local enum — caller can match outcomes without unwrapping bool; enables per-outcome telemetry
+- [Phase Phase 03-02]: std::sync::mpsc (not tokio) for notify callback — notify's debouncer thread is a native OS thread, not a tokio task
+- [Phase Phase 03-02]: normalize_event_path tries original then \?\-stripped root on strip_prefix failure — handles mixed UNC scenarios
 
 ### Pending Todos
 
@@ -108,6 +112,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-10T17:24:30Z
-Stopped at: Completed 03-01-PLAN.md
-Resume file: .planning/phases/03-file-watcher-freshness/03-02-PLAN.md
+Last session: 2026-03-10T17:37:09.102Z
+Stopped at: Completed 03-02-PLAN.md: watcher core — event processing, path normalization, lifecycle
+Resume file: None

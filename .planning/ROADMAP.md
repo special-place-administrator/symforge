@@ -64,7 +64,7 @@ Plans:
   2. After editing a function name and saving, querying that symbol within 300ms returns the updated name, not the old one
   3. Creating a new source file causes it to appear in `get_repo_outline` within 200ms, with no manual reload
   4. Deleting a source file removes its symbols from the index within 200ms without crashing the server
-**Plans:** 3 plans
+**Plans:** 2/3 plans executed
 
 Plans:
 - [x] 03-01-PLAN.md — LiveIndex mutation methods, watcher types, extended HealthStats, Cargo.toml deps
@@ -126,7 +126,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 |-------|----------------|--------|-----------|
 | 1. LiveIndex Foundation | 3/3 | Complete   | 2026-03-10 |
 | 2. MCP Tools v1 Parity | 3/3 | Complete   | 2026-03-10 |
-| 3. File Watcher + Freshness | 1/3 | In progress | - |
+| 3. File Watcher + Freshness | 2/3 | In Progress|  |
 | 4. Cross-Reference Extraction | 0/? | Not started | - |
 | 5. HTTP Sidecar + Hook Infrastructure | 0/? | Not started | - |
 | 6. Hook Enrichment Integration | 0/? | Not started | - |
