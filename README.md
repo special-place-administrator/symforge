@@ -403,7 +403,7 @@ Next:
 - error handling: `thiserror` 2.0 (domain), `anyhow` (CLI boundary only)
 - observability: `tracing`, `tracing-subscriber`
 - SpacetimeDB SDK: `spacetimedb-sdk` 2.0.3
-- test suite: 747 tests (unit + integration + conformance + grammar)
+- test suite: 749 tests (unit + integration + conformance + grammar)
 
 ```bash
 cargo test          # run all tests
