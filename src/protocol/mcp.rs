@@ -1,6 +1,7 @@
 use rmcp::{
     ErrorData as McpError, RoleServer, ServerHandler,
     handler::server::router::tool::ToolRouter,
+    handler::server::wrapper::Parameters,
     model::{
         Annotated, CallToolResult, Content, Implementation, ListResourcesResult,
         PaginatedRequestParams, RawResource, ReadResourceRequestParams, ReadResourceResult,
@@ -10,12 +11,255 @@ use rmcp::{
     tool, tool_handler, tool_router,
 };
 
+use schemars::JsonSchema;
+use serde::Deserialize;
+
 use crate::domain::{BatchRetrievalRequest, IndexRunMode, IndexRunStatus, SymbolKind};
 use crate::{ApplicationContext, TokenizorError};
 
 const RUN_STATUS_URI_PREFIX: &str = "tokenizor://runs/";
 const RUN_STATUS_URI_SUFFIX: &str = "/status";
 const VALID_KIND_FILTERS: &str = "function, method, class, struct, enum, interface, module, constant, variable, type, trait, impl, other";
+
+// ---------------------------------------------------------------------------
+// Input structs for typed MCP tool parameters
+// ---------------------------------------------------------------------------
+
+/// Input for the index_folder tool.
+#[derive(Deserialize, JsonSchema)]
+struct IndexFolderInput {
+    /// Unique identifier for the repository.
+    repo_id: String,
+    /// Absolute path to the repository root on disk.
+    repo_root: String,
+    /// Indexing mode: full, incremental, repair, or verify. Defaults to full.
+    mode: Option<String>,
+}
+
+/// Input for the get_index_run tool.
+#[derive(Deserialize, JsonSchema)]
+struct GetIndexRunInput {
+    /// The indexing run identifier to inspect.
+    run_id: String,
+}
+
+/// Input for the list_index_runs tool.
+#[derive(Deserialize, JsonSchema)]
+struct ListIndexRunsInput {
+    /// Filter runs by repository identifier.
+    repo_id: Option<String>,
+    /// Filter runs by status: queued, running, succeeded, failed, cancelled, interrupted, or aborted.
+    status: Option<String>,
+}
+
+/// Input for the cancel_index_run tool.
+#[derive(Deserialize, JsonSchema)]
+struct CancelIndexRunInput {
+    /// The indexing run identifier to cancel.
+    run_id: String,
+}
+
+/// Input for the checkpoint_now tool.
+#[derive(Deserialize, JsonSchema)]
+struct CheckpointNowInput {
+    /// The indexing run identifier to checkpoint.
+    run_id: String,
+}
+
+/// Input for the resume_index_run tool.
+#[derive(Deserialize, JsonSchema)]
+struct ResumeIndexRunInput {
+    /// The indexing run identifier to resume.
+    run_id: String,
+    /// Absolute path to the repository root on disk.
+    repo_root: String,
+}
+
+/// Input for the reindex_repository tool.
+#[derive(Deserialize, JsonSchema)]
+struct ReindexRepositoryInput {
+    /// Unique identifier for the repository.
+    repo_id: String,
+    /// Absolute path to the repository root on disk.
+    repo_root: String,
+    /// Optional workspace identifier.
+    workspace_id: Option<String>,
+    /// Optional description of why re-indexing is needed.
+    reason: Option<String>,
+}
+
+/// Input for the invalidate_indexed_state tool.
+#[derive(Deserialize, JsonSchema)]
+struct InvalidateIndexedStateInput {
+    /// Unique identifier for the repository.
+    repo_id: String,
+    /// Optional workspace identifier.
+    workspace_id: Option<String>,
+    /// Optional description of why invalidation is needed.
+    reason: Option<String>,
+}
+
+/// Input for the search_text tool.
+#[derive(Deserialize, JsonSchema)]
+struct SearchTextInput {
+    /// Unique identifier for the repository.
+    repo_id: String,
+    /// Non-empty search text.
+    query: String,
+}
+
+/// Input for the search_symbols tool.
+#[derive(Deserialize, JsonSchema)]
+struct SearchSymbolsInput {
+    /// Unique identifier for the repository.
+    repo_id: String,
+    /// Non-empty search text.
+    query: String,
+    /// Optional symbol kind filter: function, method, class, struct, enum, interface, module, constant, variable, type, trait, impl, or other.
+    kind_filter: Option<String>,
+}
+
+/// Input for the get_file_outline tool.
+#[derive(Deserialize, JsonSchema)]
+struct GetFileOutlineInput {
+    /// Unique identifier for the repository.
+    repo_id: String,
+    /// File path relative to repository root.
+    relative_path: String,
+}
+
+/// Input for the get_repo_outline tool.
+#[derive(Deserialize, JsonSchema)]
+struct GetRepoOutlineInput {
+    /// Unique identifier for the repository.
+    repo_id: String,
+}
+
+/// Input for the get_symbol tool.
+#[derive(Deserialize, JsonSchema)]
+struct GetSymbolInput {
+    /// Unique identifier for the repository.
+    repo_id: String,
+    /// File path relative to repository root.
+    relative_path: String,
+    /// Exact symbol name to retrieve.
+    symbol_name: String,
+    /// Optional symbol kind filter: function, method, class, struct, enum, interface, module, constant, variable, type, trait, impl, or other.
+    kind_filter: Option<String>,
+}
+
+/// Input for the get_symbols tool.
+#[derive(Deserialize, JsonSchema)]
+struct GetSymbolsInput {
+    /// Unique identifier for the repository.
+    repo_id: String,
+    /// Ordered array of retrieval request objects with request_type=symbol or request_type=code_slice.
+    targets: Option<Vec<serde_json::Value>>,
+    /// Legacy array of symbol request objects.
+    symbols: Option<Vec<serde_json::Value>>,
+}
+
+/// Input for the repair_index tool.
+#[derive(Deserialize, JsonSchema)]
+struct RepairIndexInput {
+    /// Unique identifier for the repository.
+    repository_id: String,
+    /// Absolute path to the repository root on disk.
+    repo_root: String,
+    /// Repair scope: repository, run, or file. Defaults to repository.
+    scope: Option<String>,
+    /// Required when scope is run or file.
+    run_id: Option<String>,
+    /// Required when scope is file.
+    relative_path: Option<String>,
+}
+
+/// Input for the inspect_repository_health tool.
+#[derive(Deserialize, JsonSchema)]
+struct InspectRepositoryHealthInput {
+    /// Unique identifier for the repository.
+    repository_id: String,
+}
+
+/// Input for the get_operational_history tool.
+#[derive(Deserialize, JsonSchema)]
+struct GetOperationalHistoryInput {
+    /// Unique identifier for the repository.
+    repository_id: String,
+    /// Filter by event name prefix, e.g. 'run', 'repair', 'integrity'.
+    category: Option<String>,
+    /// Only events at or after this timestamp (milliseconds since Unix epoch).
+    since_unix_ms: Option<u64>,
+    /// Maximum number of events to return, capped at 200.
+    limit: Option<u64>,
+}
+
+// ---------------------------------------------------------------------------
+// Validation helpers
+// ---------------------------------------------------------------------------
+
+fn require_non_empty(value: &str, field: &str) -> Result<(), McpError> {
+    if value.trim().is_empty() {
+        return Err(McpError::invalid_params(
+            format!("invalid parameter `{field}`: expected non-empty string"),
+            None,
+        ));
+    }
+    Ok(())
+}
+
+fn invalid_kind_filter_type_error() -> McpError {
+    McpError::invalid_params(
+        format!(
+            "invalid parameter `kind_filter`: expected string. Valid kinds: {VALID_KIND_FILTERS}"
+        ),
+        None,
+    )
+}
+
+fn unknown_kind_filter_error(value: &str) -> McpError {
+    McpError::invalid_params(
+        format!("unknown kind_filter: `{value}`. Valid kinds: {VALID_KIND_FILTERS}"),
+        None,
+    )
+}
+
+fn parse_kind_filter_value(
+    kind_value: Option<&serde_json::Value>,
+) -> Result<Option<SymbolKind>, McpError> {
+    let Some(value) = kind_value else {
+        return Ok(None);
+    };
+    let kind_str = value.as_str().ok_or_else(invalid_kind_filter_type_error)?;
+    let kind = match kind_str {
+        "function" => SymbolKind::Function,
+        "method" => SymbolKind::Method,
+        "class" => SymbolKind::Class,
+        "struct" => SymbolKind::Struct,
+        "enum" => SymbolKind::Enum,
+        "interface" => SymbolKind::Interface,
+        "module" => SymbolKind::Module,
+        "constant" => SymbolKind::Constant,
+        "variable" => SymbolKind::Variable,
+        "type" => SymbolKind::Type,
+        "trait" => SymbolKind::Trait,
+        "impl" => SymbolKind::Impl,
+        "other" => SymbolKind::Other,
+        other => return Err(unknown_kind_filter_error(other)),
+    };
+    Ok(Some(kind))
+}
+
+fn parse_kind_filter_str(kind_str: Option<&str>) -> Result<Option<SymbolKind>, McpError> {
+    match kind_str {
+        None => Ok(None),
+        Some(s) => parse_kind_filter_value(Some(&serde_json::Value::String(s.to_string()))),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Server
+// ---------------------------------------------------------------------------
 
 #[derive(Clone)]
 pub struct TokenizorServer {
@@ -47,23 +291,18 @@ impl TokenizorServer {
     #[tool(
         description = "Start an indexing run for a repository. Returns the run ID immediately without blocking on the full indexing pipeline. Parameters: repo_id (string, required), repo_root (string, required — absolute path to repository), mode (string, optional: full|incremental|repair|verify, defaults to full)."
     )]
-    fn index_folder(&self, params: rmcp::model::JsonObject) -> Result<CallToolResult, McpError> {
-        let repo_id = params
-            .get("repo_id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| McpError::invalid_params("missing required parameter: repo_id", None))?
-            .to_string();
+    fn index_folder(
+        &self,
+        params: Parameters<IndexFolderInput>,
+    ) -> Result<CallToolResult, McpError> {
+        let input = params.0;
 
-        let repo_root = params
-            .get("repo_root")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                McpError::invalid_params("missing required parameter: repo_root", None)
-            })?;
-        let repo_root = std::path::PathBuf::from(repo_root);
+        require_non_empty(&input.repo_id, "repo_id")?;
+        require_non_empty(&input.repo_root, "repo_root")?;
 
-        let mode_str = params.get("mode").and_then(|v| v.as_str());
-        let run_mode = match mode_str {
+        let repo_root = std::path::PathBuf::from(&input.repo_root);
+
+        let run_mode = match input.mode.as_deref() {
             Some("full") | None => IndexRunMode::Full,
             Some("incremental") => IndexRunMode::Incremental,
             Some("repair") => IndexRunMode::Repair,
@@ -80,7 +319,7 @@ impl TokenizorServer {
 
         let (run, _progress) = self
             .application
-            .launch_indexing(&repo_id, run_mode, repo_root)
+            .launch_indexing(&input.repo_id, run_mode, repo_root)
             .map_err(to_mcp_error)?;
 
         let payload = serde_json::to_string(&run).map_err(|error| {
@@ -93,16 +332,16 @@ impl TokenizorServer {
     #[tool(
         description = "Inspect the status and health of an indexing run. Returns lifecycle state, health classification, structured action classification (condition, action_required, next_action guidance), progress (if active), and file outcome summary. The classification field explicitly distinguishes action-required states from normal health. Parameters: run_id (string, required)."
     )]
-    fn get_index_run(&self, params: rmcp::model::JsonObject) -> Result<CallToolResult, McpError> {
-        let run_id = params
-            .get("run_id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| McpError::invalid_params("missing required parameter: run_id", None))?;
+    fn get_index_run(
+        &self,
+        params: Parameters<GetIndexRunInput>,
+    ) -> Result<CallToolResult, McpError> {
+        let input = params.0;
 
         let report = self
             .application
             .run_manager()
-            .inspect_run(run_id)
+            .inspect_run(&input.run_id)
             .map_err(to_mcp_error)?;
 
         let json = serde_json::to_string_pretty(&report).map_err(|e| {
@@ -115,12 +354,14 @@ impl TokenizorServer {
     #[tool(
         description = "List indexing runs, optionally filtered by repository or status. Returns status and health for each run. Parameters: repo_id (string, optional), status (string, optional: queued|running|succeeded|failed|cancelled|interrupted|aborted)."
     )]
-    fn list_index_runs(&self, params: rmcp::model::JsonObject) -> Result<CallToolResult, McpError> {
-        let repo_id = params.get("repo_id").and_then(|v| v.as_str());
+    fn list_index_runs(
+        &self,
+        params: Parameters<ListIndexRunsInput>,
+    ) -> Result<CallToolResult, McpError> {
+        let input = params.0;
 
-        let status_filter = if let Some(status_str) = params.get("status").and_then(|v| v.as_str())
-        {
-            let parsed = match status_str {
+        let status_filter = if let Some(ref status_str) = input.status {
+            let parsed = match status_str.as_str() {
                 "queued" => IndexRunStatus::Queued,
                 "running" => IndexRunStatus::Running,
                 "succeeded" => IndexRunStatus::Succeeded,
@@ -145,7 +386,7 @@ impl TokenizorServer {
         let reports = self
             .application
             .run_manager()
-            .list_runs_with_health(repo_id, status_filter.as_ref())
+            .list_runs_with_health(input.repo_id.as_deref(), status_filter.as_ref())
             .map_err(to_mcp_error)?;
 
         let json = serde_json::to_string_pretty(&reports).map_err(|e| {
@@ -160,17 +401,14 @@ impl TokenizorServer {
     )]
     fn cancel_index_run(
         &self,
-        params: rmcp::model::JsonObject,
+        params: Parameters<CancelIndexRunInput>,
     ) -> Result<CallToolResult, McpError> {
-        let run_id = params
-            .get("run_id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| McpError::invalid_params("missing required parameter: run_id", None))?;
+        let input = params.0;
 
         let report = self
             .application
             .run_manager()
-            .cancel_run(run_id)
+            .cancel_run(&input.run_id)
             .map_err(to_mcp_error)?;
 
         let json = serde_json::to_string_pretty(&report).map_err(|e| {
@@ -183,16 +421,16 @@ impl TokenizorServer {
     #[tool(
         description = "Create a checkpoint for an active indexing run. Persists current progress so interrupted work can later resume. Returns the checkpoint details. Fails if the run is not active or has no committed work yet. Parameters: run_id (string, required)."
     )]
-    fn checkpoint_now(&self, params: rmcp::model::JsonObject) -> Result<CallToolResult, McpError> {
-        let run_id = params
-            .get("run_id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| McpError::invalid_params("missing required parameter: run_id", None))?;
+    fn checkpoint_now(
+        &self,
+        params: Parameters<CheckpointNowInput>,
+    ) -> Result<CallToolResult, McpError> {
+        let input = params.0;
 
         let checkpoint = self
             .application
             .run_manager()
-            .checkpoint_run(run_id)
+            .checkpoint_run(&input.run_id)
             .map_err(to_mcp_error)?;
 
         let json = serde_json::to_string(&checkpoint).map_err(|e| {
@@ -207,24 +445,15 @@ impl TokenizorServer {
     )]
     fn resume_index_run(
         &self,
-        params: rmcp::model::JsonObject,
+        params: Parameters<ResumeIndexRunInput>,
     ) -> Result<CallToolResult, McpError> {
-        let run_id = params
-            .get("run_id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| McpError::invalid_params("missing required parameter: run_id", None))?;
+        let input = params.0;
 
-        let repo_root = params
-            .get("repo_root")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                McpError::invalid_params("missing required parameter: repo_root", None)
-            })?;
-        let repo_root = std::path::PathBuf::from(repo_root);
+        let repo_root = std::path::PathBuf::from(&input.repo_root);
 
         let outcome = self
             .application
-            .resume_index_run(run_id, repo_root)
+            .resume_index_run(&input.run_id, repo_root)
             .map_err(to_mcp_error)?;
 
         let json = serde_json::to_string_pretty(&outcome).map_err(|e| {
@@ -239,27 +468,20 @@ impl TokenizorServer {
     )]
     fn reindex_repository(
         &self,
-        params: rmcp::model::JsonObject,
+        params: Parameters<ReindexRepositoryInput>,
     ) -> Result<CallToolResult, McpError> {
-        let repo_id = params
-            .get("repo_id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| McpError::invalid_params("missing required parameter: repo_id", None))?;
+        let input = params.0;
 
-        let repo_root = params
-            .get("repo_root")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                McpError::invalid_params("missing required parameter: repo_root", None)
-            })?;
-        let repo_root = std::path::PathBuf::from(repo_root);
-
-        let workspace_id = params.get("workspace_id").and_then(|v| v.as_str());
-        let reason = params.get("reason").and_then(|v| v.as_str());
+        let repo_root = std::path::PathBuf::from(&input.repo_root);
 
         let run = self
             .application
-            .reindex_repository(repo_id, workspace_id, reason, repo_root)
+            .reindex_repository(
+                &input.repo_id,
+                input.workspace_id.as_deref(),
+                input.reason.as_deref(),
+                repo_root,
+            )
             .map_err(to_mcp_error)?;
 
         let json = serde_json::to_string_pretty(&run).map_err(|e| {
@@ -274,19 +496,17 @@ impl TokenizorServer {
     )]
     fn invalidate_indexed_state(
         &self,
-        params: rmcp::model::JsonObject,
+        params: Parameters<InvalidateIndexedStateInput>,
     ) -> Result<CallToolResult, McpError> {
-        let repo_id = params
-            .get("repo_id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| McpError::invalid_params("missing required parameter: repo_id", None))?;
-
-        let workspace_id = params.get("workspace_id").and_then(|v| v.as_str());
-        let reason = params.get("reason").and_then(|v| v.as_str());
+        let input = params.0;
 
         let result = self
             .application
-            .invalidate_repository(repo_id, workspace_id, reason)
+            .invalidate_repository(
+                &input.repo_id,
+                input.workspace_id.as_deref(),
+                input.reason.as_deref(),
+            )
             .map_err(to_mcp_error)?;
 
         let json = serde_json::to_string_pretty(&result).map_err(|e| {
@@ -302,11 +522,18 @@ impl TokenizorServer {
     #[tool(
         description = "Search indexed repository content by text. Returns matching code locations with line context, scoped to the specified repository. Results include provenance metadata (run_id, committed_at_unix_ms) for staleness assessment. Parameters: repo_id (string, required), query (string, required — non-empty search text)."
     )]
-    fn search_text(&self, params: rmcp::model::JsonObject) -> Result<CallToolResult, McpError> {
-        let p = parse_search_text_params(&params)?;
+    fn search_text(
+        &self,
+        params: Parameters<SearchTextInput>,
+    ) -> Result<CallToolResult, McpError> {
+        let input = params.0;
+
+        require_non_empty(&input.repo_id, "repo_id")?;
+        require_non_empty(&input.query, "query")?;
+
         let result = self
             .application
-            .search_text(&p.repo_id, &p.query)
+            .search_text(&input.repo_id, &input.query)
             .map_err(to_mcp_error)?;
         let json = serde_json::to_string_pretty(&result).map_err(|e| {
             McpError::internal_error(format!("failed to serialize search results: {e}"), None)
@@ -317,11 +544,19 @@ impl TokenizorServer {
     #[tool(
         description = "Search indexed repository symbols by name. Returns matching symbol metadata (name, kind, file path, line range, depth) with coverage transparency. Uses case-insensitive substring matching. Parameters: repo_id (string, required), query (string, required — non-empty search text), kind_filter (string, optional: function|method|class|struct|enum|interface|module|constant|variable|type|trait|impl|other)."
     )]
-    fn search_symbols(&self, params: rmcp::model::JsonObject) -> Result<CallToolResult, McpError> {
-        let p = parse_search_symbols_params(&params)?;
+    fn search_symbols(
+        &self,
+        params: Parameters<SearchSymbolsInput>,
+    ) -> Result<CallToolResult, McpError> {
+        let input = params.0;
+
+        require_non_empty(&input.repo_id, "repo_id")?;
+        require_non_empty(&input.query, "query")?;
+        let kind_filter = parse_kind_filter_str(input.kind_filter.as_deref())?;
+
         let result = self
             .application
-            .search_symbols(&p.repo_id, &p.query, p.kind_filter)
+            .search_symbols(&input.repo_id, &input.query, kind_filter)
             .map_err(to_mcp_error)?;
         let json = serde_json::to_string_pretty(&result).map_err(|e| {
             McpError::internal_error(
@@ -337,12 +572,16 @@ impl TokenizorServer {
     )]
     fn get_file_outline(
         &self,
-        params: rmcp::model::JsonObject,
+        params: Parameters<GetFileOutlineInput>,
     ) -> Result<CallToolResult, McpError> {
-        let p = parse_file_outline_params(&params)?;
+        let input = params.0;
+
+        require_non_empty(&input.repo_id, "repo_id")?;
+        require_non_empty(&input.relative_path, "relative_path")?;
+
         let result = self
             .application
-            .get_file_outline(&p.repo_id, &p.relative_path)
+            .get_file_outline(&input.repo_id, &input.relative_path)
             .map_err(to_mcp_error)?;
         let json = serde_json::to_string_pretty(&result).map_err(|e| {
             McpError::internal_error(format!("failed to serialize file outline: {e}"), None)
@@ -355,12 +594,15 @@ impl TokenizorServer {
     )]
     fn get_repo_outline(
         &self,
-        params: rmcp::model::JsonObject,
+        params: Parameters<GetRepoOutlineInput>,
     ) -> Result<CallToolResult, McpError> {
-        let p = parse_repo_outline_params(&params)?;
+        let input = params.0;
+
+        require_non_empty(&input.repo_id, "repo_id")?;
+
         let result = self
             .application
-            .get_repo_outline(&p.repo_id)
+            .get_repo_outline(&input.repo_id)
             .map_err(to_mcp_error)?;
         let json = serde_json::to_string_pretty(&result).map_err(|e| {
             McpError::internal_error(format!("failed to serialize repo outline: {e}"), None)
@@ -371,11 +613,20 @@ impl TokenizorServer {
     #[tool(
         description = "Retrieve verified source code for a specific symbol from an indexed repository. Returns the exact source text with byte-exact verification against stored content. Verification ensures blob integrity (content hash match), span validity, and raw source fidelity. Parameters: repo_id (string, required), relative_path (string, required — file path relative to repository root), symbol_name (string, required — exact symbol name to retrieve), kind_filter (string, optional: function|method|class|struct|enum|interface|module|constant|variable|type|trait|impl|other)."
     )]
-    fn get_symbol(&self, params: rmcp::model::JsonObject) -> Result<CallToolResult, McpError> {
-        let p = parse_get_symbol_params(&params)?;
+    fn get_symbol(
+        &self,
+        params: Parameters<GetSymbolInput>,
+    ) -> Result<CallToolResult, McpError> {
+        let input = params.0;
+
+        require_non_empty(&input.repo_id, "repo_id")?;
+        require_non_empty(&input.relative_path, "relative_path")?;
+        require_non_empty(&input.symbol_name, "symbol_name")?;
+        let kind_filter = parse_kind_filter_str(input.kind_filter.as_deref())?;
+
         let result = self
             .application
-            .get_symbol(&p.repo_id, &p.relative_path, &p.symbol_name, p.kind_filter)
+            .get_symbol(&input.repo_id, &input.relative_path, &input.symbol_name, kind_filter)
             .map_err(to_mcp_error)?;
         let json = serde_json::to_string_pretty(&result).map_err(|e| {
             McpError::internal_error(format!("failed to serialize get_symbol result: {e}"), None)
@@ -386,11 +637,28 @@ impl TokenizorServer {
     #[tool(
         description = "Retrieve verified source code for multiple symbols or raw code slices from an indexed repository in a single request. Each item is verified independently — one failure does not affect others. Returns per-item outcomes with trust and provenance metadata. Parameters: repo_id (string, required), targets (array, preferred — ordered items with request_type=symbol or request_type=code_slice), or legacy symbols (array of symbol requests). Maximum 50 items per request."
     )]
-    fn get_symbols(&self, params: rmcp::model::JsonObject) -> Result<CallToolResult, McpError> {
-        let p = parse_get_symbols_params(&params)?;
+    fn get_symbols(
+        &self,
+        params: Parameters<GetSymbolsInput>,
+    ) -> Result<CallToolResult, McpError> {
+        let input = params.0;
+
+        require_non_empty(&input.repo_id, "repo_id")?;
+
+        let requests = if let Some(ref targets_array) = input.targets {
+            parse_batch_targets(targets_array)?
+        } else if let Some(ref symbols_array) = input.symbols {
+            parse_legacy_symbol_targets(symbols_array)?
+        } else {
+            return Err(McpError::invalid_params(
+                "missing required parameter: targets or symbols",
+                None,
+            ));
+        };
+
         let result = self
             .application
-            .get_symbols(&p.repo_id, &p.requests)
+            .get_symbols(&input.repo_id, &requests)
             .map_err(to_mcp_error)?;
         let json = serde_json::to_string_pretty(&result).map_err(|e| {
             McpError::internal_error(format!("failed to serialize get_symbols result: {e}"), None)
@@ -401,59 +669,45 @@ impl TokenizorServer {
     #[tool(
         description = "Trigger deterministic repair for suspect, stale, quarantined, or incomplete indexed state. Parameters: repository_id (string, required), repo_root (string, required — absolute path to repository), scope (string, optional: repository|run|file, default: repository), run_id (string, required when scope is run or file), relative_path (string, required when scope is file)."
     )]
-    fn repair_index(&self, params: rmcp::model::JsonObject) -> Result<CallToolResult, McpError> {
+    fn repair_index(
+        &self,
+        params: Parameters<RepairIndexInput>,
+    ) -> Result<CallToolResult, McpError> {
         use crate::domain::RepairScope;
 
-        let repo_id = params
-            .get("repository_id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                McpError::invalid_params("missing required parameter: repository_id", None)
-            })?;
+        let input = params.0;
 
-        let scope_str = params
-            .get("scope")
-            .and_then(|v| v.as_str())
-            .unwrap_or("repository");
+        let scope_str = input.scope.as_deref().unwrap_or("repository");
 
         let scope = match scope_str {
             "repository" => RepairScope::Repository,
             "run" => {
-                let run_id = params
-                    .get("run_id")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        McpError::invalid_params(
-                            "missing required parameter: run_id (required when scope is run)",
-                            None,
-                        )
-                    })?;
+                let run_id = input.run_id.ok_or_else(|| {
+                    McpError::invalid_params(
+                        "missing required parameter: run_id (required when scope is run)",
+                        None,
+                    )
+                })?;
                 RepairScope::Run {
-                    run_id: run_id.to_string(),
+                    run_id,
                 }
             }
             "file" => {
-                let run_id = params
-                    .get("run_id")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        McpError::invalid_params(
-                            "missing required parameter: run_id (required when scope is file)",
-                            None,
-                        )
-                    })?;
-                let relative_path = params
-                    .get("relative_path")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        McpError::invalid_params(
-                            "missing required parameter: relative_path (required when scope is file)",
-                            None,
-                        )
-                    })?;
+                let run_id = input.run_id.ok_or_else(|| {
+                    McpError::invalid_params(
+                        "missing required parameter: run_id (required when scope is file)",
+                        None,
+                    )
+                })?;
+                let relative_path = input.relative_path.ok_or_else(|| {
+                    McpError::invalid_params(
+                        "missing required parameter: relative_path (required when scope is file)",
+                        None,
+                    )
+                })?;
                 RepairScope::File {
-                    run_id: run_id.to_string(),
-                    relative_path: relative_path.to_string(),
+                    run_id,
+                    relative_path,
                 }
             }
             other => {
@@ -464,17 +718,11 @@ impl TokenizorServer {
             }
         };
 
-        let repo_root = params
-            .get("repo_root")
-            .and_then(|v| v.as_str())
-            .map(std::path::PathBuf::from)
-            .ok_or_else(|| {
-                McpError::invalid_params("missing required parameter: repo_root", None)
-            })?;
+        let repo_root = std::path::PathBuf::from(&input.repo_root);
 
         let result = self
             .application
-            .repair_repository(repo_id, scope, repo_root)
+            .repair_repository(&input.repository_id, scope, repo_root)
             .map_err(to_mcp_error)?;
 
         let json = serde_json::to_string_pretty(&result).map_err(|e| {
@@ -489,18 +737,13 @@ impl TokenizorServer {
     )]
     fn inspect_repository_health(
         &self,
-        params: rmcp::model::JsonObject,
+        params: Parameters<InspectRepositoryHealthInput>,
     ) -> Result<CallToolResult, McpError> {
-        let repo_id = params
-            .get("repository_id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                McpError::invalid_params("missing required parameter: repository_id", None)
-            })?;
+        let input = params.0;
 
         let result = self
             .application
-            .inspect_repository_health(repo_id)
+            .inspect_repository_health(&input.repository_id)
             .map_err(to_mcp_error)?;
 
         let json = serde_json::to_string_pretty(&result).map_err(|e| {
@@ -518,22 +761,14 @@ impl TokenizorServer {
     )]
     fn get_operational_history(
         &self,
-        params: rmcp::model::JsonObject,
+        params: Parameters<GetOperationalHistoryInput>,
     ) -> Result<CallToolResult, McpError> {
-        let repo_id = params
-            .get("repository_id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                McpError::invalid_params("missing required parameter: repository_id", None)
-            })?;
+        let input = params.0;
 
-        let category = params.get("category").and_then(|v| v.as_str()).map(String::from);
-        let since_unix_ms = params
-            .get("since_unix_ms")
-            .and_then(|v| v.as_u64());
-        let limit = params
-            .get("limit")
-            .and_then(|v| v.as_u64())
+        let category = input.category;
+        let since_unix_ms = input.since_unix_ms;
+        let limit = input
+            .limit
             .map(|l| std::cmp::min(l as usize, 200));
 
         let filter = crate::domain::OperationalEventFilter {
@@ -544,7 +779,7 @@ impl TokenizorServer {
 
         let events = self
             .application
-            .get_operational_history(repo_id, &filter)
+            .get_operational_history(&input.repository_id, &filter)
             .map_err(to_mcp_error)?;
 
         let json = serde_json::to_string_pretty(&events).map_err(|e| {
@@ -673,196 +908,7 @@ fn parse_run_id_from_uri(uri: &str) -> Result<String, McpError> {
     Ok(stripped.to_string())
 }
 
-#[derive(Debug)]
-struct SearchTextParams {
-    repo_id: String,
-    query: String,
-}
-
-fn required_non_empty_string_param(
-    params: &rmcp::model::JsonObject,
-    key: &str,
-) -> Result<String, McpError> {
-    let value = params.get(key).ok_or_else(|| {
-        McpError::invalid_params(format!("missing required parameter: {key}"), None)
-    })?;
-    let value = value.as_str().ok_or_else(|| {
-        McpError::invalid_params(
-            format!("invalid parameter `{key}`: expected non-empty string"),
-            None,
-        )
-    })?;
-    if value.trim().is_empty() {
-        return Err(McpError::invalid_params(
-            format!("invalid parameter `{key}`: expected non-empty string"),
-            None,
-        ));
-    }
-    Ok(value.to_string())
-}
-
-fn invalid_kind_filter_type_error() -> McpError {
-    McpError::invalid_params(
-        format!(
-            "invalid parameter `kind_filter`: expected string. Valid kinds: {VALID_KIND_FILTERS}"
-        ),
-        None,
-    )
-}
-
-fn unknown_kind_filter_error(value: &str) -> McpError {
-    McpError::invalid_params(
-        format!("unknown kind_filter: `{value}`. Valid kinds: {VALID_KIND_FILTERS}"),
-        None,
-    )
-}
-
-fn parse_search_text_params(
-    params: &rmcp::model::JsonObject,
-) -> Result<SearchTextParams, McpError> {
-    let repo_id = required_non_empty_string_param(params, "repo_id")?;
-    let query = required_non_empty_string_param(params, "query")?;
-    Ok(SearchTextParams { repo_id, query })
-}
-
-#[derive(Debug)]
-struct SearchSymbolsParams {
-    repo_id: String,
-    query: String,
-    kind_filter: Option<SymbolKind>,
-}
-
-fn parse_search_symbols_params(
-    params: &rmcp::model::JsonObject,
-) -> Result<SearchSymbolsParams, McpError> {
-    let repo_id = required_non_empty_string_param(params, "repo_id")?;
-    let query = required_non_empty_string_param(params, "query")?;
-    let kind_filter = parse_kind_filter(params)?;
-    Ok(SearchSymbolsParams {
-        repo_id,
-        query,
-        kind_filter,
-    })
-}
-
-fn parse_kind_filter(params: &rmcp::model::JsonObject) -> Result<Option<SymbolKind>, McpError> {
-    parse_kind_filter_value(params.get("kind_filter"))
-}
-
-#[derive(Debug)]
-struct FileOutlineParams {
-    repo_id: String,
-    relative_path: String,
-}
-
-fn parse_file_outline_params(
-    params: &rmcp::model::JsonObject,
-) -> Result<FileOutlineParams, McpError> {
-    let repo_id = required_non_empty_string_param(params, "repo_id")?;
-    let relative_path = required_non_empty_string_param(params, "relative_path")?;
-    Ok(FileOutlineParams {
-        repo_id,
-        relative_path,
-    })
-}
-
-#[derive(Debug)]
-struct RepoOutlineParams {
-    repo_id: String,
-}
-
-fn parse_repo_outline_params(
-    params: &rmcp::model::JsonObject,
-) -> Result<RepoOutlineParams, McpError> {
-    let repo_id = required_non_empty_string_param(params, "repo_id")?;
-    Ok(RepoOutlineParams { repo_id })
-}
-
-#[derive(Debug)]
-struct GetSymbolParams {
-    repo_id: String,
-    relative_path: String,
-    symbol_name: String,
-    kind_filter: Option<SymbolKind>,
-}
-
-fn parse_get_symbol_params(params: &rmcp::model::JsonObject) -> Result<GetSymbolParams, McpError> {
-    let repo_id = required_non_empty_string_param(params, "repo_id")?;
-    let relative_path = required_non_empty_string_param(params, "relative_path")?;
-    let symbol_name = required_non_empty_string_param(params, "symbol_name")?;
-    let kind_filter = parse_kind_filter(params)?;
-    Ok(GetSymbolParams {
-        repo_id,
-        relative_path,
-        symbol_name,
-        kind_filter,
-    })
-}
-
 const MAX_BATCH_SIZE: usize = 50;
-
-#[derive(Debug)]
-struct GetSymbolsParams {
-    repo_id: String,
-    requests: Vec<BatchRetrievalRequest>,
-}
-
-fn parse_get_symbols_params(
-    params: &rmcp::model::JsonObject,
-) -> Result<GetSymbolsParams, McpError> {
-    let repo_id = required_non_empty_string_param(params, "repo_id")?;
-
-    let requests = if let Some(targets_value) = params.get("targets") {
-        let targets_array = targets_value.as_array().ok_or_else(|| {
-            McpError::invalid_params(
-                "invalid parameter `targets`: expected array of retrieval request objects",
-                None,
-            )
-        })?;
-        parse_batch_targets(targets_array)?
-    } else if let Some(symbols_value) = params.get("symbols") {
-        let symbols_array = symbols_value.as_array().ok_or_else(|| {
-            McpError::invalid_params(
-                "invalid parameter `symbols`: expected array of symbol request objects",
-                None,
-            )
-        })?;
-        parse_legacy_symbol_targets(symbols_array)?
-    } else {
-        return Err(McpError::invalid_params(
-            "missing required parameter: targets or symbols",
-            None,
-        ));
-    };
-
-    Ok(GetSymbolsParams { repo_id, requests })
-}
-
-fn parse_kind_filter_value(
-    kind_value: Option<&serde_json::Value>,
-) -> Result<Option<SymbolKind>, McpError> {
-    let Some(value) = kind_value else {
-        return Ok(None);
-    };
-    let kind_str = value.as_str().ok_or_else(invalid_kind_filter_type_error)?;
-    let kind = match kind_str {
-        "function" => SymbolKind::Function,
-        "method" => SymbolKind::Method,
-        "class" => SymbolKind::Class,
-        "struct" => SymbolKind::Struct,
-        "enum" => SymbolKind::Enum,
-        "interface" => SymbolKind::Interface,
-        "module" => SymbolKind::Module,
-        "constant" => SymbolKind::Constant,
-        "variable" => SymbolKind::Variable,
-        "type" => SymbolKind::Type,
-        "trait" => SymbolKind::Trait,
-        "impl" => SymbolKind::Impl,
-        "other" => SymbolKind::Other,
-        other => return Err(unknown_kind_filter_error(other)),
-    };
-    Ok(Some(kind))
-}
 
 fn parse_batch_targets(
     targets_array: &[serde_json::Value],
@@ -1115,188 +1161,7 @@ mod tests {
         assert_eq!(parsed, run_id);
     }
 
-    // --- search_text parameter validation (Task 3.1) ---
-
-    fn json_object(pairs: &[(&str, &str)]) -> rmcp::model::JsonObject {
-        let mut map = serde_json::Map::new();
-        for (k, v) in pairs {
-            map.insert(k.to_string(), serde_json::Value::String(v.to_string()));
-        }
-        map
-    }
-
-    fn json_object_values(pairs: &[(&str, serde_json::Value)]) -> rmcp::model::JsonObject {
-        let mut map = serde_json::Map::new();
-        for (k, v) in pairs {
-            map.insert(k.to_string(), v.clone());
-        }
-        map
-    }
-
-    #[test]
-    fn test_search_text_tool_rejects_missing_repo_id() {
-        let params = json_object(&[("query", "hello")]);
-        let err = parse_search_text_params(&params).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("missing required parameter: repo_id")
-        );
-    }
-
-    #[test]
-    fn test_search_text_tool_rejects_missing_query() {
-        let params = json_object(&[("repo_id", "repo-1")]);
-        let err = parse_search_text_params(&params).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("missing required parameter: query")
-        );
-    }
-
-    #[test]
-    fn test_search_text_tool_rejects_empty_repo_id() {
-        let params = json_object(&[("repo_id", ""), ("query", "hello")]);
-        let err = parse_search_text_params(&params).unwrap_err();
-        assert!(err.to_string().contains("invalid parameter `repo_id`"));
-    }
-
-    #[test]
-    fn test_search_text_tool_rejects_empty_query() {
-        let params = json_object(&[("repo_id", "repo-1"), ("query", "")]);
-        let err = parse_search_text_params(&params).unwrap_err();
-        assert!(err.to_string().contains("invalid parameter `query`"));
-    }
-
-    // --- search_symbols parameter validation (Task 3.1) ---
-
-    #[test]
-    fn test_search_symbols_tool_rejects_missing_repo_id() {
-        let params = json_object(&[("query", "hello")]);
-        let err = parse_search_symbols_params(&params).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("missing required parameter: repo_id")
-        );
-    }
-
-    #[test]
-    fn test_search_symbols_tool_rejects_missing_query() {
-        let params = json_object(&[("repo_id", "repo-1")]);
-        let err = parse_search_symbols_params(&params).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("missing required parameter: query")
-        );
-    }
-
-    #[test]
-    fn test_search_symbols_tool_rejects_invalid_kind_filter() {
-        let params = json_object(&[
-            ("repo_id", "repo-1"),
-            ("query", "test"),
-            ("kind_filter", "bogus"),
-        ]);
-        let err = parse_search_symbols_params(&params).unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("unknown kind_filter: `bogus`"));
-        assert!(msg.contains("function"));
-        assert!(msg.contains("method"));
-        assert!(msg.contains("class"));
-        assert!(msg.contains("struct"));
-        assert!(msg.contains("enum"));
-        assert!(msg.contains("interface"));
-        assert!(msg.contains("module"));
-        assert!(msg.contains("constant"));
-        assert!(msg.contains("variable"));
-        assert!(msg.contains("type"));
-        assert!(msg.contains("trait"));
-        assert!(msg.contains("impl"));
-        assert!(msg.contains("other"));
-    }
-
-    #[test]
-    fn test_search_symbols_tool_accepts_valid_kind_filter() {
-        let params = json_object(&[
-            ("repo_id", "repo-1"),
-            ("query", "test"),
-            ("kind_filter", "function"),
-        ]);
-        let result = parse_search_symbols_params(&params).unwrap();
-        assert_eq!(result.kind_filter, Some(SymbolKind::Function));
-    }
-
-    #[test]
-    fn test_search_symbols_tool_accepts_missing_kind_filter() {
-        let params = json_object(&[("repo_id", "repo-1"), ("query", "test")]);
-        let result = parse_search_symbols_params(&params).unwrap();
-        assert_eq!(result.kind_filter, None);
-    }
-
-    #[test]
-    fn test_search_symbols_tool_rejects_non_string_kind_filter() {
-        let params = json_object_values(&[
-            ("repo_id", serde_json::Value::String("repo-1".to_string())),
-            ("query", serde_json::Value::String("test".to_string())),
-            ("kind_filter", serde_json::json!(123)),
-        ]);
-        let err = parse_search_symbols_params(&params).unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("invalid parameter `kind_filter`"));
-        assert!(msg.contains("Valid kinds"));
-    }
-
-    // --- get_file_outline parameter validation (Task 3.1) ---
-
-    #[test]
-    fn test_get_file_outline_tool_rejects_missing_repo_id() {
-        let params = json_object(&[("relative_path", "src/main.rs")]);
-        let err = parse_file_outline_params(&params).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("missing required parameter: repo_id")
-        );
-    }
-
-    #[test]
-    fn test_get_file_outline_tool_rejects_missing_relative_path() {
-        let params = json_object(&[("repo_id", "repo-1")]);
-        let err = parse_file_outline_params(&params).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("missing required parameter: relative_path")
-        );
-    }
-
-    #[test]
-    fn test_get_file_outline_tool_rejects_empty_relative_path() {
-        let params = json_object(&[("repo_id", "repo-1"), ("relative_path", "")]);
-        let err = parse_file_outline_params(&params).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("invalid parameter `relative_path`")
-        );
-    }
-
-    // --- get_repo_outline parameter validation (Task 3.1) ---
-
-    #[test]
-    fn test_get_repo_outline_tool_rejects_missing_repo_id() {
-        let params = json_object(&[]);
-        let err = parse_repo_outline_params(&params).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("missing required parameter: repo_id")
-        );
-    }
-
-    #[test]
-    fn test_get_repo_outline_tool_rejects_empty_repo_id() {
-        let params = json_object(&[("repo_id", "")]);
-        let err = parse_repo_outline_params(&params).unwrap_err();
-        assert!(err.to_string().contains("invalid parameter `repo_id`"));
-    }
-
-    // --- kind_filter parsing tests (Task 3.2) ---
+    // --- kind_filter parsing tests ---
 
     #[test]
     fn test_parse_kind_filter_all_13_variants() {
@@ -1317,16 +1182,16 @@ mod tests {
         ];
         assert_eq!(cases.len(), 13);
         for (input, expected) in cases {
-            let params = json_object(&[("kind_filter", input)]);
-            let result = parse_kind_filter(&params).unwrap();
+            let value = serde_json::Value::String(input.to_string());
+            let result = parse_kind_filter_value(Some(&value)).unwrap();
             assert_eq!(result, Some(expected), "failed for kind_filter: {input}");
         }
     }
 
     #[test]
     fn test_parse_kind_filter_rejects_unknown_value() {
-        let params = json_object(&[("kind_filter", "unknown_kind")]);
-        let err = parse_kind_filter(&params).unwrap_err();
+        let value = serde_json::Value::String("unknown_kind".to_string());
+        let err = parse_kind_filter_value(Some(&value)).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("unknown kind_filter: `unknown_kind`"));
         assert!(msg.contains("function"));
@@ -1335,8 +1200,8 @@ mod tests {
 
     #[test]
     fn test_parse_kind_filter_rejects_non_string_value() {
-        let params = json_object_values(&[("kind_filter", serde_json::json!(true))]);
-        let err = parse_kind_filter(&params).unwrap_err();
+        let value = serde_json::json!(true);
+        let err = parse_kind_filter_value(Some(&value)).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("invalid parameter `kind_filter`"));
         assert!(msg.contains("function"));
@@ -1345,191 +1210,236 @@ mod tests {
 
     #[test]
     fn test_parse_kind_filter_none_for_absent() {
-        let params = json_object(&[]);
-        let result = parse_kind_filter(&params).unwrap();
+        let result = parse_kind_filter_value(None).unwrap();
         assert_eq!(result, None);
     }
 
-    // --- get_symbol parameter validation (Story 3.5) ---
+    // --- Input struct deserialization tests ---
 
     #[test]
-    fn test_get_symbol_tool_rejects_missing_repo_id() {
-        let params = json_object(&[("relative_path", "src/main.rs"), ("symbol_name", "main")]);
-        let err = parse_get_symbol_params(&params).unwrap_err();
-        assert!(err.message.contains("missing required parameter: repo_id"));
+    fn test_search_text_input_missing_repo_id() {
+        let json = serde_json::json!({"query": "hello"});
+        let result: Result<SearchTextInput, _> = serde_json::from_value(json);
+        assert!(result.is_err());
     }
 
     #[test]
-    fn test_get_symbol_tool_rejects_missing_relative_path() {
-        let params = json_object(&[("repo_id", "repo-1"), ("symbol_name", "main")]);
-        let err = parse_get_symbol_params(&params).unwrap_err();
-        assert!(
-            err.message
-                .contains("missing required parameter: relative_path")
-        );
+    fn test_search_text_input_missing_query() {
+        let json = serde_json::json!({"repo_id": "repo-1"});
+        let result: Result<SearchTextInput, _> = serde_json::from_value(json);
+        assert!(result.is_err());
     }
 
     #[test]
-    fn test_get_symbol_tool_rejects_missing_symbol_name() {
-        let params = json_object(&[("repo_id", "repo-1"), ("relative_path", "src/main.rs")]);
-        let err = parse_get_symbol_params(&params).unwrap_err();
-        assert!(
-            err.message
-                .contains("missing required parameter: symbol_name")
-        );
+    fn test_search_text_input_valid() {
+        let json = serde_json::json!({"repo_id": "repo-1", "query": "hello"});
+        let input: SearchTextInput = serde_json::from_value(json).unwrap();
+        assert_eq!(input.repo_id, "repo-1");
+        assert_eq!(input.query, "hello");
     }
 
     #[test]
-    fn test_get_symbol_tool_rejects_empty_repo_id() {
-        let params = json_object(&[
-            ("repo_id", ""),
-            ("relative_path", "src/main.rs"),
-            ("symbol_name", "main"),
+    fn test_search_symbols_input_missing_repo_id() {
+        let json = serde_json::json!({"query": "hello"});
+        let result: Result<SearchSymbolsInput, _> = serde_json::from_value(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_search_symbols_input_missing_query() {
+        let json = serde_json::json!({"repo_id": "repo-1"});
+        let result: Result<SearchSymbolsInput, _> = serde_json::from_value(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_search_symbols_input_valid_with_kind_filter() {
+        let json = serde_json::json!({"repo_id": "repo-1", "query": "test", "kind_filter": "function"});
+        let input: SearchSymbolsInput = serde_json::from_value(json).unwrap();
+        assert_eq!(input.repo_id, "repo-1");
+        assert_eq!(input.query, "test");
+        assert_eq!(input.kind_filter, Some("function".to_string()));
+    }
+
+    #[test]
+    fn test_search_symbols_input_valid_without_kind_filter() {
+        let json = serde_json::json!({"repo_id": "repo-1", "query": "test"});
+        let input: SearchSymbolsInput = serde_json::from_value(json).unwrap();
+        assert_eq!(input.kind_filter, None);
+    }
+
+    #[test]
+    fn test_get_file_outline_input_missing_repo_id() {
+        let json = serde_json::json!({"relative_path": "src/main.rs"});
+        let result: Result<GetFileOutlineInput, _> = serde_json::from_value(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_file_outline_input_missing_relative_path() {
+        let json = serde_json::json!({"repo_id": "repo-1"});
+        let result: Result<GetFileOutlineInput, _> = serde_json::from_value(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_repo_outline_input_missing_repo_id() {
+        let json = serde_json::json!({});
+        let result: Result<GetRepoOutlineInput, _> = serde_json::from_value(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_symbol_input_missing_repo_id() {
+        let json = serde_json::json!({"relative_path": "src/main.rs", "symbol_name": "main"});
+        let result: Result<GetSymbolInput, _> = serde_json::from_value(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_symbol_input_missing_relative_path() {
+        let json = serde_json::json!({"repo_id": "repo-1", "symbol_name": "main"});
+        let result: Result<GetSymbolInput, _> = serde_json::from_value(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_symbol_input_missing_symbol_name() {
+        let json = serde_json::json!({"repo_id": "repo-1", "relative_path": "src/main.rs"});
+        let result: Result<GetSymbolInput, _> = serde_json::from_value(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_symbol_input_valid_with_kind_filter() {
+        let json = serde_json::json!({"repo_id": "repo-1", "relative_path": "src/main.rs", "symbol_name": "main", "kind_filter": "function"});
+        let input: GetSymbolInput = serde_json::from_value(json).unwrap();
+        assert_eq!(input.repo_id, "repo-1");
+        assert_eq!(input.relative_path, "src/main.rs");
+        assert_eq!(input.symbol_name, "main");
+        assert_eq!(input.kind_filter, Some("function".to_string()));
+    }
+
+    #[test]
+    fn test_get_symbol_input_valid_without_kind_filter() {
+        let json = serde_json::json!({"repo_id": "repo-1", "relative_path": "src/main.rs", "symbol_name": "main"});
+        let input: GetSymbolInput = serde_json::from_value(json).unwrap();
+        assert_eq!(input.kind_filter, None);
+    }
+
+    #[test]
+    fn test_get_symbols_input_missing_repo_id() {
+        let json = serde_json::json!({"targets": []});
+        let result: Result<GetSymbolsInput, _> = serde_json::from_value(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_symbols_input_valid_with_targets() {
+        let json = serde_json::json!({"repo_id": "repo-1", "targets": [{"request_type": "symbol", "relative_path": "src/main.rs", "symbol_name": "main"}]});
+        let input: GetSymbolsInput = serde_json::from_value(json).unwrap();
+        assert_eq!(input.repo_id, "repo-1");
+        assert!(input.targets.is_some());
+        assert!(input.symbols.is_none());
+    }
+
+    #[test]
+    fn test_get_symbols_input_valid_with_symbols() {
+        let json = serde_json::json!({"repo_id": "repo-1", "symbols": [{"relative_path": "src/main.rs", "symbol_name": "main"}]});
+        let input: GetSymbolsInput = serde_json::from_value(json).unwrap();
+        assert_eq!(input.repo_id, "repo-1");
+        assert!(input.targets.is_none());
+        assert!(input.symbols.is_some());
+    }
+
+    #[test]
+    fn test_index_folder_input_missing_repo_id() {
+        let json = serde_json::json!({"repo_root": "/tmp/repo"});
+        let result: Result<IndexFolderInput, _> = serde_json::from_value(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_index_folder_input_missing_repo_root() {
+        let json = serde_json::json!({"repo_id": "repo-1"});
+        let result: Result<IndexFolderInput, _> = serde_json::from_value(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_index_folder_input_valid_with_mode() {
+        let json = serde_json::json!({"repo_id": "repo-1", "repo_root": "/tmp/repo", "mode": "incremental"});
+        let input: IndexFolderInput = serde_json::from_value(json).unwrap();
+        assert_eq!(input.repo_id, "repo-1");
+        assert_eq!(input.repo_root, "/tmp/repo");
+        assert_eq!(input.mode, Some("incremental".to_string()));
+    }
+
+    #[test]
+    fn test_index_folder_input_valid_without_mode() {
+        let json = serde_json::json!({"repo_id": "repo-1", "repo_root": "/tmp/repo"});
+        let input: IndexFolderInput = serde_json::from_value(json).unwrap();
+        assert_eq!(input.mode, None);
+    }
+
+    #[test]
+    fn test_repair_index_input_missing_repository_id() {
+        let json = serde_json::json!({"repo_root": "/tmp/repo"});
+        let result: Result<RepairIndexInput, _> = serde_json::from_value(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_repair_index_input_missing_repo_root() {
+        let json = serde_json::json!({"repository_id": "repo-1"});
+        let result: Result<RepairIndexInput, _> = serde_json::from_value(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_repair_index_input_valid_with_scope() {
+        let json = serde_json::json!({"repository_id": "repo-1", "repo_root": "/tmp/repo", "scope": "run", "run_id": "run-1"});
+        let input: RepairIndexInput = serde_json::from_value(json).unwrap();
+        assert_eq!(input.repository_id, "repo-1");
+        assert_eq!(input.scope, Some("run".to_string()));
+        assert_eq!(input.run_id, Some("run-1".to_string()));
+    }
+
+    #[test]
+    fn test_get_operational_history_input_valid() {
+        let json = serde_json::json!({"repository_id": "repo-1", "category": "run", "since_unix_ms": 1000, "limit": 10});
+        let input: GetOperationalHistoryInput = serde_json::from_value(json).unwrap();
+        assert_eq!(input.repository_id, "repo-1");
+        assert_eq!(input.category, Some("run".to_string()));
+        assert_eq!(input.since_unix_ms, Some(1000));
+        assert_eq!(input.limit, Some(10));
+    }
+
+    #[test]
+    fn test_get_operational_history_input_minimal() {
+        let json = serde_json::json!({"repository_id": "repo-1"});
+        let input: GetOperationalHistoryInput = serde_json::from_value(json).unwrap();
+        assert_eq!(input.repository_id, "repo-1");
+        assert_eq!(input.category, None);
+        assert_eq!(input.since_unix_ms, None);
+        assert_eq!(input.limit, None);
+    }
+
+    // --- batch parsing tests (get_symbols helpers) ---
+
+    #[test]
+    fn test_get_symbols_legacy_symbols_array() {
+        let symbols = serde_json::json!([
+            {
+                "relative_path": "src/main.rs",
+                "symbol_name": "main",
+                "kind_filter": "function"
+            }
         ]);
-        let err = parse_get_symbol_params(&params).unwrap_err();
+        let symbols_array = symbols.as_array().unwrap();
+        let result = parse_legacy_symbol_targets(symbols_array).unwrap();
         assert_eq!(
-            err.message,
-            "invalid parameter `repo_id`: expected non-empty string"
-        );
-    }
-
-    #[test]
-    fn test_get_symbol_tool_rejects_non_string_repo_id() {
-        let params = json_object_values(&[
-            ("repo_id", serde_json::json!(123)),
-            (
-                "relative_path",
-                serde_json::Value::String("src/main.rs".to_string()),
-            ),
-            ("symbol_name", serde_json::Value::String("main".to_string())),
-        ]);
-        let err = parse_get_symbol_params(&params).unwrap_err();
-        assert_eq!(
-            err.message,
-            "invalid parameter `repo_id`: expected non-empty string"
-        );
-    }
-
-    #[test]
-    fn test_get_symbol_tool_rejects_empty_relative_path() {
-        let params = json_object(&[
-            ("repo_id", "repo-1"),
-            ("relative_path", ""),
-            ("symbol_name", "main"),
-        ]);
-        let err = parse_get_symbol_params(&params).unwrap_err();
-        assert_eq!(
-            err.message,
-            "invalid parameter `relative_path`: expected non-empty string"
-        );
-    }
-
-    #[test]
-    fn test_get_symbol_tool_rejects_non_string_relative_path() {
-        let params = json_object_values(&[
-            ("repo_id", serde_json::Value::String("repo-1".to_string())),
-            ("relative_path", serde_json::json!(123)),
-            ("symbol_name", serde_json::Value::String("main".to_string())),
-        ]);
-        let err = parse_get_symbol_params(&params).unwrap_err();
-        assert_eq!(
-            err.message,
-            "invalid parameter `relative_path`: expected non-empty string"
-        );
-    }
-
-    #[test]
-    fn test_get_symbol_tool_rejects_empty_symbol_name() {
-        let params = json_object(&[
-            ("repo_id", "repo-1"),
-            ("relative_path", "src/main.rs"),
-            ("symbol_name", ""),
-        ]);
-        let err = parse_get_symbol_params(&params).unwrap_err();
-        assert_eq!(
-            err.message,
-            "invalid parameter `symbol_name`: expected non-empty string"
-        );
-    }
-
-    #[test]
-    fn test_get_symbol_tool_rejects_non_string_symbol_name() {
-        let params = json_object_values(&[
-            ("repo_id", serde_json::Value::String("repo-1".to_string())),
-            (
-                "relative_path",
-                serde_json::Value::String("src/main.rs".to_string()),
-            ),
-            ("symbol_name", serde_json::json!(123)),
-        ]);
-        let err = parse_get_symbol_params(&params).unwrap_err();
-        assert_eq!(
-            err.message,
-            "invalid parameter `symbol_name`: expected non-empty string"
-        );
-    }
-
-    #[test]
-    fn test_get_symbol_tool_rejects_invalid_kind_filter() {
-        let mut params = json_object(&[
-            ("repo_id", "repo-1"),
-            ("relative_path", "src/main.rs"),
-            ("symbol_name", "main"),
-        ]);
-        params.insert(
-            "kind_filter".to_string(),
-            serde_json::Value::String("invalid_kind".to_string()),
-        );
-        let err = parse_get_symbol_params(&params).unwrap_err();
-        assert!(err.message.contains("unknown kind_filter"));
-    }
-
-    #[test]
-    fn test_get_symbol_tool_accepts_valid_kind_filter() {
-        let mut params = json_object(&[
-            ("repo_id", "repo-1"),
-            ("relative_path", "src/main.rs"),
-            ("symbol_name", "main"),
-        ]);
-        params.insert(
-            "kind_filter".to_string(),
-            serde_json::Value::String("function".to_string()),
-        );
-        let result = parse_get_symbol_params(&params).unwrap();
-        assert_eq!(result.kind_filter, Some(SymbolKind::Function));
-    }
-
-    #[test]
-    fn test_get_symbol_tool_accepts_missing_kind_filter() {
-        let params = json_object(&[
-            ("repo_id", "repo-1"),
-            ("relative_path", "src/main.rs"),
-            ("symbol_name", "main"),
-        ]);
-        let result = parse_get_symbol_params(&params).unwrap();
-        assert_eq!(result.kind_filter, None);
-    }
-
-    #[test]
-    fn test_get_symbols_tool_accepts_legacy_symbols_array() {
-        let params = json_object_values(&[
-            ("repo_id", serde_json::json!("repo-1")),
-            (
-                "symbols",
-                serde_json::json!([
-                    {
-                        "relative_path": "src/main.rs",
-                        "symbol_name": "main",
-                        "kind_filter": "function"
-                    }
-                ]),
-            ),
-        ]);
-
-        let result = parse_get_symbols_params(&params).unwrap();
-        assert_eq!(result.repo_id, "repo-1");
-        assert_eq!(
-            result.requests,
+            result,
             vec![BatchRetrievalRequest::Symbol {
                 relative_path: "src/main.rs".to_string(),
                 symbol_name: "main".to_string(),
@@ -1539,30 +1449,23 @@ mod tests {
     }
 
     #[test]
-    fn test_get_symbols_tool_accepts_targets_with_code_slice() {
-        let params = json_object_values(&[
-            ("repo_id", serde_json::json!("repo-1")),
-            (
-                "targets",
-                serde_json::json!([
-                    {
-                        "request_type": "symbol",
-                        "relative_path": "src/main.rs",
-                        "symbol_name": "main"
-                    },
-                    {
-                        "request_type": "code_slice",
-                        "relative_path": "src/main.rs",
-                        "byte_range": [0, 12]
-                    }
-                ]),
-            ),
+    fn test_get_symbols_targets_with_code_slice() {
+        let targets = serde_json::json!([
+            {
+                "request_type": "symbol",
+                "relative_path": "src/main.rs",
+                "symbol_name": "main"
+            },
+            {
+                "request_type": "code_slice",
+                "relative_path": "src/main.rs",
+                "byte_range": [0, 12]
+            }
         ]);
-
-        let result = parse_get_symbols_params(&params).unwrap();
-        assert_eq!(result.repo_id, "repo-1");
+        let targets_array = targets.as_array().unwrap();
+        let result = parse_batch_targets(targets_array).unwrap();
         assert_eq!(
-            result.requests,
+            result,
             vec![
                 BatchRetrievalRequest::Symbol {
                     relative_path: "src/main.rs".to_string(),
@@ -1578,32 +1481,35 @@ mod tests {
     }
 
     #[test]
-    fn test_get_symbols_tool_rejects_missing_targets_and_symbols() {
-        let params = json_object(&[("repo_id", "repo-1")]);
-        let err = parse_get_symbols_params(&params).unwrap_err();
-        assert!(
-            err.message
-                .contains("missing required parameter: targets or symbols")
-        );
+    fn test_get_symbols_rejects_invalid_code_slice_byte_range() {
+        let targets = serde_json::json!([
+            {
+                "request_type": "code_slice",
+                "relative_path": "src/main.rs",
+                "byte_range": [0]
+            }
+        ]);
+        let targets_array = targets.as_array().unwrap();
+        let err = parse_batch_targets(targets_array).unwrap_err();
+        assert!(err.message.contains("invalid `byte_range`"));
+    }
+
+    // --- non-empty string validation tests ---
+
+    #[test]
+    fn test_require_non_empty_rejects_empty() {
+        let err = require_non_empty("", "repo_id").unwrap_err();
+        assert!(err.message.contains("invalid parameter `repo_id`"));
     }
 
     #[test]
-    fn test_get_symbols_tool_rejects_invalid_code_slice_byte_range() {
-        let params = json_object_values(&[
-            ("repo_id", serde_json::json!("repo-1")),
-            (
-                "targets",
-                serde_json::json!([
-                    {
-                        "request_type": "code_slice",
-                        "relative_path": "src/main.rs",
-                        "byte_range": [0]
-                    }
-                ]),
-            ),
-        ]);
+    fn test_require_non_empty_rejects_whitespace() {
+        let err = require_non_empty("   ", "query").unwrap_err();
+        assert!(err.message.contains("invalid parameter `query`"));
+    }
 
-        let err = parse_get_symbols_params(&params).unwrap_err();
-        assert!(err.message.contains("invalid `byte_range`"));
+    #[test]
+    fn test_require_non_empty_accepts_valid() {
+        assert!(require_non_empty("hello", "query").is_ok());
     }
 }

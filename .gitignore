@@ -1,3 +1,10 @@
 /target
 /.tokenizor
 .env
+.tmp/
+.codex/
+.gemini/
+.opencode/
+.claude/settings.local.json
+.serena/
+spacetime/tokenizor/target/
