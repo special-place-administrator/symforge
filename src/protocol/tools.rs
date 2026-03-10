@@ -13,6 +13,7 @@
 /// - Never use MCP error codes for not-found — return helpful text via format functions
 /// - Never hold RwLockReadGuard across await points — extract into owned values first
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{tool, tool_router};
@@ -210,13 +211,15 @@ impl TokenizorServer {
         result
     }
 
-    /// Report server health: index status, file counts, load duration.
+    /// Report server health: index status, file counts, load duration, watcher state.
     ///
     /// This tool always responds regardless of index state (no loading guard).
-    #[tool(description = "Report server health: index status, file counts, load duration.")]
+    #[tool(description = "Report server health: index status, file counts, load duration, watcher state.")]
     async fn health(&self) -> String {
         let guard = self.index.read().expect("lock poisoned");
-        let result = format::health_report(&guard);
+        let watcher_guard = self.watcher_info.lock().unwrap();
+        let result = format::health_report_with_watcher(&guard, &watcher_guard);
+        drop(watcher_guard);
         drop(guard);
         result
     }
@@ -231,6 +234,15 @@ impl TokenizorServer {
                 let file_count = guard.file_count();
                 let symbol_count = guard.symbol_count();
                 drop(guard);
+
+                // Restart the file watcher at the new root so freshness continues.
+                crate::watcher::restart_watcher(
+                    root.clone(),
+                    Arc::clone(&self.index),
+                    Arc::clone(&self.watcher_info),
+                );
+                tracing::info!(root = %root.display(), "file watcher restarted after index_folder");
+
                 format!("Indexed {} files, {} symbols.", file_count, symbol_count)
             }
             Err(e) => format!("Index failed: {e}"),
@@ -348,8 +360,11 @@ mod tests {
     }
 
     fn make_server(index: LiveIndex) -> TokenizorServer {
+        use std::sync::Mutex;
+        use crate::watcher::WatcherInfo;
         let shared = Arc::new(RwLock::new(index));
-        TokenizorServer::new(shared, "test_project".to_string())
+        let watcher_info = Arc::new(Mutex::new(WatcherInfo::default()));
+        TokenizorServer::new(shared, "test_project".to_string(), watcher_info, None)
     }
 
     // ── Loading guard tests ───────────────────────────────────────────────────

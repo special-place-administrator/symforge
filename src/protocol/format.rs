@@ -213,6 +213,9 @@ pub fn repo_outline(index: &LiveIndex, project_name: &str) -> String {
 
 /// Generate a health report for the index.
 ///
+/// Watcher state is read from `health_stats()` (Off defaults when no watcher is active).
+/// Use `health_report_with_watcher` when the live `WatcherInfo` should be reflected.
+///
 /// Format:
 /// ```text
 /// Status: {Ready|Empty|Degraded}
@@ -236,6 +239,66 @@ pub fn health_report(index: &LiveIndex) -> String {
     };
 
     let stats = index.health_stats();
+
+    let watcher_line = match &stats.watcher_state {
+        WatcherState::Active => {
+            let last = match stats.last_event_at {
+                None => "never".to_string(),
+                Some(t) => {
+                    let secs = t
+                        .elapsed()
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    format!("{secs}s ago")
+                }
+            };
+            format!(
+                "Watcher: active ({} events, last: {}, debounce: {}ms)",
+                stats.events_processed, last, stats.debounce_window_ms
+            )
+        }
+        WatcherState::Degraded => {
+            format!(
+                "Watcher: degraded ({} events processed before failure)",
+                stats.events_processed
+            )
+        }
+        WatcherState::Off => "Watcher: off".to_string(),
+    };
+
+    format!(
+        "Status: {}\nFiles:  {} indexed ({} parsed, {} partial, {} failed)\nSymbols: {}\nLoaded in: {}ms\n{}",
+        status,
+        stats.file_count,
+        stats.parsed_count,
+        stats.partial_parse_count,
+        stats.failed_count,
+        stats.symbol_count,
+        stats.load_duration.as_millis(),
+        watcher_line
+    )
+}
+
+/// Generate a health report for the index with live watcher state.
+///
+/// Uses `health_stats_with_watcher` to incorporate the live `WatcherInfo` into the report.
+/// Called by the `health` tool handler in production (watcher is always available there).
+pub fn health_report_with_watcher(
+    index: &LiveIndex,
+    watcher: &crate::watcher::WatcherInfo,
+) -> String {
+    use crate::live_index::IndexState;
+    use crate::watcher::WatcherState;
+
+    let state = index.index_state();
+    let status = match state {
+        IndexState::Empty => "Empty".to_string(),
+        IndexState::Ready => "Ready".to_string(),
+        IndexState::Loading => "Loading".to_string(),
+        IndexState::CircuitBreakerTripped { .. } => "Degraded".to_string(),
+    };
+
+    let stats = index.health_stats_with_watcher(watcher);
 
     let watcher_line = match &stats.watcher_state {
         WatcherState::Active => {
