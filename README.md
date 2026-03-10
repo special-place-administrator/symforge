@@ -9,9 +9,21 @@ The product direction is not "just another MCP server." The goal is a trusted lo
 - durable operational state
 - workflow integration that makes retrieval-first behavior practical
 
-## Quick Start
+## Installation
 
-**No prerequisites.** Add this to your MCP client config (Claude Code, Cursor, Claude Desktop):
+**Prerequisite:** Node.js 18+ (for `npx`). No Rust, no SDKs, no daemons.
+
+Prebuilt binaries are available for **Windows x64** and **Linux x64**.
+
+### Claude Code
+
+```bash
+claude mcp add tokenizor -e TOKENIZOR_CONTROL_PLANE_BACKEND=local_registry -- npx -y tokenizor-mcp
+```
+
+### Cursor
+
+Add to `.cursor/mcp.json`:
 
 ```json
 {
@@ -27,17 +39,48 @@ The product direction is not "just another MCP server." The goal is a trusted lo
 }
 ```
 
-That's it. The npm package downloads the prebuilt binary for your platform automatically. The MCP server is a standard stdio process — your CLI starts it on launch and kills it on exit.
+### Claude Desktop
 
-**Building from source** (contributors only):
+Add to `claude_desktop_config.json` (Settings > Developer > Edit Config):
+
+```json
+{
+  "mcpServers": {
+    "tokenizor": {
+      "command": "npx",
+      "args": ["-y", "tokenizor-mcp"],
+      "env": {
+        "TOKENIZOR_CONTROL_PLANE_BACKEND": "local_registry"
+      }
+    }
+  }
+}
+```
+
+### Any MCP-compatible client
+
+The MCP server is a standard stdio process. Point your client at:
+- **Command:** `npx`
+- **Args:** `-y tokenizor-mcp`
+- **Env:** `TOKENIZOR_CONTROL_PLANE_BACKEND=local_registry`
+
+Your CLI starts it on launch and kills it on exit. No background processes, no daemons.
+
+### Verify installation
+
+```bash
+npx -y tokenizor-mcp doctor
+```
+
+### Building from source (contributors)
+
+Requires [Rust toolchain](https://rustup.rs) (edition 2024).
 
 ```cmd
 setup.bat                           &:: Windows
-bash scripts/setup.sh               # macOS / Linux
+bash scripts/setup.sh               # Linux
 setup.bat --spacetimedb             &:: with SpacetimeDB backend
 ```
-
-Requires [Rust toolchain](https://rustup.rs) (edition 2024).
 
 ## What Tokenizor Is
 
