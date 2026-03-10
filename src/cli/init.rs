@@ -111,20 +111,10 @@ pub fn merge_tokenizor_hooks(settings: &mut Value, binary_path: &str) {
 // ---------------------------------------------------------------------------
 
 fn build_post_tool_use_entries(binary_path: &str) -> Vec<Value> {
-    vec![
-        json!({
-            "matcher": "Read",
-            "hooks": [{"type": "command", "command": format!("{binary_path} hook read"), "timeout": 5}]
-        }),
-        json!({
-            "matcher": "Edit|Write",
-            "hooks": [{"type": "command", "command": format!("{binary_path} hook edit"), "timeout": 5}]
-        }),
-        json!({
-            "matcher": "Grep",
-            "hooks": [{"type": "command", "command": format!("{binary_path} hook grep"), "timeout": 5}]
-        }),
-    ]
+    vec![json!({
+        "matcher": "Read|Edit|Write|Grep",
+        "hooks": [{"type": "command", "command": format!("{binary_path} hook"), "timeout": 5}]
+    })]
 }
 
 fn build_session_start_entries(binary_path: &str) -> Vec<Value> {
@@ -247,7 +237,7 @@ mod tests {
             .as_array()
             .expect("SessionStart must be an array");
 
-        assert_eq!(post.len(), 3, "PostToolUse must have 3 entries (Read, Edit|Write, Grep)");
+        assert_eq!(post.len(), 1, "PostToolUse must have 1 entry (single stdin-routed entry)");
         assert_eq!(session.len(), 1, "SessionStart must have 1 entry");
     }
 
@@ -256,17 +246,24 @@ mod tests {
         let result = run_merge(json!({}));
 
         let post = &result["hooks"]["PostToolUse"];
-        let read_entry = &post[0];
-        let cmd = &read_entry["hooks"][0]["command"];
+        let entry = &post[0];
+        let cmd = entry["hooks"][0]["command"].as_str().unwrap();
         assert_eq!(
-            cmd.as_str().unwrap(),
-            "/usr/local/bin/tokenizor hook read",
-            "Read hook command must match"
+            cmd,
+            "/usr/local/bin/tokenizor hook",
+            "Single PostToolUse hook command must have no subcommand suffix"
         );
 
         let session = &result["hooks"]["SessionStart"][0];
         let session_cmd = session["hooks"][0]["command"].as_str().unwrap();
         assert_eq!(session_cmd, "/usr/local/bin/tokenizor hook session-start");
+    }
+
+    #[test]
+    fn test_init_new_entry_matcher_includes_write() {
+        let result = run_merge(json!({}));
+        let matcher = result["hooks"]["PostToolUse"][0]["matcher"].as_str().unwrap();
+        assert_eq!(matcher, "Read|Edit|Write|Grep", "matcher must include Write");
     }
 
     // --- test_init_preserves_existing_hooks ---
@@ -289,16 +286,62 @@ mod tests {
             .as_array()
             .expect("PostToolUse must be an array");
 
-        // 1 existing + 3 tokenizor = 4 total.
+        // 1 existing + 1 tokenizor = 2 total.
         assert_eq!(
             post.len(),
-            4,
-            "existing hook + 3 tokenizor hooks = 4 entries; got {post:?}"
+            2,
+            "existing hook + 1 tokenizor hook = 2 entries; got {post:?}"
         );
 
         // The first entry is the preserved non-tokenizor hook.
         let first_cmd = post[0]["hooks"][0]["command"].as_str().unwrap();
         assert_eq!(first_cmd, "/some/other/hook bash", "non-tokenizor hook must be preserved");
+    }
+
+    // --- test_init_migrates_old_three_entry_format ---
+
+    #[test]
+    fn test_init_migrates_old_three_entry_format() {
+        // Old 3-entry format from Phase 5.
+        let old_binary = "/usr/local/bin/tokenizor";
+        let initial = json!({
+            "hooks": {
+                "PostToolUse": [
+                    {
+                        "matcher": "Read",
+                        "hooks": [{"type": "command", "command": format!("{old_binary} hook read"), "timeout": 5}]
+                    },
+                    {
+                        "matcher": "Edit|Write",
+                        "hooks": [{"type": "command", "command": format!("{old_binary} hook edit"), "timeout": 5}]
+                    },
+                    {
+                        "matcher": "Grep",
+                        "hooks": [{"type": "command", "command": format!("{old_binary} hook grep"), "timeout": 5}]
+                    }
+                ]
+            }
+        });
+
+        let result = run_merge(initial);
+        let post = result["hooks"]["PostToolUse"].as_array().unwrap();
+
+        // All 3 old entries must be replaced by exactly 1 new entry.
+        assert_eq!(
+            post.len(),
+            1,
+            "migration must replace 3 old entries with 1 new entry; got {post:?}"
+        );
+
+        let cmd = post[0]["hooks"][0]["command"].as_str().unwrap();
+        assert_eq!(
+            cmd,
+            "/usr/local/bin/tokenizor hook",
+            "migrated entry must use new no-subcommand command format"
+        );
+
+        let matcher = post[0]["matcher"].as_str().unwrap();
+        assert_eq!(matcher, "Read|Edit|Write|Grep", "migrated entry must use full matcher");
     }
 
     // --- test_init_idempotent ---

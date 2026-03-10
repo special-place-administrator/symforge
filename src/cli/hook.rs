@@ -108,7 +108,7 @@ pub fn run_hook(subcommand: Option<&HookSubcommand>) -> anyhow::Result<()> {
 /// PostToolUse JSON payload.
 ///
 /// Returns `HookInput::default()` on any parse failure (fail-open).
-pub fn parse_stdin_input() -> HookInput {
+pub(crate) fn parse_stdin_input() -> HookInput {
     let stdin = std::io::stdin();
     let mut raw = String::new();
     for line in stdin.lock().lines() {
@@ -128,7 +128,7 @@ pub fn parse_stdin_input() -> HookInput {
 /// Uses `std::path::Path::strip_prefix` for correct platform-aware stripping,
 /// then normalises backslashes to forward slashes for the sidecar query.
 /// Returns `absolute` unchanged if it does not start with `cwd`.
-pub fn relative_path(absolute: &str, cwd: &str) -> String {
+pub(crate) fn relative_path(absolute: &str, cwd: &str) -> String {
     let abs = std::path::Path::new(absolute);
     let base = std::path::Path::new(cwd);
     match abs.strip_prefix(base) {
@@ -149,7 +149,7 @@ fn resolve_subcommand_from_input(input: &HookInput) -> Option<HookSubcommand> {
 }
 
 /// Returns the `hookEventName` string for a given subcommand.
-pub fn event_name_for(subcommand: &HookSubcommand) -> &'static str {
+pub(crate) fn event_name_for(subcommand: &HookSubcommand) -> &'static str {
     match subcommand {
         HookSubcommand::SessionStart => "SessionStart",
         _ => "PostToolUse",
@@ -161,7 +161,7 @@ pub fn event_name_for(subcommand: &HookSubcommand) -> &'static str {
 /// The `input` carries the file path and search pattern extracted from the
 /// Claude Code PostToolUse payload. When `subcommand` is `None` (unknown
 /// tool_name), returns fail-open empty values.
-pub fn endpoint_for(subcommand: Option<&HookSubcommand>, input: &HookInput) -> (&'static str, String) {
+pub(crate) fn endpoint_for(subcommand: Option<&HookSubcommand>, input: &HookInput) -> (&'static str, String) {
     let cwd = input.cwd.as_deref().unwrap_or("");
 
     match subcommand {
@@ -213,7 +213,7 @@ pub fn endpoint_for(subcommand: Option<&HookSubcommand>, input: &HookInput) -> (
 }
 
 /// Returns the fail-open JSON: empty `additionalContext`.
-pub fn fail_open_json(event_name: &str) -> String {
+pub(crate) fn fail_open_json(event_name: &str) -> String {
     format!(
         r#"{{"hookSpecificOutput":{{"hookEventName":"{event_name}","additionalContext":""}}}}"#
     )
@@ -223,7 +223,7 @@ pub fn fail_open_json(event_name: &str) -> String {
 ///
 /// The `context` string is JSON-escaped (backslash + quote safe) so it can be
 /// embedded as a JSON string value.
-pub fn success_json(event_name: &str, context: &str) -> String {
+pub(crate) fn success_json(event_name: &str, context: &str) -> String {
     let escaped = json_escape(context);
     format!(
         r#"{{"hookSpecificOutput":{{"hookEventName":"{event_name}","additionalContext":"{escaped}"}}}}"#
