@@ -14,7 +14,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: LiveIndex Foundation** - In-memory store with concurrent access, symbol extraction, circuit breaker (completed 2026-03-10)
 - [x] **Phase 2: MCP Tools v1 Parity** - Wire all core tools to LiveIndex, compact responses, stdout purity (completed 2026-03-10)
-- [ ] **Phase 3: File Watcher + Freshness** - notify crate integration, incremental reparse, staleness eliminated
+- [x] **Phase 3: File Watcher + Freshness** - notify crate integration, incremental reparse, staleness eliminated (completed 2026-03-10)
 - [ ] **Phase 4: Cross-Reference Extraction** - tree-sitter xref queries for all 6 languages, find_references tools
 - [ ] **Phase 5: HTTP Sidecar + Hook Infrastructure** - axum sidecar on ephemeral port, tokenizor init
 - [ ] **Phase 6: Hook Enrichment Integration** - PostToolUse hooks for Read/Edit/Write/Grep, SessionStart, token tracking
@@ -64,7 +64,7 @@ Plans:
   2. After editing a function name and saving, querying that symbol within 300ms returns the updated name, not the old one
   3. Creating a new source file causes it to appear in `get_repo_outline` within 200ms, with no manual reload
   4. Deleting a source file removes its symbols from the index within 200ms without crashing the server
-**Plans:** 2/3 plans executed
+**Plans:** 3/3 plans complete
 
 Plans:
 - [x] 03-01-PLAN.md — LiveIndex mutation methods, watcher types, extended HealthStats, Cargo.toml deps
@@ -126,7 +126,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 |-------|----------------|--------|-----------|
 | 1. LiveIndex Foundation | 3/3 | Complete   | 2026-03-10 |
 | 2. MCP Tools v1 Parity | 3/3 | Complete   | 2026-03-10 |
-| 3. File Watcher + Freshness | 2/3 | In Progress|  |
+| 3. File Watcher + Freshness | 3/3 | Complete   | 2026-03-10 |
 | 4. Cross-Reference Extraction | 0/? | Not started | - |
 | 5. HTTP Sidecar + Hook Infrastructure | 0/? | Not started | - |
 | 6. Hook Enrichment Integration | 0/? | Not started | - |

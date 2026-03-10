@@ -3,9 +3,9 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: "Completed 03-02-PLAN.md: watcher core — event processing, path normalization, lifecycle"
-last_updated: "2026-03-10T17:37:09.105Z"
-last_activity: "2026-03-10 — Phase 03 Plan 01 complete: watcher type contracts, LiveIndex mutation API, extended HealthStats"
+stopped_at: "Completed 03-03-PLAN.md: watcher wiring — main.rs spawn, health/index_folder tools, integration tests"
+last_updated: "2026-03-10T17:58:00.000Z"
+last_activity: "2026-03-10 — Phase 03 Plan 03 complete: watcher wired into MCP server, 8 integration tests prove all FRSH/RELY-03 reqs"
 progress:
   total_phases: 7
   completed_phases: 2
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-03-10)
 ## Current Position
 
 Phase: 3 of 7 (File Watcher + Freshness)
-Plan: 1 of 3 completed in current phase
-Status: In progress — Plan 02 (watcher core) is next
-Last activity: 2026-03-10 — Phase 03 Plan 01 complete: watcher type contracts, LiveIndex mutation API, extended HealthStats
+Plan: 3 of 3 completed in current phase (PHASE COMPLETE)
+Status: Phase 03 complete — Phase 04 (Cross-References) is next
+Last activity: 2026-03-10 — Phase 03 Plan 03 complete: watcher wired into MCP server, 8 integration tests prove all FRSH/RELY-03 reqs
 
-Progress: [█░░░░░░░░░] 10%
+Progress: [███░░░░░░░] 30%
 
 ## Performance Metrics
 
@@ -58,6 +58,7 @@ Progress: [█░░░░░░░░░] 10%
 | Phase 02-mcp-tools-v1-parity P03 | 15 | 2 tasks | 2 files |
 | Phase 03-file-watcher-freshness P01 | 5 | 2 tasks | 6 files |
 | Phase 03-file-watcher-freshness P02 | 4 | 2 tasks | 1 files |
+| Phase 03-file-watcher-freshness P03 | 18 | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -99,6 +100,9 @@ Recent decisions affecting current work:
 - [Phase Phase 03-02]: ReindexResult is a local enum — caller can match outcomes without unwrapping bool; enables per-outcome telemetry
 - [Phase Phase 03-02]: std::sync::mpsc (not tokio) for notify callback — notify's debouncer thread is a native OS thread, not a tokio task
 - [Phase Phase 03-02]: normalize_event_path tries original then \?\-stripped root on strip_prefix failure — handles mixed UNC scenarios
+- [Phase 03-03]: recv_timeout(50ms) + yield_now() replaces blocking recv() in run_watcher — blocking std::sync::mpsc::recv() on a tokio worker starves the executor; recv_timeout releases the thread every 50ms
+- [Phase 03-03]: health_report_with_watcher is additive alongside health_report — unit tests use Off-defaults variant; production health tool always uses live-watcher variant
+- [Phase 03-03]: Integration tests use multi_thread tokio flavor — run_watcher must run on a separate worker thread; single-thread would deadlock
 
 ### Pending Todos
 

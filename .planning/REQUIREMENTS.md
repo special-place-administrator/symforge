@@ -18,10 +18,10 @@ Requirements for the v2 rewrite release. Each maps to roadmap phases.
 ### Freshness
 
 - [x] **FRSH-01**: File watcher (notify crate) detects file changes within 200ms (debounced)
-- [ ] **FRSH-02**: Single-file incremental reparse completes in <50ms
-- [ ] **FRSH-03**: LiveIndex always reflects current disk state — queries never serve stale data
-- [ ] **FRSH-04**: File creation detected and indexed automatically
-- [ ] **FRSH-05**: File deletion detected and removed from LiveIndex automatically
+- [x] **FRSH-02**: Single-file incremental reparse completes in <50ms
+- [x] **FRSH-03**: LiveIndex always reflects current disk state — queries never serve stale data
+- [x] **FRSH-04**: File creation detected and indexed automatically
+- [x] **FRSH-05**: File deletion detected and removed from LiveIndex automatically
 - [x] **FRSH-06**: Real-time synchronization — index syncs in milliseconds on any file change, always current and available to the model
 
 ### Reliability
@@ -136,10 +136,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | LIDX-04 | Phase 1 | Complete |
 | LIDX-05 | Phase 2 | Complete |
 | FRSH-01 | Phase 3 | Complete |
-| FRSH-02 | Phase 3 | Pending |
-| FRSH-03 | Phase 3 | Pending |
-| FRSH-04 | Phase 3 | Pending |
-| FRSH-05 | Phase 3 | Pending |
+| FRSH-02 | Phase 3 | Complete |
+| FRSH-03 | Phase 3 | Complete |
+| FRSH-04 | Phase 3 | Complete |
+| FRSH-05 | Phase 3 | Complete |
 | FRSH-06 | Phase 3 | Complete |
 | RELY-01 | Phase 1 | Complete |
 | RELY-02 | Phase 1 | Complete |
