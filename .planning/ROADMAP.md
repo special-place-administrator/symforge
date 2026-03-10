@@ -41,7 +41,7 @@ Plans:
 ### Phase 2: MCP Tools v1 Parity
 **Goal**: A shippable MCP server where all core retrieval tools query the LiveIndex and return compact, human-readable responses
 **Depends on**: Phase 1
-**Requirements**: LIDX-05, TOOL-01, TOOL-02, TOOL-03, TOOL-04, TOOL-05, TOOL-06, TOOL-07, TOOL-08, TOOL-12, TOOL-13, INFR-02, INFR-03, INFR-05
+**Requirements**: LIDX-02, LIDX-05, TOOL-01, TOOL-02, TOOL-03, TOOL-04, TOOL-05, TOOL-06, TOOL-07, TOOL-08, TOOL-12, TOOL-13, INFR-02, INFR-03, INFR-05
 **Success Criteria** (what must be TRUE):
   1. Initial index load completes in under 500ms for a 70-file repo and under 3 seconds for a 1,000-file repo
   2. `get_file_outline`, `get_symbol`, `search_symbols`, and `search_text` all return results in under 1ms from memory
