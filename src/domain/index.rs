@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fmt;
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum LanguageId {
     Rust,
     Python,
@@ -138,7 +138,7 @@ pub enum FileOutcome {
     Failed { error: String },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SymbolRecord {
     pub name: String,
     pub kind: SymbolKind,
@@ -148,7 +148,7 @@ pub struct SymbolRecord {
     pub line_range: (u32, u32),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SymbolKind {
     Function,
     Method,
@@ -188,7 +188,7 @@ impl fmt::Display for SymbolKind {
 
 /// A single cross-reference (call site, import, type usage, or macro use) extracted
 /// from a source file. Part of the Phase 4 cross-reference pipeline.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ReferenceRecord {
     /// Simple name at the reference site (e.g. "new", "process", "HashMap").
     pub name: String,
@@ -206,7 +206,7 @@ pub struct ReferenceRecord {
 }
 
 /// Discriminates the semantic role of a cross-reference.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ReferenceKind {
     /// A function or method call site.
     Call,

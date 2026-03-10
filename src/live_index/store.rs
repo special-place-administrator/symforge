@@ -15,7 +15,7 @@ use crate::error::Result;
 use crate::{discovery, parsing};
 
 /// Per-file parse status stored in the index.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ParseStatus {
     /// File parsed successfully with no syntax errors.
     Parsed,
