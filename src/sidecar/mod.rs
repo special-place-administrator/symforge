@@ -20,6 +20,9 @@ pub struct SidecarHandle {
     pub port: u16,
     /// Send `()` on this channel to initiate graceful shutdown.
     pub shutdown_tx: tokio::sync::oneshot::Sender<()>,
+    /// Shared token stats for the sidecar session.
+    /// Pass this `Arc` to `TokenizorServer::new()` so the health tool can report savings.
+    pub token_stats: Arc<TokenStats>,
 }
 
 // ---------------------------------------------------------------------------

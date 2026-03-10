@@ -666,6 +666,65 @@ pub fn empty_guard_message() -> String {
     "Index not loaded. Call index_folder to index a directory.".to_string()
 }
 
+/// Format a "Token Savings (this session)" section from a `StatsSnapshot`.
+///
+/// Input: `snap` — the `StatsSnapshot` from `TokenStats::summary()`.
+/// Output: a multi-line string listing per-hook-type fire counts and token savings.
+///
+/// If all counters are zero, returns an empty string (no savings section shown).
+/// This is a fail-open function — callers can append the result without checking emptiness.
+///
+/// ```text
+/// ── Token Savings (this session) ──
+/// Read:  N fires, ~M tokens saved
+/// Edit:  N fires, ~M tokens saved
+/// Write: N fires
+/// Grep:  N fires, ~M tokens saved
+/// Total: ~T tokens saved
+/// ```
+pub fn format_token_savings(snap: &crate::sidecar::StatsSnapshot) -> String {
+    let total_saved =
+        snap.read_saved_tokens + snap.edit_saved_tokens + snap.grep_saved_tokens;
+
+    // Show section only when at least one hook has fired.
+    let any_fires = snap.read_fires > 0
+        || snap.edit_fires > 0
+        || snap.write_fires > 0
+        || snap.grep_fires > 0;
+
+    if !any_fires {
+        return String::new();
+    }
+
+    let mut lines = vec!["── Token Savings (this session) ──".to_string()];
+
+    if snap.read_fires > 0 {
+        lines.push(format!(
+            "Read:  {} fires, ~{} tokens saved",
+            snap.read_fires, snap.read_saved_tokens
+        ));
+    }
+    if snap.edit_fires > 0 {
+        lines.push(format!(
+            "Edit:  {} fires, ~{} tokens saved",
+            snap.edit_fires, snap.edit_saved_tokens
+        ));
+    }
+    if snap.write_fires > 0 {
+        lines.push(format!("Write: {} fires", snap.write_fires));
+    }
+    if snap.grep_fires > 0 {
+        lines.push(format!(
+            "Grep:  {} fires, ~{} tokens saved",
+            snap.grep_fires, snap.grep_saved_tokens
+        ));
+    }
+
+    lines.push(format!("Total: ~{} tokens saved", total_saved));
+
+    lines.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1282,5 +1341,117 @@ mod tests {
         assert!(result.contains("Callers (0)"), "zero callers section missing, got: {result}");
         assert!(result.contains("Callees (0)"), "zero callees section missing, got: {result}");
         assert!(result.contains("Type usages (0)"), "zero type usages section missing, got: {result}");
+    }
+
+    // --- format_token_savings tests ---
+
+    #[test]
+    fn test_format_token_savings_all_zeros_returns_empty() {
+        let snap = crate::sidecar::StatsSnapshot {
+            read_fires: 0,
+            read_saved_tokens: 0,
+            edit_fires: 0,
+            edit_saved_tokens: 0,
+            write_fires: 0,
+            grep_fires: 0,
+            grep_saved_tokens: 0,
+        };
+        let result = format_token_savings(&snap);
+        assert!(
+            result.is_empty(),
+            "all-zero snapshot should return empty string; got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_format_token_savings_shows_section_header() {
+        let snap = crate::sidecar::StatsSnapshot {
+            read_fires: 1,
+            read_saved_tokens: 250,
+            edit_fires: 0,
+            edit_saved_tokens: 0,
+            write_fires: 0,
+            grep_fires: 0,
+            grep_saved_tokens: 0,
+        };
+        let result = format_token_savings(&snap);
+        assert!(
+            result.contains("Token Savings"),
+            "result must contain 'Token Savings' header; got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_format_token_savings_read_fires_and_tokens() {
+        let snap = crate::sidecar::StatsSnapshot {
+            read_fires: 3,
+            read_saved_tokens: 750,
+            edit_fires: 0,
+            edit_saved_tokens: 0,
+            write_fires: 0,
+            grep_fires: 0,
+            grep_saved_tokens: 0,
+        };
+        let result = format_token_savings(&snap);
+        assert!(result.contains("Read"), "should show Read line; got: {result}");
+        assert!(result.contains("3 fires"), "should show fire count; got: {result}");
+        assert!(result.contains("750"), "should show saved tokens; got: {result}");
+    }
+
+    #[test]
+    fn test_format_token_savings_total_is_sum_of_parts() {
+        let snap = crate::sidecar::StatsSnapshot {
+            read_fires: 2,
+            read_saved_tokens: 100,
+            edit_fires: 1,
+            edit_saved_tokens: 50,
+            write_fires: 0,
+            grep_fires: 3,
+            grep_saved_tokens: 200,
+        };
+        let result = format_token_savings(&snap);
+        // Total = 100 + 50 + 200 = 350
+        assert!(
+            result.contains("350"),
+            "total should be sum of read+edit+grep savings (350); got: {result}"
+        );
+        assert!(result.contains("Total:"), "should have Total line; got: {result}");
+    }
+
+    #[test]
+    fn test_format_token_savings_write_fires_no_savings_field() {
+        let snap = crate::sidecar::StatsSnapshot {
+            read_fires: 0,
+            read_saved_tokens: 0,
+            edit_fires: 0,
+            edit_saved_tokens: 0,
+            write_fires: 2,
+            grep_fires: 0,
+            grep_saved_tokens: 0,
+        };
+        let result = format_token_savings(&snap);
+        assert!(result.contains("Write"), "should show Write line; got: {result}");
+        assert!(result.contains("2 fires"), "should show write fire count; got: {result}");
+        // Write has no savings — just fire count
+        assert!(!result.contains("tokens saved\nTotal"), "write line should not show saved tokens");
+    }
+
+    #[test]
+    fn test_format_token_savings_omits_zero_hook_types() {
+        // Only read fired — edit and grep should not appear.
+        let snap = crate::sidecar::StatsSnapshot {
+            read_fires: 1,
+            read_saved_tokens: 100,
+            edit_fires: 0,
+            edit_saved_tokens: 0,
+            write_fires: 0,
+            grep_fires: 0,
+            grep_saved_tokens: 0,
+        };
+        let result = format_token_savings(&snap);
+        assert!(result.contains("Read"), "should show Read; got: {result}");
+        assert!(!result.contains("Edit:"), "Edit should be omitted when zero; got: {result}");
+        assert!(!result.contains("Grep:"), "Grep should be omitted when zero; got: {result}");
+        assert!(!result.contains("Write:"), "Write should be omitted when zero; got: {result}");
     }
 }

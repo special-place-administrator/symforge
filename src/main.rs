@@ -87,8 +87,12 @@ async fn run_mcp_server_async() -> anyhow::Result<()> {
     let sidecar_handle = sidecar::spawn_sidecar(Arc::clone(&index), &bind_host).await?;
     tracing::info!(port = sidecar_handle.port, "HTTP sidecar started");
 
+    // Share the sidecar's TokenStats Arc with the MCP server so the health tool
+    // can display token savings without an HTTP round-trip.
+    let token_stats = Some(sidecar_handle.token_stats);
+
     // Create MCP server and serve on stdio transport.
-    let server = protocol::TokenizorServer::new(index, project_name, watcher_info, watcher_root);
+    let server = protocol::TokenizorServer::new(index, project_name, watcher_info, watcher_root, token_stats);
     tracing::info!("starting MCP server on stdio transport");
     let service = serve_server(server, transport::stdio()).await?;
     service.waiting().await?;

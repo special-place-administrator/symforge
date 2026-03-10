@@ -46,9 +46,12 @@ pub async fn spawn_sidecar(
     info!("sidecar listening on {resolved_host}:{port}");
 
     // Construct SidecarState with fresh TokenStats and empty symbol cache.
+    // Keep a clone of the Arc<TokenStats> to return in SidecarHandle so the MCP server
+    // can read token savings directly without an HTTP round-trip.
+    let token_stats = TokenStats::new();
     let state = SidecarState {
         index,
-        token_stats: TokenStats::new(),
+        token_stats: Arc::clone(&token_stats),
         symbol_cache: Arc::new(RwLock::new(HashMap::new())),
     };
 
@@ -76,5 +79,5 @@ pub async fn spawn_sidecar(
         tracing::info!("sidecar shut down, port/PID files cleaned up");
     });
 
-    Ok(SidecarHandle { port, shutdown_tx })
+    Ok(SidecarHandle { port, shutdown_tx, token_stats })
 }

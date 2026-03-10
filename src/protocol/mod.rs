@@ -9,6 +9,7 @@ use rmcp::model::{ServerCapabilities, ServerInfo};
 use rmcp::{tool_handler, ServerHandler};
 
 use crate::live_index::store::LiveIndex;
+use crate::sidecar::TokenStats;
 use crate::watcher::WatcherInfo;
 
 /// Thread-safe shared handle to the index (re-exported for convenience).
@@ -20,6 +21,7 @@ pub type SharedIndex = Arc<RwLock<LiveIndex>>;
 /// The `project_name` field is passed through to `format::repo_outline`.
 /// The `watcher_info` field is read by the health tool to report live watcher state.
 /// The `repo_root` field is used by `index_folder` to restart the watcher at a new root.
+/// The `token_stats` field provides live hook token savings to the health tool (AD-4 simpler path).
 #[derive(Clone)]
 pub struct TokenizorServer {
     pub(crate) index: SharedIndex,
@@ -30,15 +32,22 @@ pub struct TokenizorServer {
     /// diagnostics and potential restart-from-last-root logic.
     #[allow(dead_code)]
     pub(crate) repo_root: Option<PathBuf>,
+    /// Shared token stats from the HTTP sidecar. Present when the sidecar is running.
+    /// The health tool reads this to display token savings accumulated during the session.
+    pub(crate) token_stats: Option<Arc<TokenStats>>,
 }
 
 impl TokenizorServer {
     /// Create a new server with the given shared index, project name, and watcher state.
+    ///
+    /// `token_stats` is optional — when `Some`, the health tool will include a token savings
+    /// section showing per-hook-type fire counts and estimated tokens saved this session.
     pub fn new(
         index: SharedIndex,
         project_name: String,
         watcher_info: Arc<Mutex<WatcherInfo>>,
         repo_root: Option<PathBuf>,
+        token_stats: Option<Arc<TokenStats>>,
     ) -> Self {
         Self {
             index,
@@ -46,6 +55,7 @@ impl TokenizorServer {
             project_name,
             watcher_info,
             repo_root,
+            token_stats,
         }
     }
 

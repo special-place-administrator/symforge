@@ -240,14 +240,27 @@ impl TokenizorServer {
 
     /// Report server health: index status, file counts, load duration, watcher state.
     ///
+    /// When the HTTP sidecar is running, also reports token savings from hook fires this session.
+    ///
     /// This tool always responds regardless of index state (no loading guard).
     #[tool(description = "Report server health: index status, file counts, load duration, watcher state.")]
     async fn health(&self) -> String {
         let guard = self.index.read().expect("lock poisoned");
         let watcher_guard = self.watcher_info.lock().unwrap();
-        let result = format::health_report_with_watcher(&guard, &watcher_guard);
+        let mut result = format::health_report_with_watcher(&guard, &watcher_guard);
         drop(watcher_guard);
         drop(guard);
+
+        // Append token savings section if the sidecar's TokenStats are available.
+        if let Some(ref stats) = self.token_stats {
+            let snap = stats.summary();
+            let savings = format::format_token_savings(&snap);
+            if !savings.is_empty() {
+                result.push('\n');
+                result.push_str(&savings);
+            }
+        }
+
         result
     }
 
@@ -430,7 +443,7 @@ mod tests {
         use crate::watcher::WatcherInfo;
         let shared = Arc::new(RwLock::new(index));
         let watcher_info = Arc::new(Mutex::new(WatcherInfo::default()));
-        TokenizorServer::new(shared, "test_project".to_string(), watcher_info, None)
+        TokenizorServer::new(shared, "test_project".to_string(), watcher_info, None, None)
     }
 
     // ── Loading guard tests ───────────────────────────────────────────────────
