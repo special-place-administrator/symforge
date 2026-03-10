@@ -3,7 +3,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use super::index::{IndexRunMode, IndexRunStatus, RepairEvent};
+use super::index::{
+    IndexRun, IndexRunMode, IndexRunStatus, RecoveryStateKind, RepairEvent, RunHealth,
+    RunRecoveryState,
+};
 use super::repository::RepositoryStatus;
 use super::retrieval::NextAction;
 
@@ -258,6 +261,264 @@ pub fn unix_timestamp_ms() -> u64 {
         .as_millis() as u64
 }
 
+// --- Action classification types (Story 4.7) ---
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionCondition {
+    Healthy,
+    Pending,
+    ActiveRun,
+    Degraded,
+    Failed,
+    Invalidated,
+    Quarantined,
+    Interrupted,
+    Stale,
+    TerminalComplete,
+}
+
+impl ActionCondition {
+    pub fn is_action_required(&self) -> bool {
+        matches!(
+            self,
+            Self::Degraded
+                | Self::Failed
+                | Self::Invalidated
+                | Self::Quarantined
+                | Self::Interrupted
+                | Self::Stale
+        )
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ActionClassification {
+    pub condition: ActionCondition,
+    pub action_required: bool,
+    pub next_action: Option<NextAction>,
+    pub detail: String,
+}
+
+pub const STALE_QUEUED_ABORTED_SUMMARY: &str =
+    "stale queued run aborted during startup sweep because no durable work was found";
+
+pub fn classify_run_action(
+    run: &IndexRun,
+    health: &RunHealth,
+    recovery_state: Option<&RunRecoveryState>,
+) -> ActionClassification {
+    if let Some(recovery) = recovery_state {
+        if recovery.state == RecoveryStateKind::Resumed
+            && matches!(
+                run.status,
+                IndexRunStatus::Interrupted | IndexRunStatus::Running
+            )
+        {
+            return ActionClassification {
+                condition: ActionCondition::ActiveRun,
+                action_required: false,
+                next_action: Some(NextAction::Wait),
+                detail: format!(
+                    "Run {} resume accepted. Waiting for the managed run to complete.",
+                    run.run_id
+                ),
+            };
+        }
+        if recovery.state == RecoveryStateKind::ResumeRejected {
+            let next = recovery
+                .next_action
+                .clone()
+                .unwrap_or(NextAction::Reindex);
+            let reason = recovery
+                .detail
+                .as_deref()
+                .unwrap_or("resume was rejected for this run");
+            return ActionClassification {
+                condition: ActionCondition::Failed,
+                action_required: true,
+                next_action: Some(next),
+                detail: format!("Run {} resume rejected: {reason}.", run.run_id),
+            };
+        }
+    }
+
+    match &run.status {
+        IndexRunStatus::Queued => ActionClassification {
+            condition: ActionCondition::Pending,
+            action_required: false,
+            next_action: None,
+            detail: format!("Run {} is queued and awaiting execution.", run.run_id),
+        },
+        IndexRunStatus::Running => ActionClassification {
+            condition: ActionCondition::ActiveRun,
+            action_required: false,
+            next_action: Some(NextAction::Wait),
+            detail: format!("Run {} is actively running.", run.run_id),
+        },
+        IndexRunStatus::Succeeded => match health {
+            RunHealth::Degraded => ActionClassification {
+                condition: ActionCondition::Degraded,
+                action_required: true,
+                next_action: Some(NextAction::Repair),
+                detail: format!(
+                    "Run {} completed with degraded files. Review partial/failed outcomes.",
+                    run.run_id
+                ),
+            },
+            RunHealth::Unhealthy => ActionClassification {
+                condition: ActionCondition::Failed,
+                action_required: true,
+                next_action: Some(NextAction::Repair),
+                detail: format!(
+                    "Run {} marked succeeded but health is unhealthy. Investigate file-level errors.",
+                    run.run_id
+                ),
+            },
+            RunHealth::Healthy => ActionClassification {
+                condition: ActionCondition::TerminalComplete,
+                action_required: false,
+                next_action: None,
+                detail: format!("Run {} succeeded.", run.run_id),
+            },
+        },
+        IndexRunStatus::Failed => {
+            let error = run.error_summary.as_deref().unwrap_or("unknown error");
+            ActionClassification {
+                condition: ActionCondition::Failed,
+                action_required: true,
+                next_action: Some(NextAction::Repair),
+                detail: format!("Run {} failed: {error}.", run.run_id),
+            }
+        }
+        IndexRunStatus::Interrupted => {
+            let has_checkpoint = run.checkpoint_cursor.is_some();
+            ActionClassification {
+                condition: ActionCondition::Interrupted,
+                action_required: true,
+                next_action: Some(if has_checkpoint {
+                    NextAction::Resume
+                } else {
+                    NextAction::Reindex
+                }),
+                detail: format!(
+                    "Run {} was interrupted. {}",
+                    run.run_id,
+                    if has_checkpoint {
+                        "A checkpoint exists; resume is possible."
+                    } else {
+                        "No checkpoint exists; re-index required."
+                    }
+                ),
+            }
+        }
+        IndexRunStatus::Cancelled => ActionClassification {
+            condition: ActionCondition::TerminalComplete,
+            action_required: false,
+            next_action: None,
+            detail: format!("Run {} was cancelled.", run.run_id),
+        },
+        IndexRunStatus::Aborted => {
+            let is_stale_queued =
+                run.error_summary.as_deref() == Some(STALE_QUEUED_ABORTED_SUMMARY);
+            if is_stale_queued {
+                ActionClassification {
+                    condition: ActionCondition::Failed,
+                    action_required: true,
+                    next_action: Some(NextAction::Reindex),
+                    detail: format!(
+                        "Run {} was abandoned during startup recovery because no durable work existed. Start a fresh index.",
+                        run.run_id
+                    ),
+                }
+            } else {
+                ActionClassification {
+                    condition: ActionCondition::Failed,
+                    action_required: true,
+                    next_action: Some(NextAction::Repair),
+                    detail: format!(
+                        "Run {} aborted (circuit breaker). Check file-level errors, consider repair.",
+                        run.run_id
+                    ),
+                }
+            }
+        }
+    }
+}
+
+pub fn classify_repository_action(
+    status: &RepositoryStatus,
+    has_completed_run: bool,
+    has_active_run: bool,
+    invalidation_reason: &Option<String>,
+    quarantine_reason: &Option<String>,
+) -> ActionClassification {
+    match status {
+        RepositoryStatus::Ready => ActionClassification {
+            condition: ActionCondition::Healthy,
+            action_required: false,
+            next_action: None,
+            detail: "Repository is healthy. Retrieval is safe.".to_string(),
+        },
+        RepositoryStatus::Pending if !has_completed_run && !has_active_run => {
+            ActionClassification {
+                condition: ActionCondition::Pending,
+                action_required: true,
+                next_action: Some(NextAction::Reindex),
+                detail: "Repository has never been indexed. Run indexing to enable retrieval."
+                    .to_string(),
+            }
+        }
+        RepositoryStatus::Pending if has_active_run => ActionClassification {
+            condition: ActionCondition::ActiveRun,
+            action_required: false,
+            next_action: Some(NextAction::Wait),
+            detail: "Initial indexing is in progress.".to_string(),
+        },
+        RepositoryStatus::Pending => ActionClassification {
+            condition: ActionCondition::Pending,
+            action_required: false,
+            next_action: None,
+            detail: "Repository is pending. A previous run completed but status has not transitioned to ready.".to_string(),
+        },
+        RepositoryStatus::Degraded => ActionClassification {
+            condition: ActionCondition::Degraded,
+            action_required: true,
+            next_action: Some(NextAction::Repair),
+            detail: "Repository has degraded indexed state. Some files failed or are missing. Trigger repair to assess and restore.".to_string(),
+        },
+        RepositoryStatus::Failed => ActionClassification {
+            condition: ActionCondition::Failed,
+            action_required: true,
+            next_action: Some(NextAction::Repair),
+            detail: "Repository indexing failed. Trigger repair to attempt recovery or reindex."
+                .to_string(),
+        },
+        RepositoryStatus::Invalidated => {
+            let reason = invalidation_reason.as_deref().unwrap_or("unknown reason");
+            ActionClassification {
+                condition: ActionCondition::Invalidated,
+                action_required: true,
+                next_action: Some(NextAction::Reindex),
+                detail: format!(
+                    "Repository has been invalidated: {reason}. Reindex required to restore trusted state."
+                ),
+            }
+        }
+        RepositoryStatus::Quarantined => {
+            let reason = quarantine_reason.as_deref().unwrap_or("unknown reason");
+            ActionClassification {
+                condition: ActionCondition::Quarantined,
+                action_required: true,
+                next_action: Some(NextAction::Repair),
+                detail: format!(
+                    "Repository has quarantined files: {reason}. Trigger repair to re-verify or reindex affected files."
+                ),
+            }
+        }
+    }
+}
+
 // --- Repository-level health inspection types (Story 4.5) ---
 
 /// Captures the reason and timestamp for invalidation or quarantine state.
@@ -292,6 +553,7 @@ pub struct RunHealthSummary {
 pub struct RepositoryHealthReport {
     pub repo_id: String,
     pub status: RepositoryStatus,
+    pub classification: ActionClassification,
     pub action_required: bool,
     pub next_action: Option<NextAction>,
     pub status_detail: String,
@@ -309,12 +571,15 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        ComponentHealth, DeploymentReport, FileHealthSummary, HealthIssueCategory, HealthSeverity,
-        HealthStatus, RepositoryHealthReport, RunHealthSummary, StatusContext,
+        ActionClassification, ActionCondition, ComponentHealth, DeploymentReport,
+        FileHealthSummary, HealthIssueCategory, HealthSeverity, HealthStatus,
+        RepositoryHealthReport, RunHealthSummary, StatusContext,
     };
+    use super::{classify_repository_action, classify_run_action};
     use crate::domain::{
-        IndexRunMode, IndexRunStatus, NextAction, RepairEvent, RepairOutcome, RepairScope,
-        RepositoryStatus,
+        IndexRun, IndexRunMode, IndexRunStatus, NextAction, RecoveryStateKind, RepairEvent,
+        RepairOutcome, RepairScope, RepositoryStatus, ResumeRejectReason, RunHealth,
+        RunRecoveryState,
     };
 
     #[test]
@@ -389,6 +654,12 @@ mod tests {
         let report = RepositoryHealthReport {
             repo_id: "repo-1".to_string(),
             status: RepositoryStatus::Ready,
+            classification: ActionClassification {
+                condition: ActionCondition::Healthy,
+                action_required: false,
+                next_action: None,
+                detail: "Repository is healthy. Retrieval is safe.".to_string(),
+            },
             action_required: false,
             next_action: None,
             status_detail: "Repository is healthy. Retrieval is safe.".to_string(),
@@ -437,6 +708,12 @@ mod tests {
         let report = RepositoryHealthReport {
             repo_id: "repo-2".to_string(),
             status: RepositoryStatus::Invalidated,
+            classification: ActionClassification {
+                condition: ActionCondition::Invalidated,
+                action_required: true,
+                next_action: Some(NextAction::Reindex),
+                detail: "Repository has been invalidated: stale data.".to_string(),
+            },
             action_required: true,
             next_action: Some(NextAction::Reindex),
             status_detail: "Repository has been invalidated: stale data.".to_string(),
@@ -508,5 +785,388 @@ mod tests {
         let json = serde_json::to_string(&summary).unwrap();
         let deserialized: RunHealthSummary = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized, summary);
+    }
+
+    // --- Task 5.1: ActionCondition and ActionClassification type tests ---
+
+    #[test]
+    fn test_action_condition_is_action_required() {
+        assert!(!ActionCondition::Healthy.is_action_required());
+        assert!(!ActionCondition::Pending.is_action_required());
+        assert!(!ActionCondition::ActiveRun.is_action_required());
+        assert!(!ActionCondition::TerminalComplete.is_action_required());
+        assert!(ActionCondition::Degraded.is_action_required());
+        assert!(ActionCondition::Failed.is_action_required());
+        assert!(ActionCondition::Invalidated.is_action_required());
+        assert!(ActionCondition::Quarantined.is_action_required());
+        assert!(ActionCondition::Interrupted.is_action_required());
+        assert!(ActionCondition::Stale.is_action_required());
+    }
+
+    #[test]
+    fn test_action_classification_serialization_roundtrip() {
+        let classification = ActionClassification {
+            condition: ActionCondition::Degraded,
+            action_required: true,
+            next_action: Some(NextAction::Repair),
+            detail: "Run run-1 completed with degraded files.".to_string(),
+        };
+        let json = serde_json::to_string(&classification).unwrap();
+        let deserialized: ActionClassification = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, classification);
+    }
+
+    #[test]
+    fn test_action_condition_serializes_snake_case() {
+        let cases = vec![
+            (ActionCondition::Healthy, "\"healthy\""),
+            (ActionCondition::Pending, "\"pending\""),
+            (ActionCondition::ActiveRun, "\"active_run\""),
+            (ActionCondition::Degraded, "\"degraded\""),
+            (ActionCondition::Failed, "\"failed\""),
+            (ActionCondition::Invalidated, "\"invalidated\""),
+            (ActionCondition::Quarantined, "\"quarantined\""),
+            (ActionCondition::Interrupted, "\"interrupted\""),
+            (ActionCondition::Stale, "\"stale\""),
+            (ActionCondition::TerminalComplete, "\"terminal_complete\""),
+        ];
+        for (variant, expected) in cases {
+            let json = serde_json::to_string(&variant).unwrap();
+            assert_eq!(json, expected, "ActionCondition::{variant:?} serialization mismatch");
+        }
+    }
+
+    // --- Task 5.2: classify_run_action tests ---
+
+    fn sample_run(status: IndexRunStatus) -> IndexRun {
+        IndexRun {
+            run_id: "run-test".into(),
+            repo_id: "repo-test".into(),
+            mode: IndexRunMode::Full,
+            status,
+            requested_at_unix_ms: 1000,
+            started_at_unix_ms: Some(1001),
+            finished_at_unix_ms: None,
+            idempotency_key: None,
+            request_hash: None,
+            checkpoint_cursor: None,
+            error_summary: None,
+            not_yet_supported: None,
+            prior_run_id: None,
+            description: None,
+            recovery_state: None,
+        }
+    }
+
+    #[test]
+    fn test_classify_queued_run_not_action_required() {
+        let run = sample_run(IndexRunStatus::Queued);
+        let result = classify_run_action(&run, &RunHealth::Healthy, None);
+        assert_eq!(result.condition, ActionCondition::Pending);
+        assert!(!result.action_required);
+        assert!(result.next_action.is_none());
+    }
+
+    #[test]
+    fn test_classify_running_run_active() {
+        let run = sample_run(IndexRunStatus::Running);
+        let result = classify_run_action(&run, &RunHealth::Healthy, None);
+        assert_eq!(result.condition, ActionCondition::ActiveRun);
+        assert_eq!(result.next_action, Some(NextAction::Wait));
+        assert!(!result.action_required);
+    }
+
+    #[test]
+    fn test_classify_succeeded_healthy_terminal() {
+        let run = sample_run(IndexRunStatus::Succeeded);
+        let result = classify_run_action(&run, &RunHealth::Healthy, None);
+        assert_eq!(result.condition, ActionCondition::TerminalComplete);
+        assert!(!result.action_required);
+        assert!(result.next_action.is_none());
+    }
+
+    #[test]
+    fn test_classify_succeeded_degraded_action_required() {
+        let run = sample_run(IndexRunStatus::Succeeded);
+        let result = classify_run_action(&run, &RunHealth::Degraded, None);
+        assert_eq!(result.condition, ActionCondition::Degraded);
+        assert!(result.action_required);
+        assert_eq!(result.next_action, Some(NextAction::Repair));
+    }
+
+    #[test]
+    fn test_classify_failed_run_action_required() {
+        let mut run = sample_run(IndexRunStatus::Failed);
+        run.error_summary = Some("disk full".to_string());
+        let result = classify_run_action(&run, &RunHealth::Unhealthy, None);
+        assert_eq!(result.condition, ActionCondition::Failed);
+        assert!(result.action_required);
+        assert_eq!(result.next_action, Some(NextAction::Repair));
+        assert!(result.detail.contains("disk full"));
+    }
+
+    #[test]
+    fn test_classify_interrupted_with_checkpoint_resume() {
+        let mut run = sample_run(IndexRunStatus::Interrupted);
+        run.checkpoint_cursor = Some("file_a.rs".to_string());
+        let result = classify_run_action(&run, &RunHealth::Healthy, None);
+        assert_eq!(result.condition, ActionCondition::Interrupted);
+        assert!(result.action_required);
+        assert_eq!(result.next_action, Some(NextAction::Resume));
+    }
+
+    #[test]
+    fn test_classify_interrupted_no_checkpoint_reindex() {
+        let run = sample_run(IndexRunStatus::Interrupted);
+        let result = classify_run_action(&run, &RunHealth::Healthy, None);
+        assert_eq!(result.condition, ActionCondition::Interrupted);
+        assert!(result.action_required);
+        assert_eq!(result.next_action, Some(NextAction::Reindex));
+    }
+
+    #[test]
+    fn test_classify_cancelled_terminal_complete() {
+        let run = sample_run(IndexRunStatus::Cancelled);
+        let result = classify_run_action(&run, &RunHealth::Healthy, None);
+        assert_eq!(result.condition, ActionCondition::TerminalComplete);
+        assert!(!result.action_required);
+        assert!(result.next_action.is_none());
+    }
+
+    #[test]
+    fn test_classify_aborted_action_required() {
+        let run = sample_run(IndexRunStatus::Aborted);
+        let result = classify_run_action(&run, &RunHealth::Unhealthy, None);
+        assert_eq!(result.condition, ActionCondition::Failed);
+        assert!(result.action_required);
+        assert_eq!(result.next_action, Some(NextAction::Repair));
+    }
+
+    #[test]
+    fn test_classify_resumed_run_active() {
+        let run = sample_run(IndexRunStatus::Running);
+        let recovery = RunRecoveryState {
+            state: RecoveryStateKind::Resumed,
+            rejection_reason: None,
+            next_action: None,
+            detail: None,
+            updated_at_unix_ms: 2000,
+        };
+        let result = classify_run_action(&run, &RunHealth::Healthy, Some(&recovery));
+        assert_eq!(result.condition, ActionCondition::ActiveRun);
+        assert_eq!(result.next_action, Some(NextAction::Wait));
+        assert!(!result.action_required);
+    }
+
+    #[test]
+    fn test_classify_resume_rejected_failed() {
+        let run = sample_run(IndexRunStatus::Interrupted);
+        let recovery = RunRecoveryState {
+            state: RecoveryStateKind::ResumeRejected,
+            rejection_reason: Some(ResumeRejectReason::MissingCheckpoint),
+            next_action: Some(NextAction::Reindex),
+            detail: Some("resume was rejected".to_string()),
+            updated_at_unix_ms: 2000,
+        };
+        let result = classify_run_action(&run, &RunHealth::Healthy, Some(&recovery));
+        assert_eq!(result.condition, ActionCondition::Failed);
+        assert!(result.action_required);
+        assert_eq!(result.next_action, Some(NextAction::Reindex));
+    }
+
+    #[test]
+    fn test_classify_detail_includes_run_context() {
+        let mut run = sample_run(IndexRunStatus::Failed);
+        run.error_summary = Some("disk full".to_string());
+        let result = classify_run_action(&run, &RunHealth::Unhealthy, None);
+        assert!(result.detail.contains("disk full"));
+    }
+
+    #[test]
+    fn test_classify_aborted_stale_queued_reindex() {
+        let mut run = sample_run(IndexRunStatus::Aborted);
+        run.error_summary = Some(super::STALE_QUEUED_ABORTED_SUMMARY.to_string());
+        let result = classify_run_action(&run, &RunHealth::Unhealthy, None);
+        assert_eq!(result.condition, ActionCondition::Failed);
+        assert!(result.action_required);
+        assert_eq!(result.next_action, Some(NextAction::Reindex));
+        assert!(result.detail.contains("startup recovery"));
+    }
+
+    // --- Task 5.3: classify_repository_action tests ---
+
+    #[test]
+    fn test_classify_ready_repository_healthy() {
+        let result = classify_repository_action(
+            &RepositoryStatus::Ready,
+            true,
+            false,
+            &None,
+            &None,
+        );
+        assert_eq!(result.condition, ActionCondition::Healthy);
+        assert!(!result.action_required);
+        assert!(result.next_action.is_none());
+    }
+
+    #[test]
+    fn test_classify_pending_never_indexed() {
+        let result = classify_repository_action(
+            &RepositoryStatus::Pending,
+            false,
+            false,
+            &None,
+            &None,
+        );
+        assert_eq!(result.condition, ActionCondition::Pending);
+        assert!(result.action_required);
+        assert_eq!(result.next_action, Some(NextAction::Reindex));
+    }
+
+    #[test]
+    fn test_classify_pending_active_run() {
+        let result = classify_repository_action(
+            &RepositoryStatus::Pending,
+            false,
+            true,
+            &None,
+            &None,
+        );
+        assert_eq!(result.condition, ActionCondition::ActiveRun);
+        assert!(!result.action_required);
+        assert_eq!(result.next_action, Some(NextAction::Wait));
+    }
+
+    #[test]
+    fn test_classify_degraded_repository() {
+        let result = classify_repository_action(
+            &RepositoryStatus::Degraded,
+            true,
+            false,
+            &None,
+            &None,
+        );
+        assert_eq!(result.condition, ActionCondition::Degraded);
+        assert!(result.action_required);
+        assert_eq!(result.next_action, Some(NextAction::Repair));
+    }
+
+    #[test]
+    fn test_classify_failed_repository() {
+        let result = classify_repository_action(
+            &RepositoryStatus::Failed,
+            true,
+            false,
+            &None,
+            &None,
+        );
+        assert_eq!(result.condition, ActionCondition::Failed);
+        assert!(result.action_required);
+        assert_eq!(result.next_action, Some(NextAction::Repair));
+    }
+
+    #[test]
+    fn test_classify_invalidated_repository() {
+        let result = classify_repository_action(
+            &RepositoryStatus::Invalidated,
+            true,
+            false,
+            &None,
+            &None,
+        );
+        assert_eq!(result.condition, ActionCondition::Invalidated);
+        assert!(result.action_required);
+        assert_eq!(result.next_action, Some(NextAction::Reindex));
+    }
+
+    #[test]
+    fn test_classify_quarantined_repository() {
+        let result = classify_repository_action(
+            &RepositoryStatus::Quarantined,
+            true,
+            false,
+            &None,
+            &None,
+        );
+        assert_eq!(result.condition, ActionCondition::Quarantined);
+        assert!(result.action_required);
+        assert_eq!(result.next_action, Some(NextAction::Repair));
+    }
+
+    #[test]
+    fn test_classify_invalidated_includes_reason() {
+        let result = classify_repository_action(
+            &RepositoryStatus::Invalidated,
+            true,
+            false,
+            &Some("stale data".to_string()),
+            &None,
+        );
+        assert_eq!(result.condition, ActionCondition::Invalidated);
+        assert!(result.detail.contains("stale data"));
+    }
+
+    // --- Task 5.6: RepositoryHealthReport enrichment tests ---
+
+    #[test]
+    fn test_repository_health_report_includes_classification() {
+        let report = RepositoryHealthReport {
+            repo_id: "repo-1".to_string(),
+            status: RepositoryStatus::Ready,
+            classification: ActionClassification {
+                condition: ActionCondition::Healthy,
+                action_required: false,
+                next_action: None,
+                detail: "Repository is healthy. Retrieval is safe.".to_string(),
+            },
+            action_required: false,
+            next_action: None,
+            status_detail: "Repository is healthy. Retrieval is safe.".to_string(),
+            file_health: None,
+            latest_run: None,
+            active_run_id: None,
+            recent_repairs: vec![],
+            invalidation_context: None,
+            quarantine_context: None,
+            checked_at_unix_ms: 3000,
+        };
+
+        let value = serde_json::to_value(&report).unwrap();
+        assert_eq!(value["classification"]["condition"], "healthy");
+    }
+
+    #[test]
+    fn test_repository_health_report_backward_compat() {
+        let report = RepositoryHealthReport {
+            repo_id: "repo-2".to_string(),
+            status: RepositoryStatus::Invalidated,
+            classification: ActionClassification {
+                condition: ActionCondition::Invalidated,
+                action_required: true,
+                next_action: Some(NextAction::Reindex),
+                detail: "Repository has been invalidated: stale data.".to_string(),
+            },
+            action_required: true,
+            next_action: Some(NextAction::Reindex),
+            status_detail: "Repository has been invalidated: stale data.".to_string(),
+            file_health: None,
+            latest_run: None,
+            active_run_id: None,
+            recent_repairs: vec![],
+            invalidation_context: None,
+            quarantine_context: None,
+            checked_at_unix_ms: 4000,
+        };
+
+        let value = serde_json::to_value(&report).unwrap();
+        assert_eq!(value["action_required"], true);
+        assert_eq!(value["next_action"], "reindex");
+        assert_eq!(
+            value["status_detail"],
+            "Repository has been invalidated: stale data."
+        );
+        assert_eq!(value["classification"]["condition"], "invalidated");
+        assert_eq!(value["classification"]["action_required"], true);
+        assert_eq!(value["classification"]["next_action"], "reindex");
     }
 }

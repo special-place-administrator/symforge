@@ -15,6 +15,7 @@ pub enum NextAction {
     Repair,
     Wait,
     ResolveContext,
+    Migrate,
 }
 
 impl fmt::Display for NextAction {
@@ -25,6 +26,7 @@ impl fmt::Display for NextAction {
             Self::Repair => "repair",
             Self::Wait => "wait",
             Self::ResolveContext => "resolve_context",
+            Self::Migrate => "migrate",
         };
         write!(f, "{value}")
     }
@@ -264,6 +266,19 @@ mod tests {
             .next_action(),
             NextAction::Wait,
         );
+    }
+
+    #[test]
+    fn test_next_action_migrate_serializes() {
+        let json = serde_json::to_string(&NextAction::Migrate).unwrap();
+        assert_eq!(json, "\"migrate\"");
+        let deserialized: NextAction = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, NextAction::Migrate);
+    }
+
+    #[test]
+    fn test_next_action_migrate_display() {
+        assert_eq!(format!("{}", NextAction::Migrate), "migrate");
     }
 }
 

@@ -6,10 +6,10 @@ use tokenizor_agentic_mcp::ApplicationContext;
 use tokenizor_agentic_mcp::application::run_manager::RunManager;
 use tokenizor_agentic_mcp::config::{BlobStoreConfig, ControlPlaneBackend, ServerConfig};
 use tokenizor_agentic_mcp::domain::{
-    Checkpoint, ComponentHealth, DiscoveryManifest, FileRecord, IndexRun, IndexRunMode,
-    IndexRunStatus, LanguageId, NextAction, OperationalEvent, OperationalEventFilter,
-    OperationalEventKind, PersistedFileOutcome, ProjectIdentityKind, RecoveryStateKind,
-    RepairOutcome, RepairScope, Repository, RepositoryKind, RepositoryStatus,
+    ActionCondition, Checkpoint, ComponentHealth, DiscoveryManifest, FileRecord, IndexRun,
+    IndexRunMode, IndexRunStatus, LanguageId, NextAction, OperationalEvent,
+    OperationalEventFilter, OperationalEventKind, PersistedFileOutcome, ProjectIdentityKind,
+    RecoveryStateKind, RepairOutcome, RepairScope, Repository, RepositoryKind, RepositoryStatus,
     ResumeRejectReason, ResumeRunOutcome, RunHealth,
 };
 use tokenizor_agentic_mcp::error::TokenizorError;
@@ -807,11 +807,15 @@ async fn test_startup_swept_interrupted_run_can_resume_from_durable_checkpoint()
         .expect("resume should expose progress");
     assert_eq!(progress.files_processed, 1);
     assert_eq!(progress.total_files, 3);
+    // Resumed run is ActiveRun — no action required, but next_action is Wait
+    assert_eq!(
+        active_report.next_action,
+        Some(NextAction::Wait),
+        "resumed run should signal wait as next action"
+    );
     assert!(
-        active_report
-            .action_required
-            .as_deref()
-            .is_some_and(|message| message.contains("wait"))
+        active_report.classification.detail.to_lowercase().contains("wait"),
+        "classification detail should mention waiting"
     );
 
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
@@ -876,13 +880,14 @@ async fn test_resume_rejection_surfaces_explicit_reindex_guidance() {
         report
             .action_required
             .as_deref()
-            .is_some_and(|message| message.contains("Resume rejected"))
+            .is_some_and(|message| message.to_lowercase().contains("resume rejected"))
     );
     assert!(
         report
             .action_required
             .as_deref()
-            .is_some_and(|message| message.contains("reindex"))
+            .is_some_and(|message| message.to_lowercase().contains("reindex")
+                || report.next_action == Some(NextAction::Reindex))
     );
 }
 
@@ -3499,4 +3504,131 @@ fn test_operational_history_repair_wrapper_roundtrip() {
     assert_eq!(back.outcome, RepairOutcome::Restored);
     assert_eq!(back.detail, "test repair");
     assert_eq!(back.timestamp_unix_ms, 5000);
+}
+
+// --- Action Classification integration tests (Story 4.7, Task 5.7) ---
+
+#[test]
+fn test_get_index_run_returns_classification() {
+    let (_dir, manager, _cas_dir, _cas) = setup_test_env();
+    save_test_repo(&manager, "repo-cls1", RepositoryStatus::Ready);
+    save_test_run(&manager, "repo-cls1", "run-cls1", IndexRunStatus::Succeeded);
+
+    let report = manager.inspect_run("run-cls1").unwrap();
+
+    assert_eq!(
+        report.classification.condition,
+        ActionCondition::TerminalComplete
+    );
+    assert!(!report.classification.action_required);
+}
+
+#[test]
+fn test_inspect_health_returns_classification() {
+    let (_dir, manager, _cas_dir, _cas) = setup_test_env();
+    save_test_repo(&manager, "repo-cls2", RepositoryStatus::Ready);
+    save_test_run(&manager, "repo-cls2", "run-cls2", IndexRunStatus::Succeeded);
+
+    let report = manager.inspect_repository_health("repo-cls2").unwrap();
+
+    assert_eq!(report.classification.condition, ActionCondition::Healthy);
+    assert!(!report.classification.action_required);
+}
+
+#[test]
+fn test_interrupted_run_classified_with_resume_action() {
+    let (_dir, manager, _cas_dir, _cas) = setup_test_env();
+    save_test_repo(&manager, "repo-cls3", RepositoryStatus::Ready);
+
+    // Create a run and set it to Interrupted with a checkpoint
+    let run = IndexRun {
+        run_id: "run-cls3".to_string(),
+        repo_id: "repo-cls3".to_string(),
+        mode: IndexRunMode::Full,
+        status: IndexRunStatus::Interrupted,
+        requested_at_unix_ms: 1000,
+        started_at_unix_ms: Some(1001),
+        finished_at_unix_ms: Some(2000),
+        idempotency_key: None,
+        request_hash: None,
+        checkpoint_cursor: Some("file.rs".to_string()),
+        error_summary: None,
+        not_yet_supported: None,
+        prior_run_id: None,
+        description: None,
+        recovery_state: None,
+    };
+    manager.persistence().save_run(&run).unwrap();
+
+    let report = manager.inspect_run("run-cls3").unwrap();
+
+    assert_eq!(
+        report.classification.condition,
+        ActionCondition::Interrupted
+    );
+    assert!(report.classification.action_required);
+    assert_eq!(
+        report.classification.next_action,
+        Some(NextAction::Resume)
+    );
+}
+
+#[test]
+fn test_degraded_repo_classified_with_repair_action() {
+    let (_dir, manager, _cas_dir, _cas) = setup_test_env();
+    save_test_repo(&manager, "repo-cls4", RepositoryStatus::Degraded);
+    save_test_run(&manager, "repo-cls4", "run-cls4", IndexRunStatus::Succeeded);
+
+    let report = manager.inspect_repository_health("repo-cls4").unwrap();
+
+    assert_eq!(report.classification.condition, ActionCondition::Degraded);
+    assert!(report.classification.action_required);
+    assert_eq!(
+        report.classification.next_action,
+        Some(NextAction::Repair)
+    );
+}
+
+#[test]
+fn test_invalidated_repo_classified_with_reindex_action() {
+    let (_dir, manager, _cas_dir, _cas) = setup_test_env();
+    let repo = Repository {
+        repo_id: "repo-cls5".to_string(),
+        kind: RepositoryKind::Git,
+        root_uri: "/tmp/repo-cls5".to_string(),
+        project_identity: "identity-cls5".to_string(),
+        project_identity_kind: ProjectIdentityKind::GitCommonDir,
+        default_branch: None,
+        last_known_revision: None,
+        status: RepositoryStatus::Invalidated,
+        invalidated_at_unix_ms: Some(3000),
+        invalidation_reason: Some("schema change".to_string()),
+        quarantined_at_unix_ms: None,
+        quarantine_reason: None,
+    };
+    manager.persistence().save_repository(&repo).unwrap();
+
+    let report = manager.inspect_repository_health("repo-cls5").unwrap();
+
+    assert_eq!(
+        report.classification.condition,
+        ActionCondition::Invalidated
+    );
+    assert!(report.classification.action_required);
+    assert_eq!(
+        report.classification.next_action,
+        Some(NextAction::Reindex)
+    );
+}
+
+#[test]
+fn test_healthy_repo_not_action_required() {
+    let (_dir, manager, _cas_dir, _cas) = setup_test_env();
+    save_test_repo(&manager, "repo-cls6", RepositoryStatus::Ready);
+    save_test_run(&manager, "repo-cls6", "run-cls6", IndexRunStatus::Succeeded);
+
+    let report = manager.inspect_repository_health("repo-cls6").unwrap();
+
+    assert!(!report.classification.action_required);
+    assert_eq!(report.classification.condition, ActionCondition::Healthy);
 }

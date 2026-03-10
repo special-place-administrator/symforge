@@ -91,7 +91,7 @@ impl TokenizorServer {
     }
 
     #[tool(
-        description = "Inspect the status and health of an indexing run. Returns lifecycle state, health classification, progress (if active), file outcome summary, and action required (if intervention is needed). Parameters: run_id (string, required)."
+        description = "Inspect the status and health of an indexing run. Returns lifecycle state, health classification, structured action classification (condition, action_required, next_action guidance), progress (if active), and file outcome summary. The classification field explicitly distinguishes action-required states from normal health. Parameters: run_id (string, required)."
     )]
     fn get_index_run(&self, params: rmcp::model::JsonObject) -> Result<CallToolResult, McpError> {
         let run_id = params
@@ -485,7 +485,7 @@ impl TokenizorServer {
     }
 
     #[tool(
-        description = "Inspect repository health and repair-required conditions. Reports explicit health status, action-required indicators, file-level health, run context, and recent repair history. Parameters: repository_id (string, required)."
+        description = "Inspect repository health and repair-required conditions. Reports explicit health status, structured action classification (condition, action_required, next_action guidance), file-level health, run context, and recent repair history. The classification field explicitly distinguishes action-required states from normal health. Parameters: repository_id (string, required)."
     )]
     fn inspect_repository_health(
         &self,

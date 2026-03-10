@@ -359,6 +359,10 @@ pub struct RunStatusReport {
     pub is_active: bool,
     pub progress: Option<RunProgressSnapshot>,
     pub file_outcome_summary: Option<FileOutcomeSummary>,
+    pub classification: super::health::ActionClassification,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_action: Option<super::retrieval::NextAction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action_required: Option<String>,
 }
 
@@ -1146,6 +1150,13 @@ mod tests {
                 partial_parse: 0,
                 failed: 0,
             }),
+            classification: super::super::health::ActionClassification {
+                condition: super::super::health::ActionCondition::TerminalComplete,
+                action_required: false,
+                next_action: None,
+                detail: "Run run-1 succeeded.".to_string(),
+            },
+            next_action: None,
             action_required: None,
         };
         let json = serde_json::to_string(&report).unwrap();
@@ -1639,5 +1650,134 @@ mod tests {
             }
         }
         check_no_forbidden_keys(&parsed);
+    }
+
+    // --- Task 5.5: RunStatusReport enrichment tests ---
+
+    #[test]
+    fn test_run_status_report_includes_classification() {
+        let report = RunStatusReport {
+            run: IndexRun {
+                run_id: "run-1".into(),
+                repo_id: "repo-1".into(),
+                mode: IndexRunMode::Full,
+                status: IndexRunStatus::Succeeded,
+                requested_at_unix_ms: 1000,
+                started_at_unix_ms: Some(1001),
+                finished_at_unix_ms: Some(2000),
+                idempotency_key: None,
+                request_hash: None,
+                checkpoint_cursor: None,
+                error_summary: None,
+                not_yet_supported: None,
+                prior_run_id: None,
+                description: None,
+                recovery_state: None,
+            },
+            health: RunHealth::Healthy,
+            is_active: false,
+            progress: None,
+            file_outcome_summary: None,
+            classification: super::super::health::ActionClassification {
+                condition: super::super::health::ActionCondition::TerminalComplete,
+                action_required: false,
+                next_action: None,
+                detail: "Run run-1 succeeded.".to_string(),
+            },
+            next_action: None,
+            action_required: None,
+        };
+
+        let value = serde_json::to_value(&report).unwrap();
+        assert_eq!(value["classification"]["condition"], "terminal_complete");
+        assert_eq!(value["classification"]["action_required"], false);
+        assert!(value["classification"]["next_action"].is_null());
+        // H2 fix: action_required and next_action omitted from JSON when None
+        assert!(
+            value.get("action_required").is_none()
+                || value["action_required"].is_null(),
+            "action_required should be omitted or null when None"
+        );
+        assert!(
+            value.get("next_action").is_none()
+                || value["next_action"].is_null(),
+            "next_action should be omitted when None"
+        );
+    }
+
+    #[test]
+    fn test_run_status_report_backward_compat() {
+        let report = RunStatusReport {
+            run: IndexRun {
+                run_id: "run-2".into(),
+                repo_id: "repo-2".into(),
+                mode: IndexRunMode::Full,
+                status: IndexRunStatus::Failed,
+                requested_at_unix_ms: 1000,
+                started_at_unix_ms: Some(1001),
+                finished_at_unix_ms: Some(2000),
+                idempotency_key: None,
+                request_hash: None,
+                checkpoint_cursor: None,
+                error_summary: Some("disk full".to_string()),
+                not_yet_supported: None,
+                prior_run_id: None,
+                description: None,
+                recovery_state: None,
+            },
+            health: RunHealth::Unhealthy,
+            is_active: false,
+            progress: None,
+            file_outcome_summary: None,
+            classification: super::super::health::ActionClassification {
+                condition: super::super::health::ActionCondition::Failed,
+                action_required: true,
+                next_action: Some(NextAction::Repair),
+                detail: "Run run-2 failed: disk full.".to_string(),
+            },
+            next_action: Some(NextAction::Repair),
+            action_required: Some("Run run-2 failed: disk full.".to_string()),
+        };
+
+        let value = serde_json::to_value(&report).unwrap();
+        assert_eq!(value["action_required"], "Run run-2 failed: disk full.");
+        assert_eq!(value["next_action"], "repair");
+    }
+
+    #[test]
+    fn test_run_status_report_next_action_field() {
+        let report = RunStatusReport {
+            run: IndexRun {
+                run_id: "run-3".into(),
+                repo_id: "repo-3".into(),
+                mode: IndexRunMode::Full,
+                status: IndexRunStatus::Interrupted,
+                requested_at_unix_ms: 1000,
+                started_at_unix_ms: Some(1001),
+                finished_at_unix_ms: None,
+                idempotency_key: None,
+                request_hash: None,
+                checkpoint_cursor: Some("file_a.rs".to_string()),
+                error_summary: None,
+                not_yet_supported: None,
+                prior_run_id: None,
+                description: None,
+                recovery_state: None,
+            },
+            health: RunHealth::Healthy,
+            is_active: false,
+            progress: None,
+            file_outcome_summary: None,
+            classification: super::super::health::ActionClassification {
+                condition: super::super::health::ActionCondition::Interrupted,
+                action_required: true,
+                next_action: Some(NextAction::Resume),
+                detail: "Run run-3 was interrupted.".to_string(),
+            },
+            next_action: Some(NextAction::Resume),
+            action_required: Some("Run run-3 was interrupted.".to_string()),
+        };
+
+        assert_eq!(report.next_action, report.classification.next_action);
     }
 }

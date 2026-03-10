@@ -115,7 +115,7 @@ development_status:
   4-4-trigger-deterministic-repair-for-suspect-or-incomplete-state: done
   4-5-inspect-repository-health-and-repair-required-conditions: done
   4-6-preserve-operational-history-for-runs-repairs-and-integrity-events: done
-  4-7-classify-action-required-states-and-signal-the-next-safe-action: backlog
+  4-7-classify-action-required-states-and-signal-the-next-safe-action: done
   epic-4-retrospective: optional
 
   epic-5: backlog

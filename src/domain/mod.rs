@@ -11,9 +11,11 @@ mod workspace;
 
 pub use context::{ActiveWorkspaceContext, ContextResolutionMode};
 pub use health::{
-    ComponentHealth, DeploymentReport, FileHealthSummary, HealthIssueCategory, HealthReport,
-    HealthSeverity, HealthStatus, RepositoryHealthReport, RunHealthSummary, ServiceIdentity,
-    StatusContext, aggregate_status, unix_timestamp_ms,
+    ActionClassification, ActionCondition, ComponentHealth, DeploymentReport, FileHealthSummary,
+    HealthIssueCategory, HealthReport, HealthSeverity, HealthStatus, RepositoryHealthReport,
+    RunHealthSummary, ServiceIdentity, StatusContext, aggregate_status,
+    classify_repository_action, classify_run_action, unix_timestamp_ms,
+    STALE_QUEUED_ABORTED_SUMMARY,
 };
 pub use idempotency::{IdempotencyRecord, IdempotencyStatus};
 pub use index::{

@@ -677,13 +677,14 @@ fn test_next_action_variants_are_exhaustive() {
         NextAction::Repair,
         NextAction::Wait,
         NextAction::ResolveContext,
+        NextAction::Migrate,
     ];
     for variant in &variants {
         let json = serde_json::to_string(variant).unwrap();
         let deserialized: NextAction = serde_json::from_str(&json).unwrap();
         assert_eq!(&deserialized, variant, "round-trip failed for {json}");
     }
-    assert_eq!(variants.len(), 5);
+    assert_eq!(variants.len(), 6);
     // Exhaustive match proves all variants are covered
     for variant in &variants {
         match variant {
@@ -692,6 +693,7 @@ fn test_next_action_variants_are_exhaustive() {
             NextAction::Repair => {}
             NextAction::Wait => {}
             NextAction::ResolveContext => {}
+            NextAction::Migrate => {}
         }
     }
 }

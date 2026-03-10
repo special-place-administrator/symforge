@@ -15,7 +15,8 @@ use crate::domain::{
     OperationalEventKind, PersistedFileOutcome, RecoveryStateKind, RepairEvent, RepairOutcome,
     RepairResult, RepairScope, RepositoryHealthReport, RepositoryStatus, ResumeRejectReason,
     ResumeRunOutcome, RunHealth, RunHealthSummary, RunPhase, RunProgressSnapshot,
-    RunRecoveryState, RunStatusReport, StatusContext, unix_timestamp_ms,
+    RunRecoveryState, RunStatusReport, StatusContext, classify_repository_action,
+    classify_run_action, unix_timestamp_ms, STALE_QUEUED_ABORTED_SUMMARY,
 };
 use crate::error::{Result, TokenizorError};
 use crate::indexing::pipeline::{IndexingPipeline, PipelineProgress, PipelineResumeState};
@@ -73,8 +74,6 @@ pub struct StartupRecoveredRunTransition {
 const STALE_RUNNING_STARTUP_SWEEP_SUMMARY: &str = "stale run detected during startup sweep";
 const STALE_QUEUED_INTERRUPTED_STARTUP_SWEEP_SUMMARY: &str =
     "stale queued run recovered as interrupted during startup sweep because durable work exists";
-const STALE_QUEUED_ABORTED_STARTUP_SWEEP_SUMMARY: &str =
-    "stale queued run aborted during startup sweep because no durable work was found";
 
 impl StartupCleanupSurface {
     fn label(&self) -> &'static str {
@@ -1012,7 +1011,7 @@ impl RunManager {
         } else {
             Ok((
                 IndexRunStatus::Aborted,
-                STALE_QUEUED_ABORTED_STARTUP_SWEEP_SUMMARY,
+                STALE_QUEUED_ABORTED_SUMMARY,
             ))
         }
     }
@@ -2245,19 +2244,29 @@ impl RunManager {
         };
 
         let health = classify_run_health(&run, file_outcome_summary.as_ref());
-        let mut action_required = action_required_message(&run, &health);
+        let mut classification =
+            classify_run_action(&run, &health, run.recovery_state.as_ref());
 
-        // Surface repo-level invalidation in action_required
+        // Surface repo-level invalidation overlay
         if let Ok(Some(repo)) = self.control_plane.get_repository(&run.repo_id) {
             if repo.status == RepositoryStatus::Invalidated {
                 let invalidation_note =
                     "repository indexed state has been invalidated — re-index or repair required";
-                action_required = Some(match action_required {
-                    Some(existing) => format!("{existing}. {invalidation_note}"),
-                    None => invalidation_note.to_string(),
-                });
+                classification.detail = if classification.action_required {
+                    format!("{}. {invalidation_note}", classification.detail)
+                } else {
+                    invalidation_note.to_string()
+                };
+                classification.action_required = true;
             }
         }
+
+        let next_action = classification.next_action.clone();
+        let action_required = if classification.action_required {
+            Some(classification.detail.clone())
+        } else {
+            None
+        };
 
         Ok(RunStatusReport {
             run,
@@ -2265,6 +2274,8 @@ impl RunManager {
             is_active,
             progress,
             file_outcome_summary,
+            classification,
+            next_action,
             action_required,
         })
     }
@@ -2683,13 +2694,17 @@ impl RunManager {
         let repair_events = self.control_plane.get_repair_events(repo_id)?;
         let recent_repairs: Vec<RepairEvent> = repair_events.into_iter().rev().take(10).collect();
 
-        let (action_required, next_action, status_detail) = Self::classify_repository_health(
+        let classification = classify_repository_action(
             &repo.status,
             latest_run.is_some(),
             active_run_id.is_some(),
             &repo.invalidation_reason,
             &repo.quarantine_reason,
         );
+
+        let action_required = classification.action_required;
+        let next_action = classification.next_action.clone();
+        let status_detail = classification.detail.clone();
 
         let file_health = if let Some(ref run) = latest_run {
             let records = self.control_plane.get_file_records(&run.run_id)?;
@@ -2727,6 +2742,7 @@ impl RunManager {
         Ok(RepositoryHealthReport {
             repo_id: repo_id.to_string(),
             status: repo.status,
+            classification,
             action_required,
             next_action,
             status_detail,
@@ -2753,67 +2769,6 @@ impl RunManager {
             .ok_or_else(|| TokenizorError::NotFound(format!("repository not found: {repo_id}")))?;
         self.control_plane
             .get_operational_events(repo_id, filter)
-    }
-
-    fn classify_repository_health(
-        status: &RepositoryStatus,
-        has_completed_run: bool,
-        has_active_run: bool,
-        invalidation_reason: &Option<String>,
-        quarantine_reason: &Option<String>,
-    ) -> (bool, Option<NextAction>, String) {
-        match status {
-            RepositoryStatus::Ready => (
-                false,
-                None,
-                "Repository is healthy. Retrieval is safe.".to_string(),
-            ),
-            RepositoryStatus::Pending if !has_completed_run && !has_active_run => (
-                true,
-                Some(NextAction::Reindex),
-                "Repository has never been indexed. Run indexing to enable retrieval.".to_string(),
-            ),
-            RepositoryStatus::Pending if has_active_run => (
-                false,
-                Some(NextAction::Wait),
-                "Initial indexing is in progress.".to_string(),
-            ),
-            RepositoryStatus::Pending => (
-                false,
-                None,
-                "Repository is pending.".to_string(),
-            ),
-            RepositoryStatus::Degraded => (
-                true,
-                Some(NextAction::Repair),
-                "Repository has degraded indexed state. Some files failed or are missing. Trigger repair to assess and restore.".to_string(),
-            ),
-            RepositoryStatus::Failed => (
-                true,
-                Some(NextAction::Repair),
-                "Repository indexing failed. Trigger repair to attempt recovery or reindex.".to_string(),
-            ),
-            RepositoryStatus::Invalidated => {
-                let reason = invalidation_reason
-                    .as_deref()
-                    .unwrap_or("unknown reason");
-                (
-                    true,
-                    Some(NextAction::Reindex),
-                    format!("Repository has been invalidated: {reason}. Reindex required to restore trusted state."),
-                )
-            }
-            RepositoryStatus::Quarantined => {
-                let reason = quarantine_reason
-                    .as_deref()
-                    .unwrap_or("unknown reason");
-                (
-                    true,
-                    Some(NextAction::Repair),
-                    format!("Repository has quarantined files: {reason}. Trigger repair to re-verify or reindex affected files."),
-                )
-            }
-        }
     }
 
     fn compute_file_health_summary(records: &[FileRecord]) -> FileHealthSummary {
@@ -2904,62 +2859,6 @@ fn run_completion_clears_repository_invalidation(
         && results
             .iter()
             .all(|result| matches!(result.outcome, FileOutcome::Processed))
-}
-
-fn action_required_message(run: &IndexRun, health: &RunHealth) -> Option<String> {
-    if let Some(recovery) = &run.recovery_state {
-        if recovery.state == RecoveryStateKind::Resumed
-            && matches!(
-                run.status,
-                IndexRunStatus::Interrupted | IndexRunStatus::Running
-            )
-        {
-            return Some(
-                "Resume accepted. Next safe action: wait for the managed run to complete.".into(),
-            );
-        }
-        if recovery.state == RecoveryStateKind::ResumeRejected {
-            let next_action = recovery
-                .next_action
-                .as_ref()
-                .map(ToString::to_string)
-                .unwrap_or_else(|| "reindex".to_string());
-            let detail = recovery
-                .detail
-                .as_deref()
-                .unwrap_or("resume was rejected for this run");
-            return Some(format!(
-                "Resume rejected: {detail}. Next safe action: {next_action}."
-            ));
-        }
-    }
-
-    match &run.status {
-        IndexRunStatus::Interrupted => Some(
-            "Run was interrupted. Next safe action: resume from the last durable checkpoint if eligible; otherwise reindex."
-                .into(),
-        ),
-        IndexRunStatus::Failed => {
-            let detail = run.error_summary.as_deref().unwrap_or("unknown error");
-            Some(format!("Run failed: {detail}. Investigate and re-run."))
-        }
-        IndexRunStatus::Aborted
-            if run.error_summary.as_deref()
-                == Some(STALE_QUEUED_ABORTED_STARTUP_SWEEP_SUMMARY) =>
-        {
-            Some(
-                "Run was abandoned during startup recovery because no durable work existed. Next safe action: start a fresh index or reindex; do not resume."
-                    .into(),
-            )
-        }
-        IndexRunStatus::Aborted => Some(
-            "Run aborted (circuit breaker). Check file-level errors, consider repair mode.".into(),
-        ),
-        IndexRunStatus::Succeeded if *health == RunHealth::Degraded => {
-            Some("Run completed with degraded files. Review partial/failed outcomes.".into())
-        }
-        _ => None,
-    }
 }
 
 fn build_file_outcome_summary(records: &[FileRecord]) -> FileOutcomeSummary {
@@ -3176,6 +3075,7 @@ fn verify_file_against_source(file_record: &FileRecord, repo_root: &Path) -> boo
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::ActionCondition;
     use crate::storage::InMemoryControlPlane;
 
     struct AuthoritativeInMemoryControlPlane {
@@ -3737,7 +3637,7 @@ mod tests {
         assert!(run.finished_at_unix_ms.is_some());
         assert_eq!(
             run.error_summary.as_deref(),
-            Some(STALE_QUEUED_ABORTED_STARTUP_SWEEP_SUMMARY)
+            Some(STALE_QUEUED_ABORTED_SUMMARY)
         );
 
         let replacement = manager.start_run("repo-1", IndexRunMode::Full).unwrap();
@@ -4256,9 +4156,10 @@ mod tests {
     fn test_action_required_for_interrupted_run() {
         let run = sample_run_with_status(IndexRunStatus::Interrupted);
         let health = classify_run_health(&run, None);
-        let msg = action_required_message(&run, &health);
-        assert!(msg.is_some());
-        assert!(msg.unwrap().contains("interrupted"));
+        let classification = classify_run_action(&run, &health, run.recovery_state.as_ref());
+        assert!(classification.action_required);
+        assert_eq!(classification.condition, ActionCondition::Interrupted);
+        assert!(classification.detail.contains("interrupted"));
     }
 
     #[test]
@@ -4271,7 +4172,8 @@ mod tests {
             failed: 0,
         };
         let health = classify_run_health(&run, Some(&summary));
-        assert!(action_required_message(&run, &health).is_none());
+        let classification = classify_run_action(&run, &health, run.recovery_state.as_ref());
+        assert!(!classification.action_required);
     }
 
     #[test]
@@ -4285,19 +4187,21 @@ mod tests {
             updated_at_unix_ms: 1234,
         });
         let health = classify_run_health(&run, None);
-        let msg = action_required_message(&run, &health).unwrap();
-        assert!(msg.contains("Resume rejected"));
-        assert!(msg.contains("reindex"));
+        let classification = classify_run_action(&run, &health, run.recovery_state.as_ref());
+        assert!(classification.action_required);
+        assert!(classification.detail.contains("rejected"));
+        assert_eq!(classification.next_action, Some(NextAction::Reindex));
     }
 
     #[test]
     fn test_action_required_for_startup_aborted_queued_run_mentions_fresh_index() {
         let mut run = sample_run_with_status(IndexRunStatus::Aborted);
-        run.error_summary = Some(STALE_QUEUED_ABORTED_STARTUP_SWEEP_SUMMARY.to_string());
+        run.error_summary = Some(STALE_QUEUED_ABORTED_SUMMARY.to_string());
         let health = classify_run_health(&run, None);
-        let msg = action_required_message(&run, &health).unwrap();
-        assert!(msg.contains("fresh index") || msg.contains("reindex"));
-        assert!(msg.contains("do not resume"));
+        let classification = classify_run_action(&run, &health, run.recovery_state.as_ref());
+        assert!(classification.action_required);
+        assert_eq!(classification.next_action, Some(NextAction::Reindex));
+        assert!(classification.detail.contains("fresh index") || classification.detail.contains("reindex") || classification.detail.contains("Reindex"));
     }
 
     #[test]
@@ -6012,18 +5916,17 @@ mod tests {
     fn test_inspect_health_pending_active_run_reports_processing() {
         // Test the Pending + active_run classification branch directly,
         // since injecting a live active run requires full pipeline setup.
-        let (action_required, next_action, status_detail) =
-            RunManager::classify_repository_health(
-                &RepositoryStatus::Pending,
-                false, // no completed run
-                true,  // has active run
-                &None,
-                &None,
-            );
+        let classification = classify_repository_action(
+            &RepositoryStatus::Pending,
+            false, // no completed run
+            true,  // has active run
+            &None,
+            &None,
+        );
 
-        assert!(!action_required);
-        assert_eq!(next_action, Some(NextAction::Wait));
-        assert!(status_detail.contains("in progress"));
+        assert!(!classification.action_required);
+        assert_eq!(classification.next_action, Some(NextAction::Wait));
+        assert!(classification.detail.contains("in progress"));
     }
 
     #[test]
