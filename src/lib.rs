@@ -8,3 +8,4 @@ pub mod discovery;
 pub mod protocol;
 pub mod watcher;
 pub mod sidecar;
+pub mod cli;
