@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: completed
-stopped_at: Completed 07-polish-and-persistence-04-PLAN.md
-last_updated: "2026-03-10T23:35:14.652Z"
+stopped_at: Completed 07-polish-and-persistence-03-PLAN.md
+last_updated: "2026-03-10T23:44:47.213Z"
 last_activity: "2026-03-10 — Phase 06 Plan 03 complete: 12 integration tests prove HOOK-04..09 + INFR-04; health tool enriched with token savings via Arc<TokenStats>"
 progress:
   total_phases: 7
-  completed_phases: 6
+  completed_phases: 7
   total_plans: 22
-  completed_plans: 21
+  completed_plans: 22
   percent: 94
 ---
 
@@ -71,6 +71,7 @@ Progress: [████████░░] 94%
 | Phase 07-polish-and-persistence P01 | 10 | 2 tasks | 7 files |
 | Phase 07-polish-and-persistence P02 | 10 | 2 tasks | 9 files |
 | Phase 07-polish-and-persistence P04 | 30 | 2 tasks | 14 files |
+| Phase 07-polish-and-persistence P03 | 25 | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -152,6 +153,9 @@ Recent decisions affecting current work:
 - [Phase Phase 07-04]: ABI compatibility: only add grammar crates that compile against tree-sitter 0.24 (max ABI 14); PHP/Swift/Perl skipped for ABI 15+ requirement
 - [Phase Phase 07-04]: tree-sitter-kotlin-sg 0.4.0 replaces both kotlin 0.3.8 (ABI <0.23) and kotlin-ng 1.1.0 (ABI 15); kotlin-sg maps interface to class_declaration
 - [Phase Phase 07-04]: Circuit breaker test updated: Ruby now returns Processed (grammar supported); Swift (ABI-incompat) used instead as failure trigger
+- [Phase 07-polish-and-persistence]: postcard 1.1 used over bincode: RUSTSEC-2025-0141 advisory; postcard is community-recommended drop-in with active maintenance
+- [Phase 07-03]: Snapshot does not store trigram_index or reverse_index: both rebuilt cheaply from files on load
+- [Phase 07-03]: background_verify placed in persist.rs not main.rs for cleaner separation of concerns
 
 ### Pending Todos
 
@@ -165,6 +169,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-10T23:35:14.648Z
-Stopped at: Completed 07-polish-and-persistence-04-PLAN.md
+Last session: 2026-03-10T23:44:47.210Z
+Stopped at: Completed 07-polish-and-persistence-03-PLAN.md
 Resume file: None

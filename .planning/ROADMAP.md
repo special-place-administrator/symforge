@@ -18,7 +18,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 4: Cross-Reference Extraction** - tree-sitter xref queries for all 6 languages, find_references tools (completed 2026-03-10)
 - [x] **Phase 5: HTTP Sidecar + Hook Infrastructure** - axum sidecar on ephemeral port, tokenizor init (completed 2026-03-10)
 - [x] **Phase 6: Hook Enrichment Integration** - PostToolUse hooks for Read/Edit/Write/Grep, SessionStart, token tracking (completed 2026-03-10)
-- [ ] **Phase 7: Polish and Persistence** - LiveIndex serialization, trigram search, scored ranking, additional languages
+- [x] **Phase 7: Polish and Persistence** - LiveIndex serialization, trigram search, scored ranking, additional languages (completed 2026-03-10)
 
 ## Phase Details
 
@@ -130,7 +130,7 @@ Plans:
   2. If the serialized index is corrupted or outdated, the server falls back to full re-index without crashing
   3. `search_symbols "parse"` returns exact matches before prefix matches before substring matches — relevance ranking is observable
   4. C and C++ source files appear in `get_repo_outline` and return symbols from `get_file_outline`, with the same quality as the original 6 languages
-**Plans:** 3/4 plans executed
+**Plans:** 4/4 plans complete
 
 Plans:
 - [ ] 07-01-PLAN.md — C and C++ language support: tree-sitter grammars, symbol extraction, cross-reference queries
@@ -150,7 +150,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7
 | 4. Cross-Reference Extraction | 3/3 | Complete   | 2026-03-10 |
 | 5. HTTP Sidecar + Hook Infrastructure | 3/3 | Complete   | 2026-03-10 |
 | 6. Hook Enrichment Integration | 3/3 | Complete   | 2026-03-10 |
-| 7. Polish and Persistence | 3/4 | In Progress|  |
+| 7. Polish and Persistence | 4/4 | Complete   | 2026-03-10 |
 
 ---
 *Roadmap created: 2026-03-10*
