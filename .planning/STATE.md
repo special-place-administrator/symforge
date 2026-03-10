@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: completed
-stopped_at: Completed 05-02-PLAN.md
-last_updated: "2026-03-10T20:35:39.372Z"
+stopped_at: Completed 05-03-PLAN.md
+last_updated: "2026-03-10T20:49:22.172Z"
 last_activity: "2026-03-10 — Phase 03 Plan 03 complete: watcher wired into MCP server, 8 integration tests prove all FRSH/RELY-03 reqs"
 progress:
   total_phases: 7
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 15
-  completed_plans: 14
+  completed_plans: 15
   percent: 30
 ---
 
@@ -64,6 +64,7 @@ Progress: [███░░░░░░░] 30%
 | Phase 04-cross-reference-extraction P03 | 7 | 2 tasks | 3 files |
 | Phase 05-http-sidecar-hook-infrastructure P01 | 7 | 2 tasks | 8 files |
 | Phase 05-http-sidecar-hook-infrastructure P02 | 6 | 2 tasks | 4 files |
+| Phase 05-http-sidecar-hook-infrastructure P03 | 8 | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -125,6 +126,9 @@ Recent decisions affecting current work:
 - [Phase 05-02]: Rust 2024 edition requires unsafe {} for set_var/remove_var in tests — wrapped with SAFETY comment
 - [Phase 05-02]: run_hook uses env var shim for Phase 5 (TOKENIZOR_HOOK_FILE_PATH); Phase 6 replaces with stdin JSON parsing
 - [Phase 05-02]: is_tokenizor_entry identifies hook entries by 'tokenizor hook' substring — robust across binary path changes
+- [Phase 05-http-sidecar-hook-infrastructure]: main() is sync (no #[tokio::main]); run_mcp_server() builds explicit tokio runtime — avoids runtime overhead for tokenizor init and tokenizor hook subcommands
+- [Phase 05-http-sidecar-hook-infrastructure]: merge_hooks_into_settings(settings_path, binary_path) extracted as public function for test isolation — avoids hardcoded ~/.claude/settings.json path
+- [Phase 05-http-sidecar-hook-infrastructure]: tokio::sync::Mutex for CWD_LOCK in async tests — std::sync::MutexGuard is not Send and cannot be held across .await in multi_thread flavor
 
 ### Pending Todos
 
@@ -138,6 +142,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-10T20:35:39.369Z
-Stopped at: Completed 05-02-PLAN.md
+Last session: 2026-03-10T20:49:22.169Z
+Stopped at: Completed 05-03-PLAN.md
 Resume file: None
