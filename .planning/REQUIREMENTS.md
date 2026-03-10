@@ -1,0 +1,204 @@
+# Requirements: Tokenizor v2
+
+**Defined:** 2026-03-10
+**Core Value:** Measurable token savings (80%+) on multi-file code exploration — the model gets the same understanding with a fraction of the context, automatically via hooks.
+
+## v1 Requirements
+
+Requirements for the v2 rewrite release. Each maps to roadmap phases.
+
+### LiveIndex
+
+- [ ] **LIDX-01**: All discovered source files loaded into in-memory HashMap on startup
+- [ ] **LIDX-02**: All tree-sitter extracted symbols stored with O(1) lookup by name, file, and ID
+- [ ] **LIDX-03**: File content bytes stored in memory — zero disk I/O on read path
+- [ ] **LIDX-04**: Concurrent access via shared ownership (Arc + concurrent map) — many readers, exclusive writer
+- [ ] **LIDX-05**: Initial load completes in <500ms for 70 files, <3s for 1,000 files
+
+### Freshness
+
+- [ ] **FRSH-01**: File watcher (notify crate) detects file changes within 200ms (debounced)
+- [ ] **FRSH-02**: Single-file incremental reparse completes in <50ms
+- [ ] **FRSH-03**: LiveIndex always reflects current disk state — queries never serve stale data
+- [ ] **FRSH-04**: File creation detected and indexed automatically
+- [ ] **FRSH-05**: File deletion detected and removed from LiveIndex automatically
+- [ ] **FRSH-06**: Real-time synchronization — index syncs in milliseconds on any file change, always current and available to the model
+
+### Reliability
+
+- [ ] **RELY-01**: Circuit breaker aborts indexing if >20% of files fail parsing
+- [ ] **RELY-02**: Partial parse on syntax errors — keep previous symbols, log warning
+- [ ] **RELY-03**: File deletion during edit handled gracefully (no panic/crash)
+- [ ] **RELY-04**: MCP server stdout purity — zero non-JSON output on stdout (CI gate)
+
+### Cross-References
+
+- [ ] **XREF-01**: Call site extraction for all 6 languages (Rust, Python, JS, TS, Go, Java)
+- [ ] **XREF-02**: Import/dependency tracking — which files import what
+- [ ] **XREF-03**: Type usage extraction — struct/class/enum references across files
+- [ ] **XREF-04**: Built-in type filters (string, number, bool) prevent false positives
+- [ ] **XREF-05**: Alias map support (use X as Y — references via alias are tracked)
+- [ ] **XREF-06**: Single-letter generic filters (T, K, V) prevent noise
+- [ ] **XREF-07**: Enclosing symbol tracked for each reference (which function contains the call)
+- [ ] **XREF-08**: References updated incrementally when a file is re-parsed
+
+### MCP Tools
+
+- [ ] **TOOL-01**: get_symbol — lookup by (file, name, kind_filter) from LiveIndex
+- [ ] **TOOL-02**: get_symbols — batch lookup, supports symbol and code_slice targets
+- [ ] **TOOL-03**: get_file_outline — ordered symbol list for a file
+- [ ] **TOOL-04**: get_repo_outline — file list with coverage stats
+- [ ] **TOOL-05**: search_symbols — substring matching with relevance scoring
+- [ ] **TOOL-06**: search_text — text search across all indexed files
+- [ ] **TOOL-07**: health — report LiveIndex stats (files, symbols, watcher status, last update)
+- [ ] **TOOL-08**: index_folder — trigger full reload of LiveIndex
+- [ ] **TOOL-09**: find_references — all call sites for a symbol with context snippets
+- [ ] **TOOL-10**: find_dependents — files that import a given file
+- [ ] **TOOL-11**: get_context_bundle — one-call full context (symbol + callers + callees + types + imports)
+- [ ] **TOOL-12**: what_changed — files and symbols modified since timestamp
+- [ ] **TOOL-13**: get_file_content — serve file content from memory with optional line range
+
+### Hook Integration
+
+- [ ] **HOOK-01**: HTTP sidecar (axum) on localhost:0, port written to .tokenizor/sidecar.port
+- [ ] **HOOK-02**: Sidecar shares Arc<LiveIndex> with MCP tools — zero data duplication
+- [ ] **HOOK-03**: Hook response latency <100ms total (Python spawn + HTTP + query)
+- [ ] **HOOK-04**: PostToolUse(Read) — inject symbol outline + key references for indexed files
+- [ ] **HOOK-05**: PostToolUse(Edit) — trigger re-index + inject impact analysis (callers to review)
+- [ ] **HOOK-06**: PostToolUse(Write) — trigger index of new file + confirmation
+- [ ] **HOOK-07**: PostToolUse(Grep) — inject symbol context for matched lines
+- [ ] **HOOK-08**: SessionStart — inject compact repo map (~500 tokens)
+- [ ] **HOOK-09**: Hook output token budget enforced (<200 tokens for Read, <100 for Grep)
+- [ ] **HOOK-10**: Hook stdout is valid JSON only — no debug output corruption
+
+### Infrastructure
+
+- [ ] **INFR-01**: tokenizor init command writes PostToolUse hooks into .claude/hooks.json (idempotent)
+- [ ] **INFR-02**: Auto-index on startup if .git exists (configurable via TOKENIZOR_AUTO_INDEX)
+- [ ] **INFR-03**: Compact response formatter — human-readable output matching Read/Grep style
+- [ ] **INFR-04**: Token savings calculation and tracking per session
+- [ ] **INFR-05**: Removed tools: cancel_index_run, checkpoint_now, resume_index_run, get_index_run, list_index_runs, invalidate_indexed_state, repair_index, inspect_repository_health, get_operational_history, reindex_repository
+
+### Polish
+
+- [ ] **PLSH-01**: Trigram text search index — <10ms for any query on 10,000-file repo
+- [ ] **PLSH-02**: Scored symbol search — exact > prefix > substring > word overlap ranking
+- [ ] **PLSH-03**: File tree navigation tool — get_file_tree with directory browsing + symbol counts
+- [ ] **PLSH-04**: Persistence — serialize LiveIndex to disk on shutdown, load on startup (<100ms)
+- [ ] **PLSH-05**: Background hash verification after loading serialized index
+
+### Languages
+
+- [ ] **LANG-01**: Tree-sitter parsing for C (high priority)
+- [ ] **LANG-02**: Tree-sitter parsing for C++ (high priority)
+- [ ] **LANG-03**: Tree-sitter parsing for C# (medium priority)
+- [ ] **LANG-04**: Tree-sitter parsing for Ruby (medium priority)
+- [ ] **LANG-05**: Tree-sitter parsing for PHP (medium priority)
+- [ ] **LANG-06**: Tree-sitter parsing for Swift (lower priority)
+- [ ] **LANG-07**: Tree-sitter parsing for Dart (lower priority)
+
+## v2 Requirements
+
+Deferred to future release. Tracked but not in current roadmap.
+
+### Advanced Intelligence
+
+- **ADVN-01**: Predictive context — "you'll need these files next" based on import graph analysis
+- **ADVN-02**: Session awareness — track model's working set, avoid re-sending already-seen context
+- **ADVN-03**: Semantic cross-references via language servers (rust-analyzer, pyright)
+
+### Distribution
+
+- **DIST-01**: Multi-repo support — multiple LiveIndex instances per server process
+- **DIST-02**: SpacetimeDB backing store for durability + multi-session coordination
+
+## Out of Scope
+
+| Feature | Reason |
+|---------|--------|
+| SpacetimeDB integration | Deferred to v3+ — in-process LiveIndex sufficient for single-session |
+| Full semantic analysis | Type inference, trait dispatch, cross-crate resolution adds months of complexity for 15% coverage gain |
+| Language Server Protocol | We use tree-sitter directly — LSP adds external process management |
+| Web/mobile UI | CLI-only tool, no GUI needed |
+| Replacing native tools | We enrich Read/Edit/Grep via hooks, never replace them |
+| Vector/semantic search | Complexity without proven value for code navigation |
+| Multi-session coordination | Single MCP server process per session for v2 |
+
+## Traceability
+
+Which phases cover which requirements. Updated during roadmap creation.
+
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| LIDX-01 | Phase 1 | Pending |
+| LIDX-02 | Phase 1 | Pending |
+| LIDX-03 | Phase 1 | Pending |
+| LIDX-04 | Phase 1 | Pending |
+| LIDX-05 | Phase 2 | Pending |
+| FRSH-01 | Phase 3 | Pending |
+| FRSH-02 | Phase 3 | Pending |
+| FRSH-03 | Phase 3 | Pending |
+| FRSH-04 | Phase 3 | Pending |
+| FRSH-05 | Phase 3 | Pending |
+| FRSH-06 | Phase 3 | Pending |
+| RELY-01 | Phase 2 | Pending |
+| RELY-02 | Phase 2 | Pending |
+| RELY-03 | Phase 3 | Pending |
+| RELY-04 | Phase 1 | Pending |
+| XREF-01 | Phase 4 | Pending |
+| XREF-02 | Phase 4 | Pending |
+| XREF-03 | Phase 4 | Pending |
+| XREF-04 | Phase 4 | Pending |
+| XREF-05 | Phase 4 | Pending |
+| XREF-06 | Phase 4 | Pending |
+| XREF-07 | Phase 4 | Pending |
+| XREF-08 | Phase 4 | Pending |
+| TOOL-01 | Phase 2 | Pending |
+| TOOL-02 | Phase 2 | Pending |
+| TOOL-03 | Phase 2 | Pending |
+| TOOL-04 | Phase 2 | Pending |
+| TOOL-05 | Phase 2 | Pending |
+| TOOL-06 | Phase 2 | Pending |
+| TOOL-07 | Phase 2 | Pending |
+| TOOL-08 | Phase 2 | Pending |
+| TOOL-09 | Phase 4 | Pending |
+| TOOL-10 | Phase 4 | Pending |
+| TOOL-11 | Phase 4 | Pending |
+| TOOL-12 | Phase 2 | Pending |
+| TOOL-13 | Phase 2 | Pending |
+| HOOK-01 | Phase 5 | Pending |
+| HOOK-02 | Phase 5 | Pending |
+| HOOK-03 | Phase 5 | Pending |
+| HOOK-04 | Phase 6 | Pending |
+| HOOK-05 | Phase 6 | Pending |
+| HOOK-06 | Phase 6 | Pending |
+| HOOK-07 | Phase 6 | Pending |
+| HOOK-08 | Phase 6 | Pending |
+| HOOK-09 | Phase 6 | Pending |
+| HOOK-10 | Phase 5 | Pending |
+| INFR-01 | Phase 6 | Pending |
+| INFR-02 | Phase 2 | Pending |
+| INFR-03 | Phase 4 | Pending |
+| INFR-04 | Phase 4 | Pending |
+| INFR-05 | Phase 2 | Pending |
+| PLSH-01 | Phase 7 | Pending |
+| PLSH-02 | Phase 7 | Pending |
+| PLSH-03 | Phase 7 | Pending |
+| PLSH-04 | Phase 7 | Pending |
+| PLSH-05 | Phase 7 | Pending |
+| LANG-01 | Phase 7 | Pending |
+| LANG-02 | Phase 7 | Pending |
+| LANG-03 | Phase 7 | Pending |
+| LANG-04 | Phase 7 | Pending |
+| LANG-05 | Phase 7 | Pending |
+| LANG-06 | Phase 7 | Pending |
+| LANG-07 | Phase 7 | Pending |
+
+**Coverage:**
+- v1 requirements: 60 total
+- Mapped to phases: 60
+- Unmapped: 0 ✓
+
+---
+*Requirements defined: 2026-03-10*
+*Last updated: 2026-03-10 after initial definition*
