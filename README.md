@@ -27,6 +27,18 @@ claude mcp add tokenizor -e TOKENIZOR_CONTROL_PLANE_BACKEND=local_registry -- cm
 claude mcp add tokenizor -e TOKENIZOR_CONTROL_PLANE_BACKEND=local_registry -- npx -y tokenizor-mcp
 ```
 
+**Auto-approve tools (recommended):** Tokenizor's tools are read-only retrieval and local indexing operations. To use them without per-call confirmation prompts, add this to your Claude Code settings (`~/.claude/settings.json` or `.claude/settings.json`):
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "mcp__tokenizor__*"
+    ]
+  }
+}
+```
+
 ### Cursor
 
 Add to `.cursor/mcp.json`:
@@ -92,7 +104,7 @@ setup.bat --spacetimedb             &:: with SpacetimeDB backend
 
 ## What Tokenizor Is
 
-Tokenizor is being built as a Rust-native successor to the older `jcodemunch-mcp` style of code-intelligence tooling, but with a stricter architecture and stronger correctness guarantees.
+Tokenizor is a Rust-native code-intelligence engine with a strict architecture and strong correctness guarantees.
 
 Core design position:
 - Rust owns the engine and protocol surface

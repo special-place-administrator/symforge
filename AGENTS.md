@@ -2,7 +2,7 @@
 
 This repository is `tokenizor_agentic_mcp`.
 
-It is a Rust-native, coding-first MCP project. It is not intended to be a carbon copy of `jcodemunch-mcp`.
+It is a Rust-native, coding-first MCP project for code indexing, retrieval, and recovery.
 
 ## Mission
 
@@ -180,8 +180,8 @@ If semantic search becomes important:
 As of 2026-03-06:
 - this repo was freshly created and bootstrapped as a Rust project
 - there is an `rmcp`-based stdio server scaffold
-- the prior Python `jcodemunch-mcp` investigation found a real Windows byte-offset bug caused by newline translation during raw cache writes
-- that bug is a design warning for this project: byte-exact storage is non-negotiable
+- an earlier Python prototype found a real Windows byte-offset bug caused by newline translation during raw cache writes
+- that bug is a design warning: byte-exact storage is non-negotiable
 
 ## Implementation Guidance
 
@@ -209,15 +209,14 @@ As of 2026-03-06:
 
 ## Tooling Preference
 
-When MCP tooling is available, prefer `jcodemunch` for repository and code inspection before falling back to direct file reads.
+When Tokenizor MCP is available, prefer its tools for repository and code inspection before falling back to direct file reads.
 
-Use `jcodemunch` first for:
+Use Tokenizor first for:
 - symbol discovery
 - text/code search
 - file outlines
 - repository outlines
 - targeted symbol/source retrieval
-- repository tree inspection
 - inspection of implementation code under `src/`, `tests/`, and similar code-bearing directories
 
 Preferred tools:
@@ -227,11 +226,9 @@ Preferred tools:
 - `get_repo_outline`
 - `get_symbol`
 - `get_symbols`
-- `get_file_tree`
-- `list_repos`
 
 Default rule:
-- use `jcodemunch` to narrow and target code inspection first
+- use Tokenizor to narrow and target code inspection first
 - use direct file reads only when exact full-file source or surrounding context is still required after tool-based narrowing
 
 Direct file reads are still appropriate for:
@@ -239,4 +236,4 @@ Direct file reads are still appropriate for:
 - exact document text in `docs/` or planning artifacts when literal wording matters
 - configuration files where exact raw contents are the point of inspection
 
-Do not default to broad raw file reads for source-code inspection when `jcodemunch` can answer the question more directly.
+Do not default to broad raw file reads for source-code inspection when Tokenizor can answer the question more directly.

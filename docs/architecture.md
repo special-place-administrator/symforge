@@ -7,7 +7,7 @@ Date: 2026-03-06
 
 `tokenizor_agentic_mcp` is a Rust-native, coding-first MCP server for repository indexing, retrieval, orchestration, and repair.
 
-It is not a carbon copy of `jcodemunch-mcp`. The design should optimize for:
+It is not a carbon copy of Tokenizor. The design should optimize for:
 - speed
 - robustness
 - idempotency

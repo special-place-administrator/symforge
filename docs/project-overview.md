@@ -8,7 +8,7 @@
 
 `tokenizor_agentic_mcp` is an early-stage Rust foundation for a coding-first indexing, retrieval, orchestration, and recovery system. The current codebase implements bootstrap runtime behavior such as `run`, `doctor`, `init`, a health MCP tool, a local byte-exact CAS scaffold, and a SpacetimeDB control-plane boundary.
 
-The authoritative product direction is currently defined in the `docs/` folder rather than in the code alone. Those documents describe the intended end state: a Rust-native successor to `jcodemunch-mcp` with deterministic indexing, resumable runs, explicit recovery, a SpacetimeDB-backed control plane, local content-addressed blob storage, and later provider-specific adapters.
+The authoritative product direction is currently defined in the `docs/` folder rather than in the code alone. Those documents describe the intended end state: a Rust-native code-intelligence engine with deterministic indexing, resumable runs, explicit recovery, a SpacetimeDB-backed control plane, local content-addressed blob storage, and later provider-specific adapters.
 
 ## Project Classification
 

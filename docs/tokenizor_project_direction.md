@@ -18,7 +18,7 @@ This is not the final architecture.
 
 It is the current best working direction given:
 
-- the original mission of building a Rust-native successor to `jcodemunch-mcp`
+- the original mission of building a Rust-native code-intelligence engine
 - the need for stronger correctness, durability, and recovery
 - the desire to make provider CLIs use Tokenizor frequently instead of only occasionally
 
@@ -26,7 +26,7 @@ It is the current best working direction given:
 
 Tokenizor should be built as:
 
-- a Rust-native successor to `jcodemunch-mcp`
+- a Rust-native code-intelligence engine
 - a coding-first indexing and retrieval engine
 - an MCP-compatible product by default
 - a provider-adapter platform by design
@@ -44,7 +44,7 @@ If the engine is strong, multiple integration surfaces become worth building.
 
 Tokenizor is not meant to be a random new code tool.
 
-It is meant to become the proper Rust-native evolution of `jcodemunch-mcp` with:
+It is meant to become the proper Rust-native evolution of Tokenizor with:
 
 - better byte correctness
 - better recovery
@@ -52,7 +52,7 @@ It is meant to become the proper Rust-native evolution of `jcodemunch-mcp` with:
 - better operational structure
 - better long-term extensibility
 
-It should preserve the useful core of `jcodemunch`:
+It should preserve the useful core of Tokenizor:
 
 - indexing repositories
 - symbol extraction
@@ -96,7 +96,7 @@ That leads to two parallel design truths:
 
 ## Working Conclusions
 
-### Conclusion 1: This should remain a Rust-first `jcodemunch` successor
+### Conclusion 1: This should remain a Rust-first Tokenizor successor
 
 The project should keep its original center of gravity:
 
@@ -184,7 +184,7 @@ The engine does the real work:
 - repair
 - health
 
-This is the true successor to `jcodemunch-mcp`.
+This is the true successor to Tokenizor.
 
 ### Layer 2: Control plane
 
@@ -209,7 +209,7 @@ MCP remains the universal compatibility layer.
 This gives Tokenizor:
 
 - interoperability across provider CLIs
-- parity with the old `jcodemunch-mcp` idea
+- parity with the old Tokenizor idea
 - a clean universal tool/resource/prompt surface
 
 ### Layer 4: Provider adapters
@@ -335,7 +335,7 @@ The following should not drive early architecture:
 
 Goal:
 
-Build the minimum credible Rust-native `jcodemunch` successor.
+Build the minimum credible Rust-native Tokenizor successor.
 
 Needed outcomes:
 
@@ -448,7 +448,7 @@ And specifically:
 
 The current working decision should be:
 
-**Build Tokenizor first as the Rust-native successor to `jcodemunch-mcp`, keep MCP as the default universal surface, and design the internals so provider-native adapters can later make Tokenizor a default retrieval plane rather than an occasionally used tool.**
+**Build Tokenizor first as the Rust-native successor to Tokenizor, keep MCP as the default universal surface, and design the internals so provider-native adapters can later make Tokenizor a default retrieval plane rather than an occasionally used tool.**
 
 That is the cleanest balance between:
 
