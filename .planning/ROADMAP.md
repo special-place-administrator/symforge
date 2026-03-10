@@ -81,7 +81,7 @@ Plans:
   3. `find_dependents("src/foo.rs")` returns only files that actually import or use symbols from that file
   4. `get_context_bundle` for any symbol returns its definition, callers, callees, and type usages in a single response under 100ms
   5. After editing a file, its cross-references update incrementally within the watcher's 200ms window
-**Plans:** 3 plans
+**Plans:** 1/3 plans executed
 
 Plans:
 - [ ] 04-01-PLAN.md — Domain types (ReferenceRecord, ReferenceKind), tree-sitter xref extraction for 6 languages, LiveIndex storage extensions with reverse index
@@ -132,7 +132,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7
 | 1. LiveIndex Foundation | 3/3 | Complete   | 2026-03-10 |
 | 2. MCP Tools v1 Parity | 3/3 | Complete   | 2026-03-10 |
 | 3. File Watcher + Freshness | 3/3 | Complete   | 2026-03-10 |
-| 4. Cross-Reference Extraction | 0/3 | Planned | - |
+| 4. Cross-Reference Extraction | 1/3 | In Progress|  |
 | 5. HTTP Sidecar + Hook Infrastructure | 0/? | Not started | - |
 | 6. Hook Enrichment Integration | 0/? | Not started | - |
 | 7. Polish and Persistence | 0/? | Not started | - |

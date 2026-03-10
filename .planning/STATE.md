@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: completed
-stopped_at: Phase 4 context gathered
-last_updated: "2026-03-10T18:33:48.024Z"
+stopped_at: Completed 04-cross-reference-extraction/04-01-PLAN.md
+last_updated: "2026-03-10T19:08:25.592Z"
 last_activity: "2026-03-10 — Phase 03 Plan 03 complete: watcher wired into MCP server, 8 integration tests prove all FRSH/RELY-03 reqs"
 progress:
   total_phases: 7
   completed_phases: 3
-  total_plans: 9
-  completed_plans: 9
+  total_plans: 12
+  completed_plans: 10
   percent: 30
 ---
 
@@ -59,6 +59,7 @@ Progress: [███░░░░░░░] 30%
 | Phase 03-file-watcher-freshness P01 | 5 | 2 tasks | 6 files |
 | Phase 03-file-watcher-freshness P02 | 4 | 2 tasks | 1 files |
 | Phase 03-file-watcher-freshness P03 | 18 | 2 tasks | 6 files |
+| Phase 04-cross-reference-extraction P01 | 13 | 2 tasks | 10 files |
 
 ## Accumulated Context
 
@@ -103,6 +104,10 @@ Recent decisions affecting current work:
 - [Phase 03-03]: recv_timeout(50ms) + yield_now() replaces blocking recv() in run_watcher — blocking std::sync::mpsc::recv() on a tokio worker starves the executor; recv_timeout releases the thread every 50ms
 - [Phase 03-03]: health_report_with_watcher is additive alongside health_report — unit tests use Off-defaults variant; production health tool always uses live-watcher variant
 - [Phase 03-03]: Integration tests use multi_thread tokio flavor — run_watcher must run on a separate worker thread; single-thread would deadlock
+- [Phase Phase 04-01]: streaming-iterator added as direct dep: tree-sitter 0.24 QueryCursor uses StreamingIterator not Iterator — advance()/get() pattern required
+- [Phase Phase 04-01]: use_as_clause has path/alias fields (not path/name) per tree-sitter-rust grammar.js
+- [Phase Phase 04-01]: FileProcessingResult must be destructured before consuming references via into_iter() to satisfy borrow checker (symbols borrowed in closure)
+- [Phase Phase 04-01]: Definition-site filter in from_parse_result: skip references whose byte_range exactly matches a SymbolRecord's byte_range (prevents self-reference noise)
 
 ### Pending Todos
 
@@ -116,6 +121,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-10T18:33:48.022Z
-Stopped at: Phase 4 context gathered
-Resume file: .planning/phases/04-cross-reference-extraction/04-CONTEXT.md
+Last session: 2026-03-10T19:08:25.589Z
+Stopped at: Completed 04-cross-reference-extraction/04-01-PLAN.md
+Resume file: None
