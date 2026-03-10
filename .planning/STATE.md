@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: completed
-stopped_at: "Completed 06-01-PLAN.md: sidecar enrichment"
-last_updated: "2026-03-10T21:45:31.539Z"
+stopped_at: "Completed 06-02-PLAN.md: stdin JSON routing + single init entry"
+last_updated: "2026-03-10T21:54:30.698Z"
 last_activity: "2026-03-10 — Phase 03 Plan 03 complete: watcher wired into MCP server, 8 integration tests prove all FRSH/RELY-03 reqs"
 progress:
   total_phases: 7
   completed_phases: 5
   total_plans: 18
-  completed_plans: 16
+  completed_plans: 17
   percent: 30
 ---
 
@@ -66,6 +66,7 @@ Progress: [███░░░░░░░] 30%
 | Phase 05-http-sidecar-hook-infrastructure P02 | 6 | 2 tasks | 4 files |
 | Phase 05-http-sidecar-hook-infrastructure P03 | 8 | 2 tasks | 5 files |
 | Phase 06-hook-enrichment-integration P01 | 6 | 2 tasks | 4 files |
+| Phase 06-hook-enrichment-integration P02 | 5 | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -133,6 +134,9 @@ Recent decisions affecting current work:
 - [Phase 06-01]: SidecarState replaces bare SharedIndex as axum state — bundles token_stats and symbol_cache alongside the index
 - [Phase 06-01]: build_with_budget max_bytes=0 is unlimited passthrough; handlers pass 0 when no budget needed
 - [Phase 06-01]: repo_map_handler does not record token savings — SessionStart is additive context, not a replacement for native tool reads
+- [Phase 06-02]: HookInput structs are pub(crate) not pub — eliminates private_interfaces warnings, no external access needed
+- [Phase 06-02]: Auto-migration of old 3-entry hook format is free side-effect: is_tokenizor_entry 'tokenizor hook' substring matches both old and new command formats
+- [Phase 06-02]: run_hook now takes Option<&HookSubcommand>: None triggers stdin JSON routing, Some triggers backward-compat explicit routing
 
 ### Pending Todos
 
@@ -146,6 +150,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-10T21:45:31.536Z
-Stopped at: Completed 06-01-PLAN.md: sidecar enrichment
+Last session: 2026-03-10T21:54:30.694Z
+Stopped at: Completed 06-02-PLAN.md: stdin JSON routing + single init entry
 Resume file: None
