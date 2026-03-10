@@ -23,32 +23,14 @@ use serde_json::{json, Value};
 /// Entry point called by main.rs for `tokenizor init`.
 pub fn run_init() -> anyhow::Result<()> {
     // Step 1 — discover binary path.
-    let binary_path = discover_binary_path();
+    let binary_path_str = discover_binary_path();
+    let binary_path = std::path::Path::new(&binary_path_str);
 
-    // Step 2 — resolve settings path and ensure parent dir exists.
+    // Step 2 — resolve settings path.
     let settings_path = settings_json_path()?;
-    if let Some(parent) = settings_path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating {}", parent.display()))?;
-    }
 
-    // Step 3 — read existing settings or start with empty object.
-    let mut settings: Value = if settings_path.exists() {
-        let raw = std::fs::read_to_string(&settings_path)
-            .with_context(|| format!("reading {}", settings_path.display()))?;
-        serde_json::from_str(&raw)
-            .with_context(|| format!("parsing {}", settings_path.display()))?
-    } else {
-        json!({})
-    };
-
-    // Steps 4-7 — merge hooks in-place.
-    merge_tokenizor_hooks(&mut settings, &binary_path);
-
-    // Step 8 — write back.
-    let pretty = serde_json::to_string_pretty(&settings)?;
-    std::fs::write(&settings_path, pretty)
-        .with_context(|| format!("writing {}", settings_path.display()))?;
+    // Steps 3-8 — delegate to the testable merge function.
+    merge_hooks_into_settings(&settings_path, binary_path)?;
 
     // Step 9 — create .tokenizor/ directory in cwd if missing.
     std::fs::create_dir_all(".tokenizor")
@@ -56,6 +38,46 @@ pub fn run_init() -> anyhow::Result<()> {
 
     // Step 10 — report to stderr only (stdout must stay clean for hook output purity).
     eprintln!("tokenizor hooks installed in {}", settings_path.display());
+
+    Ok(())
+}
+
+/// Merge tokenizor hook entries into `settings_path`, creating it if necessary.
+///
+/// This is the testable core of `run_init`. Integration tests can pass a temp-dir path
+/// instead of the real `~/.claude/settings.json`.
+///
+/// `binary_path` is the absolute path of the tokenizor binary.
+pub fn merge_hooks_into_settings(
+    settings_path: &std::path::Path,
+    binary_path: &std::path::Path,
+) -> anyhow::Result<()> {
+    // Ensure parent dir exists.
+    if let Some(parent) = settings_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+
+    // Read existing settings or start with empty object.
+    let mut settings: Value = if settings_path.exists() {
+        let raw = std::fs::read_to_string(settings_path)
+            .with_context(|| format!("reading {}", settings_path.display()))?;
+        serde_json::from_str(&raw)
+            .with_context(|| format!("parsing {}", settings_path.display()))?
+    } else {
+        json!({})
+    };
+
+    // Normalise binary path to forward slashes for JSON command strings.
+    let binary_str = binary_path.display().to_string().replace('\\', "/");
+
+    // Merge hooks in-place.
+    merge_tokenizor_hooks(&mut settings, &binary_str);
+
+    // Write back.
+    let pretty = serde_json::to_string_pretty(&settings)?;
+    std::fs::write(settings_path, pretty)
+        .with_context(|| format!("writing {}", settings_path.display()))?;
 
     Ok(())
 }
