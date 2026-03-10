@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: planning
-stopped_at: Phase 3 context gathered
-last_updated: "2026-03-10T16:55:56.149Z"
-last_activity: 2026-03-10 — Roadmap created, requirements mapped, STATE initialized
+status: in-progress
+stopped_at: "Completed 03-01-PLAN.md: watcher contracts and LiveIndex mutation API"
+last_updated: "2026-03-10T17:24:30Z"
+last_activity: 2026-03-10 — Phase 03 Plan 01 executed (watcher contracts, mutation API)
 progress:
   total_phases: 7
   completed_phases: 2
   total_plans: 6
-  completed_plans: 6
-  percent: 0
+  completed_plans: 7
+  percent: 10
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-10)
 
 **Core value:** Measurable token savings (80%+) on multi-file code exploration — automatically via hooks, zero model behavior change required
-**Current focus:** Phase 1 — LiveIndex Foundation
+**Current focus:** Phase 3 — File Watcher + Freshness
 
 ## Current Position
 
-Phase: 1 of 7 (LiveIndex Foundation)
-Plan: 0 of ? in current phase
-Status: Ready to plan
-Last activity: 2026-03-10 — Roadmap created, requirements mapped, STATE initialized
+Phase: 3 of 7 (File Watcher + Freshness)
+Plan: 1 of 3 completed in current phase
+Status: In progress — Plan 02 (watcher core) is next
+Last activity: 2026-03-10 — Phase 03 Plan 01 complete: watcher type contracts, LiveIndex mutation API, extended HealthStats
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [█░░░░░░░░░] 10%
 
 ## Performance Metrics
 
@@ -56,6 +56,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 02-mcp-tools-v1-parity P01 | 7 | 2 tasks | 7 files |
 | Phase 02-mcp-tools-v1-parity PP02 | 15 | 2 tasks | 3 files |
 | Phase 02-mcp-tools-v1-parity P03 | 15 | 2 tasks | 2 files |
+| Phase 03-file-watcher-freshness P01 | 5 | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -90,6 +91,10 @@ Recent decisions affecting current work:
 - [Phase 02-mcp-tools-v1-parity]: test_no_v1_tools_in_codebase uses fn-pattern matching not raw strings — avoids false positives from test assertion strings in tools.rs unit tests
 - [Phase 02-mcp-tools-v1-parity]: test_stdout_purity uses Stdio::null() + TOKENIZOR_AUTO_INDEX=false — null stdin causes immediate EOF so MCP server exits cleanly under test harness
 - [Phase 02-mcp-tools-v1-parity]: CircuitBreakerTripped is logged as error but server continues in degraded mode — health tool reports state, no early exit in v2
+- [Phase 03-01]: WatcherState is a separate enum in src/watcher/mod.rs — Plan 02 can import it without the health module
+- [Phase 03-01]: health_stats() always returns Off defaults — health_report remains correct without an active watcher
+- [Phase 03-01]: health_stats_with_watcher() is additive, not a replacement — callers choose which variant to use at the call site
+- [Phase 03-01]: remove_file only updates loaded_at_system if path was present — prevents spurious timestamp churn on phantom events
 
 ### Pending Todos
 
@@ -103,6 +108,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-10T16:55:56.146Z
-Stopped at: Phase 3 context gathered
-Resume file: .planning/phases/03-file-watcher-freshness/03-CONTEXT.md
+Last session: 2026-03-10T17:24:30Z
+Stopped at: Completed 03-01-PLAN.md
+Resume file: .planning/phases/03-file-watcher-freshness/03-02-PLAN.md

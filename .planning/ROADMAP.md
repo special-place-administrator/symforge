@@ -67,7 +67,7 @@ Plans:
 **Plans:** 3 plans
 
 Plans:
-- [ ] 03-01-PLAN.md — LiveIndex mutation methods, watcher types, extended HealthStats, Cargo.toml deps
+- [x] 03-01-PLAN.md — LiveIndex mutation methods, watcher types, extended HealthStats, Cargo.toml deps
 - [ ] 03-02-PLAN.md — Watcher core: notify-debouncer-full, path normalization, content hash skip, event loop
 - [ ] 03-03-PLAN.md — Wire watcher into main.rs + tools, integration tests for all FRSH requirements
 
@@ -126,7 +126,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 |-------|----------------|--------|-----------|
 | 1. LiveIndex Foundation | 3/3 | Complete   | 2026-03-10 |
 | 2. MCP Tools v1 Parity | 3/3 | Complete   | 2026-03-10 |
-| 3. File Watcher + Freshness | 0/3 | Planning complete | - |
+| 3. File Watcher + Freshness | 1/3 | In progress | - |
 | 4. Cross-Reference Extraction | 0/? | Not started | - |
 | 5. HTTP Sidecar + Hook Infrastructure | 0/? | Not started | - |
 | 6. Hook Enrichment Integration | 0/? | Not started | - |
