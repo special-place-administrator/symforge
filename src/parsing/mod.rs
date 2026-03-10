@@ -1,11 +1,12 @@
 pub mod languages;
+pub mod xref;
 
 use std::collections::HashMap;
 use std::panic;
 
 use tree_sitter::Parser;
 
-use crate::domain::{FileOutcome, FileProcessingResult, LanguageId, SymbolRecord};
+use crate::domain::{FileOutcome, FileProcessingResult, LanguageId, ReferenceRecord, SymbolRecord};
 use crate::hash::digest_hex;
 
 pub fn process_file(
@@ -20,7 +21,7 @@ pub fn process_file(
     let parse_result = panic::catch_unwind(|| parse_source(&source, &language));
 
     match parse_result {
-        Ok(Ok((symbols, has_error))) => {
+        Ok(Ok((symbols, has_error, references, alias_map))) => {
             let outcome = if has_error {
                 FileOutcome::PartialParse {
                     warning: "tree-sitter reported syntax errors in the parse tree".to_string(),
@@ -35,8 +36,8 @@ pub fn process_file(
                 symbols,
                 byte_len,
                 content_hash,
-                references: vec![],
-                alias_map: HashMap::new(),
+                references,
+                alias_map,
             }
         }
         Ok(Err(err)) => FileProcessingResult {
@@ -66,7 +67,10 @@ pub fn process_file(
     }
 }
 
-fn parse_source(source: &str, language: &LanguageId) -> Result<(Vec<SymbolRecord>, bool), String> {
+fn parse_source(
+    source: &str,
+    language: &LanguageId,
+) -> Result<(Vec<SymbolRecord>, bool, Vec<ReferenceRecord>, HashMap<String, String>), String> {
     let mut parser = Parser::new();
 
     let ts_language = match language {
@@ -94,8 +98,9 @@ fn parse_source(source: &str, language: &LanguageId) -> Result<(Vec<SymbolRecord
     let root = tree.root_node();
     let has_error = root.has_error();
     let symbols = languages::extract_symbols(&root, source, language);
+    let (references, alias_map) = xref::extract_references(&root, source, language);
 
-    Ok((symbols, has_error))
+    Ok((symbols, has_error, references, alias_map))
 }
 
 #[cfg(test)]

@@ -1,0 +1,636 @@
+use std::collections::HashMap;
+use std::sync::OnceLock;
+
+use streaming_iterator::StreamingIterator;
+use tree_sitter::{Language, Node, Query, QueryCursor};
+
+use crate::domain::{LanguageId, ReferenceKind, ReferenceRecord};
+
+// ---------------------------------------------------------------------------
+// Per-language query strings
+// ---------------------------------------------------------------------------
+
+const RUST_XREF_QUERY: &str = r#"
+; Simple function calls: foo()
+(call_expression function: (identifier) @ref.call)
+
+; Qualified calls: Vec::new()  — capture the scoped_identifier for qualified_name too
+(call_expression function: (scoped_identifier name: (identifier) @ref.call) @ref.qualified_call)
+
+; Method calls: self.push()
+(call_expression function: (field_expression field: (field_identifier) @ref.method_call))
+
+; Macro invocations: println!()
+(macro_invocation macro: (identifier) @ref.macro)
+
+; Use declarations: use std::collections::HashMap
+(use_declaration argument: (identifier) @ref.import)
+(use_declaration argument: (scoped_identifier) @ref.import)
+
+; Import with alias: use HashMap as Map
+(use_as_clause path: (_) @import.original alias: (identifier) @import.alias)
+
+; Type references (in function params, return types, struct fields, etc.)
+(type_identifier) @ref.type
+"#;
+
+const PYTHON_XREF_QUERY: &str = r#"
+; Function calls: foo(x)
+(call function: (identifier) @ref.call)
+
+; Method calls: obj.method()
+(call function: (attribute attribute: (identifier) @ref.method_call))
+
+; Import statements: import os
+(import_statement name: (dotted_name (identifier) @ref.import))
+
+; From imports: from os import path
+(import_from_statement module_name: (dotted_name (identifier) @ref.import))
+(import_from_statement name: (dotted_name (identifier) @ref.import))
+
+; Import alias: import numpy as np
+(aliased_import name: (dotted_name (identifier) @import.original) alias: (identifier) @import.alias)
+
+; Type annotations: x: MyType
+(type (identifier) @ref.type)
+"#;
+
+const JS_XREF_QUERY: &str = r#"
+; Function calls: foo()
+(call_expression function: (identifier) @ref.call)
+
+; Method calls: obj.method()
+(call_expression function: (member_expression property: (property_identifier) @ref.method_call))
+
+; Constructor: new Foo()
+(new_expression constructor: (identifier) @ref.call)
+
+; Import statements: import React from 'react'
+(import_statement source: (string) @ref.import)
+
+; Import specifiers: import { Component } from 'react'
+(import_specifier name: (identifier) @ref.import)
+"#;
+
+const TS_XREF_QUERY: &str = r#"
+; Function calls: foo()
+(call_expression function: (identifier) @ref.call)
+
+; Method calls: obj.method()
+(call_expression function: (member_expression property: (property_identifier) @ref.method_call))
+
+; Constructor: new Foo()
+(new_expression constructor: (identifier) @ref.call)
+
+; Import statements: import React from 'react'
+(import_statement source: (string) @ref.import)
+
+; Import specifiers: import { Component } from 'react'
+(import_specifier name: (identifier) @ref.import)
+
+; TypeScript type references: param: MyType
+(type_identifier) @ref.type
+"#;
+
+const GO_XREF_QUERY: &str = r#"
+; Simple function calls: foo()
+(call_expression function: (identifier) @ref.call)
+
+; Selector calls: fmt.Println()
+(call_expression function: (selector_expression field: (field_identifier) @ref.method_call))
+
+; Import specs: import "fmt"
+(import_spec path: (interpreted_string_literal) @ref.import)
+
+; Type references
+(type_identifier) @ref.type
+"#;
+
+const JAVA_XREF_QUERY: &str = r#"
+; Method invocations: obj.println()
+(method_invocation name: (identifier) @ref.call)
+
+; Object creation: new ArrayList()
+(object_creation_expression type: (type_identifier) @ref.call)
+
+; Import declarations: import java.util.ArrayList
+(import_declaration (scoped_identifier) @ref.import)
+
+; Type references
+(type_identifier) @ref.type
+"#;
+
+// ---------------------------------------------------------------------------
+// OnceLock-cached compiled queries
+// ---------------------------------------------------------------------------
+
+static RUST_QUERY: OnceLock<Query> = OnceLock::new();
+static PYTHON_QUERY: OnceLock<Query> = OnceLock::new();
+static JS_QUERY: OnceLock<Query> = OnceLock::new();
+static TS_QUERY: OnceLock<Query> = OnceLock::new();
+static GO_QUERY: OnceLock<Query> = OnceLock::new();
+static JAVA_QUERY: OnceLock<Query> = OnceLock::new();
+
+fn rust_query(lang: &Language) -> &'static Query {
+    RUST_QUERY.get_or_init(|| {
+        Query::new(lang, RUST_XREF_QUERY).expect("valid rust xref query")
+    })
+}
+
+fn python_query(lang: &Language) -> &'static Query {
+    PYTHON_QUERY.get_or_init(|| {
+        Query::new(lang, PYTHON_XREF_QUERY).expect("valid python xref query")
+    })
+}
+
+fn js_query(lang: &Language) -> &'static Query {
+    JS_QUERY.get_or_init(|| {
+        Query::new(lang, JS_XREF_QUERY).expect("valid js xref query")
+    })
+}
+
+fn ts_query(lang: &Language) -> &'static Query {
+    TS_QUERY.get_or_init(|| {
+        Query::new(lang, TS_XREF_QUERY).expect("valid ts xref query")
+    })
+}
+
+fn go_query(lang: &Language) -> &'static Query {
+    GO_QUERY.get_or_init(|| {
+        Query::new(lang, GO_XREF_QUERY).expect("valid go xref query")
+    })
+}
+
+fn java_query(lang: &Language) -> &'static Query {
+    JAVA_QUERY.get_or_init(|| {
+        Query::new(lang, JAVA_XREF_QUERY).expect("valid java xref query")
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Main extraction function
+// ---------------------------------------------------------------------------
+
+/// Extract cross-references from a parsed tree-sitter tree.
+///
+/// Returns `(Vec<ReferenceRecord>, HashMap<String, String>)` where the HashMap
+/// is the alias map (alias → original) built from import-as patterns.
+///
+/// Note: `enclosing_symbol_index` is NOT set here — it is assigned later in
+/// `IndexedFile::from_parse_result` where both symbols and references are available.
+pub fn extract_references(
+    root: &Node,
+    source: &str,
+    language: &LanguageId,
+) -> (Vec<ReferenceRecord>, HashMap<String, String>) {
+    let source_bytes = source.as_bytes();
+
+    let (query, ts_language) = match language {
+        LanguageId::Rust => {
+            let lang: Language = tree_sitter_rust::LANGUAGE.into();
+            (rust_query(&lang), lang)
+        }
+        LanguageId::Python => {
+            let lang: Language = tree_sitter_python::LANGUAGE.into();
+            (python_query(&lang), lang)
+        }
+        LanguageId::JavaScript => {
+            let lang: Language = tree_sitter_javascript::LANGUAGE.into();
+            (js_query(&lang), lang)
+        }
+        LanguageId::TypeScript => {
+            let lang: Language = tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into();
+            (ts_query(&lang), lang)
+        }
+        LanguageId::Go => {
+            let lang: Language = tree_sitter_go::LANGUAGE.into();
+            (go_query(&lang), lang)
+        }
+        LanguageId::Java => {
+            let lang: Language = tree_sitter_java::LANGUAGE.into();
+            (java_query(&lang), lang)
+        }
+        _ => return (vec![], HashMap::new()),
+    };
+
+    let _ = ts_language; // used only to initialize query once
+
+    let capture_names = query.capture_names();
+    let mut cursor = QueryCursor::new();
+    let mut references: Vec<ReferenceRecord> = Vec::new();
+    let mut alias_map: HashMap<String, String> = HashMap::new();
+
+    // StreamingIterator: use advance()/get() pattern instead of for..in
+    let mut matches = cursor.matches(query, *root, source_bytes);
+    while let Some(m) = {
+        matches.advance();
+        matches.get()
+    } {
+        let mut ref_call: Option<Node> = None;
+        let mut ref_qualified_call: Option<Node> = None;
+        let mut ref_method_call: Option<Node> = None;
+        let mut ref_import: Option<Node> = None;
+        let mut ref_type: Option<Node> = None;
+        let mut ref_macro: Option<Node> = None;
+        let mut import_original: Option<Node> = None;
+        let mut import_alias: Option<Node> = None;
+
+        for capture in m.captures {
+            let name = capture_names[capture.index as usize];
+            let node = capture.node;
+            match name {
+                "ref.call" => {
+                    ref_call = Some(node);
+                }
+                "ref.qualified_call" => {
+                    ref_qualified_call = Some(node);
+                }
+                "ref.method_call" => {
+                    ref_method_call = Some(node);
+                }
+                "ref.import" => {
+                    ref_import = Some(node);
+                }
+                "ref.type" => {
+                    ref_type = Some(node);
+                }
+                "ref.macro" => {
+                    ref_macro = Some(node);
+                }
+                "import.original" => {
+                    import_original = Some(node);
+                }
+                "import.alias" => {
+                    import_alias = Some(node);
+                }
+                _ => {}
+            }
+        }
+
+        // Handle alias pair — build alias_map and skip generating a reference
+        if let (Some(orig_node), Some(alias_node)) = (import_original, import_alias) {
+            if let (Ok(orig_text), Ok(alias_text)) = (
+                orig_node.utf8_text(source_bytes),
+                alias_node.utf8_text(source_bytes),
+            ) {
+                // Extract the last segment of the original path (e.g. "HashMap" from "std::collections::HashMap")
+                let orig_name = orig_text.split("::").last().unwrap_or(orig_text).trim().to_string();
+                let alias_str = alias_text.trim().to_string();
+                alias_map.insert(alias_str, orig_name);
+            }
+            continue;
+        }
+
+        // Process ref.call (potentially with qualified_call overlay)
+        if let Some(call_node) = ref_call {
+            if let Ok(name_text) = call_node.utf8_text(source_bytes) {
+                let name = name_text.trim().to_string();
+                let qualified_name = if let Some(qual_node) = ref_qualified_call {
+                    qual_node.utf8_text(source_bytes).ok().map(|t| t.trim().to_string())
+                } else {
+                    None
+                };
+
+                let start = call_node.start_position();
+                let end = call_node.end_position();
+                references.push(ReferenceRecord {
+                    name,
+                    qualified_name,
+                    kind: ReferenceKind::Call,
+                    byte_range: (call_node.start_byte() as u32, call_node.end_byte() as u32),
+                    line_range: (start.row as u32, end.row as u32),
+                    enclosing_symbol_index: None,
+                });
+            }
+        }
+
+        // Method call
+        if let Some(method_node) = ref_method_call {
+            if let Ok(name_text) = method_node.utf8_text(source_bytes) {
+                let name = name_text.trim().to_string();
+                let start = method_node.start_position();
+                let end = method_node.end_position();
+                references.push(ReferenceRecord {
+                    name,
+                    qualified_name: None,
+                    kind: ReferenceKind::Call,
+                    byte_range: (method_node.start_byte() as u32, method_node.end_byte() as u32),
+                    line_range: (start.row as u32, end.row as u32),
+                    enclosing_symbol_index: None,
+                });
+            }
+        }
+
+        // Import
+        if let Some(import_node) = ref_import {
+            if let Ok(name_text) = import_node.utf8_text(source_bytes) {
+                let full_text = name_text.trim();
+                // Extract simple name from qualified paths (last segment)
+                let name = full_text.split("::").last()
+                    .or_else(|| full_text.split('.').last())
+                    .unwrap_or(full_text)
+                    // Strip surrounding quotes for Go import paths
+                    .trim_matches('"')
+                    .trim_matches('\'')
+                    .to_string();
+                // Skip empty names (e.g. from wildcard imports)
+                if !name.is_empty() {
+                    let qualified_name = if full_text.contains("::") || full_text.contains('.') {
+                        Some(full_text.to_string())
+                    } else {
+                        None
+                    };
+                    let start = import_node.start_position();
+                    let end = import_node.end_position();
+                    references.push(ReferenceRecord {
+                        name,
+                        qualified_name,
+                        kind: ReferenceKind::Import,
+                        byte_range: (import_node.start_byte() as u32, import_node.end_byte() as u32),
+                        line_range: (start.row as u32, end.row as u32),
+                        enclosing_symbol_index: None,
+                    });
+                }
+            }
+        }
+
+        // Type reference
+        if let Some(type_node) = ref_type {
+            if let Ok(name_text) = type_node.utf8_text(source_bytes) {
+                let name = name_text.trim().to_string();
+                if !name.is_empty() {
+                    let start = type_node.start_position();
+                    let end = type_node.end_position();
+                    references.push(ReferenceRecord {
+                        name,
+                        qualified_name: None,
+                        kind: ReferenceKind::TypeUsage,
+                        byte_range: (type_node.start_byte() as u32, type_node.end_byte() as u32),
+                        line_range: (start.row as u32, end.row as u32),
+                        enclosing_symbol_index: None,
+                    });
+                }
+            }
+        }
+
+        // Macro use
+        if let Some(macro_node) = ref_macro {
+            if let Ok(name_text) = macro_node.utf8_text(source_bytes) {
+                let name = name_text.trim().to_string();
+                if !name.is_empty() {
+                    let start = macro_node.start_position();
+                    let end = macro_node.end_position();
+                    references.push(ReferenceRecord {
+                        name,
+                        qualified_name: None,
+                        kind: ReferenceKind::MacroUse,
+                        byte_range: (macro_node.start_byte() as u32, macro_node.end_byte() as u32),
+                        line_range: (start.row as u32, end.row as u32),
+                        enclosing_symbol_index: None,
+                    });
+                }
+            }
+        }
+    }
+
+    (references, alias_map)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tree_sitter::Parser;
+
+    fn parse_and_extract(source: &str, language: LanguageId) -> (Vec<ReferenceRecord>, HashMap<String, String>) {
+        let mut parser = Parser::new();
+        let ts_language: Language = match &language {
+            LanguageId::Rust => tree_sitter_rust::LANGUAGE.into(),
+            LanguageId::Python => tree_sitter_python::LANGUAGE.into(),
+            LanguageId::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
+            LanguageId::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+            LanguageId::Go => tree_sitter_go::LANGUAGE.into(),
+            LanguageId::Java => tree_sitter_java::LANGUAGE.into(),
+            _ => panic!("unsupported language in test"),
+        };
+        parser.set_language(&ts_language).expect("set language");
+        let tree = parser.parse(source, None).expect("parse");
+        let root = tree.root_node();
+        extract_references(&root, source, &language)
+    }
+
+    fn find_ref<'a>(refs: &'a [ReferenceRecord], name: &str) -> Option<&'a ReferenceRecord> {
+        refs.iter().find(|r| r.name == name)
+    }
+
+    fn has_ref(refs: &[ReferenceRecord], name: &str, kind: ReferenceKind) -> bool {
+        refs.iter().any(|r| r.name == name && r.kind == kind)
+    }
+
+    // --- Rust ---
+
+    #[test]
+    fn test_rust_call_expression_simple() {
+        let (refs, _) = parse_and_extract("fn main() { foo(); }", LanguageId::Rust);
+        assert!(has_ref(&refs, "foo", ReferenceKind::Call), "refs: {:?}", refs);
+    }
+
+    #[test]
+    fn test_rust_scoped_identifier_qualified_call() {
+        let (refs, _) = parse_and_extract("fn main() { Vec::new(); }", LanguageId::Rust);
+        let r = find_ref(&refs, "new");
+        assert!(r.is_some(), "should find 'new' call, refs: {:?}", refs);
+        let r = r.unwrap();
+        assert_eq!(r.kind, ReferenceKind::Call);
+        assert!(r.qualified_name.is_some(), "should have qualified_name");
+        let qname = r.qualified_name.as_deref().unwrap();
+        assert!(qname.contains("Vec"), "qualified_name should contain Vec, got: {qname}");
+    }
+
+    #[test]
+    fn test_rust_method_call() {
+        let (refs, _) = parse_and_extract("fn main() { self.items.push(x); }", LanguageId::Rust);
+        assert!(has_ref(&refs, "push", ReferenceKind::Call), "refs: {:?}", refs);
+    }
+
+    #[test]
+    fn test_rust_macro_invocation() {
+        let (refs, _) = parse_and_extract(r#"fn main() { println!("hi"); }"#, LanguageId::Rust);
+        assert!(has_ref(&refs, "println", ReferenceKind::MacroUse), "refs: {:?}", refs);
+    }
+
+    #[test]
+    fn test_rust_use_declaration_import() {
+        let (refs, _) = parse_and_extract("use std::collections::HashMap;", LanguageId::Rust);
+        // The import captures scoped_identifier for the whole use path
+        assert!(
+            refs.iter().any(|r| r.kind == ReferenceKind::Import),
+            "should have at least one Import ref, refs: {:?}", refs
+        );
+    }
+
+    #[test]
+    fn test_rust_use_as_clause_populates_alias_map() {
+        let source = "use std::collections::HashMap as Map;";
+        let (_, alias_map) = parse_and_extract(source, LanguageId::Rust);
+        assert!(
+            alias_map.contains_key("Map"),
+            "alias_map should contain 'Map', got: {:?}", alias_map
+        );
+        assert_eq!(alias_map.get("Map").map(|s| s.as_str()), Some("HashMap"));
+    }
+
+    #[test]
+    fn test_rust_type_identifier() {
+        let (refs, _) = parse_and_extract("fn foo(param: MyStruct) {}", LanguageId::Rust);
+        assert!(has_ref(&refs, "MyStruct", ReferenceKind::TypeUsage), "refs: {:?}", refs);
+    }
+
+    // --- Python ---
+
+    #[test]
+    fn test_python_function_call() {
+        let (refs, _) = parse_and_extract("process(data)", LanguageId::Python);
+        assert!(has_ref(&refs, "process", ReferenceKind::Call), "refs: {:?}", refs);
+    }
+
+    #[test]
+    fn test_python_import_statement() {
+        let (refs, _) = parse_and_extract("import os", LanguageId::Python);
+        assert!(
+            refs.iter().any(|r| r.kind == ReferenceKind::Import),
+            "should have Import ref, refs: {:?}", refs
+        );
+    }
+
+    #[test]
+    fn test_python_from_import() {
+        let (refs, _) = parse_and_extract("from os import path", LanguageId::Python);
+        assert!(
+            refs.iter().any(|r| r.kind == ReferenceKind::Import),
+            "should have Import ref, refs: {:?}", refs
+        );
+    }
+
+    #[test]
+    fn test_python_type_annotation() {
+        let (refs, _) = parse_and_extract("def foo(x: MyType): pass", LanguageId::Python);
+        assert!(has_ref(&refs, "MyType", ReferenceKind::TypeUsage), "refs: {:?}", refs);
+    }
+
+    // --- JavaScript ---
+
+    #[test]
+    fn test_js_call_expression() {
+        let (refs, _) = parse_and_extract("fetch(url);", LanguageId::JavaScript);
+        assert!(has_ref(&refs, "fetch", ReferenceKind::Call), "refs: {:?}", refs);
+    }
+
+    #[test]
+    fn test_js_import_statement() {
+        let (refs, _) = parse_and_extract("import React from 'react';", LanguageId::JavaScript);
+        assert!(
+            refs.iter().any(|r| r.kind == ReferenceKind::Import),
+            "should have Import ref, refs: {:?}", refs
+        );
+    }
+
+    // --- TypeScript ---
+
+    #[test]
+    fn test_ts_type_references() {
+        let source = "interface Foo { bar: MyInterface; }";
+        let (refs, _) = parse_and_extract(source, LanguageId::TypeScript);
+        assert!(
+            refs.iter().any(|r| r.kind == ReferenceKind::TypeUsage),
+            "should have TypeUsage ref, refs: {:?}", refs
+        );
+    }
+
+    // --- Go ---
+
+    #[test]
+    fn test_go_call_expression() {
+        let source = "package main\nimport \"fmt\"\nfunc main() { fmt.Println(\"hi\") }";
+        let (refs, _) = parse_and_extract(source, LanguageId::Go);
+        assert!(has_ref(&refs, "Println", ReferenceKind::Call), "refs: {:?}", refs);
+    }
+
+    #[test]
+    fn test_go_import() {
+        let source = "package main\nimport \"fmt\"";
+        let (refs, _) = parse_and_extract(source, LanguageId::Go);
+        assert!(
+            refs.iter().any(|r| r.kind == ReferenceKind::Import),
+            "should have Import ref, refs: {:?}", refs
+        );
+    }
+
+    // --- Java ---
+
+    #[test]
+    fn test_java_method_invocation() {
+        let source = "class A { void f() { System.out.println(\"hi\"); } }";
+        let (refs, _) = parse_and_extract(source, LanguageId::Java);
+        assert!(has_ref(&refs, "println", ReferenceKind::Call), "refs: {:?}", refs);
+    }
+
+    #[test]
+    fn test_java_import() {
+        let source = "import java.util.ArrayList;";
+        let (refs, _) = parse_and_extract(source, LanguageId::Java);
+        assert!(
+            refs.iter().any(|r| r.kind == ReferenceKind::Import),
+            "should have Import ref, refs: {:?}", refs
+        );
+    }
+
+    // --- Cross-language coverage ---
+
+    #[test]
+    fn test_all_languages_produce_at_least_one_ref_from_nontrivial_source() {
+        let cases: &[(&str, LanguageId)] = &[
+            ("fn main() { println!(\"hi\"); foo(); }", LanguageId::Rust),
+            ("import os\ndef main():\n    os.path.join('a', 'b')", LanguageId::Python),
+            ("import React from 'react';\nfetch('/api');", LanguageId::JavaScript),
+            ("import { Component } from 'react';\nconst x: MyType = null;", LanguageId::TypeScript),
+            ("package main\nimport \"fmt\"\nfunc main() { fmt.Println(\"hi\") }", LanguageId::Go),
+            ("import java.util.ArrayList;\nclass A { void f() { new ArrayList(); } }", LanguageId::Java),
+        ];
+
+        for (source, lang) in cases {
+            let (refs, _) = parse_and_extract(source, lang.clone());
+            assert!(!refs.is_empty(), "language {:?} should produce refs from non-trivial source, got none", lang);
+        }
+    }
+
+    #[test]
+    fn test_empty_source_produces_empty_refs_all_languages() {
+        let languages = [
+            LanguageId::Rust,
+            LanguageId::Python,
+            LanguageId::JavaScript,
+            LanguageId::TypeScript,
+            LanguageId::Go,
+            LanguageId::Java,
+        ];
+        for lang in languages {
+            let (refs, alias_map) = parse_and_extract("", lang.clone());
+            assert!(refs.is_empty(), "language {:?} should produce no refs from empty source", lang);
+            assert!(alias_map.is_empty(), "language {:?} should produce no aliases from empty source", lang);
+        }
+    }
+
+    #[test]
+    fn test_query_compilation_cached_onclock() {
+        // Call extract_references twice for Rust — both calls should return consistent results
+        // The query is compiled once (OnceLock) and reused.
+        let source = "fn main() { foo(); }";
+        let (refs1, _) = parse_and_extract(source, LanguageId::Rust);
+        let (refs2, _) = parse_and_extract(source, LanguageId::Rust);
+        assert_eq!(refs1.len(), refs2.len(), "same source should produce same number of refs regardless of cache state");
+    }
+}
