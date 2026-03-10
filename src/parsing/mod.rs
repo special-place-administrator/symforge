@@ -5,7 +5,7 @@ use std::panic;
 use tree_sitter::Parser;
 
 use crate::domain::{FileOutcome, FileProcessingResult, LanguageId, SymbolRecord};
-use crate::storage::digest_hex;
+use crate::hash::digest_hex;
 
 pub fn process_file(
     relative_path: &str,

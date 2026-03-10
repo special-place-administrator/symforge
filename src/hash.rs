@@ -13,11 +13,11 @@ const K: [u32; 64] = [
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ];
 
-pub fn digest_hex(bytes: &[u8]) -> String {
+pub(crate) fn digest_hex(bytes: &[u8]) -> String {
     to_hex(&digest(bytes))
 }
 
-pub fn digest(bytes: &[u8]) -> [u8; 32] {
+pub(crate) fn digest(bytes: &[u8]) -> [u8; 32] {
     let mut message = bytes.to_vec();
     let bit_len = (message.len() as u64) * 8;
 
