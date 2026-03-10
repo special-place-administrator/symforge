@@ -159,6 +159,75 @@ const CPP_XREF_QUERY: &str = r#"
 (using_declaration (qualified_identifier) @import.original)
 "#;
 
+const CSHARP_XREF_QUERY: &str = r#"
+; Method invocations: obj.Method() — capture the method name
+(invocation_expression
+  (member_access_expression name: (identifier) @ref.method_call))
+
+; Simple function calls: foo()
+(invocation_expression
+  function: (identifier) @ref.call)
+
+; Object creation: new Foo()
+(object_creation_expression type: (identifier) @ref.call)
+
+; Using directives: capture the last identifier in using System.Collections.Generic
+; For simple: using_directive -> identifier
+; For qualified: using_directive -> qualified_name -> identifier (rightmost)
+(using_directive (qualified_name (identifier) @ref.import))
+(using_directive (identifier) @ref.import)
+"#;
+
+const RUBY_XREF_QUERY: &str = r#"
+; Method calls: foo() or object.method()
+(call receiver: (_) method: (identifier) @ref.method_call)
+(call method: (identifier) @ref.call)
+
+; Require/require_relative
+(call method: (identifier) @ref.import
+  (#match? @ref.import "^require"))
+
+; Constant references: MyClass, MY_CONST
+(constant) @ref.type
+"#;
+
+const KOTLIN_XREF_QUERY: &str = r#"
+; Function/method calls: foo() or obj.method()
+(call_expression (simple_identifier) @ref.call)
+(navigation_expression (simple_identifier) @ref.method_call)
+
+; Import directives
+(import_header (identifier) @ref.import)
+
+; Type references
+(user_type (type_identifier) @ref.type)
+"#;
+
+const DART_XREF_QUERY: &str = r#"
+; Function/method calls: print('x') or obj.method()
+; In dart grammar, calls are member_access with selector
+(member_access (identifier) @ref.call)
+
+; Import directives: import 'dart:core'
+; import_specification -> configurable_uri -> uri -> string_literal
+(import_specification (configurable_uri (uri (string_literal) @ref.import)))
+
+; Type identifiers
+(type_identifier) @ref.type
+"#;
+
+const ELIXIR_XREF_QUERY: &str = r#"
+; Function calls: Module.function()
+(call target: (dot left: (alias) right: (identifier) @ref.method_call))
+
+; Local function calls: my_func()
+(call target: (identifier) @ref.call)
+
+; alias/import/use module references — capture the module alias
+(call target: (identifier)
+  (arguments (alias) @ref.import))
+"#;
+
 // ---------------------------------------------------------------------------
 // OnceLock-cached compiled queries
 // ---------------------------------------------------------------------------
@@ -171,6 +240,11 @@ static GO_QUERY: OnceLock<Query> = OnceLock::new();
 static JAVA_QUERY: OnceLock<Query> = OnceLock::new();
 static C_QUERY: OnceLock<Query> = OnceLock::new();
 static CPP_QUERY: OnceLock<Query> = OnceLock::new();
+static CSHARP_QUERY: OnceLock<Query> = OnceLock::new();
+static RUBY_QUERY: OnceLock<Query> = OnceLock::new();
+static KOTLIN_QUERY: OnceLock<Query> = OnceLock::new();
+static DART_QUERY: OnceLock<Query> = OnceLock::new();
+static ELIXIR_QUERY: OnceLock<Query> = OnceLock::new();
 
 fn rust_query(lang: &Language) -> &'static Query {
     RUST_QUERY.get_or_init(|| {
@@ -217,6 +291,36 @@ fn c_query(lang: &Language) -> &'static Query {
 fn cpp_query(lang: &Language) -> &'static Query {
     CPP_QUERY.get_or_init(|| {
         Query::new(lang, CPP_XREF_QUERY).expect("valid cpp xref query")
+    })
+}
+
+fn csharp_query(lang: &Language) -> &'static Query {
+    CSHARP_QUERY.get_or_init(|| {
+        Query::new(lang, CSHARP_XREF_QUERY).expect("valid csharp xref query")
+    })
+}
+
+fn ruby_query(lang: &Language) -> &'static Query {
+    RUBY_QUERY.get_or_init(|| {
+        Query::new(lang, RUBY_XREF_QUERY).expect("valid ruby xref query")
+    })
+}
+
+fn kotlin_query(lang: &Language) -> &'static Query {
+    KOTLIN_QUERY.get_or_init(|| {
+        Query::new(lang, KOTLIN_XREF_QUERY).expect("valid kotlin xref query")
+    })
+}
+
+fn dart_query(lang: &Language) -> &'static Query {
+    DART_QUERY.get_or_init(|| {
+        Query::new(lang, DART_XREF_QUERY).expect("valid dart xref query")
+    })
+}
+
+fn elixir_query(lang: &Language) -> &'static Query {
+    ELIXIR_QUERY.get_or_init(|| {
+        Query::new(lang, ELIXIR_XREF_QUERY).expect("valid elixir xref query")
     })
 }
 
@@ -271,6 +375,27 @@ pub fn extract_references(
             let lang: Language = tree_sitter_cpp::LANGUAGE.into();
             (cpp_query(&lang), lang)
         }
+        LanguageId::CSharp => {
+            let lang: Language = tree_sitter_c_sharp::LANGUAGE.into();
+            (csharp_query(&lang), lang)
+        }
+        LanguageId::Ruby => {
+            let lang: Language = tree_sitter_ruby::LANGUAGE.into();
+            (ruby_query(&lang), lang)
+        }
+        LanguageId::Kotlin => {
+            let lang: Language = tree_sitter_kotlin_sg::LANGUAGE.into();
+            (kotlin_query(&lang), lang)
+        }
+        LanguageId::Dart => {
+            let lang: Language = tree_sitter_dart::language().into();
+            (dart_query(&lang), lang)
+        }
+        LanguageId::Elixir => {
+            let lang: Language = tree_sitter_elixir::LANGUAGE.into();
+            (elixir_query(&lang), lang)
+        }
+        // PHP, Swift, Perl: grammar crates require ABI 15+ — no xref support
         _ => return (vec![], HashMap::new()),
     };
 
@@ -477,7 +602,12 @@ mod tests {
             LanguageId::Java => tree_sitter_java::LANGUAGE.into(),
             LanguageId::C => tree_sitter_c::LANGUAGE.into(),
             LanguageId::Cpp => tree_sitter_cpp::LANGUAGE.into(),
-            _ => panic!("unsupported language in test"),
+            LanguageId::CSharp => tree_sitter_c_sharp::LANGUAGE.into(),
+            LanguageId::Ruby => tree_sitter_ruby::LANGUAGE.into(),
+            LanguageId::Kotlin => tree_sitter_kotlin_sg::LANGUAGE.into(),
+            LanguageId::Dart => tree_sitter_dart::language().into(),
+            LanguageId::Elixir => tree_sitter_elixir::LANGUAGE.into(),
+            _ => panic!("unsupported language in test: {:?}", language),
         };
         parser.set_language(&ts_language).expect("set language");
         let tree = parser.parse(source, None).expect("parse");
@@ -752,6 +882,12 @@ mod tests {
             ("import java.util.ArrayList;\nclass A { void f() { new ArrayList(); } }", LanguageId::Java),
             ("#include <stdio.h>\nvoid foo() { bar(); }", LanguageId::C),
             ("#include <vector>\nvoid foo() { std::sort(v.begin(), v.end()); }", LanguageId::Cpp),
+            // New languages (Phase 07-04)
+            ("using System;\npublic class App { void Run() { Console.WriteLine(\"hi\"); } }", LanguageId::CSharp),
+            ("require 'json'\nclass App\n  def run\n    puts 'hi'\n  end\nend", LanguageId::Ruby),
+            ("import kotlin.io.*\nfun main() { println(\"hi\") }", LanguageId::Kotlin),
+            ("import 'dart:io';\nvoid main() { print('hello'); }", LanguageId::Dart),
+            ("defmodule App do\n  alias MyLib.Helper\n  def run, do: :ok\nend", LanguageId::Elixir),
         ];
 
         for (source, lang) in cases {
@@ -771,6 +907,11 @@ mod tests {
             LanguageId::Java,
             LanguageId::C,
             LanguageId::Cpp,
+            LanguageId::CSharp,
+            LanguageId::Ruby,
+            LanguageId::Kotlin,
+            LanguageId::Dart,
+            LanguageId::Elixir,
         ];
         for lang in languages {
             let (refs, alias_map) = parse_and_extract("", lang.clone());
@@ -787,5 +928,115 @@ mod tests {
         let (refs1, _) = parse_and_extract(source, LanguageId::Rust);
         let (refs2, _) = parse_and_extract(source, LanguageId::Rust);
         assert_eq!(refs1.len(), refs2.len(), "same source should produce same number of refs regardless of cache state");
+    }
+
+    // --- C# ---
+
+    #[test]
+    fn test_csharp_call_ref() {
+        let source = "public class App { void Run() { Console.WriteLine(\"hi\"); } }";
+        let (refs, _) = parse_and_extract(source, LanguageId::CSharp);
+        assert!(
+            refs.iter().any(|r| r.kind == ReferenceKind::Call),
+            "should have at least one Call ref, refs: {:?}", refs
+        );
+    }
+
+    #[test]
+    fn test_csharp_import_ref() {
+        let source = "using System.Collections.Generic;\npublic class App {}";
+        let (refs, _) = parse_and_extract(source, LanguageId::CSharp);
+        assert!(
+            refs.iter().any(|r| r.kind == ReferenceKind::Import),
+            "should have Import ref for using directive, refs: {:?}", refs
+        );
+    }
+
+    // --- Ruby ---
+
+    #[test]
+    fn test_ruby_call_ref() {
+        let source = "def run\n  puts 'hello'\nend";
+        let (refs, _) = parse_and_extract(source, LanguageId::Ruby);
+        assert!(
+            refs.iter().any(|r| r.kind == ReferenceKind::Call),
+            "should have at least one Call ref, refs: {:?}", refs
+        );
+    }
+
+    #[test]
+    fn test_ruby_import_ref() {
+        let source = "require 'json'\ndef run; end";
+        let (refs, _) = parse_and_extract(source, LanguageId::Ruby);
+        assert!(
+            refs.iter().any(|r| r.kind == ReferenceKind::Import),
+            "should have Import ref for require, refs: {:?}", refs
+        );
+    }
+
+    // --- Kotlin ---
+
+    #[test]
+    fn test_kotlin_call_ref() {
+        let source = "fun main() { println(\"hello\") }";
+        let (refs, _) = parse_and_extract(source, LanguageId::Kotlin);
+        assert!(
+            refs.iter().any(|r| r.kind == ReferenceKind::Call),
+            "should have at least one Call ref, refs: {:?}", refs
+        );
+    }
+
+    #[test]
+    fn test_kotlin_import_ref() {
+        let source = "import kotlin.io.println\nfun main() {}";
+        let (refs, _) = parse_and_extract(source, LanguageId::Kotlin);
+        assert!(
+            refs.iter().any(|r| r.kind == ReferenceKind::Import),
+            "should have Import ref, refs: {:?}", refs
+        );
+    }
+
+    // --- Dart ---
+
+    #[test]
+    fn test_dart_import_ref() {
+        let source = "import 'dart:io';\nvoid main() {}";
+        let (refs, _) = parse_and_extract(source, LanguageId::Dart);
+        assert!(
+            refs.iter().any(|r| r.kind == ReferenceKind::Import),
+            "should have Import ref for dart import, refs: {:?}", refs
+        );
+    }
+
+    #[test]
+    fn test_dart_type_ref() {
+        let source = "class Foo { MyType field; }";
+        let (refs, _) = parse_and_extract(source, LanguageId::Dart);
+        assert!(
+            refs.iter().any(|r| r.kind == ReferenceKind::TypeUsage),
+            "should have TypeUsage ref, refs: {:?}", refs
+        );
+    }
+
+    // --- Elixir ---
+
+    #[test]
+    fn test_elixir_call_ref() {
+        let source = "def run do\n  IO.puts(\"hello\")\nend";
+        let (refs, _) = parse_and_extract(source, LanguageId::Elixir);
+        assert!(
+            refs.iter().any(|r| r.kind == ReferenceKind::Call),
+            "should have at least one Call ref, refs: {:?}", refs
+        );
+    }
+
+    #[test]
+    fn test_elixir_import_ref() {
+        let source = "defmodule App do\n  alias MyLib.Helper\nend";
+        let (refs, _) = parse_and_extract(source, LanguageId::Elixir);
+        assert!(
+            refs.iter().any(|r| r.kind == ReferenceKind::Import),
+            "should have Import ref for alias, refs: {:?}", refs
+        );
     }
 }
