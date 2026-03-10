@@ -22,5 +22,10 @@ tree-sitter-go = "0.23"
 tree-sitter-java = "0.23"
 ignore = "0.4"
 
+[features]
+# v1 feature gate: keeps retrieval_conformance.rs compiling without v1 domain types.
+# These tests will be rewritten for v2 response format in Phase 2.
+v1 = []
+
 [dev-dependencies]
 tempfile = "3"
