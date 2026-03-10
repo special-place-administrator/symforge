@@ -1,6 +1,7 @@
 use std::time::{Duration, SystemTime};
 
 use crate::domain::SymbolRecord;
+use crate::watcher::{WatcherInfo, WatcherState};
 
 use super::store::{IndexedFile, IndexState, LiveIndex, ParseStatus};
 
@@ -13,6 +14,14 @@ pub struct HealthStats {
     pub partial_parse_count: usize,
     pub failed_count: usize,
     pub load_duration: Duration,
+    /// Current state of the file watcher.
+    pub watcher_state: WatcherState,
+    /// Total number of file-system events processed by the watcher.
+    pub events_processed: u64,
+    /// Wall-clock time of the most recent event processed, if any.
+    pub last_event_at: Option<SystemTime>,
+    /// Effective debounce window in milliseconds.
+    pub debounce_window_ms: u64,
 }
 
 impl LiveIndex {
@@ -73,8 +82,8 @@ impl LiveIndex {
 
     /// Compute health statistics for the index.
     ///
-    /// Per CONTEXT.md: includes file counts, symbol counts, parse status breakdown,
-    /// and total load duration.
+    /// Watcher fields are populated with safe defaults (Off state, zero counts).
+    /// Use `health_stats_with_watcher` when a watcher is active.
     pub fn health_stats(&self) -> HealthStats {
         let mut parsed_count = 0usize;
         let mut partial_parse_count = 0usize;
@@ -97,7 +106,24 @@ impl LiveIndex {
             partial_parse_count,
             failed_count,
             load_duration: self.load_duration,
+            watcher_state: WatcherState::Off,
+            events_processed: 0,
+            last_event_at: None,
+            debounce_window_ms: 200,
         }
+    }
+
+    /// Compute health statistics, populating watcher fields from the provided `WatcherInfo`.
+    ///
+    /// Use this variant when the file watcher is active and its state should be reflected
+    /// in health reports.
+    pub fn health_stats_with_watcher(&self, watcher: &WatcherInfo) -> HealthStats {
+        let mut stats = self.health_stats();
+        stats.watcher_state = watcher.state.clone();
+        stats.events_processed = watcher.events_processed;
+        stats.last_event_at = watcher.last_event_at;
+        stats.debounce_window_ms = watcher.debounce_window_ms;
+        stats
     }
 }
 
@@ -105,8 +131,9 @@ impl LiveIndex {
 mod tests {
     use crate::domain::{LanguageId, SymbolRecord, SymbolKind};
     use crate::live_index::store::{CircuitBreakerState, IndexedFile, IndexState, LiveIndex, ParseStatus};
+    use crate::watcher::{WatcherInfo, WatcherState};
     use std::collections::HashMap;
-    use std::time::{Duration, Instant};
+    use std::time::{Duration, Instant, SystemTime};
 
     fn make_symbol(name: &str) -> SymbolRecord {
         SymbolRecord {
@@ -286,5 +313,34 @@ mod tests {
             }
             other => panic!("expected CircuitBreakerTripped, got {:?}", other),
         }
+    }
+
+    // --- Extended HealthStats with watcher fields ---
+
+    #[test]
+    fn test_health_stats_default_watcher_fields() {
+        let index = make_index(vec![], false);
+        let stats = index.health_stats();
+        assert_eq!(stats.watcher_state, WatcherState::Off, "default watcher state should be Off");
+        assert_eq!(stats.events_processed, 0, "default events_processed should be 0");
+        assert!(stats.last_event_at.is_none(), "default last_event_at should be None");
+        assert_eq!(stats.debounce_window_ms, 200, "default debounce_window_ms should be 200");
+    }
+
+    #[test]
+    fn test_health_stats_with_watcher_active() {
+        let index = make_index(vec![], false);
+        let now = SystemTime::now();
+        let watcher = WatcherInfo {
+            state: WatcherState::Active,
+            events_processed: 42,
+            last_event_at: Some(now),
+            debounce_window_ms: 500,
+        };
+        let stats = index.health_stats_with_watcher(&watcher);
+        assert_eq!(stats.watcher_state, WatcherState::Active);
+        assert_eq!(stats.events_processed, 42);
+        assert_eq!(stats.last_event_at, Some(now));
+        assert_eq!(stats.debounce_window_ms, 500);
     }
 }
