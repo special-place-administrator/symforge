@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: planning
-stopped_at: Completed 01-liveindex-foundation/01-01-PLAN.md
-last_updated: "2026-03-10T14:24:37.866Z"
+stopped_at: Completed 01-liveindex-foundation/01-02-PLAN.md
+last_updated: "2026-03-10T14:32:43.926Z"
 last_activity: 2026-03-10 — Roadmap created, requirements mapped, STATE initialized
 progress:
   total_phases: 7
   completed_phases: 0
   total_plans: 3
-  completed_plans: 1
+  completed_plans: 2
   percent: 0
 ---
 
@@ -51,6 +51,7 @@ Progress: [░░░░░░░░░░] 0%
 
 *Updated after each plan completion*
 | Phase 01-liveindex-foundation P01 | 15 | 2 tasks | 10 files |
+| Phase 01-liveindex-foundation P02 | 5 | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -68,6 +69,10 @@ Recent decisions affecting current work:
 - [Phase 01-01]: Stub main.rs immediately when v1 types deleted — keeps cargo check green from Plan 01 forward, Plan 03 will fully rewrite
 - [Phase 01-01]: Keep content_hash in FileProcessingResult — parsing already computes it, LiveIndex will use it for cache invalidation
 - [Phase 01-01]: digest_hex relocated to src/hash.rs as pub(crate) — single source of truth, no external crate access needed
+- [Phase 01-02]: Query methods take &LiveIndex not &SharedIndex — prevents re-entrant RwLock deadlocks, enforced by type system
+- [Phase 01-02]: CircuitBreakerState::new(threshold) for testability; from_env() reads TOKENIZOR_CB_THRESHOLD env var
+- [Phase 01-02]: Content bytes stored for all files including failed-parse files (LIDX-03) — zero disk I/O on read path
+- [Phase 01-02]: LiveIndex::load is sync (runs before tokio runtime) — Rayon handles internal parallelism
 
 ### Pending Todos
 
@@ -81,6 +86,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-10T14:24:37.863Z
-Stopped at: Completed 01-liveindex-foundation/01-01-PLAN.md
+Last session: 2026-03-10T14:32:43.923Z
+Stopped at: Completed 01-liveindex-foundation/01-02-PLAN.md
 Resume file: None

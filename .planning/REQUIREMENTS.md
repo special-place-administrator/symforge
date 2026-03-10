@@ -9,10 +9,10 @@ Requirements for the v2 rewrite release. Each maps to roadmap phases.
 
 ### LiveIndex
 
-- [ ] **LIDX-01**: All discovered source files loaded into in-memory HashMap on startup
-- [ ] **LIDX-02**: All tree-sitter extracted symbols stored with O(1) lookup by name, file, and ID
-- [ ] **LIDX-03**: File content bytes stored in memory — zero disk I/O on read path
-- [ ] **LIDX-04**: Concurrent access via shared ownership (Arc + concurrent map) — many readers, exclusive writer
+- [x] **LIDX-01**: All discovered source files loaded into in-memory HashMap on startup
+- [x] **LIDX-02**: All tree-sitter extracted symbols stored with O(1) lookup by name, file, and ID
+- [x] **LIDX-03**: File content bytes stored in memory — zero disk I/O on read path
+- [x] **LIDX-04**: Concurrent access via shared ownership (Arc + concurrent map) — many readers, exclusive writer
 - [ ] **LIDX-05**: Initial load completes in <500ms for 70 files, <3s for 1,000 files
 
 ### Freshness
@@ -26,8 +26,8 @@ Requirements for the v2 rewrite release. Each maps to roadmap phases.
 
 ### Reliability
 
-- [ ] **RELY-01**: Circuit breaker aborts indexing if >20% of files fail parsing
-- [ ] **RELY-02**: Partial parse on syntax errors — keep previous symbols, log warning
+- [x] **RELY-01**: Circuit breaker aborts indexing if >20% of files fail parsing
+- [x] **RELY-02**: Partial parse on syntax errors — keep previous symbols, log warning
 - [ ] **RELY-03**: File deletion during edit handled gracefully (no panic/crash)
 - [x] **RELY-04**: MCP server stdout purity — zero non-JSON output on stdout (CI gate)
 
@@ -130,10 +130,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| LIDX-01 | Phase 1 | Pending |
-| LIDX-02 | Phase 1 | Pending |
-| LIDX-03 | Phase 1 | Pending |
-| LIDX-04 | Phase 1 | Pending |
+| LIDX-01 | Phase 1 | Complete |
+| LIDX-02 | Phase 1 | Complete |
+| LIDX-03 | Phase 1 | Complete |
+| LIDX-04 | Phase 1 | Complete |
 | LIDX-05 | Phase 2 | Pending |
 | FRSH-01 | Phase 3 | Pending |
 | FRSH-02 | Phase 3 | Pending |
@@ -141,8 +141,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | FRSH-04 | Phase 3 | Pending |
 | FRSH-05 | Phase 3 | Pending |
 | FRSH-06 | Phase 3 | Pending |
-| RELY-01 | Phase 1 | Pending |
-| RELY-02 | Phase 1 | Pending |
+| RELY-01 | Phase 1 | Complete |
+| RELY-02 | Phase 1 | Complete |
 | RELY-03 | Phase 3 | Pending |
 | RELY-04 | Phase 1 | Complete |
 | XREF-01 | Phase 4 | Pending |
