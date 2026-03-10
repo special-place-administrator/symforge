@@ -5,3 +5,4 @@ pub mod observability;
 pub mod parsing;
 pub mod live_index;
 pub mod discovery;
+pub mod protocol;
