@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: completed
-stopped_at: Completed 07-polish-and-persistence-07-01-PLAN.md
-last_updated: "2026-03-10T23:12:54.735Z"
+stopped_at: Completed 07-polish-and-persistence-02-PLAN.md
+last_updated: "2026-03-10T23:13:46.637Z"
 last_activity: "2026-03-10 — Phase 06 Plan 03 complete: 12 integration tests prove HOOK-04..09 + INFR-04; health tool enriched with token savings via Arc<TokenStats>"
 progress:
   total_phases: 7
@@ -69,6 +69,7 @@ Progress: [████████░░] 94%
 | Phase 06-hook-enrichment-integration P02 | 5 | 2 tasks | 4 files |
 | Phase 06-hook-enrichment-integration P03 | 7 | 2 tasks | 7 files |
 | Phase 07-polish-and-persistence P01 | 10 | 2 tasks | 7 files |
+| Phase 07-polish-and-persistence P02 | 10 | 2 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -144,6 +145,9 @@ Recent decisions affecting current work:
 - [Phase 06-03]: init_integration.rs 3 failures confirmed pre-existing: verified by stashing changes, deferred to deferred-items.md (not caused by Plan 06-03)
 - [Phase 07-polish-and-persistence]: Pin tree-sitter-c/cpp to 0.23.4 not 0.24.1: ABI 15 in 0.24.x grammars incompatible with tree-sitter 0.24.x host (max ABI 14); 0.23.x grammars use ABI 14 consistently
 - [Phase 07-polish-and-persistence]: C declarator name extraction uses recursive walk: pointer_declarator -> function_declarator -> identifier; template_declaration produces no symbol itself
+- [Phase 07-02]: TrigramIndex stores sorted posting lists (Vec<u32>) for binary_search during AND-intersection; starts with shortest list for early pruning
+- [Phase 07-02]: MatchTier enum derives Ord with Exact=0/Prefix=1/Substring=2 for sort key (tier, tiebreak, name) in search_symbols_result
+- [Phase 07-02]: get_file_tree is 14th MCP tool; test_exactly_13_tools_registered updated to 14
 
 ### Pending Todos
 
@@ -157,6 +161,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-10T23:12:54.731Z
-Stopped at: Completed 07-polish-and-persistence-07-01-PLAN.md
+Last session: 2026-03-10T23:13:46.633Z
+Stopped at: Completed 07-polish-and-persistence-02-PLAN.md
 Resume file: None

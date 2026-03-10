@@ -81,9 +81,9 @@ Requirements for the v2 rewrite release. Each maps to roadmap phases.
 
 ### Polish
 
-- [ ] **PLSH-01**: Trigram text search index — <10ms for any query on 10,000-file repo
-- [ ] **PLSH-02**: Scored symbol search — exact > prefix > substring > word overlap ranking
-- [ ] **PLSH-03**: File tree navigation tool — get_file_tree with directory browsing + symbol counts
+- [x] **PLSH-01**: Trigram text search index — <10ms for any query on 10,000-file repo
+- [x] **PLSH-02**: Scored symbol search — exact > prefix > substring > word overlap ranking
+- [x] **PLSH-03**: File tree navigation tool — get_file_tree with directory browsing + symbol counts
 - [ ] **PLSH-04**: Persistence — serialize LiveIndex to disk on shutdown, load on startup (<100ms)
 - [ ] **PLSH-05**: Background hash verification after loading serialized index
 
@@ -181,9 +181,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | INFR-03 | Phase 2 | Complete |
 | INFR-04 | Phase 6 | Complete |
 | INFR-05 | Phase 2 | Complete |
-| PLSH-01 | Phase 7 | Pending |
-| PLSH-02 | Phase 7 | Pending |
-| PLSH-03 | Phase 7 | Pending |
+| PLSH-01 | Phase 7 | Complete |
+| PLSH-02 | Phase 7 | Complete |
+| PLSH-03 | Phase 7 | Complete |
 | PLSH-04 | Phase 7 | Pending |
 | PLSH-05 | Phase 7 | Pending |
 | LANG-01 | Phase 7 | Complete |
