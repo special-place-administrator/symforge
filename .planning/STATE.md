@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: planning
-stopped_at: Completed 02-mcp-tools-v1-parity-02-01-PLAN.md
-last_updated: "2026-03-10T15:35:02.209Z"
+stopped_at: Completed 02-mcp-tools-v1-parity-02-02-PLAN.md
+last_updated: "2026-03-10T15:45:33.000Z"
 last_activity: 2026-03-10 — Roadmap created, requirements mapped, STATE initialized
 progress:
   total_phases: 7
   completed_phases: 1
   total_plans: 6
-  completed_plans: 4
+  completed_plans: 5
   percent: 0
 ---
 
@@ -54,6 +54,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 01-liveindex-foundation P02 | 5 | 2 tasks | 4 files |
 | Phase 01-liveindex-foundation P03 | 15 | 2 tasks | 4 files |
 | Phase 02-mcp-tools-v1-parity P01 | 7 | 2 tasks | 7 files |
+| Phase 02-mcp-tools-v1-parity PP02 | 15 | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -82,6 +83,9 @@ Recent decisions affecting current work:
 - [Phase 02-mcp-tools-v1-parity]: reload() validates path exists before discover_files — ignore crate silently returns empty on invalid paths
 - [Phase 02-mcp-tools-v1-parity]: format.rs functions accept &LiveIndex directly — no intermediate DTOs, maximal composability for tool handlers
 - [Phase 02-mcp-tools-v1-parity]: repo_outline accepts project_name parameter — caller provides context, formatter stays pure
+- [Phase 02-mcp-tools-v1-parity]: schemars 1.x mandatory over 0.8 — rmcp 1.1.0 uses schemars 1.2.1 transitively; two-version split causes trait mismatch on Parameters<T>
+- [Phase 02-mcp-tools-v1-parity]: #[tool_router(vis = pub(crate))] splits struct (mod.rs) from tool impl (tools.rs) while allowing Self::tool_router() cross-module call
+- [Phase 02-mcp-tools-v1-parity]: loading_guard! macro eliminates 6-line IndexState match boilerplate repeated 9 times across tool handlers
 
 ### Pending Todos
 
@@ -95,6 +99,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-10T15:35:02.207Z
-Stopped at: Completed 02-mcp-tools-v1-parity-02-01-PLAN.md
+Last session: 2026-03-10T15:45:32.997Z
+Stopped at: Completed 02-mcp-tools-v1-parity-02-02-PLAN.md
 Resume file: None

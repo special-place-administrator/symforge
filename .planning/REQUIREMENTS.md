@@ -44,19 +44,19 @@ Requirements for the v2 rewrite release. Each maps to roadmap phases.
 
 ### MCP Tools
 
-- [ ] **TOOL-01**: get_symbol — lookup by (file, name, kind_filter) from LiveIndex
-- [ ] **TOOL-02**: get_symbols — batch lookup, supports symbol and code_slice targets
-- [ ] **TOOL-03**: get_file_outline — ordered symbol list for a file
-- [ ] **TOOL-04**: get_repo_outline — file list with coverage stats
-- [ ] **TOOL-05**: search_symbols — substring matching with relevance scoring
-- [ ] **TOOL-06**: search_text — text search across all indexed files
-- [ ] **TOOL-07**: health — report LiveIndex stats (files, symbols, watcher status, last update)
-- [ ] **TOOL-08**: index_folder — trigger full reload of LiveIndex
+- [x] **TOOL-01**: get_symbol — lookup by (file, name, kind_filter) from LiveIndex
+- [x] **TOOL-02**: get_symbols — batch lookup, supports symbol and code_slice targets
+- [x] **TOOL-03**: get_file_outline — ordered symbol list for a file
+- [x] **TOOL-04**: get_repo_outline — file list with coverage stats
+- [x] **TOOL-05**: search_symbols — substring matching with relevance scoring
+- [x] **TOOL-06**: search_text — text search across all indexed files
+- [x] **TOOL-07**: health — report LiveIndex stats (files, symbols, watcher status, last update)
+- [x] **TOOL-08**: index_folder — trigger full reload of LiveIndex
 - [ ] **TOOL-09**: find_references — all call sites for a symbol with context snippets
 - [ ] **TOOL-10**: find_dependents — files that import a given file
 - [ ] **TOOL-11**: get_context_bundle — one-call full context (symbol + callers + callees + types + imports)
-- [ ] **TOOL-12**: what_changed — files and symbols modified since timestamp
-- [ ] **TOOL-13**: get_file_content — serve file content from memory with optional line range
+- [x] **TOOL-12**: what_changed — files and symbols modified since timestamp
+- [x] **TOOL-13**: get_file_content — serve file content from memory with optional line range
 
 ### Hook Integration
 
@@ -77,7 +77,7 @@ Requirements for the v2 rewrite release. Each maps to roadmap phases.
 - [ ] **INFR-02**: Auto-index on startup if .git exists (configurable via TOKENIZOR_AUTO_INDEX)
 - [x] **INFR-03**: Compact response formatter — human-readable output matching Read/Grep style
 - [ ] **INFR-04**: Token savings calculation and tracking per session
-- [ ] **INFR-05**: Removed tools: cancel_index_run, checkpoint_now, resume_index_run, get_index_run, list_index_runs, invalidate_indexed_state, repair_index, inspect_repository_health, get_operational_history, reindex_repository
+- [x] **INFR-05**: Removed tools: cancel_index_run, checkpoint_now, resume_index_run, get_index_run, list_index_runs, invalidate_indexed_state, repair_index, inspect_repository_health, get_operational_history, reindex_repository
 
 ### Polish
 
@@ -153,19 +153,19 @@ Which phases cover which requirements. Updated during roadmap creation.
 | XREF-06 | Phase 4 | Pending |
 | XREF-07 | Phase 4 | Pending |
 | XREF-08 | Phase 4 | Pending |
-| TOOL-01 | Phase 2 | Pending |
-| TOOL-02 | Phase 2 | Pending |
-| TOOL-03 | Phase 2 | Pending |
-| TOOL-04 | Phase 2 | Pending |
-| TOOL-05 | Phase 2 | Pending |
-| TOOL-06 | Phase 2 | Pending |
-| TOOL-07 | Phase 2 | Pending |
-| TOOL-08 | Phase 2 | Pending |
+| TOOL-01 | Phase 2 | Complete |
+| TOOL-02 | Phase 2 | Complete |
+| TOOL-03 | Phase 2 | Complete |
+| TOOL-04 | Phase 2 | Complete |
+| TOOL-05 | Phase 2 | Complete |
+| TOOL-06 | Phase 2 | Complete |
+| TOOL-07 | Phase 2 | Complete |
+| TOOL-08 | Phase 2 | Complete |
 | TOOL-09 | Phase 4 | Pending |
 | TOOL-10 | Phase 4 | Pending |
 | TOOL-11 | Phase 4 | Pending |
-| TOOL-12 | Phase 2 | Pending |
-| TOOL-13 | Phase 2 | Pending |
+| TOOL-12 | Phase 2 | Complete |
+| TOOL-13 | Phase 2 | Complete |
 | HOOK-01 | Phase 5 | Pending |
 | HOOK-02 | Phase 5 | Pending |
 | HOOK-03 | Phase 5 | Pending |
@@ -180,7 +180,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | INFR-02 | Phase 2 | Pending |
 | INFR-03 | Phase 2 | Complete |
 | INFR-04 | Phase 6 | Pending |
-| INFR-05 | Phase 2 | Pending |
+| INFR-05 | Phase 2 | Complete |
 | PLSH-01 | Phase 7 | Pending |
 | PLSH-02 | Phase 7 | Pending |
 | PLSH-03 | Phase 7 | Pending |
