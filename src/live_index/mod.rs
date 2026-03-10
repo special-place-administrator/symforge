@@ -1,1 +1,5 @@
-// LiveIndex store and query — implemented in Plan 02
+pub mod store;
+pub mod query;
+
+pub use store::{CircuitBreakerState, IndexState, IndexedFile, LiveIndex, ParseStatus, SharedIndex};
+pub use query::HealthStats;

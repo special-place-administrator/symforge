@@ -1,0 +1,494 @@
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
+
+use rayon::prelude::*;
+use tracing::{error, info, warn};
+
+use crate::domain::{FileOutcome, FileProcessingResult, LanguageId, SymbolRecord};
+use crate::error::Result;
+use crate::{discovery, parsing};
+
+/// Per-file parse status stored in the index.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ParseStatus {
+    /// File parsed successfully with no syntax errors.
+    Parsed,
+    /// File parsed but tree-sitter reported syntax errors; symbols were still extracted.
+    PartialParse { warning: String },
+    /// File could not be parsed at all; symbols list is empty but content bytes are stored.
+    Failed { error: String },
+}
+
+/// A single indexed file — all data needed for query and display.
+#[derive(Clone, Debug)]
+pub struct IndexedFile {
+    pub relative_path: String,
+    pub language: LanguageId,
+    /// Raw file bytes stored in memory (LIDX-03 — zero disk I/O on read path).
+    pub content: Vec<u8>,
+    /// Symbols extracted by the parser.
+    pub symbols: Vec<SymbolRecord>,
+    pub parse_status: ParseStatus,
+    pub byte_len: u64,
+    pub content_hash: String,
+}
+
+impl IndexedFile {
+    /// Build an `IndexedFile` from a `FileProcessingResult` plus the raw bytes.
+    ///
+    /// Maps `FileOutcome` → `ParseStatus`:
+    /// - `Processed`     → `ParseStatus::Parsed`
+    /// - `PartialParse`  → `ParseStatus::PartialParse` (symbols kept)
+    /// - `Failed`        → `ParseStatus::Failed` (empty symbols, content still stored)
+    pub fn from_parse_result(result: FileProcessingResult, content: Vec<u8>) -> Self {
+        let parse_status = match &result.outcome {
+            FileOutcome::Processed => ParseStatus::Parsed,
+            FileOutcome::PartialParse { warning } => ParseStatus::PartialParse {
+                warning: warning.clone(),
+            },
+            FileOutcome::Failed { error } => ParseStatus::Failed {
+                error: error.clone(),
+            },
+        };
+
+        IndexedFile {
+            relative_path: result.relative_path,
+            language: result.language,
+            content,
+            symbols: result.symbols,
+            parse_status,
+            byte_len: result.byte_len,
+            content_hash: result.content_hash,
+        }
+    }
+}
+
+/// Tracks parse failures during index loading for the circuit breaker.
+pub struct CircuitBreakerState {
+    total: AtomicUsize,
+    failed: AtomicUsize,
+    tripped: AtomicBool,
+    /// Failure threshold as a fraction (e.g., 0.20 = 20%).
+    threshold: f64,
+    /// First few failure details (path, reason) for summary reporting.
+    failure_details: Mutex<Vec<(String, String)>>,
+}
+
+impl CircuitBreakerState {
+    /// Create with an explicit threshold (for testability).
+    pub fn new(threshold: f64) -> Self {
+        Self {
+            total: AtomicUsize::new(0),
+            failed: AtomicUsize::new(0),
+            tripped: AtomicBool::new(false),
+            threshold,
+            failure_details: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Create using the `TOKENIZOR_CB_THRESHOLD` env var, defaulting to 0.20.
+    pub fn from_env() -> Self {
+        let threshold = std::env::var("TOKENIZOR_CB_THRESHOLD")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(0.20);
+        Self::new(threshold)
+    }
+
+    pub fn record_success(&self) {
+        self.total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_failure(&self, path: &str, reason: &str) {
+        self.total.fetch_add(1, Ordering::Relaxed);
+        self.failed.fetch_add(1, Ordering::Relaxed);
+
+        let mut details = self.failure_details.lock().unwrap();
+        if details.len() < 5 {
+            details.push((path.to_string(), reason.to_string()));
+        }
+    }
+
+    /// Returns `true` when the failure rate exceeds the threshold.
+    ///
+    /// IMPORTANT: returns `false` when fewer than 5 files have been processed
+    /// (minimum-file guard prevents spurious trips on tiny repos).
+    pub fn should_abort(&self) -> bool {
+        let total = self.total.load(Ordering::Relaxed);
+        if total < 5 {
+            return false;
+        }
+        let failed = self.failed.load(Ordering::Relaxed);
+        let rate = failed as f64 / total as f64;
+        if rate > self.threshold {
+            self.tripped.store(true, Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn is_tripped(&self) -> bool {
+        self.tripped.load(Ordering::Relaxed)
+    }
+
+    /// One-line summary plus top failure details.
+    pub fn summary(&self) -> String {
+        let total = self.total.load(Ordering::Relaxed);
+        let failed = self.failed.load(Ordering::Relaxed);
+        let rate = if total > 0 {
+            (failed as f64 / total as f64 * 100.0) as u32
+        } else {
+            0
+        };
+
+        let details = self.failure_details.lock().unwrap();
+        let top_failures: Vec<String> = details
+            .iter()
+            .take(3)
+            .map(|(p, r)| format!("  - {p}: {r}"))
+            .collect();
+
+        let mut msg = format!(
+            "circuit breaker tripped: {failed}/{total} files failed ({rate}% > {}%)",
+            (self.threshold * 100.0) as u32
+        );
+        if !top_failures.is_empty() {
+            msg.push_str("\nTop failures:\n");
+            msg.push_str(&top_failures.join("\n"));
+        }
+        msg
+    }
+}
+
+/// Overall state of the index.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IndexState {
+    Loading,
+    Ready,
+    CircuitBreakerTripped { summary: String },
+}
+
+/// The in-memory index: file contents and parsed symbols for all discovered files.
+pub struct LiveIndex {
+    /// Keyed by `relative_path` (forward-slash normalized).
+    pub(crate) files: HashMap<String, IndexedFile>,
+    pub(crate) loaded_at: Instant,
+    pub(crate) load_duration: Duration,
+    pub(crate) cb_state: CircuitBreakerState,
+}
+
+/// Thread-safe shared handle to the index.
+pub type SharedIndex = Arc<RwLock<LiveIndex>>;
+
+impl LiveIndex {
+    /// Load all source files under `root` into memory in parallel (Rayon), parse them,
+    /// and return a `SharedIndex`.
+    ///
+    /// This function is **synchronous** — it must complete before the async tokio runtime
+    /// needs the index. Rayon handles internal parallelism.
+    pub fn load(root: &Path) -> Result<SharedIndex> {
+        let start = Instant::now();
+
+        info!("LiveIndex::load starting at {:?}", root);
+
+        // 1. Discover all source files
+        let discovered = discovery::discover_files(root)?;
+        info!("discovered {} source files", discovered.len());
+
+        // 2. Parse all files in parallel via Rayon
+        let parse_results: Vec<(String, IndexedFile)> = discovered
+            .par_iter()
+            .filter_map(|df| {
+                let bytes = match std::fs::read(&df.absolute_path) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        warn!("failed to read {:?}: {}", df.absolute_path, e);
+                        return None;
+                    }
+                };
+
+                let result = parsing::process_file(&df.relative_path, &bytes, df.language.clone());
+                let indexed = IndexedFile::from_parse_result(result, bytes);
+                Some((df.relative_path.clone(), indexed))
+            })
+            .collect();
+
+        // 3. Build HashMap sequentially, running circuit breaker checks
+        let cb_state = CircuitBreakerState::from_env();
+        let mut files: HashMap<String, IndexedFile> = HashMap::with_capacity(parse_results.len());
+
+        let mut cb_tripped = false;
+        for (path, indexed_file) in parse_results {
+            match &indexed_file.parse_status {
+                ParseStatus::Failed { error } => {
+                    cb_state.record_failure(&path, error);
+                }
+                _ => {
+                    cb_state.record_success();
+                }
+            }
+
+            if cb_state.should_abort() {
+                let summary = cb_state.summary();
+                error!("{}", summary);
+                cb_tripped = true;
+                // Still insert the file before breaking
+                files.insert(path, indexed_file);
+                break;
+            }
+
+            files.insert(path, indexed_file);
+        }
+
+        if cb_tripped {
+            cb_state.tripped.store(true, Ordering::Relaxed);
+        }
+
+        let load_duration = start.elapsed();
+        info!(
+            "LiveIndex loaded: {} files, {} symbols, {:?}",
+            files.len(),
+            files.values().map(|f| f.symbols.len()).sum::<usize>(),
+            load_duration
+        );
+
+        let index = LiveIndex {
+            files,
+            loaded_at: Instant::now(),
+            load_duration,
+            cb_state,
+        };
+
+        Ok(Arc::new(RwLock::new(index)))
+    }
+
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::{FileOutcome, LanguageId, SymbolRecord, SymbolKind};
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn dummy_symbol() -> SymbolRecord {
+        SymbolRecord {
+            name: "foo".to_string(),
+            kind: SymbolKind::Function,
+            depth: 0,
+            sort_order: 0,
+            byte_range: (0, 10),
+            line_range: (0, 1),
+        }
+    }
+
+    fn make_result(outcome: FileOutcome, symbols: Vec<SymbolRecord>) -> FileProcessingResult {
+        FileProcessingResult {
+            relative_path: "test.rs".to_string(),
+            language: LanguageId::Rust,
+            outcome,
+            symbols,
+            byte_len: 42,
+            content_hash: "abc123".to_string(),
+        }
+    }
+
+    // --- IndexedFile::from_parse_result ---
+
+    #[test]
+    fn test_indexed_file_maps_processed_status() {
+        let result = make_result(FileOutcome::Processed, vec![dummy_symbol()]);
+        let indexed = IndexedFile::from_parse_result(result, b"fn foo() {}".to_vec());
+        assert_eq!(indexed.parse_status, ParseStatus::Parsed);
+        assert_eq!(indexed.symbols.len(), 1);
+    }
+
+    #[test]
+    fn test_indexed_file_maps_partial_parse_keeps_symbols() {
+        let result = make_result(
+            FileOutcome::PartialParse {
+                warning: "syntax error".to_string(),
+            },
+            vec![dummy_symbol()],
+        );
+        let indexed = IndexedFile::from_parse_result(result, b"fn bad(".to_vec());
+        assert!(matches!(indexed.parse_status, ParseStatus::PartialParse { .. }));
+        assert_eq!(indexed.symbols.len(), 1, "symbols kept even on partial parse");
+    }
+
+    #[test]
+    fn test_indexed_file_maps_failed_status_empty_symbols_content_preserved() {
+        let result = make_result(
+            FileOutcome::Failed {
+                error: "parse failed".to_string(),
+            },
+            vec![],
+        );
+        let content = b"some content bytes".to_vec();
+        let indexed = IndexedFile::from_parse_result(result, content.clone());
+        assert!(matches!(indexed.parse_status, ParseStatus::Failed { .. }));
+        assert!(indexed.symbols.is_empty(), "failed parse has no symbols");
+        assert_eq!(indexed.content, content, "content bytes stored even on failure");
+    }
+
+    // --- CircuitBreakerState ---
+
+    #[test]
+    fn test_circuit_breaker_does_not_trip_at_20pct_of_10_files() {
+        // 20% of 10 = exactly threshold — NOT exceeded
+        let cb = CircuitBreakerState::new(0.20);
+        for _ in 0..8 {
+            cb.record_success();
+        }
+        for i in 0..2 {
+            cb.record_failure(&format!("file{i}.rs"), "error");
+        }
+        assert!(!cb.should_abort(), "2/10 = 20% should NOT trip (threshold not exceeded)");
+    }
+
+    #[test]
+    fn test_circuit_breaker_trips_at_30pct_of_10_files() {
+        // 30% > 20% threshold — SHOULD trip
+        let cb = CircuitBreakerState::new(0.20);
+        for _ in 0..7 {
+            cb.record_success();
+        }
+        for i in 0..3 {
+            cb.record_failure(&format!("file{i}.rs"), "error");
+        }
+        assert!(cb.should_abort(), "3/10 = 30% should trip");
+    }
+
+    #[test]
+    fn test_circuit_breaker_does_not_trip_on_tiny_repos() {
+        // Fewer than 5 files processed — minimum-file guard must prevent tripping
+        let cb = CircuitBreakerState::new(0.20);
+        cb.record_failure("a.rs", "err");
+        cb.record_failure("b.rs", "err");
+        cb.record_failure("c.rs", "err");
+        // 3 total, all failed — but < 5 minimum threshold
+        assert!(!cb.should_abort(), "< 5 files processed: circuit breaker must not trip");
+    }
+
+    #[test]
+    fn test_circuit_breaker_threshold_configurable() {
+        // Use a strict threshold of 0.10 (10%)
+        let cb = CircuitBreakerState::new(0.10);
+        for _ in 0..9 {
+            cb.record_success();
+        }
+        cb.record_failure("file.rs", "error");
+        // 1/10 = 10% = threshold, NOT exceeded
+        assert!(!cb.should_abort(), "10% == threshold, not exceeded");
+
+        // Now one more failure puts it at 2/11 ~ 18.2% > 10% — but we add 1 more success first
+        let cb2 = CircuitBreakerState::new(0.10);
+        for _ in 0..8 {
+            cb2.record_success();
+        }
+        for i in 0..2 {
+            cb2.record_failure(&format!("file{i}.rs"), "error");
+        }
+        // 2/10 = 20% > 10% threshold
+        assert!(cb2.should_abort(), "20% > 10% threshold should trip");
+    }
+
+    // --- LiveIndex::load ---
+
+    fn write_file(dir: &Path, name: &str, content: &str) {
+        let path = dir.join(name);
+        if let Some(p) = path.parent() {
+            fs::create_dir_all(p).unwrap();
+        }
+        fs::write(path, content).unwrap();
+    }
+
+    #[test]
+    fn test_live_index_load_valid_files_produces_ready_state() {
+        let tmp = TempDir::new().unwrap();
+        write_file(tmp.path(), "a.rs", "fn alpha() {}");
+        write_file(tmp.path(), "b.py", "def beta(): pass");
+        write_file(tmp.path(), "c.js", "function gamma() {}");
+        write_file(tmp.path(), "d.ts", "function delta(): void {}");
+        write_file(tmp.path(), "e.go", "package main\nfunc epsilon() {}");
+
+        let shared = LiveIndex::load(tmp.path()).unwrap();
+        let index = shared.read().unwrap();
+        assert!(!index.cb_state.is_tripped(), "valid files should not trip circuit breaker");
+        assert_eq!(index.file_count(), 5);
+    }
+
+    #[test]
+    fn test_live_index_load_circuit_breaker_tripped_state() {
+        // Create >20% unparseable files (unsupported language → Failed outcome)
+        // Use Ruby files which parse_source returns Failed for
+        let tmp = TempDir::new().unwrap();
+        write_file(tmp.path(), "a.rs", "fn alpha() {}");
+        write_file(tmp.path(), "b.rs", "fn beta() {}");
+        write_file(tmp.path(), "c.rs", "fn gamma() {}");
+        // 3 Ruby files — unsupported language → Failed outcome
+        // 3/6 = 50% > 20% threshold — should trip
+        write_file(tmp.path(), "x.rb", "def foo; end");
+        write_file(tmp.path(), "y.rb", "def bar; end");
+        write_file(tmp.path(), "z.rb", "def baz; end");
+
+        let shared = LiveIndex::load(tmp.path()).unwrap();
+        let index = shared.read().unwrap();
+        assert!(index.cb_state.is_tripped(), "50% failure rate should trip circuit breaker");
+    }
+
+    #[test]
+    fn test_live_index_file_count() {
+        let tmp = TempDir::new().unwrap();
+        write_file(tmp.path(), "a.rs", "fn a() {}");
+        write_file(tmp.path(), "b.rs", "fn b() {}");
+        write_file(tmp.path(), "c.rs", "fn c() {}");
+
+        let shared = LiveIndex::load(tmp.path()).unwrap();
+        let index = shared.read().unwrap();
+        assert_eq!(index.file_count(), 3);
+    }
+
+    #[test]
+    fn test_live_index_symbol_count() {
+        let tmp = TempDir::new().unwrap();
+        write_file(tmp.path(), "a.rs", "fn foo() {}\nfn bar() {}");
+        write_file(tmp.path(), "b.rs", "fn baz() {}");
+
+        let shared = LiveIndex::load(tmp.path()).unwrap();
+        let index = shared.read().unwrap();
+        // a.rs: 2 symbols, b.rs: 1 symbol → total 3
+        assert_eq!(index.symbol_count(), 3);
+    }
+
+    #[test]
+    fn test_concurrent_readers_no_deadlock() {
+        use std::thread;
+
+        let tmp = TempDir::new().unwrap();
+        write_file(tmp.path(), "a.rs", "fn foo() {}");
+        write_file(tmp.path(), "b.rs", "fn bar() {}");
+        write_file(tmp.path(), "c.rs", "fn baz() {}");
+
+        let shared = LiveIndex::load(tmp.path()).unwrap();
+
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let shared_clone = Arc::clone(&shared);
+                thread::spawn(move || {
+                    let index = shared_clone.read().unwrap();
+                    let _ = index.file_count();
+                    let _ = index.symbol_count();
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().expect("reader thread should not panic");
+        }
+    }
+}
