@@ -36,11 +36,11 @@ Requirements for the v2 rewrite release. Each maps to roadmap phases.
 - [x] **XREF-01**: Call site extraction for all 6 languages (Rust, Python, JS, TS, Go, Java)
 - [x] **XREF-02**: Import/dependency tracking — which files import what
 - [x] **XREF-03**: Type usage extraction — struct/class/enum references across files
-- [ ] **XREF-04**: Built-in type filters (string, number, bool) prevent false positives
-- [ ] **XREF-05**: Alias map support (use X as Y — references via alias are tracked)
-- [ ] **XREF-06**: Single-letter generic filters (T, K, V) prevent noise
+- [x] **XREF-04**: Built-in type filters (string, number, bool) prevent false positives
+- [x] **XREF-05**: Alias map support (use X as Y — references via alias are tracked)
+- [x] **XREF-06**: Single-letter generic filters (T, K, V) prevent noise
 - [x] **XREF-07**: Enclosing symbol tracked for each reference (which function contains the call)
-- [ ] **XREF-08**: References updated incrementally when a file is re-parsed
+- [x] **XREF-08**: References updated incrementally when a file is re-parsed
 
 ### MCP Tools
 
@@ -148,11 +148,11 @@ Which phases cover which requirements. Updated during roadmap creation.
 | XREF-01 | Phase 4 | Complete |
 | XREF-02 | Phase 4 | Complete |
 | XREF-03 | Phase 4 | Complete |
-| XREF-04 | Phase 4 | Pending |
-| XREF-05 | Phase 4 | Pending |
-| XREF-06 | Phase 4 | Pending |
+| XREF-04 | Phase 4 | Complete |
+| XREF-05 | Phase 4 | Complete |
+| XREF-06 | Phase 4 | Complete |
 | XREF-07 | Phase 4 | Complete |
-| XREF-08 | Phase 4 | Pending |
+| XREF-08 | Phase 4 | Complete |
 | TOOL-01 | Phase 2 | Complete |
 | TOOL-02 | Phase 2 | Complete |
 | TOOL-03 | Phase 2 | Complete |

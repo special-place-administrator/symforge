@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: completed
-stopped_at: Completed 04-cross-reference-extraction/04-01-PLAN.md
-last_updated: "2026-03-10T19:08:25.592Z"
+stopped_at: Completed 04-cross-reference-extraction/04-02-PLAN.md
+last_updated: "2026-03-10T19:19:20.189Z"
 last_activity: "2026-03-10 — Phase 03 Plan 03 complete: watcher wired into MCP server, 8 integration tests prove all FRSH/RELY-03 reqs"
 progress:
   total_phases: 7
   completed_phases: 3
   total_plans: 12
-  completed_plans: 10
+  completed_plans: 11
   percent: 30
 ---
 
@@ -60,6 +60,7 @@ Progress: [███░░░░░░░] 30%
 | Phase 03-file-watcher-freshness P02 | 4 | 2 tasks | 1 files |
 | Phase 03-file-watcher-freshness P03 | 18 | 2 tasks | 6 files |
 | Phase 04-cross-reference-extraction P01 | 13 | 2 tasks | 10 files |
+| Phase 04-cross-reference-extraction P02 | 6 | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -108,6 +109,9 @@ Recent decisions affecting current work:
 - [Phase Phase 04-01]: use_as_clause has path/alias fields (not path/name) per tree-sitter-rust grammar.js
 - [Phase Phase 04-01]: FileProcessingResult must be destructured before consuming references via into_iter() to satisfy borrow checker (symbols borrowed in closure)
 - [Phase Phase 04-01]: Definition-site filter in from_parse_result: skip references whose byte_range exactly matches a SymbolRecord's byte_range (prevents self-reference noise)
+- [Phase Phase 04-02]: Qualified queries use full-scan not reverse_index: reverse_index is keyed by simple name; qualified names like Vec::new must scan files and match qualified_name field
+- [Phase Phase 04-02]: collect_refs_for_key as private method: closures capturing self and mut results hit E0521; private method with explicit lifetime annotation solves this
+- [Phase Phase 04-02]: is_filtered_name checks all language lists unconditionally: avoids per-file language detection at query time; cross-language repos handled uniformly
 
 ### Pending Todos
 
@@ -121,6 +125,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-10T19:08:25.589Z
-Stopped at: Completed 04-cross-reference-extraction/04-01-PLAN.md
+Last session: 2026-03-10T19:19:20.186Z
+Stopped at: Completed 04-cross-reference-extraction/04-02-PLAN.md
 Resume file: None
