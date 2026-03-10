@@ -27,7 +27,7 @@ pub enum Commands {
     /// Hook subcommands called by Claude Code (PostToolUse / SessionStart)
     Hook {
         #[command(subcommand)]
-        subcommand: HookSubcommand,
+        subcommand: Option<HookSubcommand>,
     },
 }
 
@@ -38,6 +38,8 @@ pub enum HookSubcommand {
     Read,
     /// PostToolUse hook for Edit/Write tools — returns impact (dependents) for the edited file
     Edit,
+    /// PostToolUse hook for the Write tool — confirms indexing of new file
+    Write,
     /// PostToolUse hook for the Grep tool — returns symbol-context for the search query
     Grep,
     /// SessionStart hook — returns repo map for the project

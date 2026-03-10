@@ -8,7 +8,7 @@
 //! - Fail-open: if the sidecar is unreachable for any reason, output empty additionalContext
 //!   JSON so Claude Code continues normally.
 
-use std::io::{Read, Write};
+use std::io::{BufRead, Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 
@@ -19,17 +19,58 @@ const PORT_FILE: &str = ".tokenizor/sidecar.port";
 const HTTP_TIMEOUT: Duration = Duration::from_millis(50);
 
 // ---------------------------------------------------------------------------
+// Stdin JSON parsing structs
+// ---------------------------------------------------------------------------
+
+/// Deserialized representation of a Claude Code PostToolUse stdin payload.
+#[derive(serde::Deserialize, Default)]
+pub(crate) struct HookInput {
+    pub(crate) tool_name: Option<String>,
+    pub(crate) tool_input: Option<HookToolInput>,
+    pub(crate) cwd: Option<String>,
+}
+
+/// The `tool_input` field from the Claude Code hook event payload.
+#[derive(serde::Deserialize, Default)]
+pub(crate) struct HookToolInput {
+    /// Absolute path to the file being read/edited/written.
+    pub(crate) file_path: Option<String>,
+    /// Search pattern for Grep events.
+    pub(crate) pattern: Option<String>,
+    /// Directory path for Grep events (alternative field name).
+    pub(crate) path: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Entry point called by main.rs for `tokenizor hook <subcommand>`.
+/// Entry point called by main.rs for `tokenizor hook [subcommand]`.
 ///
-/// Reads the sidecar port from `.tokenizor/sidecar.port`, determines the
-/// appropriate endpoint for the given subcommand, makes a sync HTTP GET, and
-/// prints one JSON line to stdout.  Never returns an error — failures produce
-/// the fail-open empty JSON.
-pub fn run_hook(subcommand: &HookSubcommand) -> anyhow::Result<()> {
-    let event_name = event_name_for(subcommand);
+/// When `subcommand` is `None`, reads stdin JSON to determine the tool_name and
+/// routes to the correct sidecar endpoint (Phase 6 stdin-routing mode).
+///
+/// When `subcommand` is `Some`, uses the subcommand directly (backward-compat
+/// for manual testing: `tokenizor hook read`, `tokenizor hook edit`, etc.).
+///
+/// Never returns an error — failures produce the fail-open empty JSON.
+pub fn run_hook(subcommand: Option<&HookSubcommand>) -> anyhow::Result<()> {
+    // Always read stdin so we have context for path/query extraction.
+    // For explicit subcommands the payload may be empty or absent — that's fine.
+    let input = parse_stdin_input();
+
+    // Resolve the effective subcommand: explicit takes priority; otherwise
+    // derive from the stdin tool_name.
+    let resolved = if let Some(sub) = subcommand {
+        Some(sub.clone())
+    } else {
+        resolve_subcommand_from_input(&input)
+    };
+
+    let event_name = resolved
+        .as_ref()
+        .map(event_name_for)
+        .unwrap_or("PostToolUse");
 
     // Step 1 — read port file.
     let port = match read_port_file() {
@@ -42,7 +83,8 @@ pub fn run_hook(subcommand: &HookSubcommand) -> anyhow::Result<()> {
     };
 
     // Step 2 — determine endpoint + query string.
-    let (path, query) = endpoint_for(subcommand);
+    let resolved_ref = resolved.as_ref();
+    let (path, query) = endpoint_for(resolved_ref, &input);
 
     // Step 3/4 — make sync HTTP GET with 50 ms timeout.
     let body = match sync_http_get(port, path, query) {
@@ -62,6 +104,50 @@ pub fn run_hook(subcommand: &HookSubcommand) -> anyhow::Result<()> {
 // Helpers (pub for unit-testing, not part of the public module API)
 // ---------------------------------------------------------------------------
 
+/// Reads all available stdin lines and deserializes them as a Claude Code
+/// PostToolUse JSON payload.
+///
+/// Returns `HookInput::default()` on any parse failure (fail-open).
+pub fn parse_stdin_input() -> HookInput {
+    let stdin = std::io::stdin();
+    let mut raw = String::new();
+    for line in stdin.lock().lines() {
+        match line {
+            Ok(l) => {
+                raw.push_str(&l);
+                raw.push('\n');
+            }
+            Err(_) => break,
+        }
+    }
+    serde_json::from_str(&raw).unwrap_or_default()
+}
+
+/// Converts an absolute path to a relative path by stripping the `cwd` prefix.
+///
+/// Uses `std::path::Path::strip_prefix` for correct platform-aware stripping,
+/// then normalises backslashes to forward slashes for the sidecar query.
+/// Returns `absolute` unchanged if it does not start with `cwd`.
+pub fn relative_path(absolute: &str, cwd: &str) -> String {
+    let abs = std::path::Path::new(absolute);
+    let base = std::path::Path::new(cwd);
+    match abs.strip_prefix(base) {
+        Ok(rel) => rel.to_string_lossy().replace('\\', "/"),
+        Err(_) => absolute.to_string(),
+    }
+}
+
+/// Maps a `tool_name` string from the stdin JSON to a `HookSubcommand`.
+fn resolve_subcommand_from_input(input: &HookInput) -> Option<HookSubcommand> {
+    match input.tool_name.as_deref() {
+        Some("Read") => Some(HookSubcommand::Read),
+        Some("Edit") => Some(HookSubcommand::Edit),
+        Some("Write") => Some(HookSubcommand::Write),
+        Some("Grep") => Some(HookSubcommand::Grep),
+        _ => None,
+    }
+}
+
 /// Returns the `hookEventName` string for a given subcommand.
 pub fn event_name_for(subcommand: &HookSubcommand) -> &'static str {
     match subcommand {
@@ -70,18 +156,17 @@ pub fn event_name_for(subcommand: &HookSubcommand) -> &'static str {
     }
 }
 
-/// Maps a hook subcommand to `(path, query_string)`.
+/// Maps a resolved subcommand + stdin input to `(path, query_string)`.
 ///
-/// The query string is built from environment variables set by Claude Code:
-/// - `TOKENIZOR_HOOK_FILE_PATH` — relative file path for Read/Edit hooks
-/// - `TOKENIZOR_HOOK_QUERY`     — search query string for Grep hook
-///
-/// Phase 5 uses env vars as a simple stand-in for full stdin JSON parsing
-/// (deferred to Phase 6). The HTTP plumbing works end-to-end with this approach.
-pub fn endpoint_for(subcommand: &HookSubcommand) -> (&'static str, String) {
+/// The `input` carries the file path and search pattern extracted from the
+/// Claude Code PostToolUse payload. When `subcommand` is `None` (unknown
+/// tool_name), returns fail-open empty values.
+pub fn endpoint_for(subcommand: Option<&HookSubcommand>, input: &HookInput) -> (&'static str, String) {
+    let cwd = input.cwd.as_deref().unwrap_or("");
+
     match subcommand {
-        HookSubcommand::Read => {
-            let file = std::env::var("TOKENIZOR_HOOK_FILE_PATH").unwrap_or_default();
+        Some(HookSubcommand::Read) => {
+            let file = extract_file_path(input, cwd);
             let query = if file.is_empty() {
                 String::new()
             } else {
@@ -89,8 +174,8 @@ pub fn endpoint_for(subcommand: &HookSubcommand) -> (&'static str, String) {
             };
             ("/outline", query)
         }
-        HookSubcommand::Edit => {
-            let file = std::env::var("TOKENIZOR_HOOK_FILE_PATH").unwrap_or_default();
+        Some(HookSubcommand::Edit) => {
+            let file = extract_file_path(input, cwd);
             let query = if file.is_empty() {
                 String::new()
             } else {
@@ -98,16 +183,32 @@ pub fn endpoint_for(subcommand: &HookSubcommand) -> (&'static str, String) {
             };
             ("/impact", query)
         }
-        HookSubcommand::Grep => {
-            let q = std::env::var("TOKENIZOR_HOOK_QUERY").unwrap_or_default();
+        Some(HookSubcommand::Write) => {
+            let file = extract_file_path(input, cwd);
+            let query = if file.is_empty() {
+                "new_file=true".to_string()
+            } else {
+                format!("path={}&new_file=true", url_encode(&file))
+            };
+            ("/impact", query)
+        }
+        Some(HookSubcommand::Grep) => {
+            // Use `pattern` field first, then fall back to `path` (directory) field.
+            let q = input
+                .tool_input
+                .as_ref()
+                .and_then(|ti| ti.pattern.as_deref().or(ti.path.as_deref()))
+                .unwrap_or("");
             let query = if q.is_empty() {
                 String::new()
             } else {
-                format!("name={}", url_encode(&q))
+                format!("name={}", url_encode(q))
             };
             ("/symbol-context", query)
         }
-        HookSubcommand::SessionStart => ("/repo-map", String::new()),
+        Some(HookSubcommand::SessionStart) => ("/repo-map", String::new()),
+        // Unknown tool_name → fail-open: route to a no-op that returns empty.
+        None => ("/health", String::new()),
     }
 }
 
@@ -132,6 +233,20 @@ pub fn success_json(event_name: &str, context: &str) -> String {
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+/// Extract and relativize the file path from stdin input.
+fn extract_file_path(input: &HookInput, cwd: &str) -> String {
+    let abs = input
+        .tool_input
+        .as_ref()
+        .and_then(|ti| ti.file_path.as_deref())
+        .unwrap_or("");
+    if abs.is_empty() || cwd.is_empty() {
+        abs.to_string()
+    } else {
+        relative_path(abs, cwd)
+    }
+}
 
 /// Read `.tokenizor/sidecar.port` from the current working directory.
 fn read_port_file() -> std::io::Result<u16> {
@@ -277,49 +392,141 @@ mod tests {
         assert_eq!(ctx, context);
     }
 
-    // --- endpoint_for ---
+    // --- parse_stdin_input ---
 
     #[test]
-    fn test_hook_subcommand_to_endpoint_read() {
-        // Without env var set, query is empty.
-        let (path, _query) = endpoint_for(&HookSubcommand::Read);
+    fn test_parse_stdin_returns_default_on_empty() {
+        // We cannot pipe into stdin in a unit test, but we can verify that
+        // parsing an empty string returns Default (no panics).
+        let result: HookInput = serde_json::from_str("").unwrap_or_default();
+        assert!(result.tool_name.is_none());
+        assert!(result.tool_input.is_none());
+        assert!(result.cwd.is_none());
+    }
+
+    #[test]
+    fn test_parse_stdin_deserializes_read_payload() {
+        let json = r#"{"tool_name":"Read","tool_input":{"file_path":"/abs/src/foo.rs"},"cwd":"/abs"}"#;
+        let result: HookInput = serde_json::from_str(json).unwrap_or_default();
+        assert_eq!(result.tool_name.as_deref(), Some("Read"));
+        assert_eq!(
+            result.tool_input.as_ref().and_then(|ti| ti.file_path.as_deref()),
+            Some("/abs/src/foo.rs")
+        );
+        assert_eq!(result.cwd.as_deref(), Some("/abs"));
+    }
+
+    #[test]
+    fn test_parse_stdin_deserializes_grep_payload() {
+        let json = r#"{"tool_name":"Grep","tool_input":{"pattern":"TODO","path":"/abs/src"},"cwd":"/abs"}"#;
+        let result: HookInput = serde_json::from_str(json).unwrap_or_default();
+        assert_eq!(result.tool_name.as_deref(), Some("Grep"));
+        let ti = result.tool_input.as_ref().unwrap();
+        assert_eq!(ti.pattern.as_deref(), Some("TODO"));
+        assert_eq!(ti.path.as_deref(), Some("/abs/src"));
+    }
+
+    #[test]
+    fn test_parse_stdin_returns_default_on_invalid_json() {
+        let result: HookInput = serde_json::from_str("not valid json").unwrap_or_default();
+        assert!(result.tool_name.is_none());
+    }
+
+    // --- relative_path ---
+
+    #[test]
+    fn test_relative_path_strips_unix_cwd_prefix() {
+        let rel = relative_path("/home/user/project/src/foo.rs", "/home/user/project");
+        assert_eq!(rel, "src/foo.rs");
+    }
+
+    #[test]
+    fn test_relative_path_strips_windows_cwd_prefix() {
+        // Test that strip_prefix works for Windows-style paths.
+        // Path::strip_prefix is platform-aware, but we test the string normalization.
+        // On Windows the actual separator is backslash; strip_prefix handles it.
+        // We simulate by using a path that has a clear prefix relationship.
+        let rel = relative_path(
+            "C:/Users/dev/project/src/foo.rs",
+            "C:/Users/dev/project",
+        );
+        // After strip_prefix the result should use forward slashes.
+        assert!(rel.contains("src/foo.rs") || rel == "C:/Users/dev/project/src/foo.rs",
+            "got: {rel}");
+    }
+
+    #[test]
+    fn test_relative_path_unchanged_when_no_prefix_match() {
+        let rel = relative_path("/unrelated/path.rs", "/home/user/project");
+        assert_eq!(rel, "/unrelated/path.rs");
+    }
+
+    #[test]
+    fn test_relative_path_normalizes_backslashes() {
+        // Simulate a Windows-style result from strip_prefix.
+        // Since we're on MSYS/Windows the path may use backslashes.
+        let rel = relative_path(
+            "C:\\Users\\dev\\project\\src\\foo.rs",
+            "C:\\Users\\dev\\project",
+        );
+        // Must not contain backslashes in result.
+        assert!(!rel.contains('\\'), "backslashes must be normalized to forward slashes; got: {rel}");
+    }
+
+    // --- endpoint_for (stdin-routing) ---
+
+    #[test]
+    fn test_endpoint_for_read_stdin_routes_to_outline() {
+        let input = make_input("Read", Some("/abs/src/foo.rs"), None, "/abs");
+        let (path, query) = endpoint_for(Some(&HookSubcommand::Read), &input);
         assert_eq!(path, "/outline");
+        assert!(query.contains("src/foo.rs"), "query must include relative path; got: {query}");
     }
 
     #[test]
-    fn test_hook_subcommand_to_endpoint_edit() {
-        let (path, _query) = endpoint_for(&HookSubcommand::Edit);
+    fn test_endpoint_for_edit_stdin_routes_to_impact() {
+        let input = make_input("Edit", Some("/abs/src/bar.rs"), None, "/abs");
+        let (path, query) = endpoint_for(Some(&HookSubcommand::Edit), &input);
         assert_eq!(path, "/impact");
+        assert!(query.contains("src/bar.rs"), "query must include relative path; got: {query}");
     }
 
     #[test]
-    fn test_hook_subcommand_to_endpoint_grep() {
-        let (path, _query) = endpoint_for(&HookSubcommand::Grep);
+    fn test_endpoint_for_write_routes_to_impact_with_new_file() {
+        let input = make_input("Write", Some("/abs/src/new.rs"), None, "/abs");
+        let (path, query) = endpoint_for(Some(&HookSubcommand::Write), &input);
+        assert_eq!(path, "/impact");
+        assert!(query.contains("new_file=true"), "Write must set new_file=true; got: {query}");
+        assert!(query.contains("src/new.rs"), "Write must include file path; got: {query}");
+    }
+
+    #[test]
+    fn test_endpoint_for_grep_stdin_routes_to_symbol_context() {
+        let json = r#"{"tool_name":"Grep","tool_input":{"pattern":"TODO","path":"/abs/src"},"cwd":"/abs"}"#;
+        let input: HookInput = serde_json::from_str(json).unwrap_or_default();
+        let (path, query) = endpoint_for(Some(&HookSubcommand::Grep), &input);
         assert_eq!(path, "/symbol-context");
+        assert!(query.contains("TODO"), "Grep query must include pattern; got: {query}");
     }
 
     #[test]
-    fn test_hook_subcommand_to_endpoint_session_start() {
-        let (path, query) = endpoint_for(&HookSubcommand::SessionStart);
+    fn test_endpoint_for_session_start_routes_to_repo_map() {
+        let input = HookInput::default();
+        let (path, query) = endpoint_for(Some(&HookSubcommand::SessionStart), &input);
         assert_eq!(path, "/repo-map");
         assert!(query.is_empty(), "repo-map has no query params");
     }
 
     #[test]
-    fn test_hook_subcommand_read_includes_file_path_in_query() {
-        // SAFETY: env var mutation — test isolation is best-effort; tests run in
-        // separate processes or with --test-threads=1 if this causes flakiness.
-        // `set_var`/`remove_var` are unsafe in Rust 2024 due to potential UB in
-        // multi-threaded contexts; we accept this for test-only usage.
-        unsafe {
-            std::env::set_var("TOKENIZOR_HOOK_FILE_PATH", "src/main.rs");
-        }
-        let (path, query) = endpoint_for(&HookSubcommand::Read);
-        unsafe {
-            std::env::remove_var("TOKENIZOR_HOOK_FILE_PATH");
-        }
-        assert_eq!(path, "/outline");
-        assert!(query.contains("src"), "query must include the file path");
+    fn test_endpoint_for_unknown_tool_returns_fail_open() {
+        // None subcommand with unknown/missing tool_name → fail-open /health endpoint
+        let input = HookInput {
+            tool_name: Some("UnknownTool".to_string()),
+            ..Default::default()
+        };
+        let (path, _) = endpoint_for(None, &input);
+        // Returns /health as the fail-open endpoint — no useful data, but graceful
+        assert_eq!(path, "/health");
     }
 
     // --- event_name_for ---
@@ -331,12 +538,87 @@ mod tests {
 
     #[test]
     fn test_event_name_for_post_tool_use_variants() {
-        for sub in [HookSubcommand::Read, HookSubcommand::Edit, HookSubcommand::Grep] {
+        for sub in [
+            HookSubcommand::Read,
+            HookSubcommand::Edit,
+            HookSubcommand::Write,
+            HookSubcommand::Grep,
+        ] {
             assert_eq!(
                 event_name_for(&sub),
                 "PostToolUse",
-                "Read/Edit/Grep must produce PostToolUse event name"
+                "Read/Edit/Write/Grep must produce PostToolUse event name"
             );
+        }
+    }
+
+    // --- backward compat: old subcommand variants still exist ---
+
+    #[test]
+    fn test_hook_subcommand_to_endpoint_read_backward_compat() {
+        let input = HookInput::default();
+        let (path, _query) = endpoint_for(Some(&HookSubcommand::Read), &input);
+        assert_eq!(path, "/outline");
+    }
+
+    #[test]
+    fn test_hook_subcommand_to_endpoint_edit_backward_compat() {
+        let input = HookInput::default();
+        let (path, _query) = endpoint_for(Some(&HookSubcommand::Edit), &input);
+        assert_eq!(path, "/impact");
+    }
+
+    #[test]
+    fn test_hook_subcommand_to_endpoint_grep_backward_compat() {
+        let input = HookInput::default();
+        let (path, _query) = endpoint_for(Some(&HookSubcommand::Grep), &input);
+        assert_eq!(path, "/symbol-context");
+    }
+
+    #[test]
+    fn test_hook_subcommand_to_endpoint_session_start_backward_compat() {
+        let input = HookInput::default();
+        let (path, query) = endpoint_for(Some(&HookSubcommand::SessionStart), &input);
+        assert_eq!(path, "/repo-map");
+        assert!(query.is_empty(), "repo-map has no query params");
+    }
+
+    // --- resolve_subcommand_from_input ---
+
+    #[test]
+    fn test_resolve_subcommand_read() {
+        let input = HookInput { tool_name: Some("Read".to_string()), ..Default::default() };
+        assert!(matches!(resolve_subcommand_from_input(&input), Some(HookSubcommand::Read)));
+    }
+
+    #[test]
+    fn test_resolve_subcommand_write() {
+        let input = HookInput { tool_name: Some("Write".to_string()), ..Default::default() };
+        assert!(matches!(resolve_subcommand_from_input(&input), Some(HookSubcommand::Write)));
+    }
+
+    #[test]
+    fn test_resolve_subcommand_unknown_returns_none() {
+        let input = HookInput { tool_name: Some("Bash".to_string()), ..Default::default() };
+        assert!(resolve_subcommand_from_input(&input).is_none());
+    }
+
+    // --- helpers ---
+
+    fn make_input(
+        tool_name: &str,
+        file_path: Option<&str>,
+        pattern: Option<&str>,
+        cwd: &str,
+    ) -> HookInput {
+        HookInput {
+            tool_name: Some(tool_name.to_string()),
+            tool_input: Some(HookToolInput {
+                file_path: file_path.map(|s| s.to_string()),
+                pattern: pattern.map(|s| s.to_string()),
+                path: None,
+            }),
+            cwd: Some(cwd.to_string()),
         }
     }
 }

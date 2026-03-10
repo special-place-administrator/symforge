@@ -8,7 +8,7 @@ fn main() -> anyhow::Result<()> {
     let cli = cli::Cli::parse();
     match cli.command {
         Some(cli::Commands::Init) => cli::init::run_init(),
-        Some(cli::Commands::Hook { subcommand }) => cli::hook::run_hook(&subcommand),
+        Some(cli::Commands::Hook { subcommand }) => cli::hook::run_hook(subcommand.as_ref()),
         None => run_mcp_server(),
     }
 }
