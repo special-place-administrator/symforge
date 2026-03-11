@@ -150,7 +150,14 @@ jobs:
           name: npm-package
           path: dist
 
+      - name: Verify npm package artifact
+        shell: bash
+        run: |
+          TAR_PATH="./dist/${{ needs.validate-release-version.outputs.npm_tarball }}"
+          test -f "$TAR_PATH"
+          ls -l "$TAR_PATH"
+
       - name: Publish to npm
-        run: npm publish "dist/${{ needs.validate-release-version.outputs.npm_tarball }}" --access public
+        run: npm publish "./dist/${{ needs.validate-release-version.outputs.npm_tarball }}" --access public
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ vars.NPM_TOKEN }}
