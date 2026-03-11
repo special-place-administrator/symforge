@@ -53,16 +53,35 @@ function download(url) {
   });
 }
 
+function getInstalledVersion(binPath) {
+  try {
+    const output = execSync(`"${binPath}" --version`, {
+      encoding: "utf8",
+      timeout: 5000,
+    }).trim();
+    // Output format: "tokenizor-mcp x.y.z" or just "x.y.z"
+    const match = output.match(/(\d+\.\d+\.\d+)/);
+    return match ? match[1] : null;
+  } catch {
+    return null;
+  }
+}
+
 async function main() {
   const binPath = getBinaryPath();
-
-  // Skip if binary already exists
-  if (fs.existsSync(binPath)) {
-    console.log("tokenizor-mcp binary already installed.");
-    return;
-  }
-
   const version = getVersion();
+
+  // Skip only if binary exists AND matches the expected version
+  if (fs.existsSync(binPath)) {
+    const installed = getInstalledVersion(binPath);
+    if (installed === version) {
+      console.log(`tokenizor-mcp v${version} already installed.`);
+      return;
+    }
+    console.log(
+      `tokenizor-mcp binary exists (v${installed || "unknown"}) but package wants v${version}. Updating...`
+    );
+  }
   const artifact = getPlatformArtifact();
   const url = `https://github.com/${REPO}/releases/download/v${version}/${artifact}`;
 

@@ -13,7 +13,7 @@ use clap::{Parser, Subcommand};
 
 /// Top-level CLI parser for the `tokenizor` binary.
 #[derive(Parser)]
-#[command(name = "tokenizor", about = "Tokenizor MCP server and hook system")]
+#[command(name = "tokenizor", about = "Tokenizor MCP server and hook system", version)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
