@@ -101,6 +101,10 @@ jobs:
         with:
           node-version: 20
 
+      - name: Test npm installer
+        working-directory: npm
+        run: npm test
+
       - name: Build npm tarball
         working-directory: npm
         run: npm pack

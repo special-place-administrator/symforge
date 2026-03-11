@@ -32,6 +32,18 @@ npm install -g tokenizor-mcp
 
 The npm installer downloads the platform binary to `~/.tokenizor/bin/tokenizor-mcp` or `~/.tokenizor/bin/tokenizor-mcp.exe`.
 
+Update the npm install the same way:
+
+```bash
+npm install -g tokenizor-mcp
+```
+
+Current updater behavior:
+
+- On Windows, the npm installer first tries to replace the installed binary in place.
+- If the installed Tokenizor binary is locked, the installer tries to stop running `tokenizor-mcp.exe` processes that are using the installed binary path, then retries the replacement.
+- If replacement is still not possible, the installer stages `tokenizor-mcp.pending.exe` and the wrapper applies it on the next successful launch.
+
 If your platform is not in the list above, build from source instead.
 
 ## CLI
