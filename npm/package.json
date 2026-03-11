@@ -1,7 +1,7 @@
 {
   "name": "tokenizor-mcp",
   "version": "0.1.0",
-  "description": "Tokenizor MCP — trusted local code indexing, retrieval, recovery, and repair for AI coding workflows",
+  "description": "Tokenizor MCP — in-memory code intelligence with parasitic hook integration for Claude Code",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -23,7 +23,8 @@
     "code-retrieval",
     "ai-coding",
     "tree-sitter",
-    "spacetimedb"
+    "claude-code",
+    "hooks"
   ],
   "engines": {
     "node": ">=18"
