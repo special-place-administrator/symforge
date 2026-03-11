@@ -20,7 +20,6 @@ if (!fs.existsSync(binPath)) {
 }
 
 const args = process.argv.slice(2);
-if (args.length === 0) args.push("run");
 
 try {
   const result = require("child_process").spawnSync(binPath, args, {

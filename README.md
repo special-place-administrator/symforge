@@ -128,11 +128,11 @@ Then remove the tokenizor entries from `~/.claude/settings.json` (any hook whose
 | `get_context_bundle` | Full context: symbol + callers + callees + types |
 | `what_changed` | Files and symbols modified since timestamp |
 
-## Languages (13)
+## Languages (16)
 
 Full symbol extraction + cross-references:
 
-Rust, Python, JavaScript, TypeScript, Go, Java, C, C++, C#, Ruby, Kotlin, Dart, Elixir
+Rust, Python, JavaScript, TypeScript, Go, Java, C, C++, C#, Ruby, PHP, Swift, Perl, Kotlin, Dart, Elixir
 
 ## How It Works
 
@@ -156,7 +156,7 @@ Rust, Python, JavaScript, TypeScript, Go, Java, C, C++, C#, Ruby, Kotlin, Dart, 
 2. **File watcher**: notify crate detects changes within 200ms. Content-hash skip prevents redundant reparse.
 3. **MCP tools**: Query the LiveIndex with O(1) lookups. All responses are compact human-readable text.
 4. **HTTP sidecar**: axum server on ephemeral port, shares `Arc<LiveIndex>` with MCP tools.
-5. **Hooks**: Python scripts read stdin JSON, call sidecar, return enrichment as `additionalContext`.
+5. **Hooks**: Rust binary reads stdin JSON, calls sidecar over sync HTTP (<50ms), returns enrichment as `additionalContext`.
 6. **Persistence**: On shutdown, serializes index to disk via postcard. On restart, loads snapshot and verifies in background.
 
 ## Environment Variables
@@ -173,19 +173,19 @@ Requires [Rust toolchain](https://rustup.rs) (edition 2024).
 
 ```bash
 cargo build --release
-cargo test              # 385+ tests
+cargo test              # 324 tests
 ```
 
 ## Tech Stack
 
 - **Rust** (edition 2024) — core engine
-- **tree-sitter** 0.26 — parsing and cross-reference extraction for 13 languages
+- **tree-sitter** 0.26 — parsing and cross-reference extraction for 16 languages
 - **rmcp** 1.1 — MCP protocol over stdio
 - **tokio** — async runtime
 - **axum** 0.8 — HTTP sidecar
 - **notify** 8 — file watching with debouncing
 - **postcard** 1.1 — index serialization (safe, no RUSTSEC advisories)
-- **dashmap** — concurrent HashMap for LiveIndex (via `Arc`)
+- **std RwLock + HashMap** — concurrent LiveIndex (via `Arc<RwLock<LiveIndex>>`)
 
 ## License
 

@@ -21,6 +21,14 @@ jobs:
             target: x86_64-unknown-linux-gnu
             artifact: tokenizor-mcp-linux-x64
             binary: target/x86_64-unknown-linux-gnu/release/tokenizor_agentic_mcp
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: tokenizor-mcp-macos-arm64
+            binary: target/aarch64-apple-darwin/release/tokenizor_agentic_mcp
+          - os: macos-13
+            target: x86_64-apple-darwin
+            artifact: tokenizor-mcp-macos-x64
+            binary: target/x86_64-apple-darwin/release/tokenizor_agentic_mcp
 
     runs-on: ${{ matrix.os }}
     steps:
