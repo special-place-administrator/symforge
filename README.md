@@ -18,7 +18,7 @@ All enrichment happens in <100ms via an HTTP sidecar that shares memory with the
 
 **Prerequisite:** Node.js 18+. No Rust toolchain needed.
 
-Prebuilt binaries: **Windows x64** and **Linux x64**.
+Prebuilt binaries: **Windows x64**, **Linux x64**, **macOS ARM64**, **macOS x64**.
 
 ### Claude Code
 
@@ -118,7 +118,7 @@ Then remove the tokenizor entries from `~/.claude/settings.json` (any hook whose
 | `search_symbols` | Substring search with Exact > Prefix > Substring ranking |
 | `search_text` | Trigram-accelerated full-text search |
 | `find_references` | All call sites for a symbol with context |
-| `find_dependents` | Files that import a given file |
+| `find_dependents` | Files that import a given file (module-path-aware) |
 | `get_context_bundle` | Full context: symbol + callers + callees + types |
 | `what_changed` | Files and symbols modified since timestamp |
 
