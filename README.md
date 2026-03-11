@@ -1,43 +1,46 @@
-# tokenizor_agentic_mcp
+# Tokenizor MCP
 
-Tokenizor is a Rust-native, coding-first MCP project for code indexing, retrieval, orchestration, and recovery.
+In-memory code intelligence for Claude Code. Keeps your entire project indexed in RAM, enriches every Read/Edit/Write/Grep with symbol context via PostToolUse hooks, and saves 80-95% of tokens on code exploration — automatically, with zero behavior change from the model.
 
-The product direction is not "just another MCP server." The goal is a trusted local retrieval engine for AI coding workflows:
-- byte-exact raw content storage
-- deterministic indexing and retrieval
-- explicit recovery and repair
-- durable operational state
-- workflow integration that makes retrieval-first behavior practical
+## What It Does
+
+Tokenizor runs as an MCP server alongside Claude Code. On startup it indexes your project into an in-memory LiveIndex, then:
+
+- **Read hook** — injects a symbol outline and key references for the file you just read
+- **Edit hook** — re-indexes the file and shows callers that may need review (impact analysis)
+- **Write hook** — indexes the new file immediately
+- **Grep hook** — adds symbol context to matched lines
+- **SessionStart hook** — injects a compact repo map (~500 tokens)
+
+All enrichment happens in <100ms via an HTTP sidecar that shares memory with the MCP server. The model never needs to call a special tool — it gets richer context for free.
 
 ## Installation
 
-**Prerequisite:** Node.js 18+ (for `npx`). No Rust, no SDKs, no daemons.
+**Prerequisite:** Node.js 18+ (for `npx`). No Rust toolchain needed.
 
-Prebuilt binaries are available for **Windows x64** and **Linux x64**.
+Prebuilt binaries: **Windows x64** and **Linux x64**.
 
-### Claude Code
+### Claude Code (recommended)
 
-**Windows:**
 ```bash
-claude mcp add tokenizor -e TOKENIZOR_CONTROL_PLANE_BACKEND=local_registry -- cmd /c npx -y tokenizor-mcp
+# Install as MCP server
+claude mcp add tokenizor -- npx -y tokenizor-mcp
+
+# Install hooks for automatic enrichment
+npx -y tokenizor-mcp init
 ```
 
-**Linux:**
-```bash
-claude mcp add tokenizor -e TOKENIZOR_CONTROL_PLANE_BACKEND=local_registry -- npx -y tokenizor-mcp
-```
-
-**Auto-approve tools (recommended):** Tokenizor's tools are read-only retrieval and local indexing operations. To use them without per-call confirmation prompts, add this to your Claude Code settings (`~/.claude/settings.json` or `.claude/settings.json`):
+Auto-approve tools (recommended — all operations are read-only or local indexing):
 
 ```json
 {
   "permissions": {
-    "allow": [
-      "mcp__tokenizor__*"
-    ]
+    "allow": ["mcp__tokenizor__*"]
   }
 }
 ```
+
+Add to `~/.claude/settings.json` or `.claude/settings.json`.
 
 ### Cursor
 
@@ -47,388 +50,99 @@ Add to `.cursor/mcp.json`:
 {
   "mcpServers": {
     "tokenizor": {
-      "command": "cmd",
-      "args": ["/c", "npx", "-y", "tokenizor-mcp"],
-      "env": {
-        "TOKENIZOR_CONTROL_PLANE_BACKEND": "local_registry"
-      }
+      "command": "npx",
+      "args": ["-y", "tokenizor-mcp"]
     }
   }
 }
 ```
 
-On Linux, use `"command": "npx"` and `"args": ["-y", "tokenizor-mcp"]` instead.
+On Windows, use `"command": "cmd"` and `"args": ["/c", "npx", "-y", "tokenizor-mcp"]`.
 
-### Claude Desktop
+### Any MCP client
 
-Add to `claude_desktop_config.json` (Settings > Developer > Edit Config):
+Standard stdio MCP server:
+- **Command:** `npx -y tokenizor-mcp`
+- No environment variables required. Auto-indexes on startup when `.git` is present.
 
-```json
-{
-  "mcpServers": {
-    "tokenizor": {
-      "command": "cmd",
-      "args": ["/c", "npx", "-y", "tokenizor-mcp"],
-      "env": {
-        "TOKENIZOR_CONTROL_PLANE_BACKEND": "local_registry"
-      }
-    }
-  }
-}
+## MCP Tools (14)
+
+| Tool | Description |
+|------|-------------|
+| `health` | LiveIndex stats, watcher status, token savings |
+| `index_folder` | Trigger full reload of the index |
+| `get_file_outline` | Symbol list for a file |
+| `get_repo_outline` | File list with coverage stats |
+| `get_file_tree` | Directory tree with symbol counts |
+| `get_symbol` | Lookup symbol by file + name |
+| `get_symbols` | Batch lookup (symbols and code slices) |
+| `get_file_content` | Serve file from memory with optional line range |
+| `search_symbols` | Substring search with Exact > Prefix > Substring ranking |
+| `search_text` | Trigram-accelerated full-text search |
+| `find_references` | All call sites for a symbol with context |
+| `find_dependents` | Files that import a given file |
+| `get_context_bundle` | Full context: symbol + callers + callees + types |
+| `what_changed` | Files and symbols modified since timestamp |
+
+## Languages (13)
+
+Full symbol extraction + cross-references:
+
+Rust, Python, JavaScript, TypeScript, Go, Java, C, C++, C#, Ruby, Kotlin, Dart, Elixir
+
+## How It Works
+
+```
+┌─────────────┐     stdio      ┌──────────────────┐
+│ Claude Code  │◄──────────────►│  MCP Server      │
+│             │                │  (14 tools)       │
+│  Read file  │                │       │           │
+│      │      │                │  ┌────▼────┐      │
+│      ▼      │   HTTP <100ms  │  │LiveIndex│      │
+│ PostToolUse ├───────────────►│  │  (RAM)  │      │
+│   hook      │                │  └────┬────┘      │
+│      │      │                │       │           │
+│      ▼      │                │  ┌────▼────┐      │
+│ +context    │                │  │ Watcher │      │
+│ injected    │                │  │ (notify)│      │
+└─────────────┘                └──┴─────────┴──────┘
 ```
 
-### Any MCP-compatible client
+1. **Startup**: LiveIndex loads all source files into RAM using tree-sitter parsing. If a serialized snapshot exists, loads from disk in <100ms instead of re-parsing.
+2. **File watcher**: notify crate detects changes within 200ms. Content-hash skip prevents redundant reparse.
+3. **MCP tools**: Query the LiveIndex with O(1) lookups. All responses are compact human-readable text.
+4. **HTTP sidecar**: axum server on ephemeral port, shares `Arc<LiveIndex>` with MCP tools.
+5. **Hooks**: Python scripts read stdin JSON, call sidecar, return enrichment as `additionalContext`.
+6. **Persistence**: On shutdown, serializes index to disk via postcard. On restart, loads snapshot and verifies in background.
 
-The MCP server is a standard stdio process. Point your client at:
-- **Command:** `npx`
-- **Args:** `-y tokenizor-mcp`
-- **Env:** `TOKENIZOR_CONTROL_PLANE_BACKEND=local_registry`
+## Environment Variables
 
-Your CLI starts it on launch and kills it on exit. No background processes, no daemons.
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TOKENIZOR_AUTO_INDEX` | `true` | Auto-index on startup when .git exists |
+| `TOKENIZOR_CB_THRESHOLD` | `20` | Circuit breaker: abort if >N% of files fail parsing |
+| `TOKENIZOR_SIDECAR_BIND` | `127.0.0.1` | Sidecar bind address |
 
-### Verify installation
-
-```bash
-npx -y tokenizor-mcp doctor
-```
-
-### Building from source (contributors)
+## Building from Source
 
 Requires [Rust toolchain](https://rustup.rs) (edition 2024).
 
-```cmd
-setup.bat                           &:: Windows
-bash scripts/setup.sh               # Linux
-setup.bat --spacetimedb             &:: with SpacetimeDB backend
-```
-
-## What Tokenizor Is
-
-Tokenizor is a Rust-native code-intelligence engine with a strict architecture and strong correctness guarantees.
-
-Core design position:
-- Rust owns the engine and protocol surface
-- SpacetimeDB is the authoritative control plane
-- a local byte-exact CAS owns raw file bytes and other byte-sensitive artifacts
-- tree-sitter-based parsing and symbol extraction are the planned indexing core
-
-This split exists for a reason:
-- operational state wants durable structured storage
-- raw source retrieval wants exact bytes
-- those are not the same storage problem
-
-## Current Status
-
-Epics 1–4 are complete. The codebase is a working indexing, retrieval, recovery, and repair engine with full lifecycle management, 18 MCP tools, and a live SpacetimeDB control plane.
-
-Implemented:
-- layered Rust crate structure across `application`, `domain`, `storage`, `protocol`, `indexing`, `parsing`, and `observability`
-- guarded CLI entrypoints for `run`, `doctor`, `init`, `attach`, `migrate`, `inspect`, and `resolve`
-- 18 MCP tools covering indexing, retrieval, recovery, repair, health inspection, and operational history
-- MCP resources: `tokenizor://runs/{run_id}/status` for live progress observation
-- deployment-aware startup/readiness checks
-- local byte-exact CAS foundation with atomic writes and writeability checks
-- durable local bootstrap registry for repository/workspace identity with atomic file writes and advisory locking
-- canonical Git common-directory matching for worktree attachment under one project identity
-- explicit `migrate` flow for legacy registry identity upgrades and stale path reconciliation
-- read-only registry inspection and active-context resolution
-- structured JSON operator output for initialization, migration, inspection, and workspace resolution flows
-- full indexing pipeline: gitignore-aware discovery, bounded concurrent processing, CAS storage, registry persistence
-- tree-sitter-based parsing and symbol extraction for 6 languages (Rust, Python, JavaScript, TypeScript, Go, Java) with 10 additional language variants registered
-- run lifecycle management: Queued → Running → Succeeded/Failed/Aborted/Cancelled/Interrupted
-- cooperative cancellation via CancellationToken with safe pipeline shutdown
-- checkpointing with configurable frequency and resume-from-cursor support
-- re-indexing with idempotency-backed replay and stale record detection
-- repository invalidation for untrusted indexed state
-- idempotent operation replay with conflict detection (5-case decision tree)
-- circuit breaker for consecutive file failures (default N=5)
-- run health classification and live progress tracking with phase observation
-- text search with blob integrity verification and quarantine exclusion
-- symbol search with coverage transparency (no blob I/O required)
-- file and repository outlines with quarantine visibility
-- verified source retrieval with byte-exact fidelity (blob integrity + byte-range extraction + UTF-8 validation)
-- suspect retrieval blocking with actionable NextAction guidance
-- batched multi-target retrieval with per-item independence and mixed symbol/code-slice targets
-- shared trust contract: ResultEnvelope, RetrievalOutcome, TrustLevel, Provenance, RequestGateError, NextAction
-- universal request gate (check_request_gate) reused across all retrieval operations
-- SpacetimeDB-backed mutable control plane (real SDK integration, schema, migration safety)
-- ControlPlane trait with 20+ methods across run lifecycle, checkpointing, file records, repair, and operational history
-- startup sweep for stale leases and interrupted state recovery
-- resume from durable checkpoints with discovery manifest validation
-- deterministic repair for suspect, quarantined, or incomplete indexed state (repository/run/file scopes)
-- repository health inspection with structured action classification
-- operational history with unified event model covering run transitions, checkpoints, repairs, integrity changes, and startup sweeps
-- action classification: ActionCondition (10 variants), NextAction vocabulary (Resume, Reindex, Repair, Wait, ResolveContext, Migrate)
-
-Not implemented yet:
-- MCP prompts
-- provider-native adoption layers and workflow integration (Epic 5)
-
-## Architecture
-
-Tokenizor uses a hybrid model:
-
-- `protocol`
-  - MCP and CLI entrypoints
-- `application`
-  - orchestration, readiness, and use-case logic
-- `domain`
-  - correctness-critical types and invariants
-- `storage`
-  - SpacetimeDB boundary plus local CAS
-- `indexing`
-  - discovery, hashing, commit pipeline, recovery
-- `parsing`
-  - tree-sitter integration and extraction
-- `observability`
-  - logs, health, and diagnostics
-
-Authoritative data split:
-
-- SpacetimeDB control plane
-  - repositories
-  - workspaces
-  - index runs
-  - checkpoints
-  - leases
-  - health
-  - repair actions
-  - idempotency
-  - metadata and operational history
-
-- Local CAS
-  - raw file bytes
-  - byte-sensitive derived artifacts
-  - any content where newline normalization or re-encoding would break correctness
-
-## Product Principles
-
-- Determinism beats convenience.
-- Explicit recovery beats hidden retry magic.
-- Corruption should be quarantined, not silently served.
-- Shutdown is not a safe persistence boundary.
-- Mutating operations should be idempotent.
-- Retrieval must be verified before it is trusted.
-- Provider clients are consumers, not the source of truth.
-
-## CLI Surface
-
-Current CLI commands:
-
-### `cargo run -- doctor`
-
-Evaluates deployment/runtime readiness and exits non-zero when required blockers exist.
-
-Current readiness coverage includes:
-- configuration validity
-- local CAS/storage readiness
-- SpacetimeDB runtime/service reachability
-- configured database/module/schema prerequisites
-- CLI/operator remediation guidance where relevant
-
-### `cargo run -- run`
-
-Starts the MCP stdio server only if required readiness checks pass.
-
-Current behavior:
-- refuses to serve MCP from an unsafe or degraded startup state
-- prints actionable blocker information when startup is blocked
-- uses `http://127.0.0.1:3007` as the default local SpacetimeDB endpoint unless overridden
-
-### `cargo run -- init`
-
-Initializes the current repository or an explicit path into Tokenizor's local bootstrap registry.
-
-Current behavior:
-- creates or reuses durable local repository/workspace identity
-- for Git repositories, uses the normalized shared Git common-directory path as the bootstrap-era project identity
-- attaches matching worktrees to the existing project instead of minting duplicate projects
-- returns machine-readable JSON
-- remains explicit about deployment blockers instead of hiding them
-- blocks on matching legacy bootstrap state until `migrate` reconciles it explicitly
-
-Usage:
-
-```powershell
-cargo run -- init
-cargo run -- init .
-cargo run -- init C:\path\to\repo
-```
-
-### `cargo run -- attach`
-
-Attaches the current Git workspace/worktree or an explicit path to an already registered project when the canonical Git project identity matches exactly one existing project.
-
-Current behavior:
-- returns the same machine-readable JSON report shape as `init`
-- preserves a distinct workspace identity for the attached working copy
-- fails explicitly with separate-initialization guidance when the target does not match an existing project
-- fails explicitly when multiple registered projects match the same canonical Git identity
-- fails explicitly when matching legacy bootstrap state must be reconciled through `migrate` before safe registration can continue
-
-Usage:
-
-```powershell
-cargo run -- attach
-cargo run -- attach C:\path\to\workspace
-```
-
-### `cargo run -- migrate`
-
-Reconciles legacy bootstrap registry state explicitly instead of relying on hidden read-time upgrades.
-
-Current behavior:
-- scans the local registry for legacy project identity drift and stale workspace paths
-- upgrades pre-1.6 Git registrations only when canonical identity can be proven safely from local evidence
-- reports `migrated`, `updated`, `unchanged`, and `unresolved` records as machine-readable JSON
-- exits non-zero when unresolved records remain so operators can review and act explicitly
-- supports an explicit path update mode for moved workspaces or renamed local roots
-
-Usage:
-
-```powershell
-cargo run -- migrate
-cargo run -- migrate C:\old\workspace C:\current\workspace
-```
-
-### `cargo run -- inspect`
-
-Prints the current local bootstrap registry view as JSON.
-
-Current behavior:
-- read-only
-- groups workspaces under registered project/repository identity
-- exposes explicit empty-state and provenance fields
-- remains usable even if SpacetimeDB readiness is blocked
-
-### `cargo run -- resolve`
-
-Resolves active repository/workspace context from the current directory or an explicit directory path.
-
-Current behavior:
-- returns Tokenizor-owned context as JSON
-- fails explicitly for unknown or conflicting workspace state
-- does not let external callers silently redefine repository truth
-
-Usage:
-
-```powershell
-cargo run -- resolve
-cargo run -- resolve C:\path\to\workspace
-```
-
-## Environment
-
-Supported configuration variables:
-
-- `TOKENIZOR_BLOB_ROOT`
-- `TOKENIZOR_CONTROL_PLANE_BACKEND`
-- `TOKENIZOR_SPACETIMEDB_CLI`
-- `TOKENIZOR_SPACETIMEDB_ENDPOINT`
-- `TOKENIZOR_SPACETIMEDB_DATABASE`
-- `TOKENIZOR_SPACETIMEDB_MODULE_PATH`
-- `TOKENIZOR_SPACETIMEDB_SCHEMA_VERSION`
-- `TOKENIZOR_REQUIRE_READY_CONTROL_PLANE`
-
-Important defaults:
-
-- default endpoint: `http://127.0.0.1:3007`
-- default product path expects a SpacetimeDB-backed control plane
-- `TOKENIZOR_CONTROL_PLANE_BACKEND=in_memory` is for tests and scaffolding, not the intended production path
-
-## Running Locally
-
-**After setup, no manual steps needed.** Your MCP client (Claude Code, Cursor, etc.) starts and stops the server automatically via the config.
-
-**Manual testing:**
-
 ```bash
-cargo run -- doctor           # verify deployment readiness
-cargo run -- init .           # register a repository
-cargo run -- run              # start MCP stdio server (Ctrl+C to stop)
+cargo build --release
+cargo test              # 385+ tests
 ```
 
-**With SpacetimeDB backend** (optional, for durable control plane):
+## Tech Stack
 
-```bash
-setup.bat --spacetimedb       # or: bash scripts/setup.sh --spacetimedb
-```
+- **Rust** (edition 2024) — core engine
+- **tree-sitter** 0.26 — parsing and cross-reference extraction for 13 languages
+- **rmcp** 1.1 — MCP protocol over stdio
+- **tokio** — async runtime
+- **axum** 0.8 — HTTP sidecar
+- **notify** 8 — file watching with debouncing
+- **postcard** 1.1 — index serialization (safe, no RUSTSEC advisories)
+- **dashmap** — concurrent HashMap for LiveIndex (via `Arc`)
 
-This installs SpacetimeDB CLI, starts the runtime, publishes the module, and outputs the full config.
+## License
 
-## MCP Surface
-
-Implemented MCP tools (18):
-- `health` — deployment readiness check
-- `index_folder` — launch background indexing run for a repository path
-- `get_index_run` — inspect run status, health, progress, and structured action classification
-- `list_index_runs` — list runs by repository or status
-- `cancel_index_run` — cooperatively cancel an active run
-- `reindex_repository` — re-index with idempotency and stale detection
-- `invalidate_indexed_state` — mark indexed state as untrusted
-- `checkpoint_now` — trigger checkpoint for an active run
-- `resume_index_run` — resume an interrupted run from its last durable checkpoint
-- `repair_index` — trigger deterministic repair for suspect, stale, quarantined, or incomplete state
-- `inspect_repository_health` — repository health report with structured action classification
-- `get_operational_history` — time-ordered operational events (run transitions, repairs, integrity changes)
-- `search_text` — full-text search across indexed files with blob integrity verification
-- `search_symbols` — search indexed symbol records with coverage transparency
-- `get_file_outline` — file-level symbol outline with quarantine visibility
-- `get_repo_outline` — repository-level structural overview
-- `get_symbol` — verified source retrieval for a single symbol or code slice
-- `get_symbols` — batched retrieval for multiple symbols or code slices in one request
-
-Implemented MCP resources:
-- `tokenizor://runs/{run_id}/status` — live run status and progress
-
-Planned (future):
-- MCP prompts: architecture map, codebase audit, failure triage, repair diagnosis
-- additional MCP resources: repository health, symbol metadata views
-- workflow integration and adoption layers (Epic 5)
-
-## Documentation
-
-Important repo docs:
-
-- `docs/project-overview.md`
-- `docs/architecture.md`
-- `docs/tokenizor_project_direction.md`
-- `docs/provider_cli_runtime_architecture.md`
-- `docs/provider_cli_integration_research.md`
-- `docs/data-models.md`
-- `docs/api-contracts.md`
-- `docs/development-guide.md`
-
-The root `README.md` should be read as a project-facing summary of current state and direction.
-The `docs/` folder contains the deeper architecture and planning baseline.
-
-## Build Order
-
-Completed:
-1. ~~finish durable local foundation and operator flows~~ (Epic 1)
-2. ~~implement durable indexing runs and run lifecycle control~~ (Epic 2)
-3. ~~add trusted code discovery and verified retrieval~~ (Epic 3)
-4. ~~recovery, repair, and operational confidence~~ (Epic 4)
-
-Next:
-5. retrieval-first workflow integration and adoption (Epic 5)
-
-## Development Notes
-
-- Rust edition: 2024
-- async runtime: Tokio
-- MCP SDK: `rmcp` 1.1.0
-- parsing: `tree-sitter` 0.24 with language-specific grammars
-- serialization: `serde`, `serde_json`, `schemars`
-- error handling: `thiserror` 2.0 (domain), `anyhow` (CLI boundary only)
-- observability: `tracing`, `tracing-subscriber`
-- SpacetimeDB SDK: `spacetimedb-sdk` 2.0.3
-- test suite: 749 tests (unit + integration + conformance + grammar)
-
-```bash
-cargo test          # run all tests
-cargo run -- doctor # verify deployment readiness
-cargo run -- run    # start MCP stdio server
-```
-
-This repository is optimized for the best end state, not legacy imitation.
+MIT
