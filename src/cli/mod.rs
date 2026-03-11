@@ -1,34 +1,53 @@
 //! CLI module — clap Parser types and subcommand dispatch for the `tokenizor` binary.
 //!
 //! Subcommands:
-//!   `tokenizor init`               — install hooks into ~/.claude/settings.json
+//!   `tokenizor init`               — configure Claude, Codex, or both
 //!   `tokenizor hook <subcommand>`  — hook scripts called by Claude Code
+//!   `tokenizor daemon`             — shared project/session backend
 //!
 //! Plan 03 wires these into main.rs and handles the top-level dispatch.
 
 pub mod hook;
 pub mod init;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 /// Top-level CLI parser for the `tokenizor` binary.
 #[derive(Parser)]
-#[command(name = "tokenizor", about = "Tokenizor MCP server and hook system", version)]
+#[command(
+    name = "tokenizor",
+    about = "Tokenizor MCP server and hook system",
+    version
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
 
 /// Top-level subcommands.
-#[derive(Subcommand)]
+#[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Install hooks into ~/.claude/settings.json
-    Init,
-    /// Hook subcommands called by Claude Code (PostToolUse / SessionStart)
+    /// Install Tokenizor integration for Claude, Codex, or both
+    Init {
+        /// Client to configure
+        #[arg(long, value_enum, default_value_t = InitClient::All)]
+        client: InitClient,
+    },
+    /// Run the shared local daemon that tracks project and session state
+    Daemon,
+    /// Hook subcommands called by Claude Code (PostToolUse / SessionStart / UserPromptSubmit)
     Hook {
         #[command(subcommand)]
         subcommand: Option<HookSubcommand>,
     },
+}
+
+/// Supported `tokenizor init` targets.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum InitClient {
+    Claude,
+    Codex,
+    All,
 }
 
 /// Hook subcommands — one per Claude Code tool event type.
@@ -45,4 +64,54 @@ pub enum HookSubcommand {
     /// SessionStart hook — returns repo map for the project
     #[command(name = "session-start")]
     SessionStart,
+    /// UserPromptSubmit hook — injects targeted context from file/symbol hints in the prompt
+    #[command(name = "prompt-submit")]
+    PromptSubmit,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_init_defaults_to_all_clients() {
+        let cli = Cli::parse_from(["tokenizor", "init"]);
+
+        match cli.command {
+            Some(Commands::Init { client }) => assert_eq!(client, InitClient::All),
+            _ => panic!("expected init command"),
+        }
+    }
+
+    #[test]
+    fn test_init_accepts_codex_client() {
+        let cli = Cli::parse_from(["tokenizor", "init", "--client", "codex"]);
+
+        match cli.command {
+            Some(Commands::Init { client }) => assert_eq!(client, InitClient::Codex),
+            _ => panic!("expected init command"),
+        }
+    }
+
+    #[test]
+    fn test_daemon_command_parses() {
+        let cli = Cli::parse_from(["tokenizor", "daemon"]);
+
+        match cli.command {
+            Some(Commands::Daemon) => {}
+            _ => panic!("expected daemon command"),
+        }
+    }
+
+    #[test]
+    fn test_hook_prompt_submit_command_parses() {
+        let cli = Cli::parse_from(["tokenizor", "hook", "prompt-submit"]);
+
+        match cli.command {
+            Some(Commands::Hook {
+                subcommand: Some(HookSubcommand::PromptSubmit),
+            }) => {}
+            _ => panic!("expected prompt-submit hook command"),
+        }
+    }
 }

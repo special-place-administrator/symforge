@@ -33,6 +33,8 @@ pub async fn spawn_sidecar(
 
     // Clean up stale files from a previous crashed sidecar.
     port_file::check_stale(&resolved_host);
+    // Ensure local sidecar mode does not inherit a daemon session routing file.
+    port_file::cleanup_session_file();
 
     // Bind to an OS-assigned ephemeral port.
     let addr = format!("{resolved_host}:0");
@@ -52,6 +54,7 @@ pub async fn spawn_sidecar(
     let state = SidecarState {
         index,
         token_stats: Arc::clone(&token_stats),
+        repo_root: std::env::current_dir().ok(),
         symbol_cache: Arc::new(RwLock::new(HashMap::new())),
     };
 

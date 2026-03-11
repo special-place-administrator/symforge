@@ -452,8 +452,8 @@ mod tests {
     #[test]
     fn test_extract_trigrams_produces_correct_windows() {
         let trigrams = extract_trigrams(b"abcd");
-        assert!(trigrams.contains(&[b'a', b'b', b'c']), "should contain 'abc'");
-        assert!(trigrams.contains(&[b'b', b'c', b'd']), "should contain 'bcd'");
+        assert!(trigrams.contains(b"abc"), "should contain 'abc'");
+        assert!(trigrams.contains(b"bcd"), "should contain 'bcd'");
         assert_eq!(trigrams.len(), 2, "abcd has 2 unique trigrams");
     }
 

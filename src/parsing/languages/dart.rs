@@ -1,12 +1,10 @@
 use tree_sitter::Node;
 
+use super::{collect_symbols, find_first_named_child, push_named_symbol, walk_children};
 use crate::domain::{SymbolKind, SymbolRecord};
 
 pub fn extract_symbols(node: &Node, source: &str) -> Vec<SymbolRecord> {
-    let mut symbols = Vec::new();
-    let mut sort_order = 0u32;
-    walk_node(node, source, 0, &mut sort_order, &mut symbols);
-    symbols
+    collect_symbols(node, source, walk_node)
 }
 
 fn walk_node(
@@ -24,38 +22,14 @@ fn walk_node(
         _ => None,
     };
 
-    if let Some(symbol_kind) = kind {
-        if let Some(name) = find_name(node, source) {
-            symbols.push(SymbolRecord {
-                name,
-                kind: symbol_kind,
-                depth,
-                sort_order: *sort_order,
-                byte_range: (node.start_byte() as u32, node.end_byte() as u32),
-                line_range: (
-                    node.start_position().row as u32,
-                    node.end_position().row as u32,
-                ),
-            });
-            *sort_order += 1;
-        }
-    }
-
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        let child_depth = if kind.is_some() { depth + 1 } else { depth };
-        walk_node(&child, source, child_depth, sort_order, symbols);
-    }
+    push_named_symbol(node, source, depth, sort_order, symbols, kind, |node, source, _| {
+        find_name(node, source)
+    });
+    walk_children(node, source, depth, sort_order, symbols, kind, walk_node);
 }
 
 fn find_name(node: &Node, source: &str) -> Option<String> {
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.kind() == "identifier" || child.kind() == "type_identifier" {
-            return Some(child.utf8_text(source.as_bytes()).unwrap_or("").to_string());
-        }
-    }
-    None
+    find_first_named_child(node, source, &["identifier", "type_identifier"])
 }
 
 // ---------------------------------------------------------------------------
@@ -71,7 +45,7 @@ mod tests {
 
     fn parse_dart(source: &str) -> Vec<SymbolRecord> {
         let mut parser = Parser::new();
-        let lang: tree_sitter::Language = tree_sitter_dart::language().into();
+        let lang: tree_sitter::Language = tree_sitter_dart::language();
         parser.set_language(&lang).expect("set Dart language");
         let tree = parser.parse(source, None).expect("parse Dart source");
         extract_symbols(&tree.root_node(), source)

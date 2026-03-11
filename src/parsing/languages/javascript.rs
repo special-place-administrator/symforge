@@ -1,12 +1,12 @@
 use tree_sitter::Node;
 
+use super::{
+    collect_symbols, find_first_named_child, push_named_symbol, push_symbol, walk_children,
+};
 use crate::domain::{SymbolKind, SymbolRecord};
 
 pub fn extract_symbols(node: &Node, source: &str) -> Vec<SymbolRecord> {
-    let mut symbols = Vec::new();
-    let mut sort_order = 0u32;
-    walk_node(node, source, 0, &mut sort_order, &mut symbols);
-    symbols
+    collect_symbols(node, source, walk_node)
 }
 
 fn walk_node(
@@ -28,28 +28,10 @@ fn walk_node(
         _ => None,
     };
 
-    if let Some(symbol_kind) = kind {
-        if let Some(name) = find_name(node, source) {
-            symbols.push(SymbolRecord {
-                name,
-                kind: symbol_kind,
-                depth,
-                sort_order: *sort_order,
-                byte_range: (node.start_byte() as u32, node.end_byte() as u32),
-                line_range: (
-                    node.start_position().row as u32,
-                    node.end_position().row as u32,
-                ),
-            });
-            *sort_order += 1;
-        }
-    }
-
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        let child_depth = if kind.is_some() { depth + 1 } else { depth };
-        walk_node(&child, source, child_depth, sort_order, symbols);
-    }
+    push_named_symbol(node, source, depth, sort_order, symbols, kind, |node, source, _| {
+        find_name(node, source)
+    });
+    walk_children(node, source, depth, sort_order, symbols, kind, walk_node);
 }
 
 fn extract_variable_declarations(
@@ -61,26 +43,15 @@ fn extract_variable_declarations(
 ) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if child.kind() == "variable_declarator" {
-            if let Some(name) = find_name(&child, source) {
-                let kind = if is_const_declaration(node) {
-                    SymbolKind::Constant
-                } else {
-                    SymbolKind::Variable
-                };
-                symbols.push(SymbolRecord {
-                    name,
-                    kind,
-                    depth,
-                    sort_order: *sort_order,
-                    byte_range: (node.start_byte() as u32, node.end_byte() as u32),
-                    line_range: (
-                        node.start_position().row as u32,
-                        node.end_position().row as u32,
-                    ),
-                });
-                *sort_order += 1;
-            }
+        if child.kind() == "variable_declarator"
+            && let Some(name) = find_name(&child, source)
+        {
+            let kind = if is_const_declaration(node) {
+                SymbolKind::Constant
+            } else {
+                SymbolKind::Variable
+            };
+            push_symbol(node, name, kind, depth, sort_order, symbols);
         }
     }
 }
@@ -96,11 +67,5 @@ fn is_const_declaration(node: &Node) -> bool {
 }
 
 fn find_name(node: &Node, source: &str) -> Option<String> {
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.kind() == "identifier" || child.kind() == "property_identifier" {
-            return Some(child.utf8_text(source.as_bytes()).unwrap_or("").to_string());
-        }
-    }
-    None
+    find_first_named_child(node, source, &["identifier", "property_identifier"])
 }

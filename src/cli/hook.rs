@@ -15,6 +15,7 @@ use std::time::Duration;
 use crate::cli::HookSubcommand;
 
 const PORT_FILE: &str = ".tokenizor/sidecar.port";
+const SESSION_FILE: &str = ".tokenizor/sidecar.session";
 /// Hard HTTP timeout — leaves margin within HOOK-03's 100 ms total budget.
 const HTTP_TIMEOUT: Duration = Duration::from_millis(50);
 
@@ -28,6 +29,7 @@ pub(crate) struct HookInput {
     pub(crate) tool_name: Option<String>,
     pub(crate) tool_input: Option<HookToolInput>,
     pub(crate) cwd: Option<String>,
+    pub(crate) prompt: Option<String>,
 }
 
 /// The `tool_input` field from the Claude Code hook event payload.
@@ -81,13 +83,15 @@ pub fn run_hook(subcommand: Option<&HookSubcommand>) -> anyhow::Result<()> {
             return Ok(());
         }
     };
+    let session_id = read_session_file().ok();
 
     // Step 2 — determine endpoint + query string.
     let resolved_ref = resolved.as_ref();
     let (path, query) = endpoint_for(resolved_ref, &input);
+    let request_path = proxy_path(path, session_id.as_deref());
 
     // Step 3/4 — make sync HTTP GET with 50 ms timeout.
-    let body = match sync_http_get(port, path, query) {
+    let body = match sync_http_get(port, &request_path, query) {
         Ok(b) => b,
         Err(_) => {
             println!("{}", fail_open_json(event_name));
@@ -139,6 +143,10 @@ pub(crate) fn relative_path(absolute: &str, cwd: &str) -> String {
 
 /// Maps a `tool_name` string from the stdin JSON to a `HookSubcommand`.
 fn resolve_subcommand_from_input(input: &HookInput) -> Option<HookSubcommand> {
+    if input.prompt.as_deref().is_some() {
+        return Some(HookSubcommand::PromptSubmit);
+    }
+
     match input.tool_name.as_deref() {
         Some("Read") => Some(HookSubcommand::Read),
         Some("Edit") => Some(HookSubcommand::Edit),
@@ -152,6 +160,7 @@ fn resolve_subcommand_from_input(input: &HookInput) -> Option<HookSubcommand> {
 pub fn event_name_for(subcommand: &HookSubcommand) -> &'static str {
     match subcommand {
         HookSubcommand::SessionStart => "SessionStart",
+        HookSubcommand::PromptSubmit => "UserPromptSubmit",
         _ => "PostToolUse",
     }
 }
@@ -207,6 +216,15 @@ pub(crate) fn endpoint_for(subcommand: Option<&HookSubcommand>, input: &HookInpu
             ("/symbol-context", query)
         }
         Some(HookSubcommand::SessionStart) => ("/repo-map", String::new()),
+        Some(HookSubcommand::PromptSubmit) => {
+            let prompt = input.prompt.as_deref().unwrap_or("");
+            let query = if prompt.is_empty() {
+                String::new()
+            } else {
+                format!("text={}", url_encode(prompt))
+            };
+            ("/prompt-context", query)
+        }
         // Unknown tool_name → fail-open: route to a no-op that returns empty.
         None => ("/health", String::new()),
     }
@@ -255,6 +273,20 @@ fn read_port_file() -> std::io::Result<u16> {
         .trim()
         .parse::<u16>()
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
+fn read_session_file() -> std::io::Result<String> {
+    let contents = std::fs::read_to_string(SESSION_FILE)?;
+    Ok(contents.trim().to_string())
+}
+
+fn proxy_path(base_path: &str, session_id: Option<&str>) -> String {
+    match session_id {
+        Some(session_id) if !session_id.trim().is_empty() => {
+            format!("/v1/sessions/{}/sidecar{}", session_id.trim(), base_path)
+        }
+        _ => base_path.to_string(),
+    }
 }
 
 /// Make a synchronous HTTP/1.1 GET request to `127.0.0.1:{port}{path}?{query}`.
@@ -518,6 +550,32 @@ mod tests {
     }
 
     #[test]
+    fn test_endpoint_for_prompt_submit_routes_to_prompt_context() {
+        let input = HookInput {
+            prompt: Some("please inspect src/foo.rs".to_string()),
+            ..HookInput::default()
+        };
+        let (path, query) = endpoint_for(Some(&HookSubcommand::PromptSubmit), &input);
+        assert_eq!(path, "/prompt-context");
+        assert!(
+            query.contains("please%20inspect%20src/foo.rs"),
+            "prompt query must be URL-encoded; got: {query}"
+        );
+    }
+
+    #[test]
+    fn test_proxy_path_uses_daemon_session_namespace_when_present() {
+        let path = proxy_path("/repo-map", Some("session-42"));
+        assert_eq!(path, "/v1/sessions/session-42/sidecar/repo-map");
+    }
+
+    #[test]
+    fn test_proxy_path_keeps_legacy_sidecar_route_without_session() {
+        let path = proxy_path("/repo-map", None);
+        assert_eq!(path, "/repo-map");
+    }
+
+    #[test]
     fn test_endpoint_for_unknown_tool_returns_fail_open() {
         // None subcommand with unknown/missing tool_name → fail-open /health endpoint
         let input = HookInput {
@@ -537,6 +595,11 @@ mod tests {
     }
 
     #[test]
+    fn test_event_name_for_prompt_submit() {
+        assert_eq!(event_name_for(&HookSubcommand::PromptSubmit), "UserPromptSubmit");
+    }
+
+    #[test]
     fn test_event_name_for_post_tool_use_variants() {
         for sub in [
             HookSubcommand::Read,
@@ -552,7 +615,7 @@ mod tests {
         }
     }
 
-    // --- backward compat: old subcommand variants still exist ---
+    // --- explicit subcommand routing remains available ---
 
     #[test]
     fn test_hook_subcommand_to_endpoint_read_backward_compat() {
@@ -581,6 +644,17 @@ mod tests {
         let (path, query) = endpoint_for(Some(&HookSubcommand::SessionStart), &input);
         assert_eq!(path, "/repo-map");
         assert!(query.is_empty(), "repo-map has no query params");
+    }
+
+    #[test]
+    fn test_hook_subcommand_to_endpoint_prompt_submit_backward_compat() {
+        let input = HookInput {
+            prompt: Some("review MinioService".to_string()),
+            ..HookInput::default()
+        };
+        let (path, query) = endpoint_for(Some(&HookSubcommand::PromptSubmit), &input);
+        assert_eq!(path, "/prompt-context");
+        assert!(query.contains("review%20MinioService"));
     }
 
     // --- resolve_subcommand_from_input ---
@@ -619,6 +693,7 @@ mod tests {
                 path: None,
             }),
             cwd: Some(cwd.to_string()),
+            prompt: None,
         }
     }
 }

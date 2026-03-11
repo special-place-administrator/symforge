@@ -190,7 +190,7 @@ fn test_kotlin_grammar_loads_and_parses() {
 fn test_dart_grammar_loads_and_parses() {
     let mut parser = Parser::new();
     parser
-        .set_language(&tree_sitter_dart::language().into())
+        .set_language(&tree_sitter_dart::language())
         .expect("failed to load Dart grammar — possible ABI mismatch");
     let source = "class Animal { void speak() {} }";
     let tree = parser.parse(source, None).expect("parse returned None");

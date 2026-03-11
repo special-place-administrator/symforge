@@ -6,6 +6,7 @@ pub mod server;
 pub use server::spawn_sidecar;
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
@@ -135,6 +136,9 @@ pub struct SymbolSnapshot {
 pub struct SidecarState {
     pub index: SharedIndex,
     pub token_stats: Arc<TokenStats>,
+    /// Canonical project root for file-system reads during impact analysis.
+    /// `None` falls back to process cwd for local test setups.
+    pub repo_root: Option<PathBuf>,
     /// Per-file symbol snapshot cache for impact diff.
     /// Key: relative file path. Value: symbol list captured before last edit.
     pub symbol_cache: Arc<RwLock<HashMap<String, Vec<SymbolSnapshot>>>>,
@@ -336,6 +340,7 @@ mod tests {
         let state = SidecarState {
             index,
             token_stats: TokenStats::new(),
+            repo_root: None,
             symbol_cache: Arc::new(RwLock::new(HashMap::new())),
         };
 

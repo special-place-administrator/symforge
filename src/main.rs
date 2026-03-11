@@ -1,17 +1,30 @@
 use std::sync::{Arc, Mutex};
 
 use clap::Parser;
-use tokenizor_agentic_mcp::{cli, discovery, live_index, observability, protocol, sidecar, watcher};
-use tokenizor_agentic_mcp::live_index::persist;
 use rmcp::{serve_server, transport};
+use tokenizor_agentic_mcp::live_index::persist;
+use tokenizor_agentic_mcp::{
+    cli, daemon, discovery, live_index, observability, protocol, sidecar, watcher,
+};
 
 fn main() -> anyhow::Result<()> {
     let cli = cli::Cli::parse();
     match cli.command {
-        Some(cli::Commands::Init) => cli::init::run_init(),
+        Some(cli::Commands::Init { client }) => cli::init::run_init(client),
+        Some(cli::Commands::Daemon) => run_daemon(),
         Some(cli::Commands::Hook { subcommand }) => cli::hook::run_hook(subcommand.as_ref()),
         None => run_mcp_server(),
     }
+}
+
+fn run_daemon() -> anyhow::Result<()> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(async {
+            observability::init_tracing()?;
+            daemon::run_daemon_until_shutdown("127.0.0.1").await
+        })
 }
 
 fn run_mcp_server() -> anyhow::Result<()> {
@@ -35,6 +48,65 @@ async fn run_mcp_server_async() -> anyhow::Result<()> {
         None
     };
 
+    if let Some(root) = resolved_root.clone() {
+        match daemon::connect_or_spawn_session(&root, "mcp-stdio", Some(std::process::id())).await
+        {
+            Ok(session) => return run_remote_mcp_server_async(session).await,
+            Err(error) => {
+                tracing::warn!(
+                    root = %root.display(),
+                    "daemon-backed startup failed, falling back to local mode: {error}"
+                );
+            }
+        }
+    }
+
+    run_local_mcp_server_async(should_auto_index, resolved_root).await
+}
+
+async fn run_remote_mcp_server_async(
+    session: daemon::DaemonSessionClient,
+) -> anyhow::Result<()> {
+    if let Some(port) = session.port() {
+        sidecar::port_file::write_port_file(port)?;
+        sidecar::port_file::write_pid_file(std::process::id())?;
+        sidecar::port_file::write_session_file(session.session_id())?;
+    }
+
+    let heartbeat_client = session.clone();
+    let heartbeat_task = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+            let _ = heartbeat_client.heartbeat().await;
+        }
+    });
+
+    let server = protocol::TokenizorServer::new_daemon_proxy(session.clone());
+    tracing::info!(
+        project_id = %session.project_id(),
+        session_id = %session.session_id(),
+        "starting daemon-backed MCP server on stdio transport"
+    );
+    let service = serve_server(server, transport::stdio()).await?;
+
+    tokio::select! {
+        result = service.waiting() => { result?; }
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("Ctrl+C received, shutting down");
+        }
+    }
+
+    heartbeat_task.abort();
+    let _ = session.close().await;
+    sidecar::port_file::cleanup_files();
+    tracing::info!("daemon-backed MCP server shut down cleanly");
+    Ok(())
+}
+
+async fn run_local_mcp_server_async(
+    should_auto_index: bool,
+    resolved_root: Option<std::path::PathBuf>,
+) -> anyhow::Result<()> {
     let (index, project_name, watcher_root) = if let Some(root) = resolved_root {
         tracing::info!(root = %root.display(), "auto-indexing from project root");
 
@@ -42,11 +114,16 @@ async fn run_mcp_server_async() -> anyhow::Result<()> {
         let index = if let Some(snapshot) = persist::load_snapshot(&root) {
             let file_count = snapshot.files.len();
             // Extract mtime map before consuming snapshot
-            let snapshot_mtimes: std::collections::HashMap<String, i64> = snapshot.files.iter()
+            let snapshot_mtimes: std::collections::HashMap<String, i64> = snapshot
+                .files
+                .iter()
                 .map(|(k, v)| (k.clone(), v.mtime_secs))
                 .collect();
 
-            tracing::info!(files = file_count, "loaded serialized index from .tokenizor/index.bin");
+            tracing::info!(
+                files = file_count,
+                "loaded serialized index from .tokenizor/index.bin"
+            );
             let live = persist::snapshot_to_live_index(snapshot);
             let shared: live_index::SharedIndex = std::sync::Arc::new(std::sync::RwLock::new(live));
 
@@ -115,8 +192,8 @@ async fn run_mcp_server_async() -> anyhow::Result<()> {
 
     // Spawn HTTP sidecar after watcher, before MCP serve.
     // The sidecar shares the same Arc<LiveIndex> so mutations are immediately visible.
-    let bind_host = std::env::var("TOKENIZOR_SIDECAR_BIND")
-        .unwrap_or_else(|_| "127.0.0.1".to_string());
+    let bind_host =
+        std::env::var("TOKENIZOR_SIDECAR_BIND").unwrap_or_else(|_| "127.0.0.1".to_string());
     let sidecar_handle = sidecar::spawn_sidecar(Arc::clone(&index), &bind_host).await?;
     tracing::info!(port = sidecar_handle.port, "HTTP sidecar started");
 
@@ -125,7 +202,13 @@ async fn run_mcp_server_async() -> anyhow::Result<()> {
     let token_stats = Some(sidecar_handle.token_stats);
 
     // Create MCP server and serve on stdio transport.
-    let server = protocol::TokenizorServer::new(Arc::clone(&index), project_name, watcher_info, watcher_root.clone(), token_stats);
+    let server = protocol::TokenizorServer::new(
+        Arc::clone(&index),
+        project_name,
+        watcher_info,
+        watcher_root.clone(),
+        token_stats,
+    );
     tracing::info!("starting MCP server on stdio transport");
     let service = serve_server(server, transport::stdio()).await?;
 

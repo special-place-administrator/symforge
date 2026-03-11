@@ -1,12 +1,10 @@
 use tree_sitter::Node;
 
+use super::{collect_symbols, push_named_symbol, walk_children};
 use crate::domain::{SymbolKind, SymbolRecord};
 
 pub fn extract_symbols(node: &Node, source: &str) -> Vec<SymbolRecord> {
-    let mut symbols = Vec::new();
-    let mut sort_order = 0u32;
-    walk_node(node, source, 0, &mut sort_order, &mut symbols);
-    symbols
+    collect_symbols(node, source, walk_node)
 }
 
 fn walk_node(
@@ -28,28 +26,10 @@ fn walk_node(
         _ => None,
     };
 
-    if let Some(symbol_kind) = kind {
-        if let Some(name) = find_cpp_name(node, source) {
-            symbols.push(SymbolRecord {
-                name,
-                kind: symbol_kind,
-                depth,
-                sort_order: *sort_order,
-                byte_range: (node.start_byte() as u32, node.end_byte() as u32),
-                line_range: (
-                    node.start_position().row as u32,
-                    node.end_position().row as u32,
-                ),
-            });
-            *sort_order += 1;
-        }
-    }
-
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        let child_depth = if kind.is_some() { depth + 1 } else { depth };
-        walk_node(&child, source, child_depth, sort_order, symbols);
-    }
+    push_named_symbol(node, source, depth, sort_order, symbols, kind, |node, source, _| {
+        find_cpp_name(node, source)
+    });
+    walk_children(node, source, depth, sort_order, symbols, kind, walk_node);
 }
 
 /// Find the name for C++ declarations.

@@ -24,11 +24,7 @@ pub fn file_outline(index: &LiveIndex, path: &str) -> String {
         // Format: indent + kind (left-padded to 12) + name (left-padded to 30) + line range
         lines.push(format!(
             "{}{:<12} {:<30} {}-{}",
-            indent,
-            kind_str,
-            sym.name,
-            sym.line_range.0,
-            sym.line_range.1
+            indent, kind_str, sym.name, sym.line_range.0, sym.line_range.1
         ));
     }
 
@@ -70,11 +66,7 @@ pub fn symbol_detail(
             let byte_count = end.saturating_sub(start);
             format!(
                 "{}\n[{}, lines {}-{}, {} bytes]",
-                body,
-                s.kind,
-                s.line_range.0,
-                s.line_range.1,
-                byte_count
+                body, s.kind, s.line_range.0, s.line_range.1, byte_count
             )
         }
     }
@@ -119,6 +111,14 @@ struct ScoredMatch {
 /// Header: `{N} matches in {M} files`
 /// Empty: "No symbols matching '{query}'"
 pub fn search_symbols_result(index: &LiveIndex, query: &str) -> String {
+    search_symbols_result_with_kind(index, query, None)
+}
+
+pub fn search_symbols_result_with_kind(
+    index: &LiveIndex,
+    query: &str,
+    kind_filter: Option<&str>,
+) -> String {
     let query_lower = query.to_lowercase();
     const RESULT_LIMIT: usize = 50;
 
@@ -131,6 +131,12 @@ pub fn search_symbols_result(index: &LiveIndex, query: &str) -> String {
     for path in paths {
         let file = index.get_file(path).unwrap();
         for sym in &file.symbols {
+            if let Some(filter) = kind_filter
+                && !filter.eq_ignore_ascii_case("all")
+                && !sym.kind.to_string().eq_ignore_ascii_case(filter)
+            {
+                continue;
+            }
             let name_lower = sym.name.to_lowercase();
             if !name_lower.contains(&query_lower) {
                 continue;
@@ -166,7 +172,8 @@ pub fn search_symbols_result(index: &LiveIndex, query: &str) -> String {
 
     // Sort by (tier, tiebreak, name)
     matches.sort_by(|a, b| {
-        a.tier.cmp(&b.tier)
+        a.tier
+            .cmp(&b.tier)
             .then(a.tiebreak.cmp(&b.tiebreak))
             .then(a.name.cmp(&b.name))
     });
@@ -207,21 +214,101 @@ pub fn search_symbols_result(index: &LiveIndex, query: &str) -> String {
 /// Body: grouped by file, each match: `  {line_number}: {line_content}`
 /// Empty: "No matches for '{query}'"
 pub fn search_text_result(index: &LiveIndex, query: &str) -> String {
-    let query_lower = query.to_lowercase();
+    search_text_result_with_options(index, Some(query), None, false)
+}
 
-    // Get candidate files via trigram index (handles short-query fallback internally).
-    let candidate_paths = index.trigram_index.search(query.as_bytes(), &index.files);
+pub fn search_text_result_with_options(
+    index: &LiveIndex,
+    query: Option<&str>,
+    terms: Option<&[String]>,
+    regex: bool,
+) -> String {
+    let normalized_terms: Vec<String> = match terms {
+        Some(raw_terms) if !raw_terms.is_empty() => raw_terms
+            .iter()
+            .map(|term| term.trim())
+            .filter(|term| !term.is_empty())
+            .map(ToOwned::to_owned)
+            .collect(),
+        _ => query
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(|text| vec![text.to_string()])
+            .unwrap_or_default(),
+    };
 
-    // Sort for deterministic output.
-    let mut sorted_paths: Vec<String> = candidate_paths;
-    sorted_paths.sort();
+    if regex {
+        let pattern = query
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .unwrap_or("");
+        if pattern.is_empty() {
+            return "Regex search requires a non-empty query.".to_string();
+        }
+
+        let regex = match regex::Regex::new(pattern) {
+            Ok(regex) => regex,
+            Err(error) => return format!("Invalid regex '{pattern}': {error}"),
+        };
+
+        return collect_text_matches(
+            index,
+            index.all_files().map(|(path, _)| path.clone()).collect(),
+            |line| regex.is_match(line),
+            &format!("regex '{pattern}'"),
+        );
+    }
+
+    if normalized_terms.is_empty() {
+        return "Search requires a non-empty query or terms.".to_string();
+    }
+
+    let mut candidate_paths = std::collections::HashSet::new();
+    for term in &normalized_terms {
+        for path in index.trigram_index.search(term.as_bytes(), &index.files) {
+            candidate_paths.insert(path);
+        }
+    }
+
+    let lowered_terms: Vec<String> = normalized_terms
+        .iter()
+        .map(|term| term.to_lowercase())
+        .collect();
+
+    let label = if normalized_terms.len() == 1 {
+        format!("'{}'", normalized_terms[0])
+    } else {
+        format!("terms [{}]", normalized_terms.join(", "))
+    };
+
+    collect_text_matches(
+        index,
+        candidate_paths.into_iter().collect(),
+        |line| {
+            let lowered = line.to_lowercase();
+            lowered_terms.iter().any(|term| lowered.contains(term))
+        },
+        &label,
+    )
+}
+
+fn collect_text_matches<F>(
+    index: &LiveIndex,
+    mut candidate_paths: Vec<String>,
+    mut is_match: F,
+    label: &str,
+) -> String
+where
+    F: FnMut(&str) -> bool,
+{
+    candidate_paths.sort();
 
     let mut by_file: Vec<(String, Vec<String>)> = Vec::new();
     let mut total_matches = 0usize;
 
-    for path in &sorted_paths {
+    for path in &candidate_paths {
         let file = match index.get_file(path) {
-            Some(f) => f,
+            Some(file) => file,
             None => continue,
         };
         let content_str = String::from_utf8_lossy(&file.content);
@@ -229,11 +316,10 @@ pub fn search_text_result(index: &LiveIndex, query: &str) -> String {
         let matches: Vec<String> = content_str
             .lines()
             .enumerate()
-            .filter_map(|(i, line)| {
-                // Trim \r for CRLF files
+            .filter_map(|(line_idx, line)| {
                 let line = line.trim_end_matches('\r');
-                if line.to_lowercase().contains(&query_lower) {
-                    Some(format!("  {}: {}", i + 1, line))
+                if is_match(line) {
+                    Some(format!("  {}: {}", line_idx + 1, line))
                 } else {
                     None
                 }
@@ -247,18 +333,17 @@ pub fn search_text_result(index: &LiveIndex, query: &str) -> String {
     }
 
     if by_file.is_empty() {
-        return format!("No matches for '{query}'");
+        return format!("No matches for {label}");
     }
 
-    let file_count = by_file.len();
-    let mut lines = Vec::new();
-    lines.push(format!("{total_matches} matches in {file_count} files"));
-
+    let mut lines = vec![format!(
+        "{total_matches} matches in {} files",
+        by_file.len()
+    )];
     for (path, matches) in &by_file {
         lines.push(path.clone());
         lines.extend_from_slice(matches);
     }
-
     lines.join("\n")
 }
 
@@ -287,14 +372,16 @@ pub fn file_tree(index: &LiveIndex, path: &str, depth: u32) -> String {
                 true
             } else {
                 p.starts_with(prefix)
-                    && (p.len() == prefix.len()
-                        || p.as_bytes().get(prefix.len()) == Some(&b'/'))
+                    && (p.len() == prefix.len() || p.as_bytes().get(prefix.len()) == Some(&b'/'))
             }
         })
         .collect();
 
     if matching_files.is_empty() {
-        return format!("No source files found under '{}'", if prefix.is_empty() { "." } else { prefix });
+        return format!(
+            "No source files found under '{}'",
+            if prefix.is_empty() { "." } else { prefix }
+        );
     }
 
     // Build a tree: BTreeMap from directory path -> Vec<(filename, lang, symbol_count)>
@@ -302,10 +389,23 @@ pub fn file_tree(index: &LiveIndex, path: &str, depth: u32) -> String {
     use std::collections::BTreeMap;
 
     // Strip the prefix from all paths before building the tree.
-    let strip_len = if prefix.is_empty() { 0 } else { prefix.len() + 1 };
+    let strip_len = if prefix.is_empty() {
+        0
+    } else {
+        prefix.len() + 1
+    };
     let stripped: Vec<(&str, &crate::live_index::store::IndexedFile)> = matching_files
         .iter()
-        .map(|(p, f)| (if p.len() >= strip_len { &p[strip_len..] } else { p.as_str() }, *f))
+        .map(|(p, f)| {
+            (
+                if p.len() >= strip_len {
+                    &p[strip_len..]
+                } else {
+                    p.as_str()
+                },
+                *f,
+            )
+        })
         .collect();
 
     // Recursively build tree lines.
@@ -316,7 +416,8 @@ pub fn file_tree(index: &LiveIndex, path: &str, depth: u32) -> String {
         indent: usize,
     ) -> Vec<String> {
         // Group by first path component.
-        let mut dirs: BTreeMap<&str, Vec<(&str, &crate::live_index::store::IndexedFile)>> = BTreeMap::new();
+        let mut dirs: BTreeMap<&str, Vec<(&str, &crate::live_index::store::IndexedFile)>> =
+            BTreeMap::new();
         let mut files_here: Vec<(&str, &crate::live_index::store::IndexedFile)> = Vec::new();
 
         for (rel, file) in entries {
@@ -378,10 +479,15 @@ pub fn file_tree(index: &LiveIndex, path: &str, depth: u32) -> String {
             }
         }
         // also count files in sub-directories
-        let mut dirs: std::collections::HashMap<&str, Vec<(&str, &crate::live_index::store::IndexedFile)>> = std::collections::HashMap::new();
+        let mut dirs: std::collections::HashMap<
+            &str,
+            Vec<(&str, &crate::live_index::store::IndexedFile)>,
+        > = std::collections::HashMap::new();
         for (rel, file) in entries {
             if let Some(slash) = rel.find('/') {
-                dirs.entry(&rel[..slash]).or_default().push((&rel[slash + 1..], file));
+                dirs.entry(&rel[..slash])
+                    .or_default()
+                    .push((&rel[slash + 1..], file));
             }
         }
         for children in dirs.values() {
@@ -392,12 +498,18 @@ pub fn file_tree(index: &LiveIndex, path: &str, depth: u32) -> String {
 
     fn count_dirs(entries: &[(&str, &crate::live_index::store::IndexedFile)]) -> usize {
         let mut dirs: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        let mut sub_entries: std::collections::HashMap<&str, Vec<(&str, &crate::live_index::store::IndexedFile)>> = std::collections::HashMap::new();
+        let mut sub_entries: std::collections::HashMap<
+            &str,
+            Vec<(&str, &crate::live_index::store::IndexedFile)>,
+        > = std::collections::HashMap::new();
         for (rel, file) in entries {
             if let Some(slash) = rel.find('/') {
                 let dir_name = &rel[..slash];
                 dirs.insert(dir_name);
-                sub_entries.entry(dir_name).or_default().push((&rel[slash + 1..], file));
+                sub_entries
+                    .entry(dir_name)
+                    .or_default()
+                    .push((&rel[slash + 1..], file));
             }
         }
         let mut total = dirs.len();
@@ -412,7 +524,11 @@ pub fn file_tree(index: &LiveIndex, path: &str, depth: u32) -> String {
     let total_files = stripped.len();
     let total_dirs = count_dirs(&stripped);
     let total_symbols: usize = stripped.iter().map(|(_, f)| f.symbols.len()).sum();
-    let sym_label = if total_symbols == 1 { "symbol" } else { "symbols" };
+    let sym_label = if total_symbols == 1 {
+        "symbol"
+    } else {
+        "symbols"
+    };
 
     let mut output = body_lines;
     output.push(format!(
@@ -488,10 +604,7 @@ pub fn health_report(index: &LiveIndex) -> String {
             let last = match stats.last_event_at {
                 None => "never".to_string(),
                 Some(t) => {
-                    let secs = t
-                        .elapsed()
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0);
+                    let secs = t.elapsed().map(|d| d.as_secs()).unwrap_or(0);
                     format!("{secs}s ago")
                 }
             };
@@ -548,10 +661,7 @@ pub fn health_report_with_watcher(
             let last = match stats.last_event_at {
                 None => "never".to_string(),
                 Some(t) => {
-                    let secs = t
-                        .elapsed()
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0);
+                    let secs = t.elapsed().map(|d| d.as_secs()).unwrap_or(0);
                     format!("{secs}s ago")
                 }
             };
@@ -602,10 +712,27 @@ pub fn what_changed_result(index: &LiveIndex, since_ts: i64) -> String {
         if paths.is_empty() {
             return "No changes detected since last index load.".to_string();
         }
-        paths.iter().map(|p| p.as_str()).collect::<Vec<_>>().join("\n")
+        paths
+            .iter()
+            .map(|p| p.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
     } else {
         "No changes detected since last index load.".to_string()
     }
+}
+
+pub fn what_changed_paths_result(paths: &[String], empty_message: &str) -> String {
+    let mut normalized_paths: Vec<String> =
+        paths.iter().map(|path| path.replace('\\', "/")).collect();
+    normalized_paths.sort();
+    normalized_paths.dedup();
+
+    if normalized_paths.is_empty() {
+        return empty_message.to_string();
+    }
+
+    normalized_paths.join("\n")
 }
 
 /// Return raw file content, optionally sliced by 1-indexed line range.
@@ -783,7 +910,7 @@ pub fn find_dependents_result(index: &LiveIndex, path: &str) -> String {
                 let line_0 = r.line_range.0 as usize; // 0-indexed
                 let line_content = content_lines.get(line_0).copied().unwrap_or("");
                 let line_number = line_0 + 1; // 1-indexed
-                lines.push(format!("  {line_number}: {line_content}   [import]"));
+                lines.push(format!("  {line_number}: {line_content}   [{}]", r.kind));
             }
         }
         lines.push(String::new()); // blank line between files
@@ -838,11 +965,7 @@ pub fn context_bundle_result(
 
     let mut output = format!(
         "{}\n[{}, lines {}-{}, {} bytes]\n",
-        body,
-        sym_rec.kind,
-        sym_rec.line_range.0,
-        sym_rec.line_range.1,
-        byte_count
+        body, sym_rec.kind, sym_rec.line_range.0, sym_rec.line_range.1, byte_count
     );
 
     // Callers: Call references to this symbol from anywhere
@@ -888,12 +1011,18 @@ fn format_ref_section(
         if enclosing.is_empty() {
             lines.push(format!("  {display_name:<20} {file_path}:{line_1indexed}"));
         } else {
-            lines.push(format!("  {display_name:<20} {file_path}:{line_1indexed}  {enclosing}"));
+            lines.push(format!(
+                "  {display_name:<20} {file_path}:{line_1indexed}  {enclosing}"
+            ));
         }
     }
 
     if count > SECTION_CAP {
-        lines.push(format!("  ...and {} more {}", count - SECTION_CAP, title.to_lowercase()));
+        lines.push(format!(
+            "  ...and {} more {}",
+            count - SECTION_CAP,
+            title.to_lowercase()
+        ));
     }
 
     lines.join("\n")
@@ -926,14 +1055,11 @@ pub fn empty_guard_message() -> String {
 /// Total: ~T tokens saved
 /// ```
 pub fn format_token_savings(snap: &crate::sidecar::StatsSnapshot) -> String {
-    let total_saved =
-        snap.read_saved_tokens + snap.edit_saved_tokens + snap.grep_saved_tokens;
+    let total_saved = snap.read_saved_tokens + snap.edit_saved_tokens + snap.grep_saved_tokens;
 
     // Show section only when at least one hook has fired.
-    let any_fires = snap.read_fires > 0
-        || snap.edit_fires > 0
-        || snap.write_fires > 0
-        || snap.grep_fires > 0;
+    let any_fires =
+        snap.read_fires > 0 || snap.edit_fires > 0 || snap.write_fires > 0 || snap.grep_fires > 0;
 
     if !any_fires {
         return String::new();
@@ -978,7 +1104,13 @@ mod tests {
 
     // --- Test helpers ---
 
-    fn make_symbol(name: &str, kind: SymbolKind, depth: u32, line_start: u32, line_end: u32) -> SymbolRecord {
+    fn make_symbol(
+        name: &str,
+        kind: SymbolKind,
+        depth: u32,
+        line_start: u32,
+        line_end: u32,
+    ) -> SymbolRecord {
         SymbolRecord {
             name: name.to_string(),
             kind,
@@ -1083,13 +1215,20 @@ mod tests {
             make_symbol("MyStruct", SymbolKind::Struct, 0, 1, 10),
             make_symbol("my_method", SymbolKind::Method, 1, 2, 5),
         ];
-        let (key, file) = make_file("src/lib.rs", b"struct MyStruct { fn my_method() {} }", symbols);
+        let (key, file) = make_file(
+            "src/lib.rs",
+            b"struct MyStruct { fn my_method() {} }",
+            symbols,
+        );
         let index = make_index(vec![(key, file)]);
         let result = file_outline(&index, "src/lib.rs");
         let lines: Vec<&str> = result.lines().collect();
         // Method at depth 1 should be indented by 2 spaces
         let method_line = lines.iter().find(|l| l.contains("my_method")).unwrap();
-        assert!(method_line.starts_with("  "), "depth-1 symbol should be indented by 2 spaces");
+        assert!(
+            method_line.starts_with("  "),
+            "depth-1 symbol should be indented by 2 spaces"
+        );
     }
 
     #[test]
@@ -1117,7 +1256,10 @@ mod tests {
         let index = make_index(vec![(key, file)]);
         let result = symbol_detail(&index, "src/lib.rs", "hello", None);
         assert!(result.contains("fn hello"), "should contain body");
-        assert!(result.contains("[fn, lines 1-1, 30 bytes]"), "should contain footer");
+        assert!(
+            result.contains("[fn, lines 1-1, 30 bytes]"),
+            "should contain footer"
+        );
     }
 
     #[test]
@@ -1148,7 +1290,10 @@ mod tests {
         let index = make_index(vec![(key, file)]);
         // Filter for struct kind
         let result = symbol_detail(&index, "src/lib.rs", "foo", Some("struct"));
-        assert!(result.contains("[struct, lines 5-10"), "footer should show struct kind");
+        assert!(
+            result.contains("[struct, lines 5-10"),
+            "footer should show struct kind"
+        );
     }
 
     // --- search_symbols_result tests ---
@@ -1162,7 +1307,10 @@ mod tests {
         let (key, file) = make_file("src/lib.rs", b"fn get_user() {} fn get_role() {}", symbols);
         let index = make_index(vec![(key, file)]);
         let result = search_symbols_result(&index, "get");
-        assert!(result.starts_with("2 matches in 1 files"), "should start with summary");
+        assert!(
+            result.starts_with("2 matches in 1 files"),
+            "should start with summary"
+        );
     }
 
     #[test]
@@ -1171,7 +1319,10 @@ mod tests {
         let (key, file) = make_file("src/lib.rs", b"fn GetUser() {}", vec![sym]);
         let index = make_index(vec![(key, file)]);
         let result = search_symbols_result(&index, "getuser");
-        assert!(!result.starts_with("No symbols"), "should find case-insensitive match");
+        assert!(
+            !result.starts_with("No symbols"),
+            "should find case-insensitive match"
+        );
     }
 
     #[test]
@@ -1191,9 +1342,33 @@ mod tests {
         let (key2, file2) = make_file("b.rs", b"fn foo_bar() {}", vec![sym2]);
         let index = make_index(vec![(key1, file1), (key2, file2)]);
         let result = search_symbols_result(&index, "foo");
-        assert!(result.contains("2 matches in 2 files"), "should show 2 files");
+        assert!(
+            result.contains("2 matches in 2 files"),
+            "should show 2 files"
+        );
         assert!(result.contains("a.rs"), "should contain file a.rs");
         assert!(result.contains("b.rs"), "should contain file b.rs");
+    }
+
+    #[test]
+    fn test_search_symbols_kind_filter_limits_results() {
+        let function = make_symbol("JobRunner", SymbolKind::Function, 0, 1, 5);
+        let class = make_symbol("Job", SymbolKind::Class, 0, 6, 10);
+        let (key, file) = make_file(
+            "src/lib.rs",
+            b"fn JobRunner() {} struct Job {}",
+            vec![function, class],
+        );
+        let index = make_index(vec![(key, file)]);
+        let result = search_symbols_result_with_kind(&index, "job", Some("class"));
+        assert!(
+            result.contains("class Job"),
+            "class result should remain visible: {result}"
+        );
+        assert!(
+            !result.contains("fn JobRunner"),
+            "function result should be filtered out: {result}"
+        );
     }
 
     // --- search_text_result tests ---
@@ -1212,7 +1387,10 @@ mod tests {
         let (key, file) = make_file("src/lib.rs", content, vec![]);
         let index = make_index(vec![(key, file)]);
         let result = search_text_result(&index, "line two");
-        assert!(result.contains("  2:"), "should show 1-indexed line number 2");
+        assert!(
+            result.contains("  2:"),
+            "should show 1-indexed line number 2"
+        );
     }
 
     #[test]
@@ -1220,7 +1398,10 @@ mod tests {
         let (key, file) = make_file("src/lib.rs", b"Hello World", vec![]);
         let index = make_index(vec![(key, file)]);
         let result = search_text_result(&index, "hello world");
-        assert!(!result.starts_with("No matches"), "should find case-insensitive");
+        assert!(
+            !result.starts_with("No matches"),
+            "should find case-insensitive"
+        );
     }
 
     #[test]
@@ -1237,7 +1418,57 @@ mod tests {
         let (key, file) = make_file("src/lib.rs", content, vec![]);
         let index = make_index(vec![(key, file)]);
         let result = search_text_result(&index, "let x");
-        assert!(result.contains("let x = 1"), "should find content without \\r");
+        assert!(
+            result.contains("let x = 1"),
+            "should find content without \\r"
+        );
+    }
+
+    #[test]
+    fn test_search_text_terms_or_matches_multiple_needles() {
+        let (key, file) = make_file(
+            "src/lib.rs",
+            b"// TODO: first\n// FIXME: second\n// NOTE: ignored",
+            vec![],
+        );
+        let index = make_index(vec![(key, file)]);
+        let terms = vec!["TODO".to_string(), "FIXME".to_string()];
+        let result = search_text_result_with_options(&index, None, Some(&terms), false);
+        assert!(
+            result.contains("TODO: first"),
+            "TODO line should match: {result}"
+        );
+        assert!(
+            result.contains("FIXME: second"),
+            "FIXME line should match: {result}"
+        );
+        assert!(
+            !result.contains("NOTE: ignored"),
+            "non-matching line should be absent: {result}"
+        );
+    }
+
+    #[test]
+    fn test_search_text_regex_mode_matches_pattern() {
+        let (key, file) = make_file(
+            "src/lib.rs",
+            b"// TODO: first\n// FIXME: second\n// NOTE: ignored",
+            vec![],
+        );
+        let index = make_index(vec![(key, file)]);
+        let result = search_text_result_with_options(&index, Some("TODO|FIXME"), None, true);
+        assert!(
+            result.contains("TODO: first"),
+            "TODO line should match regex: {result}"
+        );
+        assert!(
+            result.contains("FIXME: second"),
+            "FIXME line should match regex: {result}"
+        );
+        assert!(
+            !result.contains("NOTE: ignored"),
+            "non-matching line should be absent: {result}"
+        );
     }
 
     // --- repo_outline tests ---
@@ -1248,7 +1479,10 @@ mod tests {
         let (key, file) = make_file("src/main.rs", b"fn main() {}", vec![sym]);
         let index = make_index(vec![(key, file)]);
         let result = repo_outline(&index, "myproject");
-        assert!(result.starts_with("myproject  (1 files, 1 symbols)"), "got: {result}");
+        assert!(
+            result.starts_with("myproject  (1 files, 1 symbols)"),
+            "got: {result}"
+        );
     }
 
     #[test]
@@ -1274,7 +1508,10 @@ mod tests {
         assert!(result.contains("Files:"), "should have Files line");
         assert!(result.contains("Symbols:"), "should have Symbols line");
         assert!(result.contains("Loaded in:"), "should have Loaded in line");
-        assert!(result.contains("Watcher: off"), "should have Watcher: off line (no watcher active)");
+        assert!(
+            result.contains("Watcher: off"),
+            "should have Watcher: off line (no watcher active)"
+        );
     }
 
     #[test]
@@ -1299,7 +1536,10 @@ mod tests {
         let index = make_index(vec![]);
         let result = health_report(&index);
         assert!(result.contains("Watcher: off"), "got: {result}");
-        assert!(!result.contains("events"), "off watcher should not mention events");
+        assert!(
+            !result.contains("events"),
+            "off watcher should not mention events"
+        );
     }
 
     #[test]
@@ -1330,7 +1570,10 @@ mod tests {
         let index = make_index(vec![(key, file)]);
         // since_ts=0 (epoch) is before index was loaded
         let result = what_changed_result(&index, 0);
-        assert!(result.contains("src/lib.rs"), "should list all files: {result}");
+        assert!(
+            result.contains("src/lib.rs"),
+            "should list all files: {result}"
+        );
     }
 
     #[test]
@@ -1340,6 +1583,19 @@ mod tests {
         // since_ts=far future — no changes
         let result = what_changed_result(&index, i64::MAX);
         assert_eq!(result, "No changes detected since last index load.");
+    }
+
+    #[test]
+    fn test_what_changed_paths_result_sorts_and_deduplicates() {
+        let result = what_changed_paths_result(
+            &[
+                "src\\b.rs".to_string(),
+                "src/a.rs".to_string(),
+                "src/a.rs".to_string(),
+            ],
+            "No git changes detected.",
+        );
+        assert_eq!(result, "src/a.rs\nsrc/b.rs");
     }
 
     // --- file_content tests ---
@@ -1488,10 +1744,22 @@ mod tests {
         let (key, file) = make_file_with_refs("src/handler.rs", content, vec![sym], vec![r]);
         let index = make_index_with_reverse(vec![(key, file)]);
         let result = find_references_result(&index, "process", None);
-        assert!(result.contains("1 references in 1 files"), "header missing, got: {result}");
-        assert!(result.contains("src/handler.rs"), "file path missing, got: {result}");
-        assert!(result.contains("process"), "reference name missing, got: {result}");
-        assert!(result.contains("[in fn handle]"), "enclosing annotation missing, got: {result}");
+        assert!(
+            result.contains("1 references in 1 files"),
+            "header missing, got: {result}"
+        );
+        assert!(
+            result.contains("src/handler.rs"),
+            "file path missing, got: {result}"
+        );
+        assert!(
+            result.contains("process"),
+            "reference name missing, got: {result}"
+        );
+        assert!(
+            result.contains("[in fn handle]"),
+            "enclosing annotation missing, got: {result}"
+        );
     }
 
     #[test]
@@ -1506,11 +1774,15 @@ mod tests {
         let content = b"use foo;\nfoo();\n";
         let r_import = make_ref("foo", ReferenceKind::Import, 1, None);
         let r_call = make_ref("foo", ReferenceKind::Call, 2, None);
-        let (key, file) = make_file_with_refs("src/lib.rs", content, vec![], vec![r_import, r_call]);
+        let (key, file) =
+            make_file_with_refs("src/lib.rs", content, vec![], vec![r_import, r_call]);
         let index = make_index_with_reverse(vec![(key, file)]);
         let result = find_references_result(&index, "foo", Some("call"));
         // Should only show the call reference, not the import
-        assert!(result.contains("1 references"), "expected only 1 reference, got: {result}");
+        assert!(
+            result.contains("1 references"),
+            "expected only 1 reference, got: {result}"
+        );
     }
 
     // ─── find_dependents_result tests ─────────────────────────────────────
@@ -1524,9 +1796,18 @@ mod tests {
         let (key_a, file_a) = make_file("src/db.rs", b"pub fn connect() {}", vec![]);
         let index = make_index_with_reverse(vec![(key_a, file_a), (key_b, file_b)]);
         let result = find_dependents_result(&index, "src/db.rs");
-        assert!(result.contains("1 files depend on src/db.rs"), "header wrong, got: {result}");
-        assert!(result.contains("src/handler.rs"), "importer missing, got: {result}");
-        assert!(result.contains("[import]"), "import annotation missing, got: {result}");
+        assert!(
+            result.contains("1 files depend on src/db.rs"),
+            "header wrong, got: {result}"
+        );
+        assert!(
+            result.contains("src/handler.rs"),
+            "importer missing, got: {result}"
+        );
+        assert!(
+            result.contains("[import]"),
+            "import annotation missing, got: {result}"
+        );
     }
 
     #[test]
@@ -1547,10 +1828,22 @@ mod tests {
         let index = make_index_with_reverse(vec![(key, file)]);
         let result = context_bundle_result(&index, "src/lib.rs", "process", None);
         assert!(result.contains("fn process"), "body missing, got: {result}");
-        assert!(result.contains("[fn, lines"), "footer missing, got: {result}");
-        assert!(result.contains("Callers"), "Callers section missing, got: {result}");
-        assert!(result.contains("Callees"), "Callees section missing, got: {result}");
-        assert!(result.contains("Type usages"), "Type usages section missing, got: {result}");
+        assert!(
+            result.contains("[fn, lines"),
+            "footer missing, got: {result}"
+        );
+        assert!(
+            result.contains("Callers"),
+            "Callers section missing, got: {result}"
+        );
+        assert!(
+            result.contains("Callees"),
+            "Callees section missing, got: {result}"
+        );
+        assert!(
+            result.contains("Type usages"),
+            "Type usages section missing, got: {result}"
+        );
     }
 
     #[test]
@@ -1563,16 +1856,18 @@ mod tests {
         let sym_caller = make_symbol_with_bytes("caller", SymbolKind::Function, 0, 1, 1, 0, 14);
         let sym_process = make_symbol_with_bytes("process", SymbolKind::Function, 0, 1, 1, 15, 30);
         // Add a process symbol as the target
-        let (key, file) = make_file_with_refs(
-            "src/lib.rs",
-            content,
-            vec![sym_caller, sym_process],
-            refs,
-        );
+        let (key, file) =
+            make_file_with_refs("src/lib.rs", content, vec![sym_caller, sym_process], refs);
         let index = make_index_with_reverse(vec![(key, file)]);
         let result = context_bundle_result(&index, "src/lib.rs", "process", None);
-        assert!(result.contains("...and"), "overflow message missing, got: {result}");
-        assert!(result.contains("more callers"), "overflow count missing, got: {result}");
+        assert!(
+            result.contains("...and"),
+            "overflow message missing, got: {result}"
+        );
+        assert!(
+            result.contains("more callers"),
+            "overflow count missing, got: {result}"
+        );
     }
 
     #[test]
@@ -1580,7 +1875,10 @@ mod tests {
         let (key, file) = make_file("src/lib.rs", b"fn foo() {}", vec![]);
         let index = make_index_with_reverse(vec![(key, file)]);
         let result = context_bundle_result(&index, "src/lib.rs", "nonexistent", None);
-        assert!(result.contains("No symbol nonexistent in src/lib.rs"), "got: {result}");
+        assert!(
+            result.contains("No symbol nonexistent in src/lib.rs"),
+            "got: {result}"
+        );
     }
 
     #[test]
@@ -1590,9 +1888,18 @@ mod tests {
         let (key, file) = make_file_with_refs("src/lib.rs", content, vec![sym], vec![]);
         let index = make_index_with_reverse(vec![(key, file)]);
         let result = context_bundle_result(&index, "src/lib.rs", "process", None);
-        assert!(result.contains("Callers (0)"), "zero callers section missing, got: {result}");
-        assert!(result.contains("Callees (0)"), "zero callees section missing, got: {result}");
-        assert!(result.contains("Type usages (0)"), "zero type usages section missing, got: {result}");
+        assert!(
+            result.contains("Callers (0)"),
+            "zero callers section missing, got: {result}"
+        );
+        assert!(
+            result.contains("Callees (0)"),
+            "zero callees section missing, got: {result}"
+        );
+        assert!(
+            result.contains("Type usages (0)"),
+            "zero type usages section missing, got: {result}"
+        );
     }
 
     // --- format_token_savings tests ---
@@ -1645,9 +1952,18 @@ mod tests {
             grep_saved_tokens: 0,
         };
         let result = format_token_savings(&snap);
-        assert!(result.contains("Read"), "should show Read line; got: {result}");
-        assert!(result.contains("3 fires"), "should show fire count; got: {result}");
-        assert!(result.contains("750"), "should show saved tokens; got: {result}");
+        assert!(
+            result.contains("Read"),
+            "should show Read line; got: {result}"
+        );
+        assert!(
+            result.contains("3 fires"),
+            "should show fire count; got: {result}"
+        );
+        assert!(
+            result.contains("750"),
+            "should show saved tokens; got: {result}"
+        );
     }
 
     #[test]
@@ -1667,7 +1983,10 @@ mod tests {
             result.contains("350"),
             "total should be sum of read+edit+grep savings (350); got: {result}"
         );
-        assert!(result.contains("Total:"), "should have Total line; got: {result}");
+        assert!(
+            result.contains("Total:"),
+            "should have Total line; got: {result}"
+        );
     }
 
     #[test]
@@ -1682,10 +2001,19 @@ mod tests {
             grep_saved_tokens: 0,
         };
         let result = format_token_savings(&snap);
-        assert!(result.contains("Write"), "should show Write line; got: {result}");
-        assert!(result.contains("2 fires"), "should show write fire count; got: {result}");
+        assert!(
+            result.contains("Write"),
+            "should show Write line; got: {result}"
+        );
+        assert!(
+            result.contains("2 fires"),
+            "should show write fire count; got: {result}"
+        );
         // Write has no savings — just fire count
-        assert!(!result.contains("tokens saved\nTotal"), "write line should not show saved tokens");
+        assert!(
+            !result.contains("tokens saved\nTotal"),
+            "write line should not show saved tokens"
+        );
     }
 
     #[test]
@@ -1702,9 +2030,18 @@ mod tests {
         };
         let result = format_token_savings(&snap);
         assert!(result.contains("Read"), "should show Read; got: {result}");
-        assert!(!result.contains("Edit:"), "Edit should be omitted when zero; got: {result}");
-        assert!(!result.contains("Grep:"), "Grep should be omitted when zero; got: {result}");
-        assert!(!result.contains("Write:"), "Write should be omitted when zero; got: {result}");
+        assert!(
+            !result.contains("Edit:"),
+            "Edit should be omitted when zero; got: {result}"
+        );
+        assert!(
+            !result.contains("Grep:"),
+            "Grep should be omitted when zero; got: {result}"
+        );
+        assert!(
+            !result.contains("Write:"),
+            "Write should be omitted when zero; got: {result}"
+        );
     }
 
     // ── search_symbols tier ordering tests ───────────────────────────────────
@@ -1715,7 +2052,10 @@ mod tests {
         let (key, file) = make_file("src/lib.rs", b"fn parse() {}", vec![sym]);
         let index = make_index(vec![(key, file)]);
         let result = search_symbols_result(&index, "parse");
-        assert!(result.contains("Exact matches"), "should show 'Exact matches' tier header; got: {result}");
+        assert!(
+            result.contains("Exact matches"),
+            "should show 'Exact matches' tier header; got: {result}"
+        );
     }
 
     #[test]
@@ -1724,7 +2064,10 @@ mod tests {
         let (key, file) = make_file("src/lib.rs", b"fn parse_file() {}", vec![sym]);
         let index = make_index(vec![(key, file)]);
         let result = search_symbols_result(&index, "parse");
-        assert!(result.contains("Prefix matches"), "should show 'Prefix matches' tier header; got: {result}");
+        assert!(
+            result.contains("Prefix matches"),
+            "should show 'Prefix matches' tier header; got: {result}"
+        );
     }
 
     #[test]
@@ -1733,7 +2076,10 @@ mod tests {
         let (key, file) = make_file("src/lib.rs", b"fn do_parse_now() {}", vec![sym]);
         let index = make_index(vec![(key, file)]);
         let result = search_symbols_result(&index, "parse");
-        assert!(result.contains("Substring matches"), "should show 'Substring matches' tier header; got: {result}");
+        assert!(
+            result.contains("Substring matches"),
+            "should show 'Substring matches' tier header; got: {result}"
+        );
     }
 
     #[test]
@@ -1744,21 +2090,39 @@ mod tests {
             make_symbol("parse_file", SymbolKind::Function, 0, 3, 4),
             make_symbol("parse", SymbolKind::Function, 0, 5, 6),
         ];
-        let (key, file) = make_file("src/lib.rs", b"fn do_parse() {} fn parse_file() {} fn parse() {}", symbols);
+        let (key, file) = make_file(
+            "src/lib.rs",
+            b"fn do_parse() {} fn parse_file() {} fn parse() {}",
+            symbols,
+        );
         let index = make_index(vec![(key, file)]);
         let result = search_symbols_result(&index, "parse");
 
-        let exact_pos = result.find("Exact matches").expect("missing Exact matches header");
-        let prefix_pos = result.find("Prefix matches").expect("missing Prefix matches header");
-        let substr_pos = result.find("Substring matches").expect("missing Substring matches header");
+        let exact_pos = result
+            .find("Exact matches")
+            .expect("missing Exact matches header");
+        let prefix_pos = result
+            .find("Prefix matches")
+            .expect("missing Prefix matches header");
+        let substr_pos = result
+            .find("Substring matches")
+            .expect("missing Substring matches header");
 
         assert!(exact_pos < prefix_pos, "Exact must appear before Prefix");
-        assert!(prefix_pos < substr_pos, "Prefix must appear before Substring");
+        assert!(
+            prefix_pos < substr_pos,
+            "Prefix must appear before Substring"
+        );
 
         // "parse" must appear after "Exact matches" and before "Prefix matches"
-        let parse_pos = result[exact_pos..].find("\n  ").map(|p| exact_pos + p)
+        let parse_pos = result[exact_pos..]
+            .find("\n  ")
+            .map(|p| exact_pos + p)
             .expect("no symbol line after Exact header");
-        assert!(parse_pos < prefix_pos, "exact match 'parse' must be in Exact section");
+        assert!(
+            parse_pos < prefix_pos,
+            "exact match 'parse' must be in Exact section"
+        );
     }
 
     #[test]
@@ -1768,8 +2132,14 @@ mod tests {
         let (key, file) = make_file("src/lib.rs", b"fn search() {}", vec![sym]);
         let index = make_index(vec![(key, file)]);
         let result = search_symbols_result(&index, "search");
-        assert!(!result.contains("Prefix matches"), "no prefix matches: header must be omitted; got: {result}");
-        assert!(!result.contains("Substring matches"), "no substring matches: header must be omitted; got: {result}");
+        assert!(
+            !result.contains("Prefix matches"),
+            "no prefix matches: header must be omitted; got: {result}"
+        );
+        assert!(
+            !result.contains("Substring matches"),
+            "no substring matches: header must be omitted; got: {result}"
+        );
     }
 
     #[test]
@@ -1779,7 +2149,11 @@ mod tests {
             make_symbol("a_fn", SymbolKind::Function, 0, 3, 4),
             make_symbol("m_fn", SymbolKind::Function, 0, 5, 6),
         ];
-        let (key, file) = make_file("src/lib.rs", b"fn z_fn() {} fn a_fn() {} fn m_fn() {}", symbols);
+        let (key, file) = make_file(
+            "src/lib.rs",
+            b"fn z_fn() {} fn a_fn() {} fn m_fn() {}",
+            symbols,
+        );
         let index = make_index(vec![(key, file)]);
         let result = search_symbols_result(&index, "a_fn");
         // Only "a_fn" matches exactly — just verify it shows up in Exact
@@ -1794,21 +2168,39 @@ mod tests {
             make_symbol("parse_longer", SymbolKind::Function, 0, 1, 2),
             make_symbol("parse_x", SymbolKind::Function, 0, 3, 4),
         ];
-        let (key, file) = make_file("src/lib.rs", b"fn parse_longer() {} fn parse_x() {}", symbols);
+        let (key, file) = make_file(
+            "src/lib.rs",
+            b"fn parse_longer() {} fn parse_x() {}",
+            symbols,
+        );
         let index = make_index(vec![(key, file)]);
         let result = search_symbols_result(&index, "parse");
 
         // In the prefix section, parse_x must appear before parse_longer
-        let prefix_pos = result.find("Prefix matches").expect("missing Prefix matches");
+        let prefix_pos = result
+            .find("Prefix matches")
+            .expect("missing Prefix matches");
         let section_after = &result[prefix_pos..];
-        let x_pos = section_after.find("parse_x").expect("parse_x not in prefix section");
-        let longer_pos = section_after.find("parse_longer").expect("parse_longer not in prefix section");
-        assert!(x_pos < longer_pos, "shorter prefix match 'parse_x' must appear before 'parse_longer'");
+        let x_pos = section_after
+            .find("parse_x")
+            .expect("parse_x not in prefix section");
+        let longer_pos = section_after
+            .find("parse_longer")
+            .expect("parse_longer not in prefix section");
+        assert!(
+            x_pos < longer_pos,
+            "shorter prefix match 'parse_x' must appear before 'parse_longer'"
+        );
     }
 
     // ── file_tree tests ───────────────────────────────────────────────────────
 
-    fn make_file_with_lang(path: &str, content: &[u8], symbols: Vec<SymbolRecord>, lang: crate::domain::LanguageId) -> (String, IndexedFile) {
+    fn make_file_with_lang(
+        path: &str,
+        content: &[u8],
+        symbols: Vec<SymbolRecord>,
+        lang: crate::domain::LanguageId,
+    ) -> (String, IndexedFile) {
         (
             path.to_string(),
             IndexedFile {
@@ -1828,63 +2220,130 @@ mod tests {
     #[test]
     fn test_file_tree_shows_files_with_symbol_count() {
         let sym = make_symbol("main", SymbolKind::Function, 0, 1, 5);
-        let (key, file) = make_file_with_lang("src/main.rs", b"fn main() {}", vec![sym], crate::domain::LanguageId::Rust);
+        let (key, file) = make_file_with_lang(
+            "src/main.rs",
+            b"fn main() {}",
+            vec![sym],
+            crate::domain::LanguageId::Rust,
+        );
         let index = make_index(vec![(key, file)]);
         let result = file_tree(&index, "", 2);
-        assert!(result.contains("main.rs"), "should show filename; got: {result}");
-        assert!(result.contains("1 symbol"), "should show symbol count; got: {result}");
+        assert!(
+            result.contains("main.rs"),
+            "should show filename; got: {result}"
+        );
+        assert!(
+            result.contains("1 symbol"),
+            "should show symbol count; got: {result}"
+        );
     }
 
     #[test]
     fn test_file_tree_shows_directory_with_file_counts() {
         let sym1 = make_symbol("foo", SymbolKind::Function, 0, 1, 3);
         let sym2 = make_symbol("bar", SymbolKind::Function, 0, 1, 3);
-        let (k1, f1) = make_file_with_lang("src/a.rs", b"fn foo() {}", vec![sym1], crate::domain::LanguageId::Rust);
-        let (k2, f2) = make_file_with_lang("src/b.rs", b"fn bar() {}", vec![sym2], crate::domain::LanguageId::Rust);
+        let (k1, f1) = make_file_with_lang(
+            "src/a.rs",
+            b"fn foo() {}",
+            vec![sym1],
+            crate::domain::LanguageId::Rust,
+        );
+        let (k2, f2) = make_file_with_lang(
+            "src/b.rs",
+            b"fn bar() {}",
+            vec![sym2],
+            crate::domain::LanguageId::Rust,
+        );
         let index = make_index(vec![(k1, f1), (k2, f2)]);
         let result = file_tree(&index, "", 1);
         // At depth 1, "src" directory should be shown collapsed with file/symbol counts
-        assert!(result.contains("src"), "should show src directory; got: {result}");
+        assert!(
+            result.contains("src"),
+            "should show src directory; got: {result}"
+        );
     }
 
     #[test]
     fn test_file_tree_footer_shows_totals() {
         let sym = make_symbol("foo", SymbolKind::Function, 0, 1, 3);
-        let (k1, f1) = make_file_with_lang("src/a.rs", b"fn foo() {}", vec![sym], crate::domain::LanguageId::Rust);
-        let (k2, f2) = make_file_with_lang("lib/b.rs", b"fn bar() {}", vec![], crate::domain::LanguageId::Rust);
+        let (k1, f1) = make_file_with_lang(
+            "src/a.rs",
+            b"fn foo() {}",
+            vec![sym],
+            crate::domain::LanguageId::Rust,
+        );
+        let (k2, f2) = make_file_with_lang(
+            "lib/b.rs",
+            b"fn bar() {}",
+            vec![],
+            crate::domain::LanguageId::Rust,
+        );
         let index = make_index(vec![(k1, f1), (k2, f2)]);
         let result = file_tree(&index, "", 3);
         // Footer must show directories, files, symbols totals
-        assert!(result.contains("files"), "footer should mention files; got: {result}");
-        assert!(result.contains("symbols"), "footer should mention symbols; got: {result}");
+        assert!(
+            result.contains("files"),
+            "footer should mention files; got: {result}"
+        );
+        assert!(
+            result.contains("symbols"),
+            "footer should mention symbols; got: {result}"
+        );
     }
 
     #[test]
     fn test_file_tree_respects_path_filter() {
         let sym = make_symbol("foo", SymbolKind::Function, 0, 1, 3);
-        let (k1, f1) = make_file_with_lang("src/a.rs", b"fn foo() {}", vec![sym], crate::domain::LanguageId::Rust);
-        let (k2, f2) = make_file_with_lang("tests/b.rs", b"fn test_b() {}", vec![], crate::domain::LanguageId::Rust);
+        let (k1, f1) = make_file_with_lang(
+            "src/a.rs",
+            b"fn foo() {}",
+            vec![sym],
+            crate::domain::LanguageId::Rust,
+        );
+        let (k2, f2) = make_file_with_lang(
+            "tests/b.rs",
+            b"fn test_b() {}",
+            vec![],
+            crate::domain::LanguageId::Rust,
+        );
         let index = make_index(vec![(k1, f1), (k2, f2)]);
         let result = file_tree(&index, "src", 3);
-        assert!(result.contains("a.rs"), "src filter should show a.rs; got: {result}");
-        assert!(!result.contains("b.rs"), "src filter should not show tests/b.rs; got: {result}");
+        assert!(
+            result.contains("a.rs"),
+            "src filter should show a.rs; got: {result}"
+        );
+        assert!(
+            !result.contains("b.rs"),
+            "src filter should not show tests/b.rs; got: {result}"
+        );
     }
 
     #[test]
     fn test_file_tree_depth_collapses_deep_directories() {
         // At depth=1, nested directories beyond root level should be collapsed
         let sym = make_symbol("deep", SymbolKind::Function, 0, 1, 3);
-        let (k1, f1) = make_file_with_lang("src/deep/nested/file.rs", b"fn deep() {}", vec![sym], crate::domain::LanguageId::Rust);
+        let (k1, f1) = make_file_with_lang(
+            "src/deep/nested/file.rs",
+            b"fn deep() {}",
+            vec![sym],
+            crate::domain::LanguageId::Rust,
+        );
         let index = make_index(vec![(k1, f1)]);
         let result = file_tree(&index, "", 1);
         // file.rs should not be individually listed at depth=1
-        assert!(!result.contains("file.rs"), "file.rs should be collapsed at depth=1; got: {result}");
+        assert!(
+            !result.contains("file.rs"),
+            "file.rs should be collapsed at depth=1; got: {result}"
+        );
     }
 
     #[test]
     fn test_file_tree_empty_index() {
         let index = make_index(vec![]);
         let result = file_tree(&index, "", 2);
-        assert!(result.contains("0 files") || result.contains("No source files"), "got: {result}");
+        assert!(
+            result.contains("0 files") || result.contains("No source files"),
+            "got: {result}"
+        );
     }
 }

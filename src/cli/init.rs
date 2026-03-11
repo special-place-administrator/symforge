@@ -1,11 +1,11 @@
-//! `tokenizor init` command — idempotent hook installation into ~/.claude/settings.json.
+//! `tokenizor init` command — client-aware Claude/Codex configuration.
 //!
 //! Strategy:
 //! 1. Discover the absolute path of the running tokenizor binary.
-//! 2. Read (or create) `~/.claude/settings.json`.
-//! 3. Merge tokenizor hook entries, replacing any stale tokenizor entries while
-//!    preserving all non-tokenizor hooks.
-//! 4. Write the result back with pretty-printing.
+//! 2. Configure Claude, Codex, or both based on the selected client target.
+//! 3. For Claude, merge tokenizor hook entries into `~/.claude/settings.json`
+//!    and register the MCP server in `~/.claude.json`.
+//! 4. For Codex, register the MCP server in `~/.codex/config.toml`.
 //! 5. Create `.tokenizor/` in the current working directory (runtime needs it).
 //!
 //! Identification: any hook entry whose `hooks[].command` contains the substring
@@ -14,33 +14,103 @@
 use std::path::PathBuf;
 
 use anyhow::Context;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
+use toml_edit::{Array, DocumentMut, Item, Table, value};
+
+use crate::cli::InitClient;
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
+#[derive(Debug)]
+struct InitPaths {
+    claude_settings: PathBuf,
+    claude_config: PathBuf,
+    claude_memory: PathBuf,
+    codex_config: PathBuf,
+    codex_agents: PathBuf,
+}
+
+impl InitPaths {
+    fn from_home(home: &std::path::Path) -> Self {
+        Self {
+            claude_settings: home.join(".claude").join("settings.json"),
+            claude_config: home.join(".claude.json"),
+            claude_memory: home.join(".claude").join("CLAUDE.md"),
+            codex_config: home.join(".codex").join("config.toml"),
+            codex_agents: home.join(".codex").join("AGENTS.md"),
+        }
+    }
+}
+
+const CODEX_STARTUP_TIMEOUT_SEC: i64 = 30;
+const CODEX_TOOL_TIMEOUT_SEC: i64 = 120;
+const TOKENIZOR_GUIDANCE_START: &str = "<!-- TOKENIZOR START -->";
+const TOKENIZOR_GUIDANCE_END: &str = "<!-- TOKENIZOR END -->";
+
 /// Entry point called by main.rs for `tokenizor init`.
-pub fn run_init() -> anyhow::Result<()> {
-    // Step 1 — discover binary path.
-    let binary_path_str = discover_binary_path();
-    let binary_path = std::path::Path::new(&binary_path_str);
+pub fn run_init(client: InitClient) -> anyhow::Result<()> {
+    let home = dirs::home_dir().context("cannot determine home directory")?;
+    let working_dir =
+        std::env::current_dir().context("cannot determine current working directory")?;
+    let binary_path = discover_binary_path();
 
-    // Step 2 — resolve settings path.
-    let settings_path = settings_json_path()?;
+    run_init_with_context(client, &home, &working_dir, &binary_path)
+}
 
-    // Steps 3-8 — merge hooks into ~/.claude/settings.json.
-    merge_hooks_into_settings(&settings_path, binary_path)?;
-    eprintln!("hooks installed in {}", settings_path.display());
+/// Testable core for `tokenizor init` with injected paths.
+pub fn run_init_with_context(
+    client: InitClient,
+    home_dir: &std::path::Path,
+    working_dir: &std::path::Path,
+    binary_path: &std::path::Path,
+) -> anyhow::Result<()> {
+    let paths = InitPaths::from_home(home_dir);
+    let binary_path_str = binary_path.display().to_string();
 
-    // Step 9 — register MCP server in ~/.claude.json.
-    let claude_json_path = claude_json_path()?;
-    register_mcp_server(&claude_json_path, &binary_path_str)?;
-    eprintln!("MCP server registered in {}", claude_json_path.display());
+    if matches!(client, InitClient::Claude | InitClient::All) {
+        merge_hooks_into_settings(&paths.claude_settings, binary_path)?;
+        eprintln!(
+            "Claude hooks installed in {}",
+            paths.claude_settings.display()
+        );
 
-    // Step 10 — create .tokenizor/ directory in cwd if missing.
-    std::fs::create_dir_all(".tokenizor")
-        .context("creating .tokenizor/ directory in current working directory")?;
+        register_mcp_server(&paths.claude_config, &binary_path_str)?;
+        eprintln!(
+            "Claude MCP server registered in {}",
+            paths.claude_config.display()
+        );
+
+        upsert_guidance_markdown(
+            &paths.claude_memory,
+            &claude_guidance_block(),
+        )?;
+        eprintln!(
+            "Claude guidance written to {}",
+            paths.claude_memory.display()
+        );
+    }
+
+    if matches!(client, InitClient::Codex | InitClient::All) {
+        register_codex_mcp_server(&paths.codex_config, &binary_path_str)?;
+        eprintln!(
+            "Codex MCP server registered in {}",
+            paths.codex_config.display()
+        );
+
+        upsert_guidance_markdown(&paths.codex_agents, &codex_guidance_block())?;
+        eprintln!(
+            "Codex guidance written to {}",
+            paths.codex_agents.display()
+        );
+        eprintln!(
+            "note: Codex gets MCP tools only. No documented Codex hook/session-start enrichment interface was found, so transparent enrichment remains Claude-only."
+        );
+    }
+
+    std::fs::create_dir_all(working_dir.join(".tokenizor"))
+        .with_context(|| format!("creating {}", working_dir.join(".tokenizor").display()))?;
 
     eprintln!("tokenizor init complete");
 
@@ -101,14 +171,18 @@ pub fn merge_tokenizor_hooks(settings: &mut Value, binary_path: &str) {
         settings["hooks"] = json!({});
     }
 
-    let hooks = settings["hooks"].as_object_mut().expect("hooks is an object");
+    let hooks = settings["hooks"]
+        .as_object_mut()
+        .expect("hooks is an object");
 
     // Build fresh tokenizor entries.
     let post_tool_use_entries = build_post_tool_use_entries(binary_path);
     let session_start_entries = build_session_start_entries(binary_path);
+    let user_prompt_submit_entries = build_user_prompt_submit_entries(binary_path);
 
     merge_event_entries(hooks, "PostToolUse", post_tool_use_entries);
     merge_event_entries(hooks, "SessionStart", session_start_entries);
+    merge_event_entries(hooks, "UserPromptSubmit", user_prompt_submit_entries);
 }
 
 // ---------------------------------------------------------------------------
@@ -126,6 +200,12 @@ fn build_session_start_entries(binary_path: &str) -> Vec<Value> {
     vec![json!({
         "matcher": "startup|resume",
         "hooks": [{"type": "command", "command": format!("{binary_path} hook session-start"), "timeout": 5}]
+    })]
+}
+
+fn build_user_prompt_submit_entries(binary_path: &str) -> Vec<Value> {
+    vec![json!({
+        "hooks": [{"type": "command", "command": format!("{binary_path} hook prompt-submit"), "timeout": 5}]
     })]
 }
 
@@ -178,27 +258,14 @@ fn merge_event_entries(
     hooks.insert(event_key.to_string(), Value::Array(retained));
 }
 
-// ---------------------------------------------------------------------------
-// Path helpers
-// ---------------------------------------------------------------------------
-
-/// Returns the path to `~/.claude/settings.json`.
-fn settings_json_path() -> anyhow::Result<PathBuf> {
-    let home = dirs::home_dir().context("cannot determine home directory")?;
-    Ok(home.join(".claude").join("settings.json"))
-}
-
-/// Returns the path to `~/.claude.json` (Claude Code's global config).
-fn claude_json_path() -> anyhow::Result<PathBuf> {
-    let home = dirs::home_dir().context("cannot determine home directory")?;
-    Ok(home.join(".claude.json"))
-}
-
 /// Register tokenizor as an MCP server in `~/.claude.json` using the absolute binary path.
 ///
 /// This ensures Claude Code launches the native binary directly — no shell, no .cmd wrapper,
 /// no Node.js intermediary. Works on all platforms.
-pub fn register_mcp_server(claude_json_path: &std::path::Path, binary_path: &str) -> anyhow::Result<()> {
+pub fn register_mcp_server(
+    claude_json_path: &std::path::Path,
+    binary_path: &str,
+) -> anyhow::Result<()> {
     let mut config: Value = if claude_json_path.exists() {
         let raw = std::fs::read_to_string(claude_json_path)
             .with_context(|| format!("reading {}", claude_json_path.display()))?;
@@ -209,11 +276,7 @@ pub fn register_mcp_server(claude_json_path: &std::path::Path, binary_path: &str
     };
 
     // Use backslashes on Windows for the command path (Claude Code spawns natively, not via shell).
-    let command_path = if cfg!(windows) {
-        binary_path.replace('/', "\\")
-    } else {
-        binary_path.to_string()
-    };
+    let command_path = native_command_path(binary_path);
 
     // Ensure mcpServers exists and set tokenizor entry.
     if !config["mcpServers"].is_object() {
@@ -233,13 +296,138 @@ pub fn register_mcp_server(claude_json_path: &std::path::Path, binary_path: &str
     Ok(())
 }
 
-/// Returns the binary path as a forward-slash string suitable for embedding in
-/// JSON command strings.
+/// Register tokenizor as an MCP server in `~/.codex/config.toml`.
 ///
-/// On Windows, `current_exe()` may return backslash paths or paths through
-/// node_modules. We normalise to forward slashes for cross-platform JSON
-/// compatibility.
-fn discover_binary_path() -> String {
+/// Codex stores MCP servers under `[mcp_servers.<name>]` tables in TOML.
+/// We update only the `tokenizor` entry and preserve the rest of the file.
+pub fn register_codex_mcp_server(
+    codex_config_path: &std::path::Path,
+    binary_path: &str,
+) -> anyhow::Result<()> {
+    if let Some(parent) = codex_config_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+
+    let raw = if codex_config_path.exists() {
+        std::fs::read_to_string(codex_config_path)
+            .with_context(|| format!("reading {}", codex_config_path.display()))?
+    } else {
+        String::new()
+    };
+
+    let mut config = if raw.trim().is_empty() {
+        DocumentMut::new()
+    } else {
+        raw.parse::<DocumentMut>()
+            .with_context(|| format!("parsing {}", codex_config_path.display()))?
+    };
+
+    merge_tokenizor_codex_server(&mut config, binary_path);
+
+    std::fs::write(codex_config_path, config.to_string())
+        .with_context(|| format!("writing {}", codex_config_path.display()))?;
+
+    Ok(())
+}
+
+fn merge_tokenizor_codex_server(config: &mut DocumentMut, binary_path: &str) {
+    if !config.as_table().contains_key("mcp_servers") || !config["mcp_servers"].is_table() {
+        config["mcp_servers"] = Item::Table(Table::new());
+    }
+
+    let mcp_servers = config["mcp_servers"]
+        .as_table_mut()
+        .expect("mcp_servers must be a table");
+
+    if !mcp_servers.contains_key("tokenizor") || !mcp_servers["tokenizor"].is_table() {
+        mcp_servers.insert("tokenizor", Item::Table(Table::new()));
+    }
+
+    let tokenizor = mcp_servers["tokenizor"]
+        .as_table_mut()
+        .expect("tokenizor server entry must be a table");
+
+    tokenizor["command"] = value(native_command_path(binary_path));
+    tokenizor["startup_timeout_sec"] = value(CODEX_STARTUP_TIMEOUT_SEC);
+    tokenizor["tool_timeout_sec"] = value(CODEX_TOOL_TIMEOUT_SEC);
+
+    merge_codex_project_doc_fallbacks(config);
+}
+
+fn merge_codex_project_doc_fallbacks(config: &mut DocumentMut) {
+    let key = "project_doc_fallback_filenames";
+    if !config.as_table().contains_key(key) || !config[key].is_array() {
+        let mut fallbacks = Array::default();
+        fallbacks.push("CLAUDE.md");
+        config[key] = value(fallbacks);
+        return;
+    }
+
+    let fallbacks = config[key]
+        .as_array_mut()
+        .expect("project_doc_fallback_filenames must be an array");
+    let has_claude_md = fallbacks.iter().any(|entry| entry.as_str() == Some("CLAUDE.md"));
+    if !has_claude_md {
+        fallbacks.push("CLAUDE.md");
+    }
+}
+
+fn upsert_guidance_markdown(path: &std::path::Path, guidance_block: &str) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+
+    let existing = if path.exists() {
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?
+    } else {
+        String::new()
+    };
+
+    let merged = upsert_markdown_block(&existing, guidance_block);
+    std::fs::write(path, merged).with_context(|| format!("writing {}", path.display()))?;
+
+    Ok(())
+}
+
+fn upsert_markdown_block(existing: &str, guidance_block: &str) -> String {
+    if let Some(start) = existing.find(TOKENIZOR_GUIDANCE_START)
+        && let Some(end_marker_start) = existing[start..].find(TOKENIZOR_GUIDANCE_END)
+    {
+        let end = start + end_marker_start + TOKENIZOR_GUIDANCE_END.len();
+        let mut merged = String::new();
+        merged.push_str(&existing[..start]);
+        merged.push_str(guidance_block);
+        merged.push_str(&existing[end..]);
+        return merged;
+    }
+
+    if existing.trim().is_empty() {
+        return format!("{guidance_block}\n");
+    }
+
+    let mut merged = existing.trim_end_matches(['\r', '\n']).to_string();
+    merged.push_str("\n\n");
+    merged.push_str(guidance_block);
+    merged.push('\n');
+    merged
+}
+
+fn claude_guidance_block() -> String {
+    format!(
+        "{TOKENIZOR_GUIDANCE_START}\n## Tokenizor MCP\n- Prefer the Tokenizor MCP for codebase navigation when the `tokenizor` server is connected.\n- Start with `get_repo_map`, `get_repo_outline`, `get_file_context`, or `get_symbol_context` before broad raw file scans.\n- Use `analyze_file_impact` after edits and `what_changed` when resuming work.\n- Use Tokenizor MCP slash commands and `tokenizor://...` resources when Claude surfaces them.\n{TOKENIZOR_GUIDANCE_END}"
+    )
+}
+
+fn codex_guidance_block() -> String {
+    format!(
+        "{TOKENIZOR_GUIDANCE_START}\n## Tokenizor MCP\n- Prefer the Tokenizor MCP for codebase navigation when the `tokenizor` server is connected.\n- Start with `get_repo_map`, `get_repo_outline`, `get_file_context`, or `get_symbol_context` before broad raw file scans.\n- Use `analyze_file_impact` after edits and `what_changed` when resuming work.\n- Codex is configured to read `CLAUDE.md` project guidance too, so treat project Tokenizor instructions there as authoritative when `AGENTS.md` is absent.\n{TOKENIZOR_GUIDANCE_END}"
+    )
+}
+
+/// Returns the binary path of the currently running tokenizor executable.
+fn discover_binary_path() -> PathBuf {
     match std::env::current_exe() {
         Ok(path) => {
             let s = path.display().to_string();
@@ -249,16 +437,23 @@ fn discover_binary_path() -> String {
             if is_npx_cache || is_node_modules || s.ends_with(".cmd") {
                 eprintln!(
                     "warning: binary is inside node_modules or npx cache ({s}); \
-                     updates will fail on Windows. Run: npm install -g tokenizor-mcp && tokenizor-mcp init"
+                     updates will fail on Windows. Run: npm install -g tokenizor-mcp && tokenizor-mcp init --client all"
                 );
             }
-            // Normalise backslashes to forward slashes for JSON command strings.
-            s.replace('\\', "/")
+            path
         }
         Err(e) => {
             eprintln!("warning: could not determine tokenizor binary path: {e}");
-            "tokenizor".to_string()
+            PathBuf::from("tokenizor")
         }
+    }
+}
+
+fn native_command_path(binary_path: &str) -> String {
+    if cfg!(windows) {
+        binary_path.replace('/', "\\")
+    } else {
+        binary_path.to_string()
     }
 }
 
@@ -291,9 +486,17 @@ mod tests {
         let session = result["hooks"]["SessionStart"]
             .as_array()
             .expect("SessionStart must be an array");
+        let prompt = result["hooks"]["UserPromptSubmit"]
+            .as_array()
+            .expect("UserPromptSubmit must be an array");
 
-        assert_eq!(post.len(), 1, "PostToolUse must have 1 entry (single stdin-routed entry)");
+        assert_eq!(
+            post.len(),
+            1,
+            "PostToolUse must have 1 entry (single stdin-routed entry)"
+        );
         assert_eq!(session.len(), 1, "SessionStart must have 1 entry");
+        assert_eq!(prompt.len(), 1, "UserPromptSubmit must have 1 entry");
     }
 
     #[test]
@@ -304,21 +507,29 @@ mod tests {
         let entry = &post[0];
         let cmd = entry["hooks"][0]["command"].as_str().unwrap();
         assert_eq!(
-            cmd,
-            "/usr/local/bin/tokenizor hook",
+            cmd, "/usr/local/bin/tokenizor hook",
             "Single PostToolUse hook command must have no subcommand suffix"
         );
 
         let session = &result["hooks"]["SessionStart"][0];
         let session_cmd = session["hooks"][0]["command"].as_str().unwrap();
         assert_eq!(session_cmd, "/usr/local/bin/tokenizor hook session-start");
+
+        let prompt = &result["hooks"]["UserPromptSubmit"][0];
+        let prompt_cmd = prompt["hooks"][0]["command"].as_str().unwrap();
+        assert_eq!(prompt_cmd, "/usr/local/bin/tokenizor hook prompt-submit");
     }
 
     #[test]
     fn test_init_new_entry_matcher_includes_write() {
         let result = run_merge(json!({}));
-        let matcher = result["hooks"]["PostToolUse"][0]["matcher"].as_str().unwrap();
-        assert_eq!(matcher, "Read|Edit|Write|Grep", "matcher must include Write");
+        let matcher = result["hooks"]["PostToolUse"][0]["matcher"]
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            matcher, "Read|Edit|Write|Grep",
+            "matcher must include Write"
+        );
     }
 
     // --- test_init_preserves_existing_hooks ---
@@ -350,7 +561,10 @@ mod tests {
 
         // The first entry is the preserved non-tokenizor hook.
         let first_cmd = post[0]["hooks"][0]["command"].as_str().unwrap();
-        assert_eq!(first_cmd, "/some/other/hook bash", "non-tokenizor hook must be preserved");
+        assert_eq!(
+            first_cmd, "/some/other/hook bash",
+            "non-tokenizor hook must be preserved"
+        );
     }
 
     // --- test_init_migrates_old_three_entry_format ---
@@ -390,13 +604,15 @@ mod tests {
 
         let cmd = post[0]["hooks"][0]["command"].as_str().unwrap();
         assert_eq!(
-            cmd,
-            "/usr/local/bin/tokenizor hook",
+            cmd, "/usr/local/bin/tokenizor hook",
             "migrated entry must use new no-subcommand command format"
         );
 
         let matcher = post[0]["matcher"].as_str().unwrap();
-        assert_eq!(matcher, "Read|Edit|Write|Grep", "migrated entry must use full matcher");
+        assert_eq!(
+            matcher, "Read|Edit|Write|Grep",
+            "migrated entry must use full matcher"
+        );
     }
 
     // --- test_init_idempotent ---
@@ -462,7 +678,10 @@ mod tests {
                 .map(|c| c.contains(old_binary))
                 .unwrap_or(false)
         });
-        assert!(!has_old, "stale tokenizor entry with old binary path must be removed");
+        assert!(
+            !has_old,
+            "stale tokenizor entry with old binary path must be removed"
+        );
 
         // New entry must be present.
         let has_new = post.iter().any(|e| {
@@ -471,7 +690,10 @@ mod tests {
                 .map(|c| c.contains(new_binary))
                 .unwrap_or(false)
         });
-        assert!(has_new, "new tokenizor entry with new binary path must be present");
+        assert!(
+            has_new,
+            "new tokenizor entry with new binary path must be present"
+        );
     }
 
     // --- is_tokenizor_entry ---
@@ -491,7 +713,10 @@ mod tests {
             "matcher": "Read|Edit|Write|Grep",
             "hooks": [{"type": "command", "command": "C:/Users/user/node_modules/tokenizor-mcp/bin/tokenizor-mcp.exe hook"}]
         });
-        assert!(is_tokenizor_entry(&entry), "must detect tokenizor-mcp.exe binary name");
+        assert!(
+            is_tokenizor_entry(&entry),
+            "must detect tokenizor-mcp.exe binary name"
+        );
     }
 
     #[test]

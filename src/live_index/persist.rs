@@ -256,10 +256,10 @@ pub fn spot_verify_sample(index: &LiveIndex, root: &Path, sample_pct: f64) -> Ve
         };
 
         let on_disk_hash = crate::hash::digest_hex(&bytes);
-        if let Some(indexed_file) = index.files.get(rel_path) {
-            if on_disk_hash != indexed_file.content_hash {
-                mismatches.push(rel_path.to_string());
-            }
+        if let Some(indexed_file) = index.files.get(rel_path)
+            && on_disk_hash != indexed_file.content_hash
+        {
+            mismatches.push(rel_path.to_string());
         }
     }
 

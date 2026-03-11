@@ -12,6 +12,7 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::TcpStream;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -103,6 +104,17 @@ fn raw_http_get(port: u16, path: &str, query: &str) -> anyhow::Result<String> {
     Ok(body)
 }
 
+fn stable_cwd() -> PathBuf {
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
+}
+
+fn restore_cwd(path: &Path) {
+    if std::env::set_current_dir(path).is_err() {
+        std::env::set_current_dir(env!("CARGO_MANIFEST_DIR"))
+            .expect("manifest dir must be a valid cwd fallback");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // HOOK-01: Sidecar binds ephemeral port and writes port file
 // ---------------------------------------------------------------------------
@@ -111,7 +123,7 @@ fn raw_http_get(port: u16, path: &str, query: &str) -> anyhow::Result<String> {
 async fn test_sidecar_binds_ephemeral_port() {
     let tmp = TempDir::new().unwrap();
     let _guard = CWD_LOCK.lock().await;
-    let original = std::env::current_dir().unwrap();
+    let original = stable_cwd();
     std::env::set_current_dir(tmp.path()).unwrap();
 
     let index = build_shared_index(vec![make_rust_file("src/main.rs", "main")]);
@@ -137,7 +149,7 @@ async fn test_sidecar_binds_ephemeral_port() {
     assert!(!port_file.exists(), "sidecar.port file must be cleaned up after shutdown");
     assert!(!pid_file.exists(), "sidecar.pid file must be cleaned up after shutdown");
 
-    std::env::set_current_dir(&original).unwrap();
+    restore_cwd(&original);
 }
 
 // ---------------------------------------------------------------------------
@@ -148,7 +160,7 @@ async fn test_sidecar_binds_ephemeral_port() {
 async fn test_health_endpoint_responds() {
     let tmp = TempDir::new().unwrap();
     let _guard = CWD_LOCK.lock().await;
-    let original = std::env::current_dir().unwrap();
+    let original = stable_cwd();
     std::env::set_current_dir(tmp.path()).unwrap();
 
     let index = build_shared_index(vec![
@@ -178,7 +190,7 @@ async fn test_health_endpoint_responds() {
     assert_eq!(parsed["file_count"], 2, "file_count must match index");
 
     let _ = handle.shutdown_tx.send(());
-    std::env::set_current_dir(&original).unwrap();
+    restore_cwd(&original);
 }
 
 // ---------------------------------------------------------------------------
@@ -189,7 +201,7 @@ async fn test_health_endpoint_responds() {
 async fn test_outline_endpoint() {
     let tmp = TempDir::new().unwrap();
     let _guard = CWD_LOCK.lock().await;
-    let original = std::env::current_dir().unwrap();
+    let original = stable_cwd();
     std::env::set_current_dir(tmp.path()).unwrap();
 
     let index = build_shared_index(vec![make_rust_file("src/foo.rs", "hello")]);
@@ -202,14 +214,15 @@ async fn test_outline_endpoint() {
     let body = raw_http_get(handle.port, "/outline", "path=src/foo.rs")
         .expect("GET /outline must succeed");
 
-    let parsed: serde_json::Value =
-        serde_json::from_str(&body).expect("outline response must be valid JSON");
-    let arr = parsed.as_array().expect("outline must be a JSON array");
-    assert!(!arr.is_empty(), "outline must contain at least one symbol");
-    assert_eq!(arr[0]["name"], "hello", "symbol name must match");
+    assert!(body.contains("src/foo.rs"), "outline should mention the requested file");
+    assert!(body.contains("hello"), "outline should include the symbol name");
+    assert!(
+        body.contains("tokens saved"),
+        "outline should include the token savings footer"
+    );
 
     let _ = handle.shutdown_tx.send(());
-    std::env::set_current_dir(&original).unwrap();
+    restore_cwd(&original);
 }
 
 // ---------------------------------------------------------------------------
@@ -220,7 +233,7 @@ async fn test_outline_endpoint() {
 async fn test_shared_index_mutation() {
     let tmp = TempDir::new().unwrap();
     let _guard = CWD_LOCK.lock().await;
-    let original = std::env::current_dir().unwrap();
+    let original = stable_cwd();
     std::env::set_current_dir(tmp.path()).unwrap();
 
     let index = build_shared_index(vec![make_rust_file("src/a.rs", "alpha")]);
@@ -251,13 +264,11 @@ async fn test_shared_index_mutation() {
     // Outline for the new file must also be visible.
     let outline = raw_http_get(handle.port, "/outline", "path=src/b.rs")
         .expect("GET /outline for new file must succeed");
-    let symbols: serde_json::Value = serde_json::from_str(&outline).unwrap();
-    let arr = symbols.as_array().expect("outline must be array");
-    assert!(!arr.is_empty(), "new file symbols must be visible through sidecar");
-    assert_eq!(arr[0]["name"], "beta");
+    assert!(outline.contains("src/b.rs"), "outline should mention the new file");
+    assert!(outline.contains("beta"), "new file symbol must be visible through sidecar");
 
     let _ = handle.shutdown_tx.send(());
-    std::env::set_current_dir(&original).unwrap();
+    restore_cwd(&original);
 }
 
 // ---------------------------------------------------------------------------
@@ -268,7 +279,7 @@ async fn test_shared_index_mutation() {
 async fn test_hook_binary_latency() {
     let tmp = TempDir::new().unwrap();
     let _guard = CWD_LOCK.lock().await;
-    let original = std::env::current_dir().unwrap();
+    let original = stable_cwd();
     std::env::set_current_dir(tmp.path()).unwrap();
 
     let index = build_shared_index(vec![make_rust_file("src/main.rs", "main")]);
@@ -292,7 +303,7 @@ async fn test_hook_binary_latency() {
     );
 
     let _ = handle.shutdown_tx.send(());
-    std::env::set_current_dir(&original).unwrap();
+    restore_cwd(&original);
 }
 
 // ---------------------------------------------------------------------------
@@ -307,6 +318,7 @@ fn test_hook_output_valid_json() {
         HookSubcommand::Edit,
         HookSubcommand::Grep,
         HookSubcommand::SessionStart,
+        HookSubcommand::PromptSubmit,
     ];
 
     for sub in &subcommands {
@@ -358,8 +370,8 @@ fn test_hook_output_valid_json() {
 fn test_hook_failopen_valid_json() {
     let tmp = TempDir::new().unwrap();
     // Sync tests use std::sync::Mutex for cwd lock.
-    let _guard = std::sync::Mutex::new(());
-    let original = std::env::current_dir().unwrap();
+    let _guard = CWD_LOCK.blocking_lock();
+    let original = stable_cwd();
     std::env::set_current_dir(tmp.path()).unwrap();
 
     // No sidecar running — no port file — fail-open path.
@@ -368,6 +380,7 @@ fn test_hook_failopen_valid_json() {
         HookSubcommand::Edit,
         HookSubcommand::Grep,
         HookSubcommand::SessionStart,
+        HookSubcommand::PromptSubmit,
     ];
 
     for sub in &subcommands {
@@ -384,7 +397,7 @@ fn test_hook_failopen_valid_json() {
         );
     }
 
-    std::env::set_current_dir(&original).unwrap();
+    restore_cwd(&original);
 }
 
 // ---------------------------------------------------------------------------
@@ -395,7 +408,7 @@ fn test_hook_failopen_valid_json() {
 async fn test_repo_map_endpoint() {
     let tmp = TempDir::new().unwrap();
     let _guard = CWD_LOCK.lock().await;
-    let original = std::env::current_dir().unwrap();
+    let original = stable_cwd();
     std::env::set_current_dir(tmp.path()).unwrap();
 
     let files = vec![
@@ -412,16 +425,39 @@ async fn test_repo_map_endpoint() {
 
     let body = raw_http_get(handle.port, "/repo-map", "").expect("GET /repo-map must succeed");
 
-    let parsed: serde_json::Value =
-        serde_json::from_str(&body).expect("/repo-map must return valid JSON");
-    let arr = parsed.as_array().expect("/repo-map must be a JSON array");
-
-    assert_eq!(arr.len(), 3, "repo-map must contain 3 entries");
-    for entry in arr {
-        assert!(entry.get("path").is_some(), "each entry must have 'path'");
-        assert!(entry.get("symbol_count").is_some(), "each entry must have 'symbol_count'");
-    }
+    assert!(body.contains("3 files"), "repo-map should summarize file count");
+    assert!(body.contains("3 symbols"), "repo-map should summarize symbol count");
+    assert!(body.contains("Rust: 3"), "repo-map should include language breakdown");
+    assert!(body.contains("src"), "repo-map should include the src directory bucket");
 
     let _ = handle.shutdown_tx.send(());
-    std::env::set_current_dir(&original).unwrap();
+    restore_cwd(&original);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_prompt_context_endpoint_prefers_file_hint() {
+    let tmp = TempDir::new().unwrap();
+    let _guard = CWD_LOCK.lock().await;
+    let original = stable_cwd();
+    std::env::set_current_dir(tmp.path()).unwrap();
+
+    let index = build_shared_index(vec![make_rust_file("src/foo.rs", "hello")]);
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+        .await
+        .expect("spawn_sidecar should succeed");
+
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let body = raw_http_get(
+        handle.port,
+        "/prompt-context",
+        "text=please%20inspect%20src%2Ffoo.rs",
+    )
+    .expect("GET /prompt-context must succeed");
+
+    assert!(body.contains("src/foo.rs"), "prompt context should mention the hinted file");
+    assert!(body.contains("hello"), "prompt context should include the hinted file symbol");
+
+    let _ = handle.shutdown_tx.send(());
+    restore_cwd(&original);
 }

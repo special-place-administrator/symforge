@@ -20,30 +20,31 @@ use crate::sidecar::{SidecarState, SymbolSnapshot, build_with_budget};
 // Request parameter structs
 // ---------------------------------------------------------------------------
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct OutlineParams {
     pub path: String,
     /// Optional token budget override. Default: 200 tokens (800 bytes).
     pub max_tokens: Option<u64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct ImpactParams {
     pub path: String,
     /// If `true`, treat this as a new-file indexing request (HOOK-06).
     pub new_file: Option<bool>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct SymbolContextParams {
     pub name: String,
     /// Optional: restrict search to a specific file.
     pub file: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
-// Response value types
-// ---------------------------------------------------------------------------
+#[derive(Clone, Deserialize, Serialize)]
+pub struct PromptContextParams {
+    pub text: String,
+}
 
 #[derive(Serialize)]
 pub struct HealthResponse {
@@ -53,46 +54,27 @@ pub struct HealthResponse {
     pub uptime_secs: u64,
 }
 
-// Kept for test compatibility — used in older tests that check JSON fields.
-#[derive(Debug, Serialize)]
-pub struct SymbolInfo {
-    pub name: String,
-    pub kind: String,
-    pub start_line: u32,
-    pub end_line: u32,
+#[derive(Clone, Copy)]
+struct RenderOptions {
+    include_savings_footer: bool,
+    record_stats: bool,
 }
 
-#[derive(Debug, Serialize)]
-pub struct ReferenceInfo {
-    pub line: u32,
-    pub name: String,
-}
+const HOOK_RENDER_OPTIONS: RenderOptions = RenderOptions {
+    include_savings_footer: true,
+    record_stats: true,
+};
 
-#[derive(Debug, Serialize)]
-pub struct FileReferences {
-    pub file: String,
-    pub references: Vec<ReferenceInfo>,
-}
+const TOOL_RENDER_OPTIONS: RenderOptions = RenderOptions {
+    include_savings_footer: false,
+    record_stats: false,
+};
 
-#[derive(Serialize)]
-pub struct SymbolContextRef {
-    pub line: u32,
-    pub kind: String,
-    /// Name of the enclosing symbol, if any.
-    pub enclosing: Option<String>,
-}
-
-#[derive(Serialize)]
-pub struct SymbolContextEntry {
-    pub file: String,
-    pub references: Vec<SymbolContextRef>,
-}
-
-#[derive(Serialize)]
-pub struct RepoMapEntry {
-    pub path: String,
-    pub symbol_count: usize,
-    pub parse_status: String,
+fn resolve_repo_root(state: &SidecarState) -> Result<std::path::PathBuf, StatusCode> {
+    match &state.repo_root {
+        Some(root) => Ok(root.clone()),
+        None => std::env::current_dir().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -135,6 +117,25 @@ pub async fn health_handler(
 pub async fn outline_handler(
     State(state): State<SidecarState>,
     Query(params): Query<OutlineParams>,
+) -> Result<String, StatusCode> {
+    outline_hook_text(&state, &params)
+}
+
+pub(crate) fn outline_tool_text(
+    state: &SidecarState,
+    params: &OutlineParams,
+) -> Result<String, StatusCode> {
+    outline_text(state, params, TOOL_RENDER_OPTIONS)
+}
+
+fn outline_hook_text(state: &SidecarState, params: &OutlineParams) -> Result<String, StatusCode> {
+    outline_text(state, params, HOOK_RENDER_OPTIONS)
+}
+
+fn outline_text(
+    state: &SidecarState,
+    params: &OutlineParams,
+    options: RenderOptions,
 ) -> Result<String, StatusCode> {
     let guard = state.index.read().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -200,13 +201,15 @@ pub async fn outline_handler(
     let max_bytes = params.max_tokens.unwrap_or(200) * 4;
     let (mut text, _remaining) = build_with_budget(&lines, max_bytes);
 
-    // Append token savings footer.
     let output_bytes = text.len() as u64;
-    let saved_tokens = file_bytes.saturating_sub(output_bytes) / 4;
-    text.push_str(&format!("\n[~{} tokens saved]", saved_tokens));
+    if options.include_savings_footer {
+        let saved_tokens = file_bytes.saturating_sub(output_bytes) / 4;
+        text.push_str(&format!("\n[~{} tokens saved]", saved_tokens));
+    }
 
-    // Record token savings.
-    state.token_stats.record_read(file_bytes, output_bytes);
+    if options.record_stats {
+        state.token_stats.record_read(file_bytes, output_bytes);
+    }
 
     Ok(text)
 }
@@ -224,18 +227,41 @@ pub async fn impact_handler(
     State(state): State<SidecarState>,
     Query(params): Query<ImpactParams>,
 ) -> Result<String, StatusCode> {
+    impact_hook_text(state, &params).await
+}
+
+pub(crate) async fn impact_tool_text(
+    state: SidecarState,
+    params: &ImpactParams,
+) -> Result<String, StatusCode> {
+    impact_text(state, params, TOOL_RENDER_OPTIONS).await
+}
+
+async fn impact_hook_text(state: SidecarState, params: &ImpactParams) -> Result<String, StatusCode> {
+    impact_text(state, params, HOOK_RENDER_OPTIONS).await
+}
+
+async fn impact_text(
+    state: SidecarState,
+    params: &ImpactParams,
+    options: RenderOptions,
+) -> Result<String, StatusCode> {
     let is_new_file = params.new_file.unwrap_or(false);
 
     if is_new_file {
         // HOOK-06: Index a new file from disk.
-        return handle_new_file_impact(state, &params.path).await;
+        return handle_new_file_impact(state, &params.path, options).await;
     }
 
     // HOOK-05: Re-index existing file and compute symbol diff.
-    handle_edit_impact(state, &params.path).await
+    handle_edit_impact(state, &params.path, options).await
 }
 
-async fn handle_new_file_impact(state: SidecarState, path: &str) -> Result<String, StatusCode> {
+async fn handle_new_file_impact(
+    state: SidecarState,
+    path: &str,
+    options: RenderOptions,
+) -> Result<String, StatusCode> {
     use crate::domain::LanguageId;
 
     // Determine language from file extension.
@@ -250,8 +276,7 @@ async fn handle_new_file_impact(state: SidecarState, path: &str) -> Result<Strin
     // Read file from disk. The sidecar doesn't know the project root, so
     // we look up the root from the existing index as a heuristic.
     // For new files, we try to find them relative to cwd.
-    let cwd = std::env::current_dir().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let abs_path = cwd.join(path);
+    let abs_path = resolve_repo_root(&state)?.join(path);
     let bytes = std::fs::read(&abs_path).map_err(|_| StatusCode::NOT_FOUND)?;
 
     // Parse the file.
@@ -287,7 +312,9 @@ async fn handle_new_file_impact(state: SidecarState, path: &str) -> Result<Strin
         cache.insert(path.to_string(), Vec::new());
     }
 
-    state.token_stats.record_write();
+    if options.record_stats {
+        state.token_stats.record_write();
+    }
 
     let text = format!(
         "Language: {:?}\nSymbols: {}\n[Indexed, 0 callers yet]",
@@ -298,7 +325,11 @@ async fn handle_new_file_impact(state: SidecarState, path: &str) -> Result<Strin
     Ok(text)
 }
 
-async fn handle_edit_impact(state: SidecarState, path: &str) -> Result<String, StatusCode> {
+async fn handle_edit_impact(
+    state: SidecarState,
+    path: &str,
+    options: RenderOptions,
+) -> Result<String, StatusCode> {
     use crate::domain::LanguageId;
 
     // Get pre-edit symbols from cache or from current index.
@@ -344,8 +375,7 @@ async fn handle_edit_impact(state: SidecarState, path: &str) -> Result<String, S
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
 
     // Read file from disk and re-index.
-    let cwd = std::env::current_dir().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let abs_path = cwd.join(path);
+    let abs_path = resolve_repo_root(&state)?.join(path);
     let bytes = std::fs::read(&abs_path).unwrap_or_default();
     let file_bytes_new = bytes.len() as u64;
     let file_bytes = if file_bytes_new > 0 { file_bytes_new } else { file_bytes_pre };
@@ -433,12 +463,15 @@ async fn handle_edit_impact(state: SidecarState, path: &str) -> Result<String, S
     // Apply budget (150 tokens = 600 bytes).
     let (mut text, _) = build_with_budget(&lines, 600);
 
-    // Append token savings footer.
     let output_bytes = text.len() as u64;
-    let saved_tokens = file_bytes.saturating_sub(output_bytes) / 4;
-    text.push_str(&format!("\n[~{} tokens saved]", saved_tokens));
+    if options.include_savings_footer {
+        let saved_tokens = file_bytes.saturating_sub(output_bytes) / 4;
+        text.push_str(&format!("\n[~{} tokens saved]", saved_tokens));
+    }
 
-    state.token_stats.record_edit(file_bytes, output_bytes);
+    if options.record_stats {
+        state.token_stats.record_edit(file_bytes, output_bytes);
+    }
 
     Ok(text)
 }
@@ -453,6 +486,28 @@ pub async fn symbol_context_handler(
     State(state): State<SidecarState>,
     Query(params): Query<SymbolContextParams>,
 ) -> Result<String, StatusCode> {
+    symbol_context_hook_text(&state, &params)
+}
+
+pub(crate) fn symbol_context_tool_text(
+    state: &SidecarState,
+    params: &SymbolContextParams,
+) -> Result<String, StatusCode> {
+    symbol_context_text(state, params, TOOL_RENDER_OPTIONS)
+}
+
+fn symbol_context_hook_text(
+    state: &SidecarState,
+    params: &SymbolContextParams,
+) -> Result<String, StatusCode> {
+    symbol_context_text(state, params, HOOK_RENDER_OPTIONS)
+}
+
+fn symbol_context_text(
+    state: &SidecarState,
+    params: &SymbolContextParams,
+    options: RenderOptions,
+) -> Result<String, StatusCode> {
     let guard = state.index.read().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let raw = guard.find_references_for_name(&params.name, None, false);
@@ -466,10 +521,10 @@ pub async fn symbol_context_handler(
 
     for (file_path, reference) in &raw {
         grand_total += 1;
-        if let Some(ref filter_file) = params.file {
-            if *file_path != filter_file.as_str() {
-                continue;
-            }
+        if let Some(ref filter_file) = params.file
+            && *file_path != filter_file.as_str()
+        {
+            continue;
         }
         if total >= 10 {
             continue; // count beyond 10 but don't include
@@ -527,12 +582,15 @@ pub async fn symbol_context_handler(
     // Apply budget (100 tokens = 400 bytes).
     let (mut text, _) = build_with_budget(&lines, 400);
 
-    // Append token savings footer.
     let output_bytes = text.len() as u64;
-    let saved_tokens = total_bytes.saturating_sub(output_bytes) / 4;
-    text.push_str(&format!("\n[~{} tokens saved]", saved_tokens));
+    if options.include_savings_footer {
+        let saved_tokens = total_bytes.saturating_sub(output_bytes) / 4;
+        text.push_str(&format!("\n[~{} tokens saved]", saved_tokens));
+    }
 
-    state.token_stats.record_grep(total_bytes, output_bytes);
+    if options.record_stats {
+        state.token_stats.record_grep(total_bytes, output_bytes);
+    }
 
     Ok(text)
 }
@@ -546,6 +604,10 @@ pub async fn symbol_context_handler(
 pub async fn repo_map_handler(
     State(state): State<SidecarState>,
 ) -> Result<String, StatusCode> {
+    repo_map_text(&state)
+}
+
+pub(crate) fn repo_map_text(state: &SidecarState) -> Result<String, StatusCode> {
     let guard = state.index.read().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let total_files = guard.file_count();
@@ -607,6 +669,63 @@ pub async fn repo_map_handler(
     Ok(text)
 }
 
+/// `GET /prompt-context?text=<prompt>` — derive compact context from a user prompt.
+///
+/// Heuristics:
+/// - explicit file hint in the prompt => outline for that file
+/// - explicit symbol hint in the prompt => symbol context for that symbol
+/// - repo-map intent keywords => repo map
+/// - otherwise => empty context
+pub async fn prompt_context_handler(
+    State(state): State<SidecarState>,
+    Query(params): Query<PromptContextParams>,
+) -> Result<String, StatusCode> {
+    prompt_context_hook_text(&state, &params).await
+}
+
+async fn prompt_context_hook_text(
+    state: &SidecarState,
+    params: &PromptContextParams,
+) -> Result<String, StatusCode> {
+    prompt_context_text(state, params, HOOK_RENDER_OPTIONS).await
+}
+
+async fn prompt_context_text(
+    state: &SidecarState,
+    params: &PromptContextParams,
+    options: RenderOptions,
+) -> Result<String, StatusCode> {
+    let prompt = params.text.trim();
+    if prompt.is_empty() {
+        return Ok(String::new());
+    }
+
+    if let Some(path) = find_prompt_file_hint(state, prompt)? {
+        return outline_text(
+            state,
+            &OutlineParams {
+                path,
+                max_tokens: Some(160),
+            },
+            options,
+        );
+    }
+
+    if let Some(name) = find_prompt_symbol_hint(state, prompt)? {
+        return symbol_context_text(
+            state,
+            &SymbolContextParams { name, file: None },
+            options,
+        );
+    }
+
+    if prompt_requests_repo_map(prompt) {
+        return repo_map_text(state);
+    }
+
+    Ok(String::new())
+}
+
 /// `GET /stats` — return token savings snapshot as JSON.
 pub async fn stats_handler(
     State(state): State<SidecarState>,
@@ -634,6 +753,85 @@ fn get_dir_2level(path: &str) -> String {
         .map(|c| c.as_os_str().to_string_lossy().to_string())
         .collect::<Vec<_>>()
         .join("/")
+}
+
+fn find_prompt_file_hint(state: &SidecarState, prompt: &str) -> Result<Option<String>, StatusCode> {
+    let guard = state.index.read().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let prompt_lower = prompt.to_ascii_lowercase();
+    let mut basename_match: Option<String> = None;
+    let mut basename_ambiguous = false;
+
+    for (path, _) in guard.all_files() {
+        if prompt.contains(path) || prompt_lower.contains(&path.to_ascii_lowercase()) {
+            return Ok(Some(path.to_string()));
+        }
+
+        let Some(file_name) = std::path::Path::new(path).file_name().and_then(|name| name.to_str())
+        else {
+            continue;
+        };
+        if !prompt_lower.contains(&file_name.to_ascii_lowercase()) {
+            continue;
+        }
+
+        if let Some(existing) = &basename_match {
+            if existing != path {
+                basename_ambiguous = true;
+            }
+        } else {
+            basename_match = Some(path.to_string());
+        }
+    }
+
+    if basename_ambiguous {
+        Ok(None)
+    } else {
+        Ok(basename_match)
+    }
+}
+
+fn find_prompt_symbol_hint(
+    state: &SidecarState,
+    prompt: &str,
+) -> Result<Option<String>, StatusCode> {
+    let guard = state.index.read().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    for token in prompt_tokens(prompt) {
+        if token.len() < 3 || token.contains('/') || token.contains('.') {
+            continue;
+        }
+
+        let has_match = guard
+            .all_files()
+            .any(|(_, file)| file.symbols.iter().any(|symbol| symbol.name == token));
+        if has_match {
+            return Ok(Some(token));
+        }
+    }
+
+    Ok(None)
+}
+
+fn prompt_tokens(prompt: &str) -> Vec<String> {
+    prompt
+        .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '/' || ch == '.'))
+        .filter(|token| !token.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn prompt_requests_repo_map(prompt: &str) -> bool {
+    let lower = prompt.to_ascii_lowercase();
+    [
+        "architecture",
+        "codebase",
+        "map",
+        "overview",
+        "repo",
+        "repository",
+        "structure",
+    ]
+    .iter()
+    .any(|term| lower.contains(term))
 }
 
 // ---------------------------------------------------------------------------
@@ -722,6 +920,7 @@ mod tests {
         SidecarState {
             index: build_shared_index(files),
             token_stats: TokenStats::new(),
+            repo_root: None,
             symbol_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -1016,6 +1215,29 @@ mod tests {
         let state = make_state(vec![]);
         let result = repo_map_handler(State(state)).await.unwrap();
         assert!(result.contains("0 files"), "empty index should show 0 files");
+    }
+
+    #[tokio::test]
+    async fn test_prompt_context_handler_prefers_file_hint() {
+        let file = make_indexed_file(
+            "src/main.rs",
+            vec![make_symbol("serve", SymbolKind::Function, 1, 3)],
+            vec![],
+            ParseStatus::Parsed,
+        );
+        let state = make_state(vec![("src/main.rs", file)]);
+
+        let result = prompt_context_handler(
+            State(state),
+            Query(PromptContextParams {
+                text: "please inspect src/main.rs".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(result.contains("src/main.rs"), "prompt context should target the hinted file");
+        assert!(result.contains("serve"), "prompt context should surface the file outline");
     }
 
     // -----------------------------------------------------------------------

@@ -1,9 +1,10 @@
+use std::collections::HashSet;
 use std::time::{Duration, SystemTime};
 
 use crate::domain::{LanguageId, ReferenceKind, ReferenceRecord, SymbolRecord};
 use crate::watcher::{WatcherInfo, WatcherState};
 
-use super::store::{IndexedFile, IndexState, LiveIndex, ParseStatus};
+use super::store::{IndexState, IndexedFile, LiveIndex, ParseStatus};
 
 // ---------------------------------------------------------------------------
 // Module path resolution for find_dependents
@@ -41,17 +42,19 @@ fn resolve_module_path(file_path: &str, language: &LanguageId) -> Option<String>
                 .collect();
 
             // Remove extension from last component
-            if let Some(last) = components.last_mut() {
-                if let Some(stem) = std::path::Path::new(last.as_str())
+            if let Some(last) = components.last_mut()
+                && let Some(stem) = std::path::Path::new(last.as_str())
                     .file_stem()
                     .and_then(|s| s.to_str())
-                {
-                    *last = stem.to_string();
-                }
+            {
+                *last = stem.to_string();
             }
 
             // Drop "lib", "main", "mod" — these map to their parent module
-            if matches!(components.last().map(|s| s.as_str()), Some("lib" | "main" | "mod")) {
+            if matches!(
+                components.last().map(|s| s.as_str()),
+                Some("lib" | "main" | "mod")
+            ) {
                 components.pop();
             }
 
@@ -68,13 +71,12 @@ fn resolve_module_path(file_path: &str, language: &LanguageId) -> Option<String>
                 .collect();
 
             // Remove extension from last component
-            if let Some(last) = components.last_mut() {
-                if let Some(stem) = std::path::Path::new(last.as_str())
+            if let Some(last) = components.last_mut()
+                && let Some(stem) = std::path::Path::new(last.as_str())
                     .file_stem()
                     .and_then(|s| s.to_str())
-                {
-                    *last = stem.to_string();
-                }
+            {
+                *last = stem.to_string();
             }
 
             // Drop __init__ — maps to the package (parent directory)
@@ -95,13 +97,12 @@ fn resolve_module_path(file_path: &str, language: &LanguageId) -> Option<String>
                 .collect();
 
             // Remove extension from last component
-            if let Some(last) = components.last_mut() {
-                if let Some(stem) = std::path::Path::new(last.as_str())
+            if let Some(last) = components.last_mut()
+                && let Some(stem) = std::path::Path::new(last.as_str())
                     .file_stem()
                     .and_then(|s| s.to_str())
-                {
-                    *last = stem.to_string();
-                }
+            {
+                *last = stem.to_string();
             }
 
             // Drop "index" — maps to the directory
@@ -119,49 +120,176 @@ fn resolve_module_path(file_path: &str, language: &LanguageId) -> Option<String>
     }
 }
 
+fn declared_scope(file: &IndexedFile) -> Option<String> {
+    let content = String::from_utf8_lossy(&file.content);
+    match file.language {
+        LanguageId::CSharp => parse_declared_scope(&content, "namespace"),
+        LanguageId::Java => parse_declared_scope(&content, "package"),
+        _ => None,
+    }
+}
+
+fn parse_declared_scope(content: &str, keyword: &str) -> Option<String> {
+    content.lines().find_map(|line| {
+        let trimmed = line.split("//").next().unwrap_or("").trim();
+        let rest = trimmed.strip_prefix(keyword)?.trim_start();
+        let scope: String = rest
+            .chars()
+            .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_' || *ch == '.')
+            .collect();
+        if scope.is_empty() { None } else { Some(scope) }
+    })
+}
+
+fn imported_scope(language: &LanguageId, reference: &ReferenceRecord) -> Option<String> {
+    if reference.kind != ReferenceKind::Import {
+        return None;
+    }
+
+    let qualified_name = reference.qualified_name.as_deref()?;
+    match language {
+        LanguageId::CSharp => Some(qualified_name.to_string()),
+        LanguageId::Java => {
+            let trimmed = qualified_name.trim_end_matches(".*");
+            match trimmed.rsplit_once('.') {
+                Some((scope, _)) if !scope.is_empty() => Some(scope.to_string()),
+                _ if !trimmed.is_empty() => Some(trimmed.to_string()),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn can_match_type_dependents(
+    dependent_file: &IndexedFile,
+    target_language: &LanguageId,
+    target_scope: Option<&str>,
+) -> bool {
+    if &dependent_file.language != target_language {
+        return false;
+    }
+
+    match target_language {
+        LanguageId::CSharp | LanguageId::Java => {
+            let Some(target_scope) = target_scope else {
+                return true;
+            };
+
+            if declared_scope(dependent_file).as_deref() == Some(target_scope) {
+                return true;
+            }
+
+            dependent_file
+                .references
+                .iter()
+                .filter_map(|reference| imported_scope(&dependent_file.language, reference))
+                .any(|scope| scope == target_scope)
+        }
+        _ => false,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Built-in type filter lists (per-language)
 // ---------------------------------------------------------------------------
 
 const RUST_BUILTINS: &[&str] = &[
-    "i8", "i16", "i32", "i64", "i128", "isize",
-    "u8", "u16", "u32", "u64", "u128", "usize",
-    "f32", "f64", "bool", "char", "str", "String", "Self", "self",
+    "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize", "f32",
+    "f64", "bool", "char", "str", "String", "Self", "self",
 ];
 
 const PYTHON_BUILTINS: &[&str] = &[
-    "int", "float", "str", "bool", "list", "dict", "tuple", "set",
-    "None", "bytes", "object", "type",
+    "int", "float", "str", "bool", "list", "dict", "tuple", "set", "None", "bytes", "object",
+    "type",
 ];
 
 const JS_BUILTINS: &[&str] = &[
-    "string", "number", "boolean", "undefined", "null",
-    "Object", "Array", "Function", "Symbol", "Promise", "Error",
+    "string",
+    "number",
+    "boolean",
+    "undefined",
+    "null",
+    "Object",
+    "Array",
+    "Function",
+    "Symbol",
+    "Promise",
+    "Error",
 ];
 
 const TS_BUILTINS: &[&str] = &[
-    "string", "number", "boolean", "undefined", "null", "void", "never",
-    "any", "unknown", "Object", "Array", "Function", "Symbol", "Promise",
-    "Error", "Record", "Partial", "Required", "Readonly", "Pick", "Omit",
+    "string",
+    "number",
+    "boolean",
+    "undefined",
+    "null",
+    "void",
+    "never",
+    "any",
+    "unknown",
+    "Object",
+    "Array",
+    "Function",
+    "Symbol",
+    "Promise",
+    "Error",
+    "Record",
+    "Partial",
+    "Required",
+    "Readonly",
+    "Pick",
+    "Omit",
 ];
 
 const GO_BUILTINS: &[&str] = &[
-    "int", "int8", "int16", "int32", "int64",
-    "uint", "uint8", "uint16", "uint32", "uint64",
-    "float32", "float64", "complex64", "complex128",
-    "bool", "string", "byte", "rune", "error", "any",
+    "int",
+    "int8",
+    "int16",
+    "int32",
+    "int64",
+    "uint",
+    "uint8",
+    "uint16",
+    "uint32",
+    "uint64",
+    "float32",
+    "float64",
+    "complex64",
+    "complex128",
+    "bool",
+    "string",
+    "byte",
+    "rune",
+    "error",
+    "any",
 ];
 
 const JAVA_BUILTINS: &[&str] = &[
-    "int", "long", "short", "byte", "float", "double", "boolean", "char", "void",
-    "String", "Object", "Integer", "Long", "Short", "Byte", "Float", "Double",
-    "Boolean", "Character",
+    "int",
+    "long",
+    "short",
+    "byte",
+    "float",
+    "double",
+    "boolean",
+    "char",
+    "void",
+    "String",
+    "Object",
+    "Integer",
+    "Long",
+    "Short",
+    "Byte",
+    "Float",
+    "Double",
+    "Boolean",
+    "Character",
 ];
 
 /// Single-letter generic type parameter names that are almost always noise.
 const SINGLE_LETTER_GENERICS: &[&str] = &[
-    "T", "K", "V", "E", "R", "S", "A", "B", "C", "D",
-    "N", "M", "P", "U", "W", "X", "Y", "Z",
+    "T", "K", "V", "E", "R", "S", "A", "B", "C", "D", "N", "M", "P", "U", "W", "X", "Y", "Z",
 ];
 
 /// Returns `true` when `name` is a known built-in primitive/stdlib type or a
@@ -348,10 +476,10 @@ impl LiveIndex {
                     } else {
                         continue;
                     }
-                    if let Some(kf) = kind_filter {
-                        if reference.kind != kf {
-                            continue;
-                        }
+                    if let Some(kf) = kind_filter
+                        && reference.kind != kf
+                    {
+                        continue;
                     }
                     results.push((file_path.as_str(), reference));
                 }
@@ -402,10 +530,10 @@ impl LiveIndex {
                     Some(r) => r,
                     None => continue,
                 };
-                if let Some(kf) = kind_filter {
-                    if reference.kind != kf {
-                        continue;
-                    }
+                if let Some(kf) = kind_filter
+                    && reference.kind != kf
+                {
+                    continue;
                 }
                 results.push((loc.file_path.as_str(), reference));
             }
@@ -423,10 +551,11 @@ impl LiveIndex {
     ///    and `index.js`/`index.ts` which stem matching misses.
     ///
     /// Returns a `Vec` of `(importing_file_path, &import_reference)` tuples.
-    pub fn find_dependents_for_file(
-        &self,
-        target_path: &str,
-    ) -> Vec<(&str, &ReferenceRecord)> {
+    pub fn find_dependents_for_file(&self, target_path: &str) -> Vec<(&str, &ReferenceRecord)> {
+        let Some(target_file) = self.files.get(target_path) else {
+            return vec![];
+        };
+
         // Extract the file stem: "src/db.rs" → "db"
         let stem = std::path::Path::new(target_path)
             .file_stem()
@@ -434,21 +563,22 @@ impl LiveIndex {
             .unwrap_or(target_path);
 
         // Resolve the logical module path for the target file.
-        let module_path = self
-            .files
-            .get(target_path)
-            .and_then(|f| resolve_module_path(target_path, &f.language));
+        let module_path = resolve_module_path(target_path, &target_file.language);
 
         // Module-path separator for matching (language-dependent).
-        let module_sep = self
-            .files
-            .get(target_path)
-            .map(|f| match f.language {
-                LanguageId::Python => ".",
-                LanguageId::JavaScript | LanguageId::TypeScript => "/",
-                _ => "::",
-            })
-            .unwrap_or("::");
+        let module_sep = match target_file.language {
+            LanguageId::Python => ".",
+            LanguageId::JavaScript | LanguageId::TypeScript => "/",
+            _ => "::",
+        };
+        let target_language = target_file.language.clone();
+        let target_scope = declared_scope(target_file);
+        let target_symbol_names: HashSet<&str> = target_file
+            .symbols
+            .iter()
+            .map(|symbol| symbol.name.as_str())
+            .filter(|name| !name.is_empty())
+            .collect();
 
         let mut results = Vec::new();
 
@@ -456,6 +586,28 @@ impl LiveIndex {
             // Don't report a file as depending on itself.
             if file_path.as_str() == target_path {
                 continue;
+            }
+
+            if !target_symbol_names.is_empty()
+                && can_match_type_dependents(file, &target_language, target_scope.as_deref())
+            {
+                let type_refs: Vec<&ReferenceRecord> = file
+                    .references
+                    .iter()
+                    .filter(|reference| {
+                        reference.kind == ReferenceKind::TypeUsage
+                            && target_symbol_names.contains(reference.name.as_str())
+                    })
+                    .collect();
+
+                if !type_refs.is_empty() {
+                    results.extend(
+                        type_refs
+                            .into_iter()
+                            .map(|reference| (file_path.as_str(), reference)),
+                    );
+                    continue;
+                }
             }
 
             for reference in &file.references {
@@ -497,6 +649,12 @@ impl LiveIndex {
             }
         }
 
+        results.sort_by(|a, b| {
+            a.0.cmp(b.0)
+                .then(a.1.line_range.0.cmp(&b.1.line_range.0))
+                .then(a.1.byte_range.0.cmp(&b.1.byte_range.0))
+        });
+
         results
     }
 
@@ -512,22 +670,37 @@ impl LiveIndex {
     ) -> Vec<&ReferenceRecord> {
         match self.files.get(file_path) {
             None => vec![],
-            Some(file) => file
-                .references
-                .iter()
-                .filter(|r| {
-                    r.kind == ReferenceKind::Call
-                        && r.enclosing_symbol_index == Some(symbol_index as u32)
-                })
-                .collect(),
+            Some(file) => {
+                let symbol_range = file
+                    .symbols
+                    .get(symbol_index)
+                    .map(|symbol| symbol.line_range);
+                file.references
+                    .iter()
+                    .filter(|reference| {
+                        if reference.kind != ReferenceKind::Call {
+                            return false;
+                        }
+
+                        if let Some((start_line, end_line)) = symbol_range {
+                            reference.line_range.0 >= start_line
+                                && reference.line_range.1 <= end_line
+                        } else {
+                            reference.enclosing_symbol_index == Some(symbol_index as u32)
+                        }
+                    })
+                    .collect()
+            }
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::domain::{LanguageId, ReferenceKind, ReferenceRecord, SymbolRecord, SymbolKind};
-    use crate::live_index::store::{CircuitBreakerState, IndexedFile, IndexState, LiveIndex, ParseStatus};
+    use crate::domain::{LanguageId, ReferenceKind, ReferenceRecord, SymbolKind, SymbolRecord};
+    use crate::live_index::store::{
+        CircuitBreakerState, IndexState, IndexedFile, LiveIndex, ParseStatus,
+    };
     use crate::watcher::{WatcherInfo, WatcherState};
     use std::collections::HashMap;
     use std::time::{Duration, Instant, SystemTime};
@@ -543,7 +716,11 @@ mod tests {
         }
     }
 
-    fn make_indexed_file(path: &str, symbols: Vec<SymbolRecord>, status: ParseStatus) -> IndexedFile {
+    fn make_indexed_file(
+        path: &str,
+        symbols: Vec<SymbolRecord>,
+        status: ParseStatus,
+    ) -> IndexedFile {
         IndexedFile {
             relative_path: path.to_string(),
             language: LanguageId::Rust,
@@ -563,7 +740,9 @@ mod tests {
             // Force-trip by recording enough failures
             for i in 0..10 {
                 cb.record_success();
-                if i < 7 { cb.record_success(); }
+                if i < 7 {
+                    cb.record_success();
+                }
             }
             for i in 0..5 {
                 cb.record_failure(&format!("f{i}.rs"), "error");
@@ -571,10 +750,8 @@ mod tests {
             cb.should_abort();
         }
 
-        let files_map: std::collections::HashMap<String, IndexedFile> = files
-            .into_iter()
-            .map(|(p, f)| (p.to_string(), f))
-            .collect();
+        let files_map: std::collections::HashMap<String, IndexedFile> =
+            files.into_iter().map(|(p, f)| (p.to_string(), f)).collect();
         let trigram_index = crate::live_index::trigram::TrigramIndex::build_from_files(&files_map);
         let mut index = LiveIndex {
             files: files_map,
@@ -628,9 +805,33 @@ mod tests {
         }
     }
 
+    fn make_file_with_refs_and_content(
+        path: &str,
+        language: LanguageId,
+        content: &str,
+        refs: Vec<ReferenceRecord>,
+        symbols: Vec<SymbolRecord>,
+    ) -> IndexedFile {
+        IndexedFile {
+            relative_path: path.to_string(),
+            language,
+            content: content.as_bytes().to_vec(),
+            symbols,
+            parse_status: ParseStatus::Parsed,
+            byte_len: content.len() as u64,
+            content_hash: "abc".to_string(),
+            references: refs,
+            alias_map: HashMap::new(),
+        }
+    }
+
     #[test]
     fn test_get_file_returns_some_for_existing() {
-        let f = make_indexed_file("src/main.rs", vec![make_symbol("main")], ParseStatus::Parsed);
+        let f = make_indexed_file(
+            "src/main.rs",
+            vec![make_symbol("main")],
+            ParseStatus::Parsed,
+        );
         let index = make_index(vec![("src/main.rs", f)], false);
         assert!(index.get_file("src/main.rs").is_some());
     }
@@ -678,7 +879,11 @@ mod tests {
 
     #[test]
     fn test_symbol_count_across_all_files() {
-        let f1 = make_indexed_file("a.rs", vec![make_symbol("x"), make_symbol("y")], ParseStatus::Parsed);
+        let f1 = make_indexed_file(
+            "a.rs",
+            vec![make_symbol("x"), make_symbol("y")],
+            ParseStatus::Parsed,
+        );
         let f2 = make_indexed_file("b.rs", vec![make_symbol("z")], ParseStatus::Parsed);
         let index = make_index(vec![("a.rs", f1), ("b.rs", f2)], false);
         assert_eq!(index.symbol_count(), 3);
@@ -687,12 +892,20 @@ mod tests {
     #[test]
     fn test_health_stats_correct_breakdown() {
         let f1 = make_indexed_file("a.rs", vec![make_symbol("x")], ParseStatus::Parsed);
-        let f2 = make_indexed_file("b.rs", vec![make_symbol("y")], ParseStatus::PartialParse {
-            warning: "syntax err".to_string(),
-        });
-        let f3 = make_indexed_file("c.rs", vec![], ParseStatus::Failed {
-            error: "failed".to_string(),
-        });
+        let f2 = make_indexed_file(
+            "b.rs",
+            vec![make_symbol("y")],
+            ParseStatus::PartialParse {
+                warning: "syntax err".to_string(),
+            },
+        );
+        let f3 = make_indexed_file(
+            "c.rs",
+            vec![],
+            ParseStatus::Failed {
+                error: "failed".to_string(),
+            },
+        );
         let index = make_index(vec![("a.rs", f1), ("b.rs", f2), ("c.rs", f3)], false);
 
         let stats = index.health_stats();
@@ -713,8 +926,12 @@ mod tests {
     fn test_is_ready_false_when_tripped() {
         // Build a tripped circuit breaker by direct manipulation
         let cb = CircuitBreakerState::new(0.20);
-        for _ in 0..7 { cb.record_success(); }
-        for i in 0..3 { cb.record_failure(&format!("f{i}.rs"), "err"); }
+        for _ in 0..7 {
+            cb.record_success();
+        }
+        for i in 0..3 {
+            cb.record_failure(&format!("f{i}.rs"), "err");
+        }
         cb.should_abort(); // This will trip it
 
         let index = LiveIndex {
@@ -739,8 +956,12 @@ mod tests {
     #[test]
     fn test_index_state_circuit_breaker_tripped_with_summary() {
         let cb = CircuitBreakerState::new(0.20);
-        for _ in 0..7 { cb.record_success(); }
-        for i in 0..3 { cb.record_failure(&format!("f{i}.rs"), "err"); }
+        for _ in 0..7 {
+            cb.record_success();
+        }
+        for i in 0..3 {
+            cb.record_failure(&format!("f{i}.rs"), "err");
+        }
         cb.should_abort();
 
         let index = LiveIndex {
@@ -768,10 +989,23 @@ mod tests {
     fn test_health_stats_default_watcher_fields() {
         let index = make_index(vec![], false);
         let stats = index.health_stats();
-        assert_eq!(stats.watcher_state, WatcherState::Off, "default watcher state should be Off");
-        assert_eq!(stats.events_processed, 0, "default events_processed should be 0");
-        assert!(stats.last_event_at.is_none(), "default last_event_at should be None");
-        assert_eq!(stats.debounce_window_ms, 200, "default debounce_window_ms should be 200");
+        assert_eq!(
+            stats.watcher_state,
+            WatcherState::Off,
+            "default watcher state should be Off"
+        );
+        assert_eq!(
+            stats.events_processed, 0,
+            "default events_processed should be 0"
+        );
+        assert!(
+            stats.last_event_at.is_none(),
+            "default last_event_at should be None"
+        );
+        assert_eq!(
+            stats.debounce_window_ms, 200,
+            "default debounce_window_ms should be 200"
+        );
     }
 
     #[test]
@@ -827,14 +1061,15 @@ mod tests {
 
     #[test]
     fn test_find_references_for_name_kind_filter_excludes_import() {
-        let refs = vec![
-            make_ref("foo", None, ReferenceKind::Import, None, 0),
-        ];
+        let refs = vec![make_ref("foo", None, ReferenceKind::Import, None, 0)];
         let f = make_file_with_refs("a.rs", refs, HashMap::new());
         let index = make_index(vec![("a.rs", f)], false);
 
         let results = index.find_references_for_name("foo", Some(ReferenceKind::Call), false);
-        assert!(results.is_empty(), "Import reference should be excluded when filtering for Call");
+        assert!(
+            results.is_empty(),
+            "Import reference should be excluded when filtering for Call"
+        );
     }
 
     // --- Built-in filter (XREF-04 / XREF-06) ---
@@ -847,7 +1082,10 @@ mod tests {
         let index = make_index(vec![("a.ts", f)], false);
 
         let results = index.find_references_for_name("string", None, false);
-        assert!(results.is_empty(), "built-in 'string' should be filtered by default");
+        assert!(
+            results.is_empty(),
+            "built-in 'string' should be filtered by default"
+        );
     }
 
     #[test]
@@ -862,12 +1100,22 @@ mod tests {
 
     #[test]
     fn test_find_references_mystruct_not_filtered() {
-        let refs = vec![make_ref("MyStruct", None, ReferenceKind::TypeUsage, None, 0)];
+        let refs = vec![make_ref(
+            "MyStruct",
+            None,
+            ReferenceKind::TypeUsage,
+            None,
+            0,
+        )];
         let f = make_file_with_refs("a.rs", refs, HashMap::new());
         let index = make_index(vec![("a.rs", f)], false);
 
         let results = index.find_references_for_name("MyStruct", None, false);
-        assert_eq!(results.len(), 1, "user-defined type 'MyStruct' should NOT be filtered");
+        assert_eq!(
+            results.len(),
+            1,
+            "user-defined type 'MyStruct' should NOT be filtered"
+        );
     }
 
     #[test]
@@ -878,7 +1126,11 @@ mod tests {
         let index = make_index(vec![("a.rs", f)], false);
 
         let results = index.find_references_for_name("i32", None, true);
-        assert_eq!(results.len(), 1, "include_filtered=true should bypass the filter");
+        assert_eq!(
+            results.len(),
+            1,
+            "include_filtered=true should bypass the filter"
+        );
     }
 
     // --- Generic filter ---
@@ -890,7 +1142,10 @@ mod tests {
         let index = make_index(vec![("a.rs", f)], false);
 
         let results = index.find_references_for_name("T", None, false);
-        assert!(results.is_empty(), "single-letter generic 'T' should be filtered");
+        assert!(
+            results.is_empty(),
+            "single-letter generic 'T' should be filtered"
+        );
     }
 
     #[test]
@@ -900,7 +1155,10 @@ mod tests {
         let index = make_index(vec![("a.rs", f)], false);
 
         let results = index.find_references_for_name("K", None, false);
-        assert!(results.is_empty(), "single-letter generic 'K' should be filtered");
+        assert!(
+            results.is_empty(),
+            "single-letter generic 'K' should be filtered"
+        );
     }
 
     #[test]
@@ -910,7 +1168,11 @@ mod tests {
         let index = make_index(vec![("a.rs", f)], false);
 
         let results = index.find_references_for_name("Key", None, false);
-        assert_eq!(results.len(), 1, "multi-letter name 'Key' should NOT be filtered");
+        assert_eq!(
+            results.len(),
+            1,
+            "multi-letter name 'Key' should NOT be filtered"
+        );
     }
 
     // --- Alias resolution (XREF-05) ---
@@ -929,7 +1191,10 @@ mod tests {
 
         let results = index.find_references_for_name("HashMap", None, false);
         // Should find the "Map" reference from b.rs via alias resolution
-        assert!(!results.is_empty(), "alias resolution should find 'Map' when searching 'HashMap'");
+        assert!(
+            !results.is_empty(),
+            "alias resolution should find 'Map' when searching 'HashMap'"
+        );
         assert_eq!(results[0].1.name, "Map");
     }
 
@@ -937,13 +1202,23 @@ mod tests {
 
     #[test]
     fn test_find_references_qualified_name_vec_new() {
-        let refs = vec![make_ref("new", Some("Vec::new"), ReferenceKind::Call, None, 0)];
+        let refs = vec![make_ref(
+            "new",
+            Some("Vec::new"),
+            ReferenceKind::Call,
+            None,
+            0,
+        )];
         let f = make_file_with_refs("a.rs", refs, HashMap::new());
         let index = make_index(vec![("a.rs", f)], false);
 
         // Qualified search: "Vec::new" matches against qualified_name field.
         let results = index.find_references_for_name("Vec::new", None, false);
-        assert_eq!(results.len(), 1, "qualified 'Vec::new' should match via qualified_name field");
+        assert_eq!(
+            results.len(),
+            1,
+            "qualified 'Vec::new' should match via qualified_name field"
+        );
     }
 
     #[test]
@@ -954,7 +1229,10 @@ mod tests {
         let index = make_index(vec![("a.rs", f)], false);
 
         let results = index.find_references_for_name("Vec::new", None, false);
-        assert!(results.is_empty(), "qualified search should not match reference without qualified_name");
+        assert!(
+            results.is_empty(),
+            "qualified search should not match reference without qualified_name"
+        );
     }
 
     // --- Result fields ---
@@ -982,7 +1260,11 @@ mod tests {
         let index = make_index(vec![("src/b.rs", f_b), ("src/db.rs", f_db)], false);
 
         let deps = index.find_dependents_for_file("src/db.rs");
-        assert_eq!(deps.len(), 1, "b.rs imports 'db' so it is a dependent of db.rs");
+        assert_eq!(
+            deps.len(),
+            1,
+            "b.rs imports 'db' so it is a dependent of db.rs"
+        );
         assert_eq!(deps[0].0, "src/b.rs");
     }
 
@@ -1015,7 +1297,11 @@ mod tests {
         let index = make_index(vec![("src/b.rs", f_b), ("src/db.rs", f_db)], false);
 
         let deps = index.find_dependents_for_file("src/db.rs");
-        assert_eq!(deps.len(), 1, "qualified 'crate::db' should match src/db.rs");
+        assert_eq!(
+            deps.len(),
+            1,
+            "qualified 'crate::db' should match src/db.rs"
+        );
     }
 
     // --- find_dependents: module path resolution ---
@@ -1029,15 +1315,24 @@ mod tests {
         let index = make_index(vec![("src/main.rs", f_main), ("src/lib.rs", f_lib)], false);
 
         let deps = index.find_dependents_for_file("src/lib.rs");
-        assert_eq!(deps.len(), 1, "crate::error starts with 'crate' module path of lib.rs");
+        assert_eq!(
+            deps.len(),
+            1,
+            "crate::error starts with 'crate' module path of lib.rs"
+        );
         assert_eq!(deps[0].0, "src/main.rs");
     }
 
     #[test]
     fn test_find_dependents_mod_rs_via_module_path() {
         // store.rs imports "crate::live_index" — mod.rs defines that module.
-        let import_ref =
-            make_ref("crate::live_index::store", None, ReferenceKind::Import, None, 0);
+        let import_ref = make_ref(
+            "crate::live_index::store",
+            None,
+            ReferenceKind::Import,
+            None,
+            0,
+        );
         let f_store = make_file_with_refs("src/store.rs", vec![import_ref], HashMap::new());
         let f_mod = make_file_with_refs("src/live_index/mod.rs", vec![], HashMap::new());
         let index = make_index(
@@ -1068,7 +1363,11 @@ mod tests {
         );
 
         let deps = index.find_dependents_for_file("utils/__init__.py");
-        assert_eq!(deps.len(), 1, "'utils.helpers' starts with module path 'utils'");
+        assert_eq!(
+            deps.len(),
+            1,
+            "'utils.helpers' starts with module path 'utils'"
+        );
     }
 
     #[test]
@@ -1085,7 +1384,195 @@ mod tests {
         );
 
         let deps = index.find_dependents_for_file("src/utils/index.js");
-        assert_eq!(deps.len(), 1, "'src/utils/foo' starts with module path 'src/utils'");
+        assert_eq!(
+            deps.len(),
+            1,
+            "'src/utils/foo' starts with module path 'src/utils'"
+        );
+    }
+
+    #[test]
+    fn test_find_dependents_csharp_type_usage_with_imported_namespace() {
+        let target = make_file_with_refs_and_content(
+            "Core/Services/IMinioService.cs",
+            LanguageId::CSharp,
+            "namespace CeRegistry.Core.Services { public interface IMinioService {} }",
+            vec![],
+            vec![SymbolRecord {
+                name: "IMinioService".to_string(),
+                kind: SymbolKind::Interface,
+                depth: 0,
+                sort_order: 0,
+                byte_range: (0, 10),
+                line_range: (0, 0),
+            }],
+        );
+        let dependent = make_file_with_refs_and_content(
+            "Api/Controllers/PacketsController.cs",
+            LanguageId::CSharp,
+            r#"using CeRegistry.Core.Services;
+namespace CeRegistry.Api.Controllers {
+    public class PacketsController {
+        private readonly IMinioService _minio;
+        public PacketsController(IMinioService minioService) {}
+    }
+}"#,
+            vec![
+                make_ref(
+                    "Services",
+                    Some("CeRegistry.Core.Services"),
+                    ReferenceKind::Import,
+                    None,
+                    0,
+                ),
+                make_ref(
+                    "IMinioService",
+                    None,
+                    ReferenceKind::TypeUsage,
+                    Some(0),
+                    100,
+                ),
+                make_ref(
+                    "IMinioService",
+                    None,
+                    ReferenceKind::TypeUsage,
+                    Some(0),
+                    200,
+                ),
+            ],
+            vec![make_symbol("PacketsController")],
+        );
+        let index = make_index(
+            vec![
+                ("Core/Services/IMinioService.cs", target),
+                ("Api/Controllers/PacketsController.cs", dependent),
+            ],
+            false,
+        );
+
+        let deps = index.find_dependents_for_file("Core/Services/IMinioService.cs");
+        assert_eq!(
+            deps.len(),
+            2,
+            "constructor and field type usage should both be treated as dependencies"
+        );
+        assert!(
+            deps.iter()
+                .all(|(path, _)| *path == "Api/Controllers/PacketsController.cs")
+        );
+        assert!(deps.iter().all(|(_, r)| r.kind == ReferenceKind::TypeUsage));
+    }
+
+    #[test]
+    fn test_find_dependents_csharp_type_usage_in_same_namespace_without_import() {
+        let target = make_file_with_refs_and_content(
+            "Core/Services/IMinioService.cs",
+            LanguageId::CSharp,
+            "namespace CeRegistry.Core.Services { public interface IMinioService {} }",
+            vec![],
+            vec![SymbolRecord {
+                name: "IMinioService".to_string(),
+                kind: SymbolKind::Interface,
+                depth: 0,
+                sort_order: 0,
+                byte_range: (0, 10),
+                line_range: (0, 0),
+            }],
+        );
+        let dependent = make_file_with_refs_and_content(
+            "Core/Services/MinioServiceConsumer.cs",
+            LanguageId::CSharp,
+            r#"namespace CeRegistry.Core.Services {
+    public class MinioServiceConsumer {
+        private readonly IMinioService _minio;
+    }
+}"#,
+            vec![make_ref(
+                "IMinioService",
+                None,
+                ReferenceKind::TypeUsage,
+                Some(0),
+                100,
+            )],
+            vec![make_symbol("MinioServiceConsumer")],
+        );
+        let index = make_index(
+            vec![
+                ("Core/Services/IMinioService.cs", target),
+                ("Core/Services/MinioServiceConsumer.cs", dependent),
+            ],
+            false,
+        );
+
+        let deps = index.find_dependents_for_file("Core/Services/IMinioService.cs");
+        assert_eq!(
+            deps.len(),
+            1,
+            "same-namespace C# type usage should count even without a using directive"
+        );
+        assert_eq!(deps[0].0, "Core/Services/MinioServiceConsumer.cs");
+        assert_eq!(deps[0].1.kind, ReferenceKind::TypeUsage);
+    }
+
+    #[test]
+    fn test_find_dependents_java_type_usage_with_imported_package() {
+        let target = make_file_with_refs_and_content(
+            "src/main/java/com/acme/storage/MinioService.java",
+            LanguageId::Java,
+            "package com.acme.storage; public class MinioService {}",
+            vec![],
+            vec![SymbolRecord {
+                name: "MinioService".to_string(),
+                kind: SymbolKind::Class,
+                depth: 0,
+                sort_order: 0,
+                byte_range: (0, 10),
+                line_range: (0, 0),
+            }],
+        );
+        let dependent = make_file_with_refs_and_content(
+            "src/main/java/com/acme/api/PacketsController.java",
+            LanguageId::Java,
+            r#"package com.acme.api;
+import com.acme.storage.MinioService;
+public class PacketsController {
+    private final MinioService minioService;
+}"#,
+            vec![
+                make_ref(
+                    "MinioService",
+                    Some("com.acme.storage.MinioService"),
+                    ReferenceKind::Import,
+                    None,
+                    0,
+                ),
+                make_ref("MinioService", None, ReferenceKind::TypeUsage, Some(0), 100),
+            ],
+            vec![make_symbol("PacketsController")],
+        );
+        let index = make_index(
+            vec![
+                ("src/main/java/com/acme/storage/MinioService.java", target),
+                (
+                    "src/main/java/com/acme/api/PacketsController.java",
+                    dependent,
+                ),
+            ],
+            false,
+        );
+
+        let deps =
+            index.find_dependents_for_file("src/main/java/com/acme/storage/MinioService.java");
+        assert_eq!(
+            deps.len(),
+            1,
+            "Java field type usage should resolve through the imported package"
+        );
+        assert_eq!(
+            deps[0].0,
+            "src/main/java/com/acme/api/PacketsController.java"
+        );
+        assert_eq!(deps[0].1.kind, ReferenceKind::TypeUsage);
     }
 
     #[test]
@@ -1158,8 +1645,58 @@ mod tests {
         let index = make_index(vec![("src/main.rs", f)], false);
 
         let callees = index.callees_for_symbol("src/main.rs", 0);
-        assert_eq!(callees.len(), 1, "only the Call reference with enclosing=0 should be returned");
+        assert_eq!(
+            callees.len(),
+            1,
+            "only the Call reference with enclosing=0 should be returned"
+        );
         assert_eq!(callees[0].name, "helper");
+    }
+
+    #[test]
+    fn test_callees_for_symbol_includes_calls_inside_nested_methods() {
+        let file = make_file_with_refs_and_content(
+            "src/service.rs",
+            LanguageId::CSharp,
+            r#"public class MinioService {
+    public async Task UploadAsync() {
+        _minioClient.BucketExistsAsync();
+        _logger.LogInformation(""upload"");
+    }
+}"#,
+            vec![
+                make_ref("BucketExistsAsync", None, ReferenceKind::Call, Some(1), 100),
+                make_ref("LogInformation", None, ReferenceKind::Call, Some(1), 200),
+            ],
+            vec![
+                SymbolRecord {
+                    name: "MinioService".to_string(),
+                    kind: SymbolKind::Class,
+                    depth: 0,
+                    sort_order: 0,
+                    byte_range: (0, 500),
+                    line_range: (0, 4),
+                },
+                SymbolRecord {
+                    name: "UploadAsync".to_string(),
+                    kind: SymbolKind::Method,
+                    depth: 1,
+                    sort_order: 1,
+                    byte_range: (50, 400),
+                    line_range: (1, 3),
+                },
+            ],
+        );
+        let index = make_index(vec![("src/service.rs", file)], false);
+
+        let callees = index.callees_for_symbol("src/service.rs", 0);
+        assert_eq!(
+            callees.len(),
+            2,
+            "class bundles should surface calls made inside enclosed methods"
+        );
+        assert_eq!(callees[0].name, "BucketExistsAsync");
+        assert_eq!(callees[1].name, "LogInformation");
     }
 
     #[test]
@@ -1179,7 +1716,10 @@ mod tests {
         let index = make_index(vec![("src/lib.rs", f)], false);
 
         let callees = index.callees_for_symbol("src/lib.rs", 0);
-        assert!(callees.is_empty(), "TypeUsage and MacroUse should not appear in callees");
+        assert!(
+            callees.is_empty(),
+            "TypeUsage and MacroUse should not appear in callees"
+        );
     }
 
     // --- is_filtered_name (unit coverage) ---
@@ -1199,6 +1739,9 @@ mod tests {
         assert!(is_filtered_name("T"), "T is a single-letter generic");
         assert!(is_filtered_name("K"), "K is a single-letter generic");
         assert!(is_filtered_name("V"), "V is a single-letter generic");
-        assert!(!is_filtered_name("Key"), "Key is not a single-letter generic");
+        assert!(
+            !is_filtered_name("Key"),
+            "Key is not a single-letter generic"
+        );
     }
 }

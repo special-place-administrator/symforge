@@ -171,11 +171,16 @@ const CSHARP_XREF_QUERY: &str = r#"
 ; Object creation: new Foo()
 (object_creation_expression type: (identifier) @ref.call)
 
-; Using directives: capture the last identifier in using System.Collections.Generic
-; For simple: using_directive -> identifier
-; For qualified: using_directive -> qualified_name -> identifier (rightmost)
-(using_directive (qualified_name (identifier) @ref.import))
+; Using directives: keep the full namespace/type text when present.
+(using_directive (qualified_name) @ref.import)
+(using_directive (alias_qualified_name) @ref.import)
+(using_directive (generic_name) @ref.import)
 (using_directive (identifier) @ref.import)
+
+; Type references in DI-style constructor params, fields, properties, and return types.
+(parameter type: (type) @ref.type)
+(variable_declaration type: (type) @ref.type)
+(property_declaration type: (type) @ref.type)
 "#;
 
 const RUBY_XREF_QUERY: &str = r#"
@@ -291,99 +296,71 @@ static SWIFT_QUERY: OnceLock<Query> = OnceLock::new();
 static PERL_QUERY: OnceLock<Query> = OnceLock::new();
 
 fn rust_query(lang: &Language) -> &'static Query {
-    RUST_QUERY.get_or_init(|| {
-        Query::new(lang, RUST_XREF_QUERY).expect("valid rust xref query")
-    })
+    RUST_QUERY.get_or_init(|| Query::new(lang, RUST_XREF_QUERY).expect("valid rust xref query"))
 }
 
 fn python_query(lang: &Language) -> &'static Query {
-    PYTHON_QUERY.get_or_init(|| {
-        Query::new(lang, PYTHON_XREF_QUERY).expect("valid python xref query")
-    })
+    PYTHON_QUERY
+        .get_or_init(|| Query::new(lang, PYTHON_XREF_QUERY).expect("valid python xref query"))
 }
 
 fn js_query(lang: &Language) -> &'static Query {
-    JS_QUERY.get_or_init(|| {
-        Query::new(lang, JS_XREF_QUERY).expect("valid js xref query")
-    })
+    JS_QUERY.get_or_init(|| Query::new(lang, JS_XREF_QUERY).expect("valid js xref query"))
 }
 
 fn ts_query(lang: &Language) -> &'static Query {
-    TS_QUERY.get_or_init(|| {
-        Query::new(lang, TS_XREF_QUERY).expect("valid ts xref query")
-    })
+    TS_QUERY.get_or_init(|| Query::new(lang, TS_XREF_QUERY).expect("valid ts xref query"))
 }
 
 fn go_query(lang: &Language) -> &'static Query {
-    GO_QUERY.get_or_init(|| {
-        Query::new(lang, GO_XREF_QUERY).expect("valid go xref query")
-    })
+    GO_QUERY.get_or_init(|| Query::new(lang, GO_XREF_QUERY).expect("valid go xref query"))
 }
 
 fn java_query(lang: &Language) -> &'static Query {
-    JAVA_QUERY.get_or_init(|| {
-        Query::new(lang, JAVA_XREF_QUERY).expect("valid java xref query")
-    })
+    JAVA_QUERY.get_or_init(|| Query::new(lang, JAVA_XREF_QUERY).expect("valid java xref query"))
 }
 
 fn c_query(lang: &Language) -> &'static Query {
-    C_QUERY.get_or_init(|| {
-        Query::new(lang, C_XREF_QUERY).expect("valid c xref query")
-    })
+    C_QUERY.get_or_init(|| Query::new(lang, C_XREF_QUERY).expect("valid c xref query"))
 }
 
 fn cpp_query(lang: &Language) -> &'static Query {
-    CPP_QUERY.get_or_init(|| {
-        Query::new(lang, CPP_XREF_QUERY).expect("valid cpp xref query")
-    })
+    CPP_QUERY.get_or_init(|| Query::new(lang, CPP_XREF_QUERY).expect("valid cpp xref query"))
 }
 
 fn csharp_query(lang: &Language) -> &'static Query {
-    CSHARP_QUERY.get_or_init(|| {
-        Query::new(lang, CSHARP_XREF_QUERY).expect("valid csharp xref query")
-    })
+    CSHARP_QUERY
+        .get_or_init(|| Query::new(lang, CSHARP_XREF_QUERY).expect("valid csharp xref query"))
 }
 
 fn ruby_query(lang: &Language) -> &'static Query {
-    RUBY_QUERY.get_or_init(|| {
-        Query::new(lang, RUBY_XREF_QUERY).expect("valid ruby xref query")
-    })
+    RUBY_QUERY.get_or_init(|| Query::new(lang, RUBY_XREF_QUERY).expect("valid ruby xref query"))
 }
 
 fn kotlin_query(lang: &Language) -> &'static Query {
-    KOTLIN_QUERY.get_or_init(|| {
-        Query::new(lang, KOTLIN_XREF_QUERY).expect("valid kotlin xref query")
-    })
+    KOTLIN_QUERY
+        .get_or_init(|| Query::new(lang, KOTLIN_XREF_QUERY).expect("valid kotlin xref query"))
 }
 
 fn dart_query(lang: &Language) -> &'static Query {
-    DART_QUERY.get_or_init(|| {
-        Query::new(lang, DART_XREF_QUERY).expect("valid dart xref query")
-    })
+    DART_QUERY.get_or_init(|| Query::new(lang, DART_XREF_QUERY).expect("valid dart xref query"))
 }
 
 fn elixir_query(lang: &Language) -> &'static Query {
-    ELIXIR_QUERY.get_or_init(|| {
-        Query::new(lang, ELIXIR_XREF_QUERY).expect("valid elixir xref query")
-    })
+    ELIXIR_QUERY
+        .get_or_init(|| Query::new(lang, ELIXIR_XREF_QUERY).expect("valid elixir xref query"))
 }
 
 fn php_query(lang: &Language) -> &'static Query {
-    PHP_QUERY.get_or_init(|| {
-        Query::new(lang, PHP_XREF_QUERY).expect("valid php xref query")
-    })
+    PHP_QUERY.get_or_init(|| Query::new(lang, PHP_XREF_QUERY).expect("valid php xref query"))
 }
 
 fn swift_query(lang: &Language) -> &'static Query {
-    SWIFT_QUERY.get_or_init(|| {
-        Query::new(lang, SWIFT_XREF_QUERY).expect("valid swift xref query")
-    })
+    SWIFT_QUERY.get_or_init(|| Query::new(lang, SWIFT_XREF_QUERY).expect("valid swift xref query"))
 }
 
 fn perl_query(lang: &Language) -> &'static Query {
-    PERL_QUERY.get_or_init(|| {
-        Query::new(lang, PERL_XREF_QUERY).expect("valid perl xref query")
-    })
+    PERL_QUERY.get_or_init(|| Query::new(lang, PERL_XREF_QUERY).expect("valid perl xref query"))
 }
 
 // ---------------------------------------------------------------------------
@@ -450,7 +427,7 @@ pub fn extract_references(
             (kotlin_query(&lang), lang)
         }
         LanguageId::Dart => {
-            let lang: Language = tree_sitter_dart::language().into();
+            let lang: Language = tree_sitter_dart::language();
             (dart_query(&lang), lang)
         }
         LanguageId::Elixir => {
@@ -532,7 +509,12 @@ pub fn extract_references(
                 alias_node.utf8_text(source_bytes),
             ) {
                 // Extract the last segment of the original path (e.g. "HashMap" from "std::collections::HashMap")
-                let orig_name = orig_text.split("::").last().unwrap_or(orig_text).trim().to_string();
+                let orig_name = orig_text
+                    .split("::")
+                    .last()
+                    .unwrap_or(orig_text)
+                    .trim()
+                    .to_string();
                 let alias_str = alias_text.trim().to_string();
                 alias_map.insert(alias_str, orig_name);
             }
@@ -540,113 +522,124 @@ pub fn extract_references(
         }
 
         // Process ref.call (potentially with qualified_call overlay)
-        if let Some(call_node) = ref_call {
-            if let Ok(name_text) = call_node.utf8_text(source_bytes) {
-                let name = name_text.trim().to_string();
-                let qualified_name = if let Some(qual_node) = ref_qualified_call {
-                    qual_node.utf8_text(source_bytes).ok().map(|t| t.trim().to_string())
-                } else {
-                    None
-                };
+        if let Some(call_node) = ref_call
+            && let Ok(name_text) = call_node.utf8_text(source_bytes)
+        {
+            let name = name_text.trim().to_string();
+            let qualified_name = if let Some(qual_node) = ref_qualified_call {
+                qual_node
+                    .utf8_text(source_bytes)
+                    .ok()
+                    .map(|t| t.trim().to_string())
+            } else {
+                None
+            };
 
-                let start = call_node.start_position();
-                let end = call_node.end_position();
-                references.push(ReferenceRecord {
-                    name,
-                    qualified_name,
-                    kind: ReferenceKind::Call,
-                    byte_range: (call_node.start_byte() as u32, call_node.end_byte() as u32),
-                    line_range: (start.row as u32, end.row as u32),
-                    enclosing_symbol_index: None,
-                });
-            }
+            let start = call_node.start_position();
+            let end = call_node.end_position();
+            references.push(ReferenceRecord {
+                name,
+                qualified_name,
+                kind: ReferenceKind::Call,
+                byte_range: (call_node.start_byte() as u32, call_node.end_byte() as u32),
+                line_range: (start.row as u32, end.row as u32),
+                enclosing_symbol_index: None,
+            });
         }
 
         // Method call
-        if let Some(method_node) = ref_method_call {
-            if let Ok(name_text) = method_node.utf8_text(source_bytes) {
-                let name = name_text.trim().to_string();
-                let start = method_node.start_position();
-                let end = method_node.end_position();
-                references.push(ReferenceRecord {
-                    name,
-                    qualified_name: None,
-                    kind: ReferenceKind::Call,
-                    byte_range: (method_node.start_byte() as u32, method_node.end_byte() as u32),
-                    line_range: (start.row as u32, end.row as u32),
-                    enclosing_symbol_index: None,
-                });
-            }
+        if let Some(method_node) = ref_method_call
+            && let Ok(name_text) = method_node.utf8_text(source_bytes)
+        {
+            let name = name_text.trim().to_string();
+            let start = method_node.start_position();
+            let end = method_node.end_position();
+            references.push(ReferenceRecord {
+                name,
+                qualified_name: None,
+                kind: ReferenceKind::Call,
+                byte_range: (
+                    method_node.start_byte() as u32,
+                    method_node.end_byte() as u32,
+                ),
+                line_range: (start.row as u32, end.row as u32),
+                enclosing_symbol_index: None,
+            });
         }
 
         // Import
-        if let Some(import_node) = ref_import {
-            if let Ok(name_text) = import_node.utf8_text(source_bytes) {
-                let full_text = name_text.trim();
-                // Extract simple name from qualified paths (last segment)
-                let name = full_text.split("::").last()
-                    .or_else(|| full_text.split('.').last())
-                    .unwrap_or(full_text)
-                    // Strip surrounding quotes for Go import paths
-                    .trim_matches('"')
-                    .trim_matches('\'')
-                    .to_string();
-                // Skip empty names (e.g. from wildcard imports)
-                if !name.is_empty() {
-                    let qualified_name = if full_text.contains("::") || full_text.contains('.') {
-                        Some(full_text.to_string())
-                    } else {
-                        None
-                    };
-                    let start = import_node.start_position();
-                    let end = import_node.end_position();
-                    references.push(ReferenceRecord {
-                        name,
-                        qualified_name,
-                        kind: ReferenceKind::Import,
-                        byte_range: (import_node.start_byte() as u32, import_node.end_byte() as u32),
-                        line_range: (start.row as u32, end.row as u32),
-                        enclosing_symbol_index: None,
-                    });
-                }
+        if let Some(import_node) = ref_import
+            && let Ok(name_text) = import_node.utf8_text(source_bytes)
+        {
+            let full_text = name_text.trim();
+            // Extract simple name from qualified paths (last segment)
+            let name = full_text
+                .split("::")
+                .last()
+                .or_else(|| full_text.split('.').next_back())
+                .unwrap_or(full_text)
+                // Strip surrounding quotes for Go import paths
+                .trim_matches('"')
+                .trim_matches('\'')
+                .to_string();
+            // Skip empty names (e.g. from wildcard imports)
+            if !name.is_empty() {
+                let qualified_name = if full_text.contains("::") || full_text.contains('.') {
+                    Some(full_text.to_string())
+                } else {
+                    None
+                };
+                let start = import_node.start_position();
+                let end = import_node.end_position();
+                references.push(ReferenceRecord {
+                    name,
+                    qualified_name,
+                    kind: ReferenceKind::Import,
+                    byte_range: (
+                        import_node.start_byte() as u32,
+                        import_node.end_byte() as u32,
+                    ),
+                    line_range: (start.row as u32, end.row as u32),
+                    enclosing_symbol_index: None,
+                });
             }
         }
 
         // Type reference
-        if let Some(type_node) = ref_type {
-            if let Ok(name_text) = type_node.utf8_text(source_bytes) {
-                let name = name_text.trim().to_string();
-                if !name.is_empty() {
-                    let start = type_node.start_position();
-                    let end = type_node.end_position();
-                    references.push(ReferenceRecord {
-                        name,
-                        qualified_name: None,
-                        kind: ReferenceKind::TypeUsage,
-                        byte_range: (type_node.start_byte() as u32, type_node.end_byte() as u32),
-                        line_range: (start.row as u32, end.row as u32),
-                        enclosing_symbol_index: None,
-                    });
-                }
+        if let Some(type_node) = ref_type
+            && let Ok(name_text) = type_node.utf8_text(source_bytes)
+        {
+            let name = name_text.trim().to_string();
+            if !name.is_empty() {
+                let start = type_node.start_position();
+                let end = type_node.end_position();
+                references.push(ReferenceRecord {
+                    name,
+                    qualified_name: None,
+                    kind: ReferenceKind::TypeUsage,
+                    byte_range: (type_node.start_byte() as u32, type_node.end_byte() as u32),
+                    line_range: (start.row as u32, end.row as u32),
+                    enclosing_symbol_index: None,
+                });
             }
         }
 
         // Macro use
-        if let Some(macro_node) = ref_macro {
-            if let Ok(name_text) = macro_node.utf8_text(source_bytes) {
-                let name = name_text.trim().to_string();
-                if !name.is_empty() {
-                    let start = macro_node.start_position();
-                    let end = macro_node.end_position();
-                    references.push(ReferenceRecord {
-                        name,
-                        qualified_name: None,
-                        kind: ReferenceKind::MacroUse,
-                        byte_range: (macro_node.start_byte() as u32, macro_node.end_byte() as u32),
-                        line_range: (start.row as u32, end.row as u32),
-                        enclosing_symbol_index: None,
-                    });
-                }
+        if let Some(macro_node) = ref_macro
+            && let Ok(name_text) = macro_node.utf8_text(source_bytes)
+        {
+            let name = name_text.trim().to_string();
+            if !name.is_empty() {
+                let start = macro_node.start_position();
+                let end = macro_node.end_position();
+                references.push(ReferenceRecord {
+                    name,
+                    qualified_name: None,
+                    kind: ReferenceKind::MacroUse,
+                    byte_range: (macro_node.start_byte() as u32, macro_node.end_byte() as u32),
+                    line_range: (start.row as u32, end.row as u32),
+                    enclosing_symbol_index: None,
+                });
             }
         }
     }
@@ -663,7 +656,10 @@ mod tests {
     use super::*;
     use tree_sitter::Parser;
 
-    fn parse_and_extract(source: &str, language: LanguageId) -> (Vec<ReferenceRecord>, HashMap<String, String>) {
+    fn parse_and_extract(
+        source: &str,
+        language: LanguageId,
+    ) -> (Vec<ReferenceRecord>, HashMap<String, String>) {
         let mut parser = Parser::new();
         let ts_language: Language = match &language {
             LanguageId::Rust => tree_sitter_rust::LANGUAGE.into(),
@@ -677,7 +673,7 @@ mod tests {
             LanguageId::CSharp => tree_sitter_c_sharp::LANGUAGE.into(),
             LanguageId::Ruby => tree_sitter_ruby::LANGUAGE.into(),
             LanguageId::Kotlin => tree_sitter_kotlin_sg::LANGUAGE.into(),
-            LanguageId::Dart => tree_sitter_dart::language().into(),
+            LanguageId::Dart => tree_sitter_dart::language(),
             LanguageId::Elixir => tree_sitter_elixir::LANGUAGE.into(),
             LanguageId::Php => tree_sitter_php::LANGUAGE_PHP.into(),
             LanguageId::Swift => tree_sitter_swift::LANGUAGE.into(),
@@ -702,7 +698,11 @@ mod tests {
     #[test]
     fn test_rust_call_expression_simple() {
         let (refs, _) = parse_and_extract("fn main() { foo(); }", LanguageId::Rust);
-        assert!(has_ref(&refs, "foo", ReferenceKind::Call), "refs: {:?}", refs);
+        assert!(
+            has_ref(&refs, "foo", ReferenceKind::Call),
+            "refs: {:?}",
+            refs
+        );
     }
 
     #[test]
@@ -714,19 +714,30 @@ mod tests {
         assert_eq!(r.kind, ReferenceKind::Call);
         assert!(r.qualified_name.is_some(), "should have qualified_name");
         let qname = r.qualified_name.as_deref().unwrap();
-        assert!(qname.contains("Vec"), "qualified_name should contain Vec, got: {qname}");
+        assert!(
+            qname.contains("Vec"),
+            "qualified_name should contain Vec, got: {qname}"
+        );
     }
 
     #[test]
     fn test_rust_method_call() {
         let (refs, _) = parse_and_extract("fn main() { self.items.push(x); }", LanguageId::Rust);
-        assert!(has_ref(&refs, "push", ReferenceKind::Call), "refs: {:?}", refs);
+        assert!(
+            has_ref(&refs, "push", ReferenceKind::Call),
+            "refs: {:?}",
+            refs
+        );
     }
 
     #[test]
     fn test_rust_macro_invocation() {
         let (refs, _) = parse_and_extract(r#"fn main() { println!("hi"); }"#, LanguageId::Rust);
-        assert!(has_ref(&refs, "println", ReferenceKind::MacroUse), "refs: {:?}", refs);
+        assert!(
+            has_ref(&refs, "println", ReferenceKind::MacroUse),
+            "refs: {:?}",
+            refs
+        );
     }
 
     #[test]
@@ -735,7 +746,8 @@ mod tests {
         // The import captures scoped_identifier for the whole use path
         assert!(
             refs.iter().any(|r| r.kind == ReferenceKind::Import),
-            "should have at least one Import ref, refs: {:?}", refs
+            "should have at least one Import ref, refs: {:?}",
+            refs
         );
     }
 
@@ -745,7 +757,8 @@ mod tests {
         let (_, alias_map) = parse_and_extract(source, LanguageId::Rust);
         assert!(
             alias_map.contains_key("Map"),
-            "alias_map should contain 'Map', got: {:?}", alias_map
+            "alias_map should contain 'Map', got: {:?}",
+            alias_map
         );
         assert_eq!(alias_map.get("Map").map(|s| s.as_str()), Some("HashMap"));
     }
@@ -753,7 +766,11 @@ mod tests {
     #[test]
     fn test_rust_type_identifier() {
         let (refs, _) = parse_and_extract("fn foo(param: MyStruct) {}", LanguageId::Rust);
-        assert!(has_ref(&refs, "MyStruct", ReferenceKind::TypeUsage), "refs: {:?}", refs);
+        assert!(
+            has_ref(&refs, "MyStruct", ReferenceKind::TypeUsage),
+            "refs: {:?}",
+            refs
+        );
     }
 
     // --- Python ---
@@ -761,7 +778,11 @@ mod tests {
     #[test]
     fn test_python_function_call() {
         let (refs, _) = parse_and_extract("process(data)", LanguageId::Python);
-        assert!(has_ref(&refs, "process", ReferenceKind::Call), "refs: {:?}", refs);
+        assert!(
+            has_ref(&refs, "process", ReferenceKind::Call),
+            "refs: {:?}",
+            refs
+        );
     }
 
     #[test]
@@ -769,7 +790,8 @@ mod tests {
         let (refs, _) = parse_and_extract("import os", LanguageId::Python);
         assert!(
             refs.iter().any(|r| r.kind == ReferenceKind::Import),
-            "should have Import ref, refs: {:?}", refs
+            "should have Import ref, refs: {:?}",
+            refs
         );
     }
 
@@ -778,14 +800,19 @@ mod tests {
         let (refs, _) = parse_and_extract("from os import path", LanguageId::Python);
         assert!(
             refs.iter().any(|r| r.kind == ReferenceKind::Import),
-            "should have Import ref, refs: {:?}", refs
+            "should have Import ref, refs: {:?}",
+            refs
         );
     }
 
     #[test]
     fn test_python_type_annotation() {
         let (refs, _) = parse_and_extract("def foo(x: MyType): pass", LanguageId::Python);
-        assert!(has_ref(&refs, "MyType", ReferenceKind::TypeUsage), "refs: {:?}", refs);
+        assert!(
+            has_ref(&refs, "MyType", ReferenceKind::TypeUsage),
+            "refs: {:?}",
+            refs
+        );
     }
 
     // --- JavaScript ---
@@ -793,7 +820,11 @@ mod tests {
     #[test]
     fn test_js_call_expression() {
         let (refs, _) = parse_and_extract("fetch(url);", LanguageId::JavaScript);
-        assert!(has_ref(&refs, "fetch", ReferenceKind::Call), "refs: {:?}", refs);
+        assert!(
+            has_ref(&refs, "fetch", ReferenceKind::Call),
+            "refs: {:?}",
+            refs
+        );
     }
 
     #[test]
@@ -801,7 +832,8 @@ mod tests {
         let (refs, _) = parse_and_extract("import React from 'react';", LanguageId::JavaScript);
         assert!(
             refs.iter().any(|r| r.kind == ReferenceKind::Import),
-            "should have Import ref, refs: {:?}", refs
+            "should have Import ref, refs: {:?}",
+            refs
         );
     }
 
@@ -813,7 +845,8 @@ mod tests {
         let (refs, _) = parse_and_extract(source, LanguageId::TypeScript);
         assert!(
             refs.iter().any(|r| r.kind == ReferenceKind::TypeUsage),
-            "should have TypeUsage ref, refs: {:?}", refs
+            "should have TypeUsage ref, refs: {:?}",
+            refs
         );
     }
 
@@ -823,7 +856,11 @@ mod tests {
     fn test_go_call_expression() {
         let source = "package main\nimport \"fmt\"\nfunc main() { fmt.Println(\"hi\") }";
         let (refs, _) = parse_and_extract(source, LanguageId::Go);
-        assert!(has_ref(&refs, "Println", ReferenceKind::Call), "refs: {:?}", refs);
+        assert!(
+            has_ref(&refs, "Println", ReferenceKind::Call),
+            "refs: {:?}",
+            refs
+        );
     }
 
     #[test]
@@ -832,7 +869,8 @@ mod tests {
         let (refs, _) = parse_and_extract(source, LanguageId::Go);
         assert!(
             refs.iter().any(|r| r.kind == ReferenceKind::Import),
-            "should have Import ref, refs: {:?}", refs
+            "should have Import ref, refs: {:?}",
+            refs
         );
     }
 
@@ -842,7 +880,11 @@ mod tests {
     fn test_java_method_invocation() {
         let source = "class A { void f() { System.out.println(\"hi\"); } }";
         let (refs, _) = parse_and_extract(source, LanguageId::Java);
-        assert!(has_ref(&refs, "println", ReferenceKind::Call), "refs: {:?}", refs);
+        assert!(
+            has_ref(&refs, "println", ReferenceKind::Call),
+            "refs: {:?}",
+            refs
+        );
     }
 
     #[test]
@@ -851,7 +893,8 @@ mod tests {
         let (refs, _) = parse_and_extract(source, LanguageId::Java);
         assert!(
             refs.iter().any(|r| r.kind == ReferenceKind::Import),
-            "should have Import ref, refs: {:?}", refs
+            "should have Import ref, refs: {:?}",
+            refs
         );
     }
 
@@ -861,7 +904,11 @@ mod tests {
     fn test_c_call_ref() {
         let source = "void foo() { bar(); }";
         let (refs, _) = parse_and_extract(source, LanguageId::C);
-        assert!(has_ref(&refs, "bar", ReferenceKind::Call), "refs: {:?}", refs);
+        assert!(
+            has_ref(&refs, "bar", ReferenceKind::Call),
+            "refs: {:?}",
+            refs
+        );
     }
 
     #[test]
@@ -870,7 +917,8 @@ mod tests {
         let (refs, _) = parse_and_extract(source, LanguageId::C);
         assert!(
             refs.iter().any(|r| r.kind == ReferenceKind::Import),
-            "should have Import ref for #include, refs: {:?}", refs
+            "should have Import ref for #include, refs: {:?}",
+            refs
         );
     }
 
@@ -878,7 +926,11 @@ mod tests {
     fn test_c_type_ref() {
         let source = "void foo(MyStruct *s) {}";
         let (refs, _) = parse_and_extract(source, LanguageId::C);
-        assert!(has_ref(&refs, "MyStruct", ReferenceKind::TypeUsage), "refs: {:?}", refs);
+        assert!(
+            has_ref(&refs, "MyStruct", ReferenceKind::TypeUsage),
+            "refs: {:?}",
+            refs
+        );
     }
 
     #[test]
@@ -886,8 +938,10 @@ mod tests {
         let source = "void foo(MyObj *obj) { obj->method(); }";
         let (refs, _) = parse_and_extract(source, LanguageId::C);
         assert!(
-            refs.iter().any(|r| r.kind == ReferenceKind::Call && r.name == "method"),
-            "should have method call ref, refs: {:?}", refs
+            refs.iter()
+                .any(|r| r.kind == ReferenceKind::Call && r.name == "method"),
+            "should have method call ref, refs: {:?}",
+            refs
         );
     }
 
@@ -898,8 +952,10 @@ mod tests {
         let source = "void foo(Foo *f) { f->bar(); }";
         let (refs, _) = parse_and_extract(source, LanguageId::Cpp);
         assert!(
-            refs.iter().any(|r| r.kind == ReferenceKind::Call && r.name == "bar"),
-            "should have method call ref, refs: {:?}", refs
+            refs.iter()
+                .any(|r| r.kind == ReferenceKind::Call && r.name == "bar"),
+            "should have method call ref, refs: {:?}",
+            refs
         );
     }
 
@@ -909,8 +965,10 @@ mod tests {
         let (refs, _) = parse_and_extract(source, LanguageId::Cpp);
         // qualified_identifier captures: "sort" from std::sort
         assert!(
-            refs.iter().any(|r| r.kind == ReferenceKind::Call && r.name == "sort"),
-            "should have qualified call ref for sort, refs: {:?}", refs
+            refs.iter()
+                .any(|r| r.kind == ReferenceKind::Call && r.name == "sort"),
+            "should have qualified call ref for sort, refs: {:?}",
+            refs
         );
     }
 
@@ -918,7 +976,11 @@ mod tests {
     fn test_cpp_template_type_ref() {
         let source = "void foo(std::vector<MyType> v) {}";
         let (refs, _) = parse_and_extract(source, LanguageId::Cpp);
-        assert!(has_ref(&refs, "MyType", ReferenceKind::TypeUsage), "refs: {:?}", refs);
+        assert!(
+            has_ref(&refs, "MyType", ReferenceKind::TypeUsage),
+            "refs: {:?}",
+            refs
+        );
     }
 
     #[test]
@@ -939,7 +1001,8 @@ mod tests {
         let (refs, _) = parse_and_extract(source, LanguageId::Cpp);
         assert!(
             refs.iter().any(|r| r.kind == ReferenceKind::Import),
-            "should have Import ref for #include, refs: {:?}", refs
+            "should have Import ref for #include, refs: {:?}",
+            refs
         );
     }
 
@@ -949,24 +1012,61 @@ mod tests {
     fn test_all_languages_produce_at_least_one_ref_from_nontrivial_source() {
         let cases: &[(&str, LanguageId)] = &[
             ("fn main() { println!(\"hi\"); foo(); }", LanguageId::Rust),
-            ("import os\ndef main():\n    os.path.join('a', 'b')", LanguageId::Python),
-            ("import React from 'react';\nfetch('/api');", LanguageId::JavaScript),
-            ("import { Component } from 'react';\nconst x: MyType = null;", LanguageId::TypeScript),
-            ("package main\nimport \"fmt\"\nfunc main() { fmt.Println(\"hi\") }", LanguageId::Go),
-            ("import java.util.ArrayList;\nclass A { void f() { new ArrayList(); } }", LanguageId::Java),
+            (
+                "import os\ndef main():\n    os.path.join('a', 'b')",
+                LanguageId::Python,
+            ),
+            (
+                "import React from 'react';\nfetch('/api');",
+                LanguageId::JavaScript,
+            ),
+            (
+                "import { Component } from 'react';\nconst x: MyType = null;",
+                LanguageId::TypeScript,
+            ),
+            (
+                "package main\nimport \"fmt\"\nfunc main() { fmt.Println(\"hi\") }",
+                LanguageId::Go,
+            ),
+            (
+                "import java.util.ArrayList;\nclass A { void f() { new ArrayList(); } }",
+                LanguageId::Java,
+            ),
             ("#include <stdio.h>\nvoid foo() { bar(); }", LanguageId::C),
-            ("#include <vector>\nvoid foo() { std::sort(v.begin(), v.end()); }", LanguageId::Cpp),
+            (
+                "#include <vector>\nvoid foo() { std::sort(v.begin(), v.end()); }",
+                LanguageId::Cpp,
+            ),
             // New languages (Phase 07-04)
-            ("using System;\npublic class App { void Run() { Console.WriteLine(\"hi\"); } }", LanguageId::CSharp),
-            ("require 'json'\nclass App\n  def run\n    puts 'hi'\n  end\nend", LanguageId::Ruby),
-            ("import kotlin.io.*\nfun main() { println(\"hi\") }", LanguageId::Kotlin),
-            ("import 'dart:io';\nvoid main() { print('hello'); }", LanguageId::Dart),
-            ("defmodule App do\n  alias MyLib.Helper\n  def run, do: :ok\nend", LanguageId::Elixir),
+            (
+                "using System;\npublic class App { void Run() { Console.WriteLine(\"hi\"); } }",
+                LanguageId::CSharp,
+            ),
+            (
+                "require 'json'\nclass App\n  def run\n    puts 'hi'\n  end\nend",
+                LanguageId::Ruby,
+            ),
+            (
+                "import kotlin.io.*\nfun main() { println(\"hi\") }",
+                LanguageId::Kotlin,
+            ),
+            (
+                "import 'dart:io';\nvoid main() { print('hello'); }",
+                LanguageId::Dart,
+            ),
+            (
+                "defmodule App do\n  alias MyLib.Helper\n  def run, do: :ok\nend",
+                LanguageId::Elixir,
+            ),
         ];
 
         for (source, lang) in cases {
             let (refs, _) = parse_and_extract(source, lang.clone());
-            assert!(!refs.is_empty(), "language {:?} should produce refs from non-trivial source, got none", lang);
+            assert!(
+                !refs.is_empty(),
+                "language {:?} should produce refs from non-trivial source, got none",
+                lang
+            );
         }
     }
 
@@ -989,8 +1089,16 @@ mod tests {
         ];
         for lang in languages {
             let (refs, alias_map) = parse_and_extract("", lang.clone());
-            assert!(refs.is_empty(), "language {:?} should produce no refs from empty source", lang);
-            assert!(alias_map.is_empty(), "language {:?} should produce no aliases from empty source", lang);
+            assert!(
+                refs.is_empty(),
+                "language {:?} should produce no refs from empty source",
+                lang
+            );
+            assert!(
+                alias_map.is_empty(),
+                "language {:?} should produce no aliases from empty source",
+                lang
+            );
         }
     }
 
@@ -1001,7 +1109,11 @@ mod tests {
         let source = "fn main() { foo(); }";
         let (refs1, _) = parse_and_extract(source, LanguageId::Rust);
         let (refs2, _) = parse_and_extract(source, LanguageId::Rust);
-        assert_eq!(refs1.len(), refs2.len(), "same source should produce same number of refs regardless of cache state");
+        assert_eq!(
+            refs1.len(),
+            refs2.len(),
+            "same source should produce same number of refs regardless of cache state"
+        );
     }
 
     // --- C# ---
@@ -1012,7 +1124,8 @@ mod tests {
         let (refs, _) = parse_and_extract(source, LanguageId::CSharp);
         assert!(
             refs.iter().any(|r| r.kind == ReferenceKind::Call),
-            "should have at least one Call ref, refs: {:?}", refs
+            "should have at least one Call ref, refs: {:?}",
+            refs
         );
     }
 
@@ -1022,7 +1135,50 @@ mod tests {
         let (refs, _) = parse_and_extract(source, LanguageId::CSharp);
         assert!(
             refs.iter().any(|r| r.kind == ReferenceKind::Import),
-            "should have Import ref for using directive, refs: {:?}", refs
+            "should have Import ref for using directive, refs: {:?}",
+            refs
+        );
+    }
+
+    #[test]
+    fn test_csharp_import_ref_preserves_qualified_namespace() {
+        let source = "using CeRegistry.Core.Services;\npublic class App {}";
+        let (refs, _) = parse_and_extract(source, LanguageId::CSharp);
+        let import_ref = refs
+            .iter()
+            .find(|r| r.kind == ReferenceKind::Import)
+            .expect("should capture C# using directive");
+        assert_eq!(
+            import_ref.qualified_name.as_deref(),
+            Some("CeRegistry.Core.Services")
+        );
+    }
+
+    #[test]
+    fn test_csharp_type_refs_include_constructor_params_and_fields() {
+        let source = r#"
+using CeRegistry.Core.Services;
+
+public class PacketsController
+{
+    private readonly IMinioService _minio;
+
+    public PacketsController(IMinioService minioService)
+    {
+        _minio = minioService;
+    }
+}
+"#;
+        let (refs, _) = parse_and_extract(source, LanguageId::CSharp);
+        let type_refs: Vec<_> = refs
+            .iter()
+            .filter(|r| r.kind == ReferenceKind::TypeUsage && r.name == "IMinioService")
+            .collect();
+        assert_eq!(
+            type_refs.len(),
+            2,
+            "field type and constructor parameter type should both be tracked, refs: {:?}",
+            refs
         );
     }
 
@@ -1034,7 +1190,8 @@ mod tests {
         let (refs, _) = parse_and_extract(source, LanguageId::Ruby);
         assert!(
             refs.iter().any(|r| r.kind == ReferenceKind::Call),
-            "should have at least one Call ref, refs: {:?}", refs
+            "should have at least one Call ref, refs: {:?}",
+            refs
         );
     }
 
@@ -1044,7 +1201,8 @@ mod tests {
         let (refs, _) = parse_and_extract(source, LanguageId::Ruby);
         assert!(
             refs.iter().any(|r| r.kind == ReferenceKind::Import),
-            "should have Import ref for require, refs: {:?}", refs
+            "should have Import ref for require, refs: {:?}",
+            refs
         );
     }
 
@@ -1056,7 +1214,8 @@ mod tests {
         let (refs, _) = parse_and_extract(source, LanguageId::Kotlin);
         assert!(
             refs.iter().any(|r| r.kind == ReferenceKind::Call),
-            "should have at least one Call ref, refs: {:?}", refs
+            "should have at least one Call ref, refs: {:?}",
+            refs
         );
     }
 
@@ -1066,7 +1225,8 @@ mod tests {
         let (refs, _) = parse_and_extract(source, LanguageId::Kotlin);
         assert!(
             refs.iter().any(|r| r.kind == ReferenceKind::Import),
-            "should have Import ref, refs: {:?}", refs
+            "should have Import ref, refs: {:?}",
+            refs
         );
     }
 
@@ -1078,7 +1238,8 @@ mod tests {
         let (refs, _) = parse_and_extract(source, LanguageId::Dart);
         assert!(
             refs.iter().any(|r| r.kind == ReferenceKind::Import),
-            "should have Import ref for dart import, refs: {:?}", refs
+            "should have Import ref for dart import, refs: {:?}",
+            refs
         );
     }
 
@@ -1088,7 +1249,8 @@ mod tests {
         let (refs, _) = parse_and_extract(source, LanguageId::Dart);
         assert!(
             refs.iter().any(|r| r.kind == ReferenceKind::TypeUsage),
-            "should have TypeUsage ref, refs: {:?}", refs
+            "should have TypeUsage ref, refs: {:?}",
+            refs
         );
     }
 
@@ -1100,7 +1262,8 @@ mod tests {
         let (refs, _) = parse_and_extract(source, LanguageId::Elixir);
         assert!(
             refs.iter().any(|r| r.kind == ReferenceKind::Call),
-            "should have at least one Call ref, refs: {:?}", refs
+            "should have at least one Call ref, refs: {:?}",
+            refs
         );
     }
 
@@ -1110,7 +1273,8 @@ mod tests {
         let (refs, _) = parse_and_extract(source, LanguageId::Elixir);
         assert!(
             refs.iter().any(|r| r.kind == ReferenceKind::Import),
-            "should have Import ref for alias, refs: {:?}", refs
+            "should have Import ref for alias, refs: {:?}",
+            refs
         );
     }
 }

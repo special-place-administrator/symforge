@@ -118,6 +118,12 @@ impl BurstTracker {
     }
 }
 
+impl Default for BurstTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Plan 02: Event processing, path normalization, content hash skip, ENOENT
 // ---------------------------------------------------------------------------
@@ -143,8 +149,8 @@ pub(crate) fn normalize_event_path(abs_path: &Path, repo_root: &Path) -> Option<
     let raw = abs_path.to_string_lossy();
 
     // Strip \\?\ prefix (Windows extended-length format)
-    let stripped_raw: &str = if raw.starts_with(r"\\?\") {
-        &raw[4..]
+    let stripped_raw: &str = if let Some(stripped) = raw.strip_prefix(r"\\?\") {
+        stripped
     } else {
         &raw
     };
@@ -154,8 +160,8 @@ pub(crate) fn normalize_event_path(abs_path: &Path, repo_root: &Path) -> Option<
     // Try strip_prefix with the original repo_root first, then with its own \\?\ stripped
     let relative = clean_abs.strip_prefix(repo_root).or_else(|_| {
         let root_raw = repo_root.to_string_lossy();
-        let stripped_root: &str = if root_raw.starts_with(r"\\?\") {
-            &root_raw[4..]
+        let stripped_root: &str = if let Some(stripped) = root_raw.strip_prefix(r"\\?\") {
+            stripped
         } else {
             return clean_abs.strip_prefix(repo_root);
         };
@@ -218,11 +224,11 @@ pub(crate) fn maybe_reindex(
     let new_hash = hash::digest_hex(&bytes);
     {
         let index = shared.read().unwrap();
-        if let Some(existing) = index.get_file(relative_path) {
-            if existing.content_hash == new_hash {
-                debug!("watcher: hash-skip {relative_path}");
-                return ReindexResult::HashSkip;
-            }
+        if let Some(existing) = index.get_file(relative_path)
+            && existing.content_hash == new_hash
+        {
+            debug!("watcher: hash-skip {relative_path}");
+            return ReindexResult::HashSkip;
         }
         // read lock dropped here
     }
@@ -322,7 +328,7 @@ pub(crate) fn process_events(
                     let now = Instant::now();
                     let tracker = burst_trackers
                         .entry(abs_path.clone())
-                        .or_insert_with(BurstTracker::new);
+                        .or_default();
                     tracker.update(now);
                     let debounce_ms = tracker.effective_debounce_ms();
 

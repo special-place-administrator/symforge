@@ -12,6 +12,7 @@ use super::{SidecarState, handlers};
 /// - `GET /impact`          → `impact_handler`
 /// - `GET /symbol-context`  → `symbol_context_handler`
 /// - `GET /repo-map`        → `repo_map_handler`
+/// - `GET /prompt-context`  → `prompt_context_handler`
 /// - `GET /stats`           → `stats_handler`
 pub fn build_router(state: SidecarState) -> Router {
     Router::new()
@@ -20,6 +21,7 @@ pub fn build_router(state: SidecarState) -> Router {
         .route("/impact", get(handlers::impact_handler))
         .route("/symbol-context", get(handlers::symbol_context_handler))
         .route("/repo-map", get(handlers::repo_map_handler))
+        .route("/prompt-context", get(handlers::prompt_context_handler))
         .route("/stats", get(handlers::stats_handler))
         .with_state(state)
 }

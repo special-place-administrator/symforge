@@ -1,4 +1,4 @@
-/// All 10 MCP tool handler methods and their input parameter structs.
+/// MCP tool handler methods and their input parameter structs.
 ///
 /// Each handler follows the pattern:
 /// 1. Acquire read lock (or write lock for `index_folder`)
@@ -12,30 +12,38 @@
 /// - Never return JSON — always plain text String (AD-6)
 /// - Never use MCP error codes for not-found — return helpful text via format functions
 /// - Never hold RwLockReadGuard across await points — extract into owned values first
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::process::Command;
+use std::sync::{Arc, RwLock};
 
+use axum::http::StatusCode;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{tool, tool_router};
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::live_index::store::IndexState;
 use crate::protocol::format;
+use crate::sidecar::handlers::{
+    ImpactParams, OutlineParams, SymbolContextParams, impact_tool_text, outline_tool_text,
+    repo_map_text, symbol_context_tool_text,
+};
+use crate::sidecar::{SidecarState, TokenStats};
 
 use super::TokenizorServer;
 
 // ─── Input parameter structs ────────────────────────────────────────────────
 
 /// Input for `get_file_outline`.
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, Serialize, JsonSchema)]
 pub struct GetFileOutlineInput {
     /// Relative path to the file (e.g. "src/lib.rs").
     pub path: String,
 }
 
 /// Input for `get_symbol`.
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, Serialize, JsonSchema)]
 pub struct GetSymbolInput {
     /// Relative path to the file.
     pub path: String,
@@ -48,7 +56,7 @@ pub struct GetSymbolInput {
 /// A single target in a `get_symbols` batch request.
 ///
 /// Either provide `name` (symbol lookup) or `start_byte`/`end_byte` (code slice).
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, Serialize, JsonSchema)]
 pub struct SymbolTarget {
     /// Relative file path.
     pub path: String,
@@ -63,35 +71,52 @@ pub struct SymbolTarget {
 }
 
 /// Input for `get_symbols` (batch).
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, Serialize, JsonSchema)]
 pub struct GetSymbolsInput {
     /// List of symbol or code-slice targets.
     pub targets: Vec<SymbolTarget>,
 }
 
-/// Input for `search_symbols` and `search_text`.
-#[derive(Deserialize, JsonSchema)]
-pub struct SearchInput {
+/// Input for `search_symbols`.
+#[derive(Deserialize, Serialize, JsonSchema)]
+pub struct SearchSymbolsInput {
     /// Search query (case-insensitive substring match).
     pub query: String,
+    /// Optional kind filter using display names such as `fn`, `class`, or `interface`.
+    pub kind: Option<String>,
+}
+
+/// Input for `search_text`.
+#[derive(Deserialize, Serialize, JsonSchema)]
+pub struct SearchTextInput {
+    /// Search query (case-insensitive substring match unless `regex` is true).
+    pub query: Option<String>,
+    /// Optional list of terms to match with OR semantics.
+    pub terms: Option<Vec<String>>,
+    /// Interpret `query` as a regex pattern instead of a literal substring.
+    pub regex: Option<bool>,
 }
 
 /// Input for `index_folder`.
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, Serialize, JsonSchema)]
 pub struct IndexFolderInput {
     /// Absolute or relative path to the directory to index.
     pub path: String,
 }
 
 /// Input for `what_changed`.
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, Serialize, JsonSchema)]
 pub struct WhatChangedInput {
-    /// Unix timestamp (seconds since epoch). Files newer than this are returned.
-    pub since: i64,
+    /// Optional Unix timestamp (seconds since epoch). Files newer than this are returned.
+    pub since: Option<i64>,
+    /// Optional git ref to diff against, for example `HEAD~5` or `branch:main`.
+    pub git_ref: Option<String>,
+    /// When true, report uncommitted git changes. Defaults to true when no other mode is specified and a repo root exists.
+    pub uncommitted: Option<bool>,
 }
 
 /// Input for `get_file_content`.
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, Serialize, JsonSchema)]
 pub struct GetFileContentInput {
     /// Relative path to the file.
     pub path: String,
@@ -102,7 +127,7 @@ pub struct GetFileContentInput {
 }
 
 /// Input for `find_references`.
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, Serialize, JsonSchema)]
 pub struct FindReferencesInput {
     /// Symbol name to find references for.
     pub name: String,
@@ -111,14 +136,14 @@ pub struct FindReferencesInput {
 }
 
 /// Input for `find_dependents`.
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, Serialize, JsonSchema)]
 pub struct FindDependentsInput {
     /// Relative file path to find dependents for.
     pub path: String,
 }
 
 /// Input for `get_file_tree`.
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, Serialize, JsonSchema)]
 pub struct GetFileTreeInput {
     /// Subtree path to browse (default: project root).
     pub path: Option<String>,
@@ -127,7 +152,7 @@ pub struct GetFileTreeInput {
 }
 
 /// Input for `get_context_bundle`.
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, Serialize, JsonSchema)]
 pub struct GetContextBundleInput {
     /// File path containing the symbol.
     pub path: String,
@@ -135,6 +160,141 @@ pub struct GetContextBundleInput {
     pub name: String,
     /// Optional kind filter for the symbol lookup (e.g., "fn", "struct").
     pub kind: Option<String>,
+}
+
+/// Input for `get_file_context`.
+#[derive(Deserialize, Serialize, JsonSchema)]
+pub struct GetFileContextInput {
+    /// Relative path to the file.
+    pub path: String,
+    /// Optional max token budget, matching hook behavior.
+    pub max_tokens: Option<u64>,
+}
+
+/// Input for `get_symbol_context`.
+#[derive(Deserialize, Serialize, JsonSchema)]
+pub struct GetSymbolContextInput {
+    /// Symbol name to inspect.
+    pub name: String,
+    /// Optional file filter.
+    pub file: Option<String>,
+}
+
+/// Input for `analyze_file_impact`.
+#[derive(Deserialize, Serialize, JsonSchema)]
+pub struct AnalyzeFileImpactInput {
+    /// Relative path to the file to re-read from disk.
+    pub path: String,
+    /// When true, treat the file as newly created and index it.
+    pub new_file: Option<bool>,
+}
+
+enum WhatChangedMode {
+    Timestamp(i64),
+    GitRef(String),
+    Uncommitted,
+}
+
+fn determine_what_changed_mode(
+    input: &WhatChangedInput,
+    has_repo_root: bool,
+) -> Result<WhatChangedMode, String> {
+    if let Some(git_ref) = input
+        .git_ref
+        .as_deref()
+        .map(str::trim)
+        .filter(|git_ref| !git_ref.is_empty())
+    {
+        return if has_repo_root {
+            Ok(WhatChangedMode::GitRef(
+                git_ref
+                    .strip_prefix("branch:")
+                    .unwrap_or(git_ref)
+                    .to_string(),
+            ))
+        } else {
+            Err("Git change detection unavailable; pass `since` for timestamp mode.".to_string())
+        };
+    }
+
+    if input.uncommitted.unwrap_or(false) || (input.since.is_none() && has_repo_root) {
+        return if has_repo_root {
+            Ok(WhatChangedMode::Uncommitted)
+        } else {
+            Err("Git change detection unavailable; pass `since` for timestamp mode.".to_string())
+        };
+    }
+
+    if let Some(since) = input.since {
+        Ok(WhatChangedMode::Timestamp(since))
+    } else {
+        Err(
+            "what_changed requires either `since`, `git_ref`, or an available repo root."
+                .to_string(),
+        )
+    }
+}
+
+fn run_git(repo_root: &std::path::Path, args: &[&str]) -> Result<String, String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(args)
+        .output()
+        .map_err(|error| format!("failed to start git: {error}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let message = if stderr.is_empty() {
+            format!("git exited with status {}", output.status)
+        } else {
+            stderr
+        };
+        return Err(message);
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn parse_git_status_paths(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let raw_path = line.get(3..)?.trim();
+            if raw_path.is_empty() {
+                return None;
+            }
+            let normalized = raw_path
+                .rsplit(" -> ")
+                .next()
+                .unwrap_or(raw_path)
+                .trim_matches('"')
+                .replace('\\', "/");
+            if normalized.is_empty() {
+                None
+            } else {
+                Some(normalized)
+            }
+        })
+        .collect()
+}
+
+fn parse_git_name_only_paths(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| line.trim_matches('"').replace('\\', "/"))
+        .collect()
+}
+
+fn sidecar_state_for_server(server: &TokenizorServer) -> SidecarState {
+    SidecarState {
+        index: Arc::clone(&server.index),
+        token_stats: server.token_stats.clone().unwrap_or_else(TokenStats::new),
+        repo_root: server.repo_root.clone(),
+        symbol_cache: Arc::new(RwLock::new(HashMap::new())),
+    }
 }
 
 // ─── Tool handlers ───────────────────────────────────────────────────────────
@@ -159,8 +319,13 @@ macro_rules! loading_guard {
 #[tool_router(vis = "pub(crate)")]
 impl TokenizorServer {
     /// Return the symbol outline for a file. Shows functions, structs, classes with line ranges.
-    #[tool(description = "Return the symbol outline for a file. Shows functions, structs, classes with line ranges.")]
-    async fn get_file_outline(&self, params: Parameters<GetFileOutlineInput>) -> String {
+    #[tool(
+        description = "Return the symbol outline for a file. Shows functions, structs, classes with line ranges."
+    )]
+    pub(crate) async fn get_file_outline(&self, params: Parameters<GetFileOutlineInput>) -> String {
+        if let Some(result) = self.proxy_tool_call("get_file_outline", &params.0).await {
+            return result;
+        }
         let guard = self.index.read().expect("lock poisoned");
         loading_guard!(guard);
         let result = format::file_outline(&guard, &params.0.path);
@@ -169,8 +334,13 @@ impl TokenizorServer {
     }
 
     /// Look up a specific symbol by file path and name. Returns full source code.
-    #[tool(description = "Look up a specific symbol by file path and name. Returns full source code.")]
-    async fn get_symbol(&self, params: Parameters<GetSymbolInput>) -> String {
+    #[tool(
+        description = "Look up a specific symbol by file path and name. Returns full source code."
+    )]
+    pub(crate) async fn get_symbol(&self, params: Parameters<GetSymbolInput>) -> String {
+        if let Some(result) = self.proxy_tool_call("get_symbol", &params.0).await {
+            return result;
+        }
         let guard = self.index.read().expect("lock poisoned");
         loading_guard!(guard);
         let result = format::symbol_detail(
@@ -184,8 +354,13 @@ impl TokenizorServer {
     }
 
     /// Batch lookup of symbols or code slices. Each target can be a symbol name or byte range.
-    #[tool(description = "Batch lookup of symbols or code slices. Each target can be a symbol name or byte range.")]
-    async fn get_symbols(&self, params: Parameters<GetSymbolsInput>) -> String {
+    #[tool(
+        description = "Batch lookup of symbols or code slices. Each target can be a symbol name or byte range."
+    )]
+    pub(crate) async fn get_symbols(&self, params: Parameters<GetSymbolsInput>) -> String {
+        if let Some(result) = self.proxy_tool_call("get_symbols", &params.0).await {
+            return result;
+        }
         let guard = self.index.read().expect("lock poisoned");
         loading_guard!(guard);
 
@@ -202,7 +377,10 @@ impl TokenizorServer {
                         None => format::not_found_file(&target.path),
                         Some(file) => {
                             let start = target.start_byte.unwrap_or(0) as usize;
-                            let end = target.end_byte.map(|e| e as usize).unwrap_or(file.content.len());
+                            let end = target
+                                .end_byte
+                                .map(|e| e as usize)
+                                .unwrap_or(file.content.len());
                             let end = end.min(file.content.len());
                             let slice = &file.content[start.min(end)..end];
                             let text = String::from_utf8_lossy(slice).into_owned();
@@ -219,7 +397,10 @@ impl TokenizorServer {
 
     /// Show the file tree with language and symbol counts per file.
     #[tool(description = "Show the file tree with language and symbol counts per file.")]
-    async fn get_repo_outline(&self) -> String {
+    pub(crate) async fn get_repo_outline(&self) -> String {
+        if let Some(result) = self.proxy_tool_call_without_params("get_repo_outline").await {
+            return result;
+        }
         let guard = self.index.read().expect("lock poisoned");
         loading_guard!(guard);
         let result = format::repo_outline(&guard, &self.project_name.clone());
@@ -227,22 +408,147 @@ impl TokenizorServer {
         result
     }
 
-    /// Search for symbols by name substring across all indexed files.
-    #[tool(description = "Search for symbols by name substring across all indexed files.")]
-    async fn search_symbols(&self, params: Parameters<SearchInput>) -> String {
+    /// Show the compact repo map used for session-start enrichment.
+    #[tool(
+        description = "Show the compact repo map used for session-start enrichment."
+    )]
+    pub(crate) async fn get_repo_map(&self) -> String {
+        if let Some(result) = self.proxy_tool_call_without_params("get_repo_map").await {
+            return result;
+        }
         let guard = self.index.read().expect("lock poisoned");
         loading_guard!(guard);
-        let result = format::search_symbols_result(&guard, &params.0.query);
+        drop(guard);
+
+        let state = sidecar_state_for_server(self);
+        match repo_map_text(&state) {
+            Ok(result) => result,
+            Err(StatusCode::NOT_FOUND) => "Repository map unavailable.".to_string(),
+            Err(StatusCode::INTERNAL_SERVER_ERROR) => {
+                "Repository map failed: internal error.".to_string()
+            }
+            Err(other) => format!("Repository map failed: HTTP {}", other.as_u16()),
+        }
+    }
+
+    /// Show enriched file context with symbol outline and key external references.
+    #[tool(
+        description = "Show enriched file context with symbol outline and key external references."
+    )]
+    pub(crate) async fn get_file_context(&self, params: Parameters<GetFileContextInput>) -> String {
+        if let Some(result) = self.proxy_tool_call("get_file_context", &params.0).await {
+            return result;
+        }
+        let guard = self.index.read().expect("lock poisoned");
+        loading_guard!(guard);
+        drop(guard);
+
+        let state = sidecar_state_for_server(self);
+        let outline = OutlineParams {
+            path: params.0.path.clone(),
+            max_tokens: params.0.max_tokens,
+        };
+        match outline_tool_text(&state, &outline) {
+            Ok(result) => result,
+            Err(StatusCode::NOT_FOUND) => format::not_found_file(&params.0.path),
+            Err(StatusCode::INTERNAL_SERVER_ERROR) => {
+                "File context failed: internal error.".to_string()
+            }
+            Err(other) => format!("File context failed: HTTP {}", other.as_u16()),
+        }
+    }
+
+    /// Show grouped references for a symbol with enclosing-symbol annotations.
+    #[tool(
+        description = "Show grouped references for a symbol with enclosing-symbol annotations."
+    )]
+    pub(crate) async fn get_symbol_context(
+        &self,
+        params: Parameters<GetSymbolContextInput>,
+    ) -> String {
+        if let Some(result) = self.proxy_tool_call("get_symbol_context", &params.0).await {
+            return result;
+        }
+        let guard = self.index.read().expect("lock poisoned");
+        loading_guard!(guard);
+        drop(guard);
+
+        let state = sidecar_state_for_server(self);
+        let symbol_context = SymbolContextParams {
+            name: params.0.name.clone(),
+            file: params.0.file.clone(),
+        };
+        match symbol_context_tool_text(&state, &symbol_context) {
+            Ok(result) => result,
+            Err(StatusCode::INTERNAL_SERVER_ERROR) => {
+                "Symbol context failed: internal error.".to_string()
+            }
+            Err(other) => format!("Symbol context failed: HTTP {}", other.as_u16()),
+        }
+    }
+
+    /// Re-read a file from disk, update the index, and report symbol impact.
+    #[tool(
+        description = "Re-read a file from disk, update the index, and report symbol impact."
+    )]
+    pub(crate) async fn analyze_file_impact(
+        &self,
+        params: Parameters<AnalyzeFileImpactInput>,
+    ) -> String {
+        if let Some(result) = self.proxy_tool_call("analyze_file_impact", &params.0).await {
+            return result;
+        }
+        {
+            let guard = self.index.read().expect("lock poisoned");
+            loading_guard!(guard);
+        }
+
+        let state = sidecar_state_for_server(self);
+        let impact = ImpactParams {
+            path: params.0.path.clone(),
+            new_file: params.0.new_file,
+        };
+        match impact_tool_text(state, &impact).await {
+            Ok(result) => result,
+            Err(StatusCode::NOT_FOUND) => format!("File not found on disk: {}", params.0.path),
+            Err(StatusCode::INTERNAL_SERVER_ERROR) => {
+                "Impact analysis failed: internal error.".to_string()
+            }
+            Err(other) => format!("Impact analysis failed: HTTP {}", other.as_u16()),
+        }
+    }
+
+    /// Search for symbols by name substring across all indexed files.
+    #[tool(description = "Search for symbols by name substring across all indexed files.")]
+    pub(crate) async fn search_symbols(&self, params: Parameters<SearchSymbolsInput>) -> String {
+        if let Some(result) = self.proxy_tool_call("search_symbols", &params.0).await {
+            return result;
+        }
+        let guard = self.index.read().expect("lock poisoned");
+        loading_guard!(guard);
+        let result = format::search_symbols_result_with_kind(
+            &guard,
+            &params.0.query,
+            params.0.kind.as_deref(),
+        );
         drop(guard);
         result
     }
 
     /// Full-text search across all indexed file contents.
     #[tool(description = "Full-text search across all indexed file contents.")]
-    async fn search_text(&self, params: Parameters<SearchInput>) -> String {
+    pub(crate) async fn search_text(&self, params: Parameters<SearchTextInput>) -> String {
+        if let Some(result) = self.proxy_tool_call("search_text", &params.0).await {
+            return result;
+        }
         let guard = self.index.read().expect("lock poisoned");
         loading_guard!(guard);
-        let result = format::search_text_result(&guard, &params.0.query);
+        let result = format::search_text_result_with_options(
+            &guard,
+            params.0.query.as_deref(),
+            params.0.terms.as_deref(),
+            params.0.regex.unwrap_or(false),
+        );
         drop(guard);
         result
     }
@@ -252,8 +558,13 @@ impl TokenizorServer {
     /// When the HTTP sidecar is running, also reports token savings from hook fires this session.
     ///
     /// This tool always responds regardless of index state (no loading guard).
-    #[tool(description = "Report server health: index status, file counts, load duration, watcher state.")]
-    async fn health(&self) -> String {
+    #[tool(
+        description = "Report server health: index status, file counts, load duration, watcher state."
+    )]
+    pub(crate) async fn health(&self) -> String {
+        if let Some(result) = self.proxy_tool_call_without_params("health").await {
+            return result;
+        }
         let guard = self.index.read().expect("lock poisoned");
         let watcher_guard = self.watcher_info.lock().unwrap();
         let mut result = format::health_report_with_watcher(&guard, &watcher_guard);
@@ -274,8 +585,13 @@ impl TokenizorServer {
     }
 
     /// Reload the index from a directory path. Replaces current index entirely.
-    #[tool(description = "Reload the index from a directory path. Replaces current index entirely.")]
-    async fn index_folder(&self, params: Parameters<IndexFolderInput>) -> String {
+    #[tool(
+        description = "Reload the index from a directory path. Replaces current index entirely."
+    )]
+    pub(crate) async fn index_folder(&self, params: Parameters<IndexFolderInput>) -> String {
+        if let Some(result) = self.proxy_tool_call("index_folder", &params.0).await {
+            return result;
+        }
         let root = PathBuf::from(&params.0.path);
         let mut guard = self.index.write().expect("lock poisoned");
         match guard.reload(&root) {
@@ -298,19 +614,73 @@ impl TokenizorServer {
         }
     }
 
-    /// Show files changed since a Unix timestamp.
-    #[tool(description = "Show files changed since a Unix timestamp.")]
-    async fn what_changed(&self, params: Parameters<WhatChangedInput>) -> String {
-        let guard = self.index.read().expect("lock poisoned");
-        loading_guard!(guard);
-        let result = format::what_changed_result(&guard, params.0.since);
-        drop(guard);
-        result
+    /// Show files changed since a Unix timestamp, git ref, or current uncommitted state.
+    #[tool(
+        description = "Show files changed since a Unix timestamp, git ref, or current uncommitted state."
+    )]
+    pub(crate) async fn what_changed(&self, params: Parameters<WhatChangedInput>) -> String {
+        if let Some(result) = self.proxy_tool_call("what_changed", &params.0).await {
+            return result;
+        }
+        let mode = match determine_what_changed_mode(&params.0, self.repo_root.is_some()) {
+            Ok(mode) => mode,
+            Err(message) => return message,
+        };
+
+        match mode {
+            WhatChangedMode::Timestamp(since_ts) => {
+                let guard = self.index.read().expect("lock poisoned");
+                loading_guard!(guard);
+                let result = format::what_changed_result(&guard, since_ts);
+                drop(guard);
+                result
+            }
+            WhatChangedMode::Uncommitted => {
+                let guard = self.index.read().expect("lock poisoned");
+                loading_guard!(guard);
+                drop(guard);
+
+                let Some(repo_root) = self.repo_root.as_deref() else {
+                    return "Git change detection unavailable; pass `since` for timestamp mode."
+                        .to_string();
+                };
+                match run_git(
+                    repo_root,
+                    &["status", "--porcelain", "--untracked-files=all"],
+                ) {
+                    Ok(output) => format::what_changed_paths_result(
+                        &parse_git_status_paths(&output),
+                        "No uncommitted changes detected.",
+                    ),
+                    Err(error) => format!("Git change detection failed: {error}"),
+                }
+            }
+            WhatChangedMode::GitRef(git_ref) => {
+                let guard = self.index.read().expect("lock poisoned");
+                loading_guard!(guard);
+                drop(guard);
+
+                let Some(repo_root) = self.repo_root.as_deref() else {
+                    return "Git change detection unavailable; pass `since` for timestamp mode."
+                        .to_string();
+                };
+                match run_git(repo_root, &["diff", "--name-only", &git_ref, "--"]) {
+                    Ok(output) => format::what_changed_paths_result(
+                        &parse_git_name_only_paths(&output),
+                        &format!("No changes detected relative to git ref '{git_ref}'."),
+                    ),
+                    Err(error) => format!("Git change detection failed: {error}"),
+                }
+            }
+        }
     }
 
     /// Serve file content from memory with optional line range.
     #[tool(description = "Serve file content from memory with optional line range.")]
-    async fn get_file_content(&self, params: Parameters<GetFileContentInput>) -> String {
+    pub(crate) async fn get_file_content(&self, params: Parameters<GetFileContentInput>) -> String {
+        if let Some(result) = self.proxy_tool_call("get_file_content", &params.0).await {
+            return result;
+        }
         let guard = self.index.read().expect("lock poisoned");
         loading_guard!(guard);
         let result = format::file_content(
@@ -324,8 +694,13 @@ impl TokenizorServer {
     }
 
     /// Find all references (call sites, imports, type usages) for a symbol across the codebase.
-    #[tool(description = "Find all references (call sites, imports, type usages) for a symbol across the codebase")]
-    async fn find_references(&self, params: Parameters<FindReferencesInput>) -> String {
+    #[tool(
+        description = "Find all references (call sites, imports, type usages) for a symbol across the codebase"
+    )]
+    pub(crate) async fn find_references(&self, params: Parameters<FindReferencesInput>) -> String {
+        if let Some(result) = self.proxy_tool_call("find_references", &params.0).await {
+            return result;
+        }
         let guard = self.index.read().expect("lock poisoned");
         loading_guard!(guard);
         let input = &params.0;
@@ -336,7 +711,10 @@ impl TokenizorServer {
 
     /// Find all files that import or depend on the given file.
     #[tool(description = "Find all files that import or depend on the given file")]
-    async fn find_dependents(&self, params: Parameters<FindDependentsInput>) -> String {
+    pub(crate) async fn find_dependents(&self, params: Parameters<FindDependentsInput>) -> String {
+        if let Some(result) = self.proxy_tool_call("find_dependents", &params.0).await {
+            return result;
+        }
         let guard = self.index.read().expect("lock poisoned");
         loading_guard!(guard);
         let input = &params.0;
@@ -347,7 +725,10 @@ impl TokenizorServer {
 
     /// Browse the source file tree with symbol counts per file and directory.
     #[tool(description = "Browse the source file tree with symbol counts per file and directory.")]
-    async fn get_file_tree(&self, params: Parameters<GetFileTreeInput>) -> String {
+    pub(crate) async fn get_file_tree(&self, params: Parameters<GetFileTreeInput>) -> String {
+        if let Some(result) = self.proxy_tool_call("get_file_tree", &params.0).await {
+            return result;
+        }
         let guard = self.index.read().expect("lock poisoned");
         loading_guard!(guard);
         let path = params.0.path.as_deref().unwrap_or("");
@@ -358,8 +739,13 @@ impl TokenizorServer {
     }
 
     /// Get full context for a symbol: definition body, callers, callees, and type usages in one call.
-    #[tool(description = "Get full context for a symbol: definition body, callers, callees, and type usages in one call")]
-    async fn get_context_bundle(&self, params: Parameters<GetContextBundleInput>) -> String {
+    #[tool(
+        description = "Get full context for a symbol: definition body, callers, callees, and type usages in one call"
+    )]
+    pub(crate) async fn get_context_bundle(&self, params: Parameters<GetContextBundleInput>) -> String {
+        if let Some(result) = self.proxy_tool_call("get_context_bundle", &params.0).await {
+            return result;
+        }
         let guard = self.index.read().expect("lock poisoned");
         loading_guard!(guard);
         let input = &params.0;
@@ -374,16 +760,19 @@ impl TokenizorServer {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
     use std::collections::HashMap;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
     use std::sync::{Arc, RwLock};
     use std::time::{Duration, Instant};
 
-    use crate::domain::{LanguageId, SymbolKind, SymbolRecord};
-    use crate::live_index::store::{
-        CircuitBreakerState, IndexedFile, LiveIndex, ParseStatus,
-    };
+    use crate::domain::{LanguageId, ReferenceKind, ReferenceRecord, SymbolKind, SymbolRecord};
+    use crate::live_index::store::{CircuitBreakerState, IndexedFile, LiveIndex, ParseStatus};
     use crate::protocol::TokenizorServer;
     use rmcp::handler::server::wrapper::Parameters;
+    use tempfile::TempDir;
 
     // ── Test helpers ─────────────────────────────────────────────────────────
 
@@ -415,11 +804,22 @@ mod tests {
         )
     }
 
+    fn make_file_with_refs(
+        path: &str,
+        content: &[u8],
+        symbols: Vec<SymbolRecord>,
+        references: Vec<ReferenceRecord>,
+    ) -> (String, IndexedFile) {
+        let (key, mut file) = make_file(path, content, symbols);
+        file.references = references;
+        (key, file)
+    }
+
     fn make_live_index_ready(files: Vec<(String, IndexedFile)>) -> LiveIndex {
         use crate::live_index::trigram::TrigramIndex;
         let files_map = files.into_iter().collect::<HashMap<_, _>>();
         let trigram_index = TrigramIndex::build_from_files(&files_map);
-        LiveIndex {
+        let mut index = LiveIndex {
             files: files_map,
             loaded_at: Instant::now(),
             loaded_at_system: std::time::SystemTime::now(),
@@ -428,7 +828,9 @@ mod tests {
             is_empty: false,
             reverse_index: HashMap::new(),
             trigram_index,
-        }
+        };
+        index.rebuild_reverse_index();
+        index
     }
 
     fn make_live_index_empty() -> LiveIndex {
@@ -467,12 +869,76 @@ mod tests {
         }
     }
 
-    fn make_server(index: LiveIndex) -> TokenizorServer {
-        use std::sync::Mutex;
+    fn make_server_with_root(index: LiveIndex, repo_root: Option<PathBuf>) -> TokenizorServer {
         use crate::watcher::WatcherInfo;
+        use std::sync::Mutex;
         let shared = Arc::new(RwLock::new(index));
         let watcher_info = Arc::new(Mutex::new(WatcherInfo::default()));
-        TokenizorServer::new(shared, "test_project".to_string(), watcher_info, None, None)
+        TokenizorServer::new(
+            shared,
+            "test_project".to_string(),
+            watcher_info,
+            repo_root,
+            None,
+        )
+    }
+
+    fn make_server(index: LiveIndex) -> TokenizorServer {
+        make_server_with_root(index, None)
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set_path(key: &'static str, value: &Path) -> Self {
+            let previous = std::env::var_os(key);
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(previous) => unsafe {
+                    std::env::set_var(self.key, previous);
+                },
+                None => unsafe {
+                    std::env::remove_var(self.key);
+                },
+            }
+        }
+    }
+
+    fn run_git(repo_root: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(repo_root)
+            .args(args)
+            .output()
+            .expect("git command should start");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn init_git_repo() -> TempDir {
+        let dir = TempDir::new().expect("temp git repo");
+        run_git(dir.path(), &["init", "-q"]);
+        run_git(
+            dir.path(),
+            &["config", "user.email", "tokenizor-tests@example.com"],
+        );
+        run_git(dir.path(), &["config", "user.name", "Tokenizor Tests"]);
+        dir
     }
 
     // ── Loading guard tests ───────────────────────────────────────────────────
@@ -569,13 +1035,178 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_get_repo_outline_proxies_to_daemon_session() {
+        let daemon_home = TempDir::new().expect("daemon home");
+        let _env_guard = EnvVarGuard::set_path("TOKENIZOR_HOME", daemon_home.path());
+        let project = TempDir::new().expect("project dir");
+        fs::create_dir_all(project.path().join("src")).expect("src dir");
+        fs::write(project.path().join("src").join("main.rs"), "fn main() {}\n")
+            .expect("write source");
+
+        let handle = crate::daemon::spawn_daemon("127.0.0.1")
+            .await
+            .expect("spawn daemon");
+        let base_url = format!("http://127.0.0.1:{}", handle.port);
+        let opened = reqwest::Client::new()
+            .post(format!("{base_url}/v1/sessions/open"))
+            .json(&crate::daemon::OpenProjectRequest {
+                project_root: project.path().display().to_string(),
+                client_name: "codex".to_string(),
+                pid: Some(1234),
+            })
+            .send()
+            .await
+            .expect("open request")
+            .error_for_status()
+            .expect("open status")
+            .json::<crate::daemon::OpenProjectResponse>()
+            .await
+            .expect("open body");
+
+        let daemon_client = crate::daemon::DaemonSessionClient::new_for_test(
+            base_url,
+            opened.project_id,
+            opened.session_id,
+            opened.project_name,
+        );
+        let server = TokenizorServer::new_daemon_proxy(daemon_client);
+
+        let result = server.get_repo_outline().await;
+        assert!(
+            result.contains("main.rs"),
+            "remote repo outline should come from daemon project instance, got: {result}"
+        );
+
+        let _ = handle.shutdown_tx.send(());
+    }
+
+    #[tokio::test]
+    async fn test_get_repo_map_returns_directory_breakdown() {
+        let sym = make_symbol("main", SymbolKind::Function, 1, 3);
+        let (key, file) = make_file("src/main.rs", b"fn main() {}", vec![sym]);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+
+        let result = server.get_repo_map().await;
+
+        assert!(
+            result.contains("Index: 1 files, 1 symbols"),
+            "repo map should include totals header; got: {result}"
+        );
+        assert!(
+            result.contains("src"),
+            "repo map should include directory breakdown; got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_file_context_returns_outline_and_key_references() {
+        let callee = make_symbol("target", SymbolKind::Function, 1, 3);
+        let caller = make_symbol("caller", SymbolKind::Function, 1, 3);
+        let target_file = make_file("src/target.rs", b"fn target() {}", vec![callee]);
+        let caller_file = make_file_with_refs(
+            "src/caller.rs",
+            b"fn caller() { target(); }",
+            vec![caller],
+            vec![ReferenceRecord {
+                name: "target".to_string(),
+                qualified_name: None,
+                kind: ReferenceKind::Call,
+                byte_range: (12, 18),
+                line_range: (1, 1),
+                enclosing_symbol_index: Some(0),
+            }],
+        );
+        let server = make_server(make_live_index_ready(vec![target_file, caller_file]));
+
+        let result = server
+            .get_file_context(Parameters(super::GetFileContextInput {
+                path: "src/target.rs".to_string(),
+                max_tokens: None,
+            }))
+            .await;
+
+        assert!(
+            result.contains("src/target.rs"),
+            "file context should include file header; got: {result}"
+        );
+        assert!(
+            result.contains("Key references"),
+            "file context should include reference section; got: {result}"
+        );
+        assert!(
+            result.contains("src/caller.rs"),
+            "file context should include caller file; got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_symbol_context_returns_grouped_references() {
+        let caller = make_symbol("caller", SymbolKind::Function, 1, 3);
+        let caller_file = make_file_with_refs(
+            "src/caller.rs",
+            b"fn caller() { target(); }",
+            vec![caller],
+            vec![ReferenceRecord {
+                name: "target".to_string(),
+                qualified_name: None,
+                kind: ReferenceKind::Call,
+                byte_range: (12, 18),
+                line_range: (1, 1),
+                enclosing_symbol_index: Some(0),
+            }],
+        );
+        let server = make_server(make_live_index_ready(vec![caller_file]));
+
+        let result = server
+            .get_symbol_context(Parameters(super::GetSymbolContextInput {
+                name: "target".to_string(),
+                file: None,
+            }))
+            .await;
+
+        assert!(
+            result.contains("src/caller.rs"),
+            "symbol context should group matches by file; got: {result}"
+        );
+        assert!(
+            result.contains("in fn caller"),
+            "symbol context should include enclosing symbol names; got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_analyze_file_impact_reports_symbol_change() {
+        let repo = TempDir::new().expect("temp repo");
+        fs::create_dir_all(repo.path().join("src")).expect("src dir");
+        let source_path = repo.path().join("src").join("lib.rs");
+        fs::write(&source_path, "pub fn new_name() {}\n").expect("write updated source");
+
+        let old_symbol = make_symbol("old_name", SymbolKind::Function, 1, 1);
+        let (key, file) = make_file("src/lib.rs", b"pub fn old_name() {}\n", vec![old_symbol]);
+        let server = make_server_with_root(make_live_index_ready(vec![(key, file)]), Some(repo.path().to_path_buf()));
+
+        let result = server
+            .analyze_file_impact(Parameters(super::AnalyzeFileImpactInput {
+                path: "src/lib.rs".to_string(),
+                new_file: None,
+            }))
+            .await;
+
+        assert!(
+            result.contains("new_name"),
+            "impact tool should re-read the file from repo_root and report new symbols; got: {result}"
+        );
+    }
+
+    #[tokio::test]
     async fn test_search_symbols_returns_results() {
         let sym = make_symbol("find_user", SymbolKind::Function, 1, 5);
         let (key, file) = make_file("src/lib.rs", b"fn find_user() {}", vec![sym]);
         let server = make_server(make_live_index_ready(vec![(key, file)]));
         let result = server
-            .search_symbols(Parameters(super::SearchInput {
+            .search_symbols(Parameters(super::SearchSymbolsInput {
                 query: "find".to_string(),
+                kind: None,
             }))
             .await;
         assert!(
@@ -585,17 +1216,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_search_symbols_kind_filter_returns_only_requested_kind() {
+        let function = make_symbol("JobRunner", SymbolKind::Function, 1, 5);
+        let class = make_symbol("Job", SymbolKind::Class, 6, 10);
+        let (key, file) = make_file(
+            "src/lib.rs",
+            b"fn JobRunner() {}\nstruct Job {}",
+            vec![function, class],
+        );
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let result = server
+            .search_symbols(Parameters(super::SearchSymbolsInput {
+                query: "job".to_string(),
+                kind: Some("class".to_string()),
+            }))
+            .await;
+        assert!(
+            result.contains("class Job"),
+            "class should remain visible: {result}"
+        );
+        assert!(
+            !result.contains("fn JobRunner"),
+            "function should be filtered out: {result}"
+        );
+    }
+
+    #[tokio::test]
     async fn test_search_text_returns_results() {
         let (key, file) = make_file("src/lib.rs", b"fn find_user() {}", vec![]);
         let server = make_server(make_live_index_ready(vec![(key, file)]));
         let result = server
-            .search_text(Parameters(super::SearchInput {
-                query: "find".to_string(),
+            .search_text(Parameters(super::SearchTextInput {
+                query: Some("find".to_string()),
+                terms: None,
+                regex: None,
             }))
             .await;
         assert!(
             result.contains("find_user"),
             "should find matching text, got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_text_terms_or_returns_results() {
+        let (key, file) = make_file(
+            "src/lib.rs",
+            b"// TODO: first\n// FIXME: second\n// NOTE: ignored",
+            vec![],
+        );
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let result = server
+            .search_text(Parameters(super::SearchTextInput {
+                query: None,
+                terms: Some(vec!["TODO".to_string(), "FIXME".to_string()]),
+                regex: None,
+            }))
+            .await;
+        assert!(
+            result.contains("TODO: first"),
+            "TODO term should match: {result}"
+        );
+        assert!(
+            result.contains("FIXME: second"),
+            "FIXME term should match: {result}"
+        );
+        assert!(
+            !result.contains("NOTE: ignored"),
+            "unmatched line should be absent: {result}"
         );
     }
 
@@ -663,11 +1351,85 @@ mod tests {
         let server = make_server(make_live_index_ready(vec![(key, file)]));
         // since=0 (far past) → all files are "newer"
         let result = server
-            .what_changed(Parameters(super::WhatChangedInput { since: 0 }))
+            .what_changed(Parameters(super::WhatChangedInput {
+                since: Some(0),
+                git_ref: None,
+                uncommitted: None,
+            }))
             .await;
         assert!(
             result.contains("src/lib.rs"),
             "what_changed since epoch should list all files, got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_what_changed_defaults_to_uncommitted_git_changes() {
+        let repo = init_git_repo();
+        fs::create_dir_all(repo.path().join("src")).expect("create src dir");
+        fs::write(repo.path().join("src/lib.rs"), "fn foo() {}\n").expect("write initial file");
+        run_git(repo.path(), &["add", "."]);
+        run_git(repo.path(), &["commit", "-m", "init", "-q"]);
+        fs::write(
+            repo.path().join("src/lib.rs"),
+            "fn foo() { println!(\"changed\"); }\n",
+        )
+        .expect("modify tracked file");
+
+        let (key, file) = make_file(
+            "src/lib.rs",
+            b"fn foo() { println!(\"changed\"); }\n",
+            vec![],
+        );
+        let server = make_server_with_root(
+            make_live_index_ready(vec![(key, file)]),
+            Some(repo.path().to_path_buf()),
+        );
+        let result = server
+            .what_changed(Parameters(super::WhatChangedInput {
+                since: None,
+                git_ref: None,
+                uncommitted: None,
+            }))
+            .await;
+        assert!(
+            result.contains("src/lib.rs"),
+            "default mode should surface uncommitted git changes: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_what_changed_git_ref_reports_diffed_files() {
+        let repo = init_git_repo();
+        fs::create_dir_all(repo.path().join("src")).expect("create src dir");
+        fs::write(repo.path().join("src/lib.rs"), "fn foo() {}\n").expect("write initial file");
+        run_git(repo.path(), &["add", "."]);
+        run_git(repo.path(), &["commit", "-m", "init", "-q"]);
+        fs::write(
+            repo.path().join("src/lib.rs"),
+            "fn foo() { println!(\"changed\"); }\n",
+        )
+        .expect("modify tracked file");
+
+        let (key, file) = make_file(
+            "src/lib.rs",
+            b"fn foo() { println!(\"changed\"); }\n",
+            vec![],
+        );
+        let server = make_server_with_root(
+            make_live_index_ready(vec![(key, file)]),
+            Some(repo.path().to_path_buf()),
+        );
+        let result = server
+            .what_changed(Parameters(super::WhatChangedInput {
+                since: None,
+                git_ref: Some("HEAD".to_string()),
+                uncommitted: None,
+            }))
+            .await;
+        assert!(
+            result.contains("src/lib.rs"),
+            "git_ref mode should show changed files: {result}"
         );
     }
 
@@ -733,12 +1495,12 @@ mod tests {
     }
 
     #[test]
-    fn test_exactly_14_tools_registered() {
+    fn test_exactly_18_tools_registered() {
         let server = make_server(make_live_index_ready(vec![]));
         let tool_count = server.tool_router.list_all().len();
         assert_eq!(
-            tool_count, 14,
-            "server must expose exactly 14 tools (including get_file_tree); found {tool_count}"
+            tool_count, 18,
+            "server must expose exactly 18 tools after adding shared hook-parity tools; found {tool_count}"
         );
     }
 

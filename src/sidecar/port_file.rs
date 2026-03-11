@@ -11,6 +11,7 @@ use std::time::Duration;
 const DIR_NAME: &str = ".tokenizor";
 const PORT_FILE: &str = "sidecar.port";
 const PID_FILE: &str = "sidecar.pid";
+const SESSION_FILE: &str = "sidecar.session";
 
 /// Ensure `.tokenizor/` exists in the current working directory.
 /// Creates the directory if it doesn't exist. Returns its path.
@@ -45,6 +46,21 @@ pub fn write_pid_file(pid: u32) -> io::Result<()> {
     Ok(())
 }
 
+/// Write the daemon/session proxy identifier to `.tokenizor/sidecar.session`.
+pub fn write_session_file(session_id: &str) -> io::Result<()> {
+    let dir = ensure_tokenizor_dir()?;
+    let path = dir.join(SESSION_FILE);
+    let mut file = std::fs::File::create(&path)?;
+    write!(file, "{session_id}")?;
+    Ok(())
+}
+
+/// Remove only the daemon/session proxy file, preserving any live local sidecar port/pid files.
+pub fn cleanup_session_file() {
+    let dir = PathBuf::from(DIR_NAME);
+    let _ = std::fs::remove_file(dir.join(SESSION_FILE));
+}
+
 /// Read and parse the port from `.tokenizor/sidecar.port`.
 ///
 /// Returns an error if the file doesn't exist or contains invalid data.
@@ -64,6 +80,7 @@ pub fn cleanup_files() {
     let dir = PathBuf::from(DIR_NAME);
     let _ = std::fs::remove_file(dir.join(PORT_FILE));
     let _ = std::fs::remove_file(dir.join(PID_FILE));
+    let _ = std::fs::remove_file(dir.join(SESSION_FILE));
 }
 
 /// Check whether the port/PID files are stale (i.e., the old sidecar is no longer running).

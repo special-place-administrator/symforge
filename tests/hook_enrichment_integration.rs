@@ -45,7 +45,7 @@ fn make_rust_file_with_symbols(path: &str, symbols: Vec<(&str, SymbolKind)>) -> 
             let line = (i as u32 + 1) * 3;
             SymbolRecord {
                 name: name.to_string(),
-                kind: kind.clone(),
+                kind: *kind,
                 depth: 0,
                 sort_order: i as u32,
                 byte_range: (i as u32 * 20, i as u32 * 20 + 15),

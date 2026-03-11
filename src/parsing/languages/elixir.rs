@@ -1,12 +1,10 @@
 use tree_sitter::Node;
 
+use super::{collect_symbols, push_symbol, walk_children};
 use crate::domain::{SymbolKind, SymbolRecord};
 
 pub fn extract_symbols(node: &Node, source: &str) -> Vec<SymbolRecord> {
-    let mut symbols = Vec::new();
-    let mut sort_order = 0u32;
-    walk_node(node, source, 0, &mut sort_order, &mut symbols);
-    symbols
+    collect_symbols(node, source, walk_node)
 }
 
 fn walk_node(
@@ -18,33 +16,23 @@ fn walk_node(
 ) {
     // In Elixir's tree-sitter grammar, functions are modeled as calls to 'def'/'defp',
     // and modules are calls to 'defmodule'. All appear as `call` nodes.
-    if node.kind() == "call" {
-        if let Some((symbol_kind, name)) = extract_elixir_def(node, source) {
-            symbols.push(SymbolRecord {
-                name,
-                kind: symbol_kind,
-                depth,
-                sort_order: *sort_order,
-                byte_range: (node.start_byte() as u32, node.end_byte() as u32),
-                line_range: (
-                    node.start_position().row as u32,
-                    node.end_position().row as u32,
-                ),
-            });
-            *sort_order += 1;
-
-            let mut cursor = node.walk();
-            for child in node.children(&mut cursor) {
-                walk_node(&child, source, depth + 1, sort_order, symbols);
-            }
-            return;
-        }
+    if node.kind() == "call"
+        && let Some((symbol_kind, name)) = extract_elixir_def(node, source)
+    {
+        push_symbol(node, name, symbol_kind, depth, sort_order, symbols);
+        walk_children(
+            node,
+            source,
+            depth,
+            sort_order,
+            symbols,
+            Some(symbol_kind),
+            walk_node,
+        );
+        return;
     }
 
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        walk_node(&child, source, depth, sort_order, symbols);
-    }
+    walk_children(node, source, depth, sort_order, symbols, None, walk_node);
 }
 
 /// Check if a `call` node represents a def/defp/defmodule call and extract name.

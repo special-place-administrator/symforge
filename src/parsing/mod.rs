@@ -9,6 +9,13 @@ use tree_sitter::Parser;
 use crate::domain::{FileOutcome, FileProcessingResult, LanguageId, ReferenceRecord, SymbolRecord};
 use crate::hash::digest_hex;
 
+type ParseSourceOutput = (
+    Vec<SymbolRecord>,
+    bool,
+    Vec<ReferenceRecord>,
+    HashMap<String, String>,
+);
+
 pub fn process_file(
     relative_path: &str,
     bytes: &[u8],
@@ -70,7 +77,7 @@ pub fn process_file(
 fn parse_source(
     source: &str,
     language: &LanguageId,
-) -> Result<(Vec<SymbolRecord>, bool, Vec<ReferenceRecord>, HashMap<String, String>), String> {
+) -> Result<ParseSourceOutput, String> {
     let mut parser = Parser::new();
 
     let ts_language = match language {
@@ -88,7 +95,7 @@ fn parse_source(
         LanguageId::Swift => tree_sitter_swift::LANGUAGE.into(),
         LanguageId::Perl => tree_sitter_perl::LANGUAGE.into(),
         LanguageId::Kotlin => tree_sitter_kotlin_sg::LANGUAGE.into(),
-        LanguageId::Dart => tree_sitter_dart::language().into(),
+        LanguageId::Dart => tree_sitter_dart::language(),
         LanguageId::Elixir => tree_sitter_elixir::LANGUAGE.into(),
     };
 
