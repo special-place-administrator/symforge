@@ -3,10 +3,12 @@
 
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
 
 const ext = process.platform === "win32" ? ".exe" : "";
-const binPath = path.join(__dirname, "tokenizor-mcp" + ext);
-const pendingPath = path.join(__dirname, "tokenizor-mcp.pending" + ext);
+const installDir = path.join(os.homedir(), ".tokenizor", "bin");
+const binPath = path.join(installDir, "tokenizor-mcp" + ext);
+const pendingPath = path.join(installDir, "tokenizor-mcp.pending" + ext);
 
 // Apply pending update if one was staged (binary was locked during npm update)
 if (fs.existsSync(pendingPath)) {

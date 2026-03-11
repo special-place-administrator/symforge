@@ -4,11 +4,15 @@
 const { execSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
 const https = require("https");
 const http = require("http");
 
 const REPO = "special-place-administrator/tokenizor_agentic_mcp";
-const BIN_DIR = path.join(__dirname, "..", "bin");
+
+// Binary lives outside node_modules so npm can update the JS wrapper
+// even while the MCP server holds a lock on the running .exe (Windows).
+const INSTALL_DIR = path.join(os.homedir(), ".tokenizor", "bin");
 
 function getPlatformArtifact() {
   const platform = process.platform;
@@ -31,12 +35,12 @@ function getVersion() {
 
 function getBinaryPath() {
   const ext = process.platform === "win32" ? ".exe" : "";
-  return path.join(BIN_DIR, "tokenizor-mcp" + ext);
+  return path.join(INSTALL_DIR, "tokenizor-mcp" + ext);
 }
 
 function getPendingPath() {
   const ext = process.platform === "win32" ? ".exe" : "";
-  return path.join(BIN_DIR, "tokenizor-mcp.pending" + ext);
+  return path.join(INSTALL_DIR, "tokenizor-mcp.pending" + ext);
 }
 
 function download(url) {
@@ -79,13 +83,12 @@ async function main() {
   if (fs.existsSync(binPath)) {
     const installed = getInstalledVersion(binPath);
     if (installed === version) {
-      // Clean up any stale pending file
       try { fs.unlinkSync(pendingPath); } catch {}
-      console.log(`tokenizor-mcp v${version} already installed.`);
+      console.log(`tokenizor-mcp v${version} already installed at ${binPath}`);
       return;
     }
     console.log(
-      `tokenizor-mcp binary exists (v${installed || "unknown"}) but package wants v${version}. Updating...`
+      `tokenizor-mcp v${installed || "unknown"} found, updating to v${version}...`
     );
   }
 
@@ -97,23 +100,20 @@ async function main() {
 
   try {
     const data = await download(url);
-    fs.mkdirSync(BIN_DIR, { recursive: true });
+    fs.mkdirSync(INSTALL_DIR, { recursive: true });
 
-    // Try writing directly to the target path
     try {
       fs.writeFileSync(binPath, data);
       fs.chmodSync(binPath, 0o755);
-      // Clean up any stale pending file
       try { fs.unlinkSync(pendingPath); } catch {}
       console.log(`Installed: ${binPath}`);
     } catch (writeErr) {
-      // On Windows the binary may be locked by a running MCP server.
-      // Write to a .pending file — the JS wrapper will swap it in on next launch.
+      // Binary locked by running MCP server — stage for next launch
       if (writeErr.code === "EPERM" || writeErr.code === "EBUSY") {
         fs.writeFileSync(pendingPath, data);
         fs.chmodSync(pendingPath, 0o755);
         console.log(`Binary is locked (MCP server running). Staged update at: ${pendingPath}`);
-        console.log(`The update will apply automatically on next launch.`);
+        console.log(`Update will apply automatically on next launch.`);
       } else {
         throw writeErr;
       }

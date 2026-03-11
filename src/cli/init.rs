@@ -243,14 +243,13 @@ fn discover_binary_path() -> String {
     match std::env::current_exe() {
         Ok(path) => {
             let s = path.display().to_string();
-            // Warn if the binary is running from an ephemeral npx cache (will break
-            // when the cache is cleaned). Global npm installs under node_modules are
-            // fine — only npx cache paths and .cmd wrappers are problematic.
+            // Warn if the binary is running from an unstable location.
             let is_npx_cache = s.contains("_npx") || s.contains("npx-cache");
-            if is_npx_cache || s.ends_with(".cmd") {
+            let is_node_modules = s.contains("node_modules");
+            if is_npx_cache || is_node_modules || s.ends_with(".cmd") {
                 eprintln!(
-                    "warning: tokenizor binary path looks like a node wrapper ({s}); \
-                     hooks may not work correctly. Install globally instead: npm install -g tokenizor-mcp"
+                    "warning: binary is inside node_modules or npx cache ({s}); \
+                     updates will fail on Windows. Run: npm install -g tokenizor-mcp && tokenizor-mcp init"
                 );
             }
             // Normalise backslashes to forward slashes for JSON command strings.
