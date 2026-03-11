@@ -17,7 +17,7 @@ fn walk_node(
     symbols: &mut Vec<SymbolRecord>,
 ) {
     let kind = match node.kind() {
-        "subroutine_declaration_statement" => Some(SymbolKind::Function),
+        "function_definition" | "function_definition_without_sub" => Some(SymbolKind::Function),
         "package_statement" => Some(SymbolKind::Module),
         _ => None,
     };
@@ -65,22 +65,23 @@ fn find_name(node: &Node, source: &str, kind: SymbolKind) -> Option<String> {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
-// Note: Available Perl grammar crates require ABI 15 or 26 — incompatible with
-// tree-sitter 0.24 host (max ABI 14). Tests verify graceful failure only.
 
 #[cfg(test)]
 mod tests {
-    use crate::domain::{FileOutcome, LanguageId};
+    use crate::domain::{FileOutcome, LanguageId, SymbolKind};
     use crate::parsing::process_file;
 
     #[test]
-    fn test_perl_process_file_returns_failed_gracefully() {
-        // Perl grammar crates require incompatible ABI — returns Failed outcome, not a panic
+    fn test_perl_process_file_extracts_subroutine() {
         let source = b"sub greet { print \"hello\\n\"; }";
         let result = process_file("test.pl", source, LanguageId::Perl);
         assert!(
-            matches!(result.outcome, FileOutcome::Failed { .. }),
-            "Perl without ABI-compatible grammar should return Failed, not panic: {:?}", result.outcome
+            matches!(result.outcome, FileOutcome::Processed | FileOutcome::PartialParse { .. }),
+            "Perl should parse successfully: {:?}", result.outcome
+        );
+        assert!(
+            result.symbols.iter().any(|s| s.kind == SymbolKind::Function && s.name == "greet"),
+            "should extract greet subroutine, symbols: {:?}", result.symbols
         );
     }
 }

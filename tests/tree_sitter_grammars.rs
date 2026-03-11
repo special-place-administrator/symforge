@@ -223,34 +223,64 @@ fn test_elixir_grammar_loads_and_parses() {
 }
 
 #[test]
-fn test_php_grammar_returns_failed_gracefully() {
-    // PHP grammar requires ABI 15 — should return Failed with a clear error, not panic
-    let source = b"<?php class Foo { public function bar() {} }";
-    let result = process_file("test.php", source, LanguageId::Php);
+fn test_php_grammar_loads_and_parses() {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&tree_sitter_php::LANGUAGE_PHP.into())
+        .expect("failed to load PHP grammar");
+    let source = "<?php class Foo { public function bar() {} }";
+    let tree = parser.parse(source, None).expect("parse returned None");
+    assert!(!tree.root_node().kind().is_empty());
+
+    let result = process_file("test.php", source.as_bytes(), LanguageId::Php);
     assert!(
-        matches!(result.outcome, FileOutcome::Failed { .. }),
-        "PHP with ABI-incompatible grammar should return Failed, not panic: {:?}", result.outcome
+        matches!(result.outcome, FileOutcome::Processed | FileOutcome::PartialParse { .. }),
+        "PHP should parse successfully: {:?}", result.outcome
+    );
+    assert!(
+        result.symbols.iter().any(|s| s.kind == SymbolKind::Class && s.name == "Foo"),
+        "should extract Foo class, symbols: {:?}", result.symbols
     );
 }
 
 #[test]
-fn test_swift_grammar_returns_failed_gracefully() {
-    // Swift grammar requires ABI 15 — should return Failed with a clear error, not panic
-    let source = b"class Foo { func bar() {} }";
-    let result = process_file("test.swift", source, LanguageId::Swift);
+fn test_swift_grammar_loads_and_parses() {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&tree_sitter_swift::LANGUAGE.into())
+        .expect("failed to load Swift grammar");
+    let source = "class Foo { func bar() -> Int { return 0 } }";
+    let tree = parser.parse(source, None).expect("parse returned None");
+    assert!(!tree.root_node().kind().is_empty());
+
+    let result = process_file("test.swift", source.as_bytes(), LanguageId::Swift);
     assert!(
-        matches!(result.outcome, FileOutcome::Failed { .. }),
-        "Swift with ABI-incompatible grammar should return Failed, not panic: {:?}", result.outcome
+        matches!(result.outcome, FileOutcome::Processed | FileOutcome::PartialParse { .. }),
+        "Swift should parse successfully: {:?}", result.outcome
+    );
+    assert!(
+        result.symbols.iter().any(|s| s.kind == SymbolKind::Class && s.name == "Foo"),
+        "should extract Foo class, symbols: {:?}", result.symbols
     );
 }
 
 #[test]
-fn test_perl_grammar_returns_failed_gracefully() {
-    // Perl grammar requires ABI 15+ — should return Failed with a clear error, not panic
-    let source = b"sub greet { print \"hello\\n\"; }";
-    let result = process_file("test.pl", source, LanguageId::Perl);
+fn test_perl_grammar_loads_and_parses() {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&tree_sitter_perl::LANGUAGE.into())
+        .expect("failed to load Perl grammar");
+    let source = "sub greet { print \"hello\\n\"; }";
+    let tree = parser.parse(source, None).expect("parse returned None");
+    assert!(!tree.root_node().kind().is_empty());
+
+    let result = process_file("test.pl", source.as_bytes(), LanguageId::Perl);
     assert!(
-        matches!(result.outcome, FileOutcome::Failed { .. }),
-        "Perl with ABI-incompatible grammar should return Failed, not panic: {:?}", result.outcome
+        matches!(result.outcome, FileOutcome::Processed | FileOutcome::PartialParse { .. }),
+        "Perl should parse successfully: {:?}", result.outcome
+    );
+    assert!(
+        result.symbols.iter().any(|s| s.kind == SymbolKind::Function && s.name == "greet"),
+        "should extract greet subroutine, symbols: {:?}", result.symbols
     );
 }

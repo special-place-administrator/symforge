@@ -84,15 +84,12 @@ fn parse_source(
         LanguageId::Cpp => tree_sitter_cpp::LANGUAGE.into(),
         LanguageId::CSharp => tree_sitter_c_sharp::LANGUAGE.into(),
         LanguageId::Ruby => tree_sitter_ruby::LANGUAGE.into(),
+        LanguageId::Php => tree_sitter_php::LANGUAGE_PHP.into(),
+        LanguageId::Swift => tree_sitter_swift::LANGUAGE.into(),
+        LanguageId::Perl => tree_sitter_perl::LANGUAGE.into(),
         LanguageId::Kotlin => tree_sitter_kotlin_sg::LANGUAGE.into(),
         LanguageId::Dart => tree_sitter_dart::language().into(),
         LanguageId::Elixir => tree_sitter_elixir::LANGUAGE.into(),
-        // PHP, Swift, Perl: grammar crates require ABI 15+ (incompatible with tree-sitter 0.24)
-        _ => {
-            return Err(format!(
-                "language not yet onboarded for parsing: {language:?}"
-            ));
-        }
     };
 
     parser

@@ -62,22 +62,23 @@ fn find_name(node: &Node, source: &str) -> Option<String> {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
-// Note: tree-sitter-swift 0.7.1 requires ABI 15 which is incompatible with
-// tree-sitter 0.24 host (max ABI 14). Tests use process_file which returns Failed.
 
 #[cfg(test)]
 mod tests {
-    use crate::domain::{FileOutcome, LanguageId};
+    use crate::domain::{FileOutcome, LanguageId, SymbolKind};
     use crate::parsing::process_file;
 
     #[test]
-    fn test_swift_process_file_returns_failed_gracefully() {
-        // Swift grammar crate requires ABI 15 — returns Failed outcome, not a panic
+    fn test_swift_process_file_extracts_class_and_function() {
         let source = b"class Foo { func bar() -> Int { return 0 } }";
         let result = process_file("test.swift", source, LanguageId::Swift);
         assert!(
-            matches!(result.outcome, FileOutcome::Failed { .. }),
-            "Swift without ABI-compatible grammar should return Failed, not panic: {:?}", result.outcome
+            matches!(result.outcome, FileOutcome::Processed | FileOutcome::PartialParse { .. }),
+            "Swift should parse successfully: {:?}", result.outcome
+        );
+        assert!(
+            result.symbols.iter().any(|s| s.kind == SymbolKind::Class && s.name == "Foo"),
+            "should extract Foo class, symbols: {:?}", result.symbols
         );
     }
 }

@@ -228,6 +228,47 @@ const ELIXIR_XREF_QUERY: &str = r#"
   (arguments (alias) @ref.import))
 "#;
 
+const PHP_XREF_QUERY: &str = r#"
+; Function calls: foo() — function: can be qualified_name or variable_name
+(function_call_expression
+  function: (qualified_name (name) @ref.call))
+
+; Method calls: $obj->method()
+(member_call_expression
+  name: (name) @ref.method_call)
+
+; Static calls: Foo::bar()
+(scoped_call_expression
+  name: (name) @ref.method_call)
+
+; Type references in class extends/implements
+(named_type (name) @ref.type)
+"#;
+
+const SWIFT_XREF_QUERY: &str = r#"
+; Navigation expression method calls: obj.method()
+(navigation_expression
+  (simple_identifier) @ref.method_call)
+
+; Import declarations: import Foundation
+(import_declaration
+  (identifier) @ref.import)
+
+; Type references
+(user_type
+  (type_identifier) @ref.type)
+"#;
+
+const PERL_XREF_QUERY: &str = r#"
+; Method calls: $obj->method()
+(method_invocation
+  function_name: (identifier) @ref.method_call)
+
+; require statements
+(require_statement
+  package_name: (package_name) @ref.import)
+"#;
+
 // ---------------------------------------------------------------------------
 // OnceLock-cached compiled queries
 // ---------------------------------------------------------------------------
@@ -245,6 +286,9 @@ static RUBY_QUERY: OnceLock<Query> = OnceLock::new();
 static KOTLIN_QUERY: OnceLock<Query> = OnceLock::new();
 static DART_QUERY: OnceLock<Query> = OnceLock::new();
 static ELIXIR_QUERY: OnceLock<Query> = OnceLock::new();
+static PHP_QUERY: OnceLock<Query> = OnceLock::new();
+static SWIFT_QUERY: OnceLock<Query> = OnceLock::new();
+static PERL_QUERY: OnceLock<Query> = OnceLock::new();
 
 fn rust_query(lang: &Language) -> &'static Query {
     RUST_QUERY.get_or_init(|| {
@@ -324,6 +368,24 @@ fn elixir_query(lang: &Language) -> &'static Query {
     })
 }
 
+fn php_query(lang: &Language) -> &'static Query {
+    PHP_QUERY.get_or_init(|| {
+        Query::new(lang, PHP_XREF_QUERY).expect("valid php xref query")
+    })
+}
+
+fn swift_query(lang: &Language) -> &'static Query {
+    SWIFT_QUERY.get_or_init(|| {
+        Query::new(lang, SWIFT_XREF_QUERY).expect("valid swift xref query")
+    })
+}
+
+fn perl_query(lang: &Language) -> &'static Query {
+    PERL_QUERY.get_or_init(|| {
+        Query::new(lang, PERL_XREF_QUERY).expect("valid perl xref query")
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Main extraction function
 // ---------------------------------------------------------------------------
@@ -395,8 +457,18 @@ pub fn extract_references(
             let lang: Language = tree_sitter_elixir::LANGUAGE.into();
             (elixir_query(&lang), lang)
         }
-        // PHP, Swift, Perl: grammar crates require ABI 15+ — no xref support
-        _ => return (vec![], HashMap::new()),
+        LanguageId::Php => {
+            let lang: Language = tree_sitter_php::LANGUAGE_PHP.into();
+            (php_query(&lang), lang)
+        }
+        LanguageId::Swift => {
+            let lang: Language = tree_sitter_swift::LANGUAGE.into();
+            (swift_query(&lang), lang)
+        }
+        LanguageId::Perl => {
+            let lang: Language = tree_sitter_perl::LANGUAGE.into();
+            (perl_query(&lang), lang)
+        }
     };
 
     let _ = ts_language; // used only to initialize query once
@@ -607,7 +679,9 @@ mod tests {
             LanguageId::Kotlin => tree_sitter_kotlin_sg::LANGUAGE.into(),
             LanguageId::Dart => tree_sitter_dart::language().into(),
             LanguageId::Elixir => tree_sitter_elixir::LANGUAGE.into(),
-            _ => panic!("unsupported language in test: {:?}", language),
+            LanguageId::Php => tree_sitter_php::LANGUAGE_PHP.into(),
+            LanguageId::Swift => tree_sitter_swift::LANGUAGE.into(),
+            LanguageId::Perl => tree_sitter_perl::LANGUAGE.into(),
         };
         parser.set_language(&ts_language).expect("set language");
         let tree = parser.parse(source, None).expect("parse");

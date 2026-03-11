@@ -654,23 +654,21 @@ mod tests {
     }
 
     #[test]
-    fn test_live_index_load_circuit_breaker_tripped_state() {
-        // Create >20% unparseable files (ABI-incompatible language → Failed outcome)
-        // PHP/Swift/Perl grammar crates require ABI 15 and return Failed when loaded.
-        // Ruby is now supported (ABI-compatible grammar) and returns Processed.
+    fn test_live_index_load_circuit_breaker_not_tripped_with_all_languages() {
+        // All 16 languages now parse successfully (tree-sitter 0.26 + ABI-compatible grammars).
+        // A mix of language files should not trip the circuit breaker.
         let tmp = TempDir::new().unwrap();
         write_file(tmp.path(), "a.rs", "fn alpha() {}");
-        write_file(tmp.path(), "b.rs", "fn beta() {}");
-        write_file(tmp.path(), "c.rs", "fn gamma() {}");
-        // 3 Swift files — ABI-incompatible grammar → Failed outcome
-        // 3/6 = 50% > 20% threshold — should trip
+        write_file(tmp.path(), "b.py", "def beta(): pass");
+        write_file(tmp.path(), "c.js", "function gamma() {}");
+        // Swift, PHP, Perl now parse successfully — CB should not trip
         write_file(tmp.path(), "x.swift", "class A {}");
-        write_file(tmp.path(), "y.swift", "class B {}");
-        write_file(tmp.path(), "z.swift", "class C {}");
+        write_file(tmp.path(), "y.php", "<?php class B {}");
+        write_file(tmp.path(), "z.pl", "sub greet { print \"hi\"; }");
 
         let shared = LiveIndex::load(tmp.path()).unwrap();
         let index = shared.read().unwrap();
-        assert!(index.cb_state.is_tripped(), "50% failure rate should trip circuit breaker");
+        assert!(!index.cb_state.is_tripped(), "all-parseable files should not trip circuit breaker");
     }
 
     #[test]
