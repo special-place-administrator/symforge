@@ -1,19 +1,31 @@
 #!/usr/bin/env node
 "use strict";
 
-const { execFileSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 
 const ext = process.platform === "win32" ? ".exe" : "";
 const binPath = path.join(__dirname, "tokenizor-mcp" + ext);
+const pendingPath = path.join(__dirname, "tokenizor-mcp.pending" + ext);
+
+// Apply pending update if one was staged (binary was locked during npm update)
+if (fs.existsSync(pendingPath)) {
+  try {
+    fs.renameSync(pendingPath, binPath);
+    console.error("tokenizor-mcp: applied pending update.");
+  } catch {
+    // Still locked — will try again next launch
+  }
+}
 
 if (!fs.existsSync(binPath)) {
   console.error("tokenizor-mcp binary not found. Running install...");
   try {
-    execFileSync(process.execPath, [path.join(__dirname, "..", "scripts", "install.js")], {
-      stdio: "inherit",
-    });
+    require("child_process").execFileSync(
+      process.execPath,
+      [path.join(__dirname, "..", "scripts", "install.js")],
+      { stdio: "inherit" }
+    );
   } catch {
     process.exit(1);
   }

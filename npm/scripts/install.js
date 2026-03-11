@@ -30,9 +30,13 @@ function getVersion() {
 }
 
 function getBinaryPath() {
-  const artifact = getPlatformArtifact();
   const ext = process.platform === "win32" ? ".exe" : "";
   return path.join(BIN_DIR, "tokenizor-mcp" + ext);
+}
+
+function getPendingPath() {
+  const ext = process.platform === "win32" ? ".exe" : "";
+  return path.join(BIN_DIR, "tokenizor-mcp.pending" + ext);
 }
 
 function download(url) {
@@ -59,7 +63,6 @@ function getInstalledVersion(binPath) {
       encoding: "utf8",
       timeout: 5000,
     }).trim();
-    // Output format: "tokenizor-mcp x.y.z" or just "x.y.z"
     const match = output.match(/(\d+\.\d+\.\d+)/);
     return match ? match[1] : null;
   } catch {
@@ -69,12 +72,15 @@ function getInstalledVersion(binPath) {
 
 async function main() {
   const binPath = getBinaryPath();
+  const pendingPath = getPendingPath();
   const version = getVersion();
 
   // Skip only if binary exists AND matches the expected version
   if (fs.existsSync(binPath)) {
     const installed = getInstalledVersion(binPath);
     if (installed === version) {
+      // Clean up any stale pending file
+      try { fs.unlinkSync(pendingPath); } catch {}
       console.log(`tokenizor-mcp v${version} already installed.`);
       return;
     }
@@ -82,6 +88,7 @@ async function main() {
       `tokenizor-mcp binary exists (v${installed || "unknown"}) but package wants v${version}. Updating...`
     );
   }
+
   const artifact = getPlatformArtifact();
   const url = `https://github.com/${REPO}/releases/download/v${version}/${artifact}`;
 
@@ -90,12 +97,27 @@ async function main() {
 
   try {
     const data = await download(url);
-
     fs.mkdirSync(BIN_DIR, { recursive: true });
-    fs.writeFileSync(binPath, data);
-    fs.chmodSync(binPath, 0o755);
 
-    console.log(`Installed: ${binPath}`);
+    // Try writing directly to the target path
+    try {
+      fs.writeFileSync(binPath, data);
+      fs.chmodSync(binPath, 0o755);
+      // Clean up any stale pending file
+      try { fs.unlinkSync(pendingPath); } catch {}
+      console.log(`Installed: ${binPath}`);
+    } catch (writeErr) {
+      // On Windows the binary may be locked by a running MCP server.
+      // Write to a .pending file — the JS wrapper will swap it in on next launch.
+      if (writeErr.code === "EPERM" || writeErr.code === "EBUSY") {
+        fs.writeFileSync(pendingPath, data);
+        fs.chmodSync(pendingPath, 0o755);
+        console.log(`Binary is locked (MCP server running). Staged update at: ${pendingPath}`);
+        console.log(`The update will apply automatically on next launch.`);
+      } else {
+        throw writeErr;
+      }
+    }
   } catch (err) {
     console.error(`Failed to download binary: ${err.message}`);
     console.error("");
