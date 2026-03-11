@@ -22,7 +22,7 @@ Prebuilt binaries: **Windows x64** and **Linux x64**.
 
 ### Claude Code
 
-Three commands. Run them in order.
+Two commands. Run them in order.
 
 **Step 1 — Install globally**
 
@@ -30,27 +30,21 @@ Three commands. Run them in order.
 npm install -g tokenizor-mcp
 ```
 
-> **Do NOT use `npx`.** The next step writes the binary's absolute path into your Claude Code settings for hook invocation. `npx` runs from a temporary cache directory that gets cleaned up, which silently breaks your hooks. A global install gives a stable path that survives across sessions.
+> **Do NOT use `npx`.** The init step writes the binary's absolute path into your Claude Code config. `npx` runs from a temporary cache directory that gets cleaned up, which silently breaks hooks. A global install gives a stable path.
 
-**Step 2 — Register the MCP server**
-
-```bash
-claude mcp add tokenizor -- tokenizor-mcp
-```
-
-This tells Claude Code to launch tokenizor as an MCP server on stdio.
-
-**Step 3 — Install hooks**
+**Step 2 — Initialize**
 
 ```bash
 tokenizor-mcp init
 ```
 
-This writes PostToolUse and SessionStart hooks into `~/.claude/settings.json`. The hooks call the tokenizor binary to enrich Read/Edit/Write/Grep results with symbol context automatically.
+This does everything:
+- Registers the MCP server in `~/.claude.json` (absolute path to the native binary — no shell or wrapper needed)
+- Installs PostToolUse and SessionStart hooks into `~/.claude/settings.json`
 
-**Step 4 (optional) — Auto-approve tools**
+**Optional — Auto-approve tools**
 
-All tokenizor tools are read-only or local indexing. To skip approval prompts, add this to `~/.claude/settings.json` or your project's `.claude/settings.json`:
+All tokenizor tools are read-only or local indexing. To skip approval prompts, add to `~/.claude/settings.json` or your project's `.claude/settings.json`:
 
 ```json
 {
@@ -63,10 +57,10 @@ All tokenizor tools are read-only or local indexing. To skip approval prompts, a
 **Verify it works:**
 
 Start a new Claude Code session in any git repo. You should see:
-- No errors on startup (the SessionStart hook fires)
+- `tokenizor` shows as connected in `/mcp`
 - When you read a file, extra symbol context appears after the file contents
 
-If hooks aren't firing, run `tokenizor-mcp init` again and check that `~/.claude/settings.json` contains hook entries with a stable path (not one containing `_npx` or `npm-cache`).
+If hooks aren't firing, run `tokenizor-mcp init` again.
 
 ### Cursor
 

@@ -19,7 +19,7 @@ fn read_settings(dir: &TempDir) -> serde_json::Value {
 }
 
 // ---------------------------------------------------------------------------
-// test_init_writes_hooks: init produces all 4 hook entries
+// test_init_writes_hooks: init produces correct hook entries
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -39,7 +39,7 @@ fn test_init_writes_hooks() {
         .as_array()
         .expect("SessionStart must be an array");
 
-    assert_eq!(post.len(), 3, "PostToolUse must have 3 entries (Read, Edit|Write, Grep)");
+    assert_eq!(post.len(), 1, "PostToolUse must have 1 entry (single stdin-routed entry)");
     assert_eq!(session.len(), 1, "SessionStart must have 1 entry");
 
     // Verify each entry has the correct binary path embedded.
@@ -61,15 +61,12 @@ fn test_init_writes_hooks() {
         );
     }
 
-    // Verify the 4 specific subcommands are present.
-    let has_read = all_commands.iter().any(|c| c.ends_with("hook read"));
-    let has_edit = all_commands.iter().any(|c| c.ends_with("hook edit"));
-    let has_grep = all_commands.iter().any(|c| c.ends_with("hook grep"));
-    let has_session = all_commands.iter().any(|c| c.ends_with("hook session-start"));
+    // Verify the PostToolUse matcher covers all tools.
+    let matcher = post[0]["matcher"].as_str().unwrap();
+    assert_eq!(matcher, "Read|Edit|Write|Grep", "matcher must cover all tools");
 
-    assert!(has_read, "Read hook must be present");
-    assert!(has_edit, "Edit hook must be present");
-    assert!(has_grep, "Grep hook must be present");
+    // Verify session-start hook is present.
+    let has_session = all_commands.iter().any(|c| c.ends_with("hook session-start"));
     assert!(has_session, "SessionStart hook must be present");
 }
 
@@ -98,7 +95,7 @@ fn test_init_idempotent() {
     // Also assert entry count didn't grow.
     let settings = read_settings(&dir);
     let post_count = settings["hooks"]["PostToolUse"].as_array().unwrap().len();
-    assert_eq!(post_count, 3, "second merge must not add duplicate entries");
+    assert_eq!(post_count, 1, "second merge must not add duplicate entries");
 }
 
 // ---------------------------------------------------------------------------
@@ -131,8 +128,8 @@ fn test_init_preserves_other_hooks() {
         .as_array()
         .expect("PostToolUse must be an array");
 
-    // 1 existing + 3 tokenizor = 4 total.
-    assert_eq!(post.len(), 4, "existing hook + 3 tokenizor hooks = 4 entries");
+    // 1 existing + 1 tokenizor = 2 total.
+    assert_eq!(post.len(), 2, "existing hook + 1 tokenizor hook = 2 entries");
 
     // Non-tokenizor hook must still be present.
     let has_bash_hook = post.iter().any(|e| {
@@ -142,4 +139,68 @@ fn test_init_preserves_other_hooks() {
             .unwrap_or(false)
     });
     assert!(has_bash_hook, "non-tokenizor hook must be preserved after merge");
+}
+
+// ---------------------------------------------------------------------------
+// test_init_registers_mcp_server: MCP entry written to claude.json
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_init_registers_mcp_server() {
+    let dir = TempDir::new().unwrap();
+    let claude_json_path = dir.path().join(".claude.json");
+    let binary_path = "/usr/local/bin/tokenizor";
+
+    tokenizor_agentic_mcp::cli::init::register_mcp_server(&claude_json_path, binary_path)
+        .expect("register_mcp_server must succeed");
+
+    let raw = std::fs::read_to_string(&claude_json_path).unwrap();
+    let config: serde_json::Value = serde_json::from_str(&raw).unwrap();
+
+    let tok = &config["mcpServers"]["tokenizor"];
+    assert_eq!(tok["type"], "stdio");
+    // On Windows, forward slashes are converted to backslashes for native process spawning.
+    let expected_command = if cfg!(windows) {
+        binary_path.replace('/', "\\")
+    } else {
+        binary_path.to_string()
+    };
+    assert_eq!(tok["command"], expected_command);
+}
+
+#[test]
+fn test_init_mcp_registration_idempotent() {
+    let dir = TempDir::new().unwrap();
+    let claude_json_path = dir.path().join(".claude.json");
+    let binary_path = "/usr/local/bin/tokenizor";
+
+    tokenizor_agentic_mcp::cli::init::register_mcp_server(&claude_json_path, binary_path).unwrap();
+    let first = std::fs::read_to_string(&claude_json_path).unwrap();
+
+    tokenizor_agentic_mcp::cli::init::register_mcp_server(&claude_json_path, binary_path).unwrap();
+    let second = std::fs::read_to_string(&claude_json_path).unwrap();
+
+    assert_eq!(first, second, "register_mcp_server must be idempotent");
+}
+
+#[test]
+fn test_init_mcp_registration_preserves_other_servers() {
+    let dir = TempDir::new().unwrap();
+    let claude_json_path = dir.path().join(".claude.json");
+
+    // Pre-populate with another MCP server.
+    let initial = serde_json::json!({
+        "mcpServers": {
+            "other-server": {"type": "stdio", "command": "other-binary"}
+        }
+    });
+    std::fs::write(&claude_json_path, serde_json::to_string_pretty(&initial).unwrap()).unwrap();
+
+    tokenizor_agentic_mcp::cli::init::register_mcp_server(&claude_json_path, "/usr/local/bin/tokenizor").unwrap();
+
+    let raw = std::fs::read_to_string(&claude_json_path).unwrap();
+    let config: serde_json::Value = serde_json::from_str(&raw).unwrap();
+
+    assert!(config["mcpServers"]["other-server"].is_object(), "other MCP server must be preserved");
+    assert!(config["mcpServers"]["tokenizor"].is_object(), "tokenizor must be added");
 }

@@ -29,15 +29,20 @@ pub fn run_init() -> anyhow::Result<()> {
     // Step 2 — resolve settings path.
     let settings_path = settings_json_path()?;
 
-    // Steps 3-8 — delegate to the testable merge function.
+    // Steps 3-8 — merge hooks into ~/.claude/settings.json.
     merge_hooks_into_settings(&settings_path, binary_path)?;
+    eprintln!("hooks installed in {}", settings_path.display());
 
-    // Step 9 — create .tokenizor/ directory in cwd if missing.
+    // Step 9 — register MCP server in ~/.claude.json.
+    let claude_json_path = claude_json_path()?;
+    register_mcp_server(&claude_json_path, &binary_path_str)?;
+    eprintln!("MCP server registered in {}", claude_json_path.display());
+
+    // Step 10 — create .tokenizor/ directory in cwd if missing.
     std::fs::create_dir_all(".tokenizor")
         .context("creating .tokenizor/ directory in current working directory")?;
 
-    // Step 10 — report to stderr only (stdout must stay clean for hook output purity).
-    eprintln!("tokenizor hooks installed in {}", settings_path.display());
+    eprintln!("tokenizor init complete");
 
     Ok(())
 }
@@ -181,6 +186,51 @@ fn merge_event_entries(
 fn settings_json_path() -> anyhow::Result<PathBuf> {
     let home = dirs::home_dir().context("cannot determine home directory")?;
     Ok(home.join(".claude").join("settings.json"))
+}
+
+/// Returns the path to `~/.claude.json` (Claude Code's global config).
+fn claude_json_path() -> anyhow::Result<PathBuf> {
+    let home = dirs::home_dir().context("cannot determine home directory")?;
+    Ok(home.join(".claude.json"))
+}
+
+/// Register tokenizor as an MCP server in `~/.claude.json` using the absolute binary path.
+///
+/// This ensures Claude Code launches the native binary directly — no shell, no .cmd wrapper,
+/// no Node.js intermediary. Works on all platforms.
+pub fn register_mcp_server(claude_json_path: &std::path::Path, binary_path: &str) -> anyhow::Result<()> {
+    let mut config: Value = if claude_json_path.exists() {
+        let raw = std::fs::read_to_string(claude_json_path)
+            .with_context(|| format!("reading {}", claude_json_path.display()))?;
+        serde_json::from_str(&raw)
+            .with_context(|| format!("parsing {}", claude_json_path.display()))?
+    } else {
+        json!({})
+    };
+
+    // Use backslashes on Windows for the command path (Claude Code spawns natively, not via shell).
+    let command_path = if cfg!(windows) {
+        binary_path.replace('/', "\\")
+    } else {
+        binary_path.to_string()
+    };
+
+    // Ensure mcpServers exists and set tokenizor entry.
+    if !config["mcpServers"].is_object() {
+        config["mcpServers"] = json!({});
+    }
+    config["mcpServers"]["tokenizor"] = json!({
+        "type": "stdio",
+        "command": command_path,
+        "args": [],
+        "env": {}
+    });
+
+    let pretty = serde_json::to_string_pretty(&config)?;
+    std::fs::write(claude_json_path, pretty)
+        .with_context(|| format!("writing {}", claude_json_path.display()))?;
+
+    Ok(())
 }
 
 /// Returns the binary path as a forward-slash string suitable for embedding in
