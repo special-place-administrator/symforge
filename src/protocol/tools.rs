@@ -91,6 +91,10 @@ pub struct SearchSymbolsInput {
     pub language: Option<String>,
     /// Optional maximum number of matches to return (default 50, capped at 100).
     pub limit: Option<u32>,
+    /// When true, include generated files in the result set.
+    pub include_generated: Option<bool>,
+    /// When true, include test files in the result set.
+    pub include_tests: Option<bool>,
 }
 
 /// Input for `search_text`.
@@ -404,7 +408,11 @@ fn search_symbols_options_from_input(
         path_scope: normalize_path_prefix(input.path_prefix.as_deref()),
         search_scope: search::SearchScope::Code,
         result_limit: search::ResultLimit::new(input.limit.unwrap_or(50).min(100) as usize),
-        noise_policy: search::NoisePolicy::permissive(),
+        noise_policy: search::NoisePolicy {
+            include_generated: input.include_generated.unwrap_or(false),
+            include_tests: input.include_tests.unwrap_or(false),
+            include_vendor: true,
+        },
         language_filter: parse_language_filter(input.language.as_deref())?,
     })
 }
@@ -1533,6 +1541,8 @@ mod tests {
                 path_prefix: None,
                 language: None,
                 limit: None,
+                include_generated: None,
+                include_tests: None,
             }))
             .await;
         assert!(
@@ -1558,6 +1568,8 @@ mod tests {
                 path_prefix: None,
                 language: None,
                 limit: None,
+                include_generated: None,
+                include_tests: None,
             }))
             .await;
         assert!(
@@ -1567,6 +1579,135 @@ mod tests {
         assert!(
             !result.contains("fn JobRunner"),
             "function should be filtered out: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_symbols_hides_generated_and_test_noise_by_default() {
+        let server = make_server(make_live_index_ready(vec![
+            make_file(
+                "src/job.rs",
+                b"struct Job {}\n",
+                vec![make_symbol("Job", SymbolKind::Class, 1, 1)],
+            ),
+            make_file(
+                "src/generated/job_generated.rs",
+                b"struct JobGenerated {}\n",
+                vec![make_symbol("JobGenerated", SymbolKind::Class, 2, 2)],
+            ),
+            make_file(
+                "tests/job_test.rs",
+                b"struct JobTest {}\n",
+                vec![make_symbol("JobTest", SymbolKind::Class, 3, 3)],
+            ),
+        ]));
+
+        let result = server
+            .search_symbols(Parameters(super::SearchSymbolsInput {
+                query: "job".to_string(),
+                kind: Some("class".to_string()),
+                path_prefix: None,
+                language: None,
+                limit: None,
+                include_generated: None,
+                include_tests: None,
+            }))
+            .await;
+
+        assert!(result.contains("class Job"), "expected primary hit: {result}");
+        assert!(
+            !result.contains("JobGenerated"),
+            "generated symbol noise should be hidden by default: {result}"
+        );
+        assert!(
+            !result.contains("JobTest"),
+            "test symbol noise should be hidden by default: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_symbols_tool_can_include_generated_without_tests() {
+        let server = make_server(make_live_index_ready(vec![
+            make_file(
+                "src/job.rs",
+                b"struct Job {}\n",
+                vec![make_symbol("Job", SymbolKind::Class, 1, 1)],
+            ),
+            make_file(
+                "src/generated/job_generated.rs",
+                b"struct JobGenerated {}\n",
+                vec![make_symbol("JobGenerated", SymbolKind::Class, 2, 2)],
+            ),
+            make_file(
+                "tests/job_test.rs",
+                b"struct JobTest {}\n",
+                vec![make_symbol("JobTest", SymbolKind::Class, 3, 3)],
+            ),
+        ]));
+
+        let result = server
+            .search_symbols(Parameters(super::SearchSymbolsInput {
+                query: "job".to_string(),
+                kind: Some("class".to_string()),
+                path_prefix: None,
+                language: None,
+                limit: None,
+                include_generated: Some(true),
+                include_tests: None,
+            }))
+            .await;
+
+        assert!(result.contains("class Job"), "expected primary hit: {result}");
+        assert!(
+            result.contains("JobGenerated"),
+            "generated symbol should be visible when opted in: {result}"
+        );
+        assert!(
+            !result.contains("JobTest"),
+            "test noise should stay hidden without explicit opt-in: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_symbols_tool_can_include_tests_without_generated() {
+        let server = make_server(make_live_index_ready(vec![
+            make_file(
+                "src/job.rs",
+                b"struct Job {}\n",
+                vec![make_symbol("Job", SymbolKind::Class, 1, 1)],
+            ),
+            make_file(
+                "src/generated/job_generated.rs",
+                b"struct JobGenerated {}\n",
+                vec![make_symbol("JobGenerated", SymbolKind::Class, 2, 2)],
+            ),
+            make_file(
+                "tests/job_test.rs",
+                b"struct JobTest {}\n",
+                vec![make_symbol("JobTest", SymbolKind::Class, 3, 3)],
+            ),
+        ]));
+
+        let result = server
+            .search_symbols(Parameters(super::SearchSymbolsInput {
+                query: "job".to_string(),
+                kind: Some("class".to_string()),
+                path_prefix: None,
+                language: None,
+                limit: None,
+                include_generated: None,
+                include_tests: Some(true),
+            }))
+            .await;
+
+        assert!(result.contains("class Job"), "expected primary hit: {result}");
+        assert!(
+            !result.contains("JobGenerated"),
+            "generated noise should stay hidden without explicit opt-in: {result}"
+        );
+        assert!(
+            result.contains("JobTest"),
+            "test symbol should be visible when opted in: {result}"
         );
     }
 
@@ -1598,6 +1739,8 @@ mod tests {
                 path_prefix: Some("src/ui".to_string()),
                 language: Some("TypeScript".to_string()),
                 limit: Some(1),
+                include_generated: None,
+                include_tests: None,
             }))
             .await;
 

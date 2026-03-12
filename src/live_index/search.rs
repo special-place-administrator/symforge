@@ -196,7 +196,11 @@ impl SymbolSearchOptions {
             path_scope: PathScope::any(),
             search_scope: SearchScope::Code,
             result_limit: ResultLimit::new(result_limit),
-            noise_policy: NoisePolicy::permissive(),
+            noise_policy: NoisePolicy {
+                include_generated: false,
+                include_tests: false,
+                include_vendor: true,
+            },
             language_filter: None,
         }
     }
@@ -932,6 +936,34 @@ mod tests {
     }
 
     #[test]
+    fn test_search_module_symbol_search_hides_generated_and_test_noise_by_default() {
+        let index = make_index(vec![
+            make_file(
+                "src/job.rs",
+                "",
+                vec![make_symbol("Job", SymbolKind::Class, 1)],
+            ),
+            make_file(
+                "src/generated/job_generated.rs",
+                "",
+                vec![make_symbol("JobGenerated", SymbolKind::Class, 2)],
+            ),
+            make_file(
+                "tests/job_test.rs",
+                "",
+                vec![make_symbol("JobTest", SymbolKind::Class, 3)],
+            ),
+        ]);
+
+        let result = search_symbols(&index, "job", None, 50);
+
+        assert_eq!(result.file_count, 1);
+        assert_eq!(result.hits.len(), 1);
+        assert_eq!(result.hits[0].path, "src/job.rs");
+        assert_eq!(result.hits[0].name, "Job");
+    }
+
+    #[test]
     fn test_search_module_symbol_search_with_options_respects_path_language_and_limit() {
         let rust_model = make_file(
             "src/models/job.rs",
@@ -1015,7 +1047,14 @@ mod tests {
         assert_eq!(options.path_scope, PathScope::Any);
         assert_eq!(options.search_scope, SearchScope::Code);
         assert_eq!(options.result_limit, ResultLimit::new(17));
-        assert_eq!(options.noise_policy, NoisePolicy::permissive());
+        assert_eq!(
+            options.noise_policy,
+            NoisePolicy {
+                include_generated: false,
+                include_tests: false,
+                include_vendor: true,
+            }
+        );
         assert_eq!(options.language_filter, None);
     }
 

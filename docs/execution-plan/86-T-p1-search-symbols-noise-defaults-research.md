@@ -2,11 +2,11 @@
 doc_type: task
 task_id: 86
 title: P1 search_symbols noise defaults research
-status: in_progress
+status: done
 sprint: tokenizor-upgrade-foundation
 parent_plan: 05-P-validation-and-backlog.md
 prev_task: 85-T-p1-search-symbols-scope-filter-shell.md
-next_task: 
+next_task: 87-T-p1-search-symbols-noise-defaults-shell.md
 created: 2026-03-12
 updated: 2026-03-12
 ---
@@ -32,7 +32,8 @@ updated: 2026-03-12
 ## Expected Touch Points
 
 - `docs/execution-plan/86-T-p1-search-symbols-noise-defaults-research.md`
-- likely a follow-on research note and implementation task docs
+- `docs/execution-plan/86-R-p1-search-symbols-noise-defaults-research.md`
+- `docs/execution-plan/87-T-p1-search-symbols-noise-defaults-shell.md`
 
 ## Deliverable
 
@@ -46,13 +47,19 @@ updated: 2026-03-12
 
 ## Completion Notes
 
-- pending
+- added [86-R-p1-search-symbols-noise-defaults-research.md](/E:/project/tokenizor_agentic_mcp/docs/execution-plan/86-R-p1-search-symbols-noise-defaults-research.md)
+- recommendation:
+  - make current-code `search_symbols` hide generated and test files by default
+  - add `include_generated` and `include_tests` as explicit public opt-in overrides
+  - keep vendor visibility unchanged in this slice
+  - preserve formatter output and current ranking
+- authored the follow-on execution slice as `87-T-p1-search-symbols-noise-defaults-shell.md`
 
 ## Carry Forward To Next Task
 
 Next task:
 
-- `TBD`
+- `87-T-p1-search-symbols-noise-defaults-shell.md`
 
 Carry forward:
 
@@ -60,6 +67,6 @@ Carry forward:
 - avoid mixing noise-default changes with ranking changes in the same slice
 - preserve the new scope filter contract from task 85
 
-Open points:
+Resolved point:
 
-- OPEN: whether the next shell should change defaults only or also expose explicit `include_generated` / `include_tests` knobs
+- change defaults and add explicit `include_generated` / `include_tests` overrides together
