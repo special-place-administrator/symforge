@@ -58,6 +58,11 @@ struct PromptFileHint {
     line_hint_alias: Option<String>,
 }
 
+struct PromptQualifiedSymbolHint {
+    file_hint: PromptFileHint,
+    symbol_name: String,
+}
+
 #[derive(Serialize)]
 pub struct HealthResponse {
     pub file_count: usize,
@@ -778,6 +783,21 @@ async fn prompt_context_text(
         return Ok(String::new());
     }
 
+    if let Some(symbol_hint) = find_prompt_qualified_symbol_hint(state, prompt)? {
+        let line_hint = find_prompt_line_hint(prompt, Some(&symbol_hint.file_hint));
+        return symbol_context_text(
+            state,
+            &SymbolContextParams {
+                name: symbol_hint.symbol_name,
+                file: None,
+                path: Some(symbol_hint.file_hint.path),
+                symbol_kind: None,
+                symbol_line: line_hint,
+            },
+            options,
+        );
+    }
+
     let file_hint = find_prompt_file_hint(state, prompt)?;
     let symbol_hint = find_prompt_symbol_hint(state, prompt)?;
     let line_hint = find_prompt_line_hint(prompt, file_hint.as_ref());
@@ -885,7 +905,7 @@ fn find_prompt_file_hint(
         }
 
         if let Some(module_alias) = prompt_module_alias(path, &file.language) {
-            if prompt_contains_exact_module_alias(prompt, &module_alias) {
+            if prompt_contains_exact_alias(prompt, &module_alias) {
                 if let Some(existing) = &module_match {
                     if existing.path != path.as_str() {
                         module_ambiguous = true;
@@ -972,6 +992,53 @@ fn find_prompt_file_hint(
         Ok(None)
     } else {
         Ok(stem_match)
+    }
+}
+
+fn find_prompt_qualified_symbol_hint(
+    state: &SidecarState,
+    prompt: &str,
+) -> Result<Option<PromptQualifiedSymbolHint>, StatusCode> {
+    let guard = state
+        .index
+        .read()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut qualified_symbol_match: Option<PromptQualifiedSymbolHint> = None;
+    let mut qualified_symbol_ambiguous = false;
+
+    for (path, file) in guard.all_files() {
+        let Some(module_alias) = prompt_module_alias(path, &file.language) else {
+            continue;
+        };
+
+        for symbol in &file.symbols {
+            let Some(alias) = prompt_qualified_symbol_alias(&module_alias, &symbol.name) else {
+                continue;
+            };
+            if !prompt_contains_exact_alias(prompt, &alias) {
+                continue;
+            }
+
+            if let Some(existing) = &qualified_symbol_match {
+                if existing.file_hint.path != path.as_str() || existing.symbol_name != symbol.name {
+                    qualified_symbol_ambiguous = true;
+                }
+            } else {
+                qualified_symbol_match = Some(PromptQualifiedSymbolHint {
+                    file_hint: PromptFileHint {
+                        path: path.to_string(),
+                        line_hint_alias: Some(alias),
+                    },
+                    symbol_name: symbol.name.clone(),
+                });
+            }
+        }
+    }
+
+    if qualified_symbol_ambiguous {
+        Ok(None)
+    } else {
+        Ok(qualified_symbol_match)
     }
 }
 
@@ -1125,7 +1192,19 @@ fn prompt_module_alias(path: &str, language: &LanguageId) -> Option<String> {
     }
 }
 
-fn prompt_contains_exact_module_alias(prompt: &str, alias: &str) -> bool {
+fn prompt_qualified_symbol_alias(module_alias: &str, symbol_name: &str) -> Option<String> {
+    let separator = if module_alias.contains("::") {
+        "::"
+    } else if module_alias.contains('.') {
+        "."
+    } else {
+        return None;
+    };
+
+    Some(format!("{module_alias}{separator}{symbol_name}"))
+}
+
+fn prompt_contains_exact_alias(prompt: &str, alias: &str) -> bool {
     let prompt_lower = prompt.to_ascii_lowercase();
     let alias_lower = alias.to_ascii_lowercase();
     let prompt_bytes = prompt_lower.as_bytes();
@@ -2441,6 +2520,149 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_prompt_context_handler_qualified_symbol_alias_prefers_exact_selector() {
+        let src_target = make_indexed_file(
+            "src/db.rs",
+            vec![make_symbol("connect", SymbolKind::Function, 2, 2)],
+            vec![],
+            ParseStatus::Parsed,
+        );
+        let src_dependent = IndexedFile {
+            relative_path: "src/service.rs".to_string(),
+            language: LanguageId::Rust,
+            classification: crate::domain::FileClassification::for_code_path("src/service.rs"),
+            content: b"use crate::db::connect;\nfn run() { connect(); }\n".to_vec(),
+            symbols: vec![make_symbol("run", SymbolKind::Function, 2, 2)],
+            parse_status: ParseStatus::Parsed,
+            byte_len: 46,
+            content_hash: "abc".to_string(),
+            references: vec![
+                ReferenceRecord {
+                    name: "db".to_string(),
+                    qualified_name: Some("crate::db".to_string()),
+                    kind: ReferenceKind::Import,
+                    byte_range: (0, 6),
+                    line_range: (0, 0),
+                    enclosing_symbol_index: Some(0),
+                },
+                ReferenceRecord {
+                    name: "connect".to_string(),
+                    qualified_name: Some("crate::db::connect".to_string()),
+                    kind: ReferenceKind::Call,
+                    byte_range: (10, 16),
+                    line_range: (1, 1),
+                    enclosing_symbol_index: Some(0),
+                },
+            ],
+            alias_map: HashMap::new(),
+        };
+        let unrelated = make_indexed_file(
+            "src/other.rs",
+            vec![make_symbol("run", SymbolKind::Function, 1, 1)],
+            vec![make_reference("connect", ReferenceKind::Call, 1)],
+            ParseStatus::Parsed,
+        );
+        let state = make_state(vec![
+            ("src/db.rs", src_target),
+            ("src/service.rs", src_dependent),
+            ("src/other.rs", unrelated),
+        ]);
+
+        let result = prompt_context_handler(
+            State(state),
+            Query(PromptContextParams {
+                text: "inspect crate::db::connect".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            result.contains("src/service.rs"),
+            "qualified symbol aliases should keep exact-selector matches: {result}"
+        );
+        assert!(
+            !result.contains("src/other.rs"),
+            "qualified symbol aliases should drop unrelated same-name hits: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_prompt_context_handler_qualified_symbol_alias_line_hint_disambiguates_selector() {
+        let src_target = make_indexed_file(
+            "src/db.rs",
+            vec![
+                make_symbol("connect", SymbolKind::Function, 1, 1),
+                make_symbol("connect", SymbolKind::Function, 2, 2),
+            ],
+            vec![],
+            ParseStatus::Parsed,
+        );
+        let src_dependent = IndexedFile {
+            relative_path: "src/service.rs".to_string(),
+            language: LanguageId::Rust,
+            classification: crate::domain::FileClassification::for_code_path("src/service.rs"),
+            content: b"use crate::db::connect;\nfn run() { connect(); }\n".to_vec(),
+            symbols: vec![make_symbol("run", SymbolKind::Function, 2, 2)],
+            parse_status: ParseStatus::Parsed,
+            byte_len: 46,
+            content_hash: "abc".to_string(),
+            references: vec![
+                ReferenceRecord {
+                    name: "db".to_string(),
+                    qualified_name: Some("crate::db".to_string()),
+                    kind: ReferenceKind::Import,
+                    byte_range: (0, 6),
+                    line_range: (0, 0),
+                    enclosing_symbol_index: Some(0),
+                },
+                ReferenceRecord {
+                    name: "connect".to_string(),
+                    qualified_name: Some("crate::db::connect".to_string()),
+                    kind: ReferenceKind::Call,
+                    byte_range: (10, 16),
+                    line_range: (1, 1),
+                    enclosing_symbol_index: Some(0),
+                },
+            ],
+            alias_map: HashMap::new(),
+        };
+        let unrelated = make_indexed_file(
+            "src/other.rs",
+            vec![make_symbol("run", SymbolKind::Function, 1, 1)],
+            vec![make_reference("connect", ReferenceKind::Call, 1)],
+            ParseStatus::Parsed,
+        );
+        let state = make_state(vec![
+            ("src/db.rs", src_target),
+            ("src/service.rs", src_dependent),
+            ("src/other.rs", unrelated),
+        ]);
+
+        let result = prompt_context_handler(
+            State(state),
+            Query(PromptContextParams {
+                text: "inspect crate::db::connect:2".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            !result.contains("Ambiguous symbol selector"),
+            "qualified symbol aliases should allow direct line-hint disambiguation: {result}"
+        );
+        assert!(
+            result.contains("src/service.rs"),
+            "qualified symbol aliases with line hints should keep exact-selector matches: {result}"
+        );
+        assert!(
+            !result.contains("src/other.rs"),
+            "qualified symbol aliases with line hints should drop unrelated same-name hits: {result}"
+        );
+    }
+
+    #[tokio::test]
     async fn test_prompt_context_handler_partial_module_alias_without_line_does_not_activate() {
         let src_target = make_indexed_file(
             "src/db.rs",
@@ -2482,6 +2704,364 @@ mod tests {
         assert!(
             result.contains("src/other.rs"),
             "partial module aliases should not collapse to one exact file: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_prompt_context_handler_partial_qualified_symbol_alias_does_not_activate() {
+        let src_target = make_indexed_file(
+            "src/db.rs",
+            vec![make_symbol("connect", SymbolKind::Function, 2, 2)],
+            vec![],
+            ParseStatus::Parsed,
+        );
+        let src_dependent = make_indexed_file(
+            "src/service.rs",
+            vec![make_symbol("run", SymbolKind::Function, 1, 1)],
+            vec![make_reference("connect", ReferenceKind::Call, 1)],
+            ParseStatus::Parsed,
+        );
+        let alt_dependent = make_indexed_file(
+            "src/other.rs",
+            vec![make_symbol("run", SymbolKind::Function, 1, 1)],
+            vec![make_reference("connect", ReferenceKind::Call, 1)],
+            ParseStatus::Parsed,
+        );
+        let state = make_state(vec![
+            ("src/db.rs", src_target),
+            ("src/service.rs", src_dependent),
+            ("src/other.rs", alt_dependent),
+        ]);
+
+        let result = prompt_context_handler(
+            State(state),
+            Query(PromptContextParams {
+                text: "inspect crate::db::connect::helper".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            result.contains("src/service.rs"),
+            "continued qualified symbol aliases should stay on the fallback path: {result}"
+        );
+        assert!(
+            result.contains("src/other.rs"),
+            "continued qualified symbol aliases should not collapse to one exact file: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_prompt_context_handler_dotted_qualified_symbol_alias_prefers_exact_selector() {
+        let target = IndexedFile {
+            relative_path: "pkg/db.py".to_string(),
+            language: LanguageId::Python,
+            classification: crate::domain::FileClassification::for_code_path("pkg/db.py"),
+            content: b"def connect():\n    pass\n".to_vec(),
+            symbols: vec![make_symbol("connect", SymbolKind::Function, 1, 1)],
+            parse_status: ParseStatus::Parsed,
+            byte_len: 24,
+            content_hash: "db-py".to_string(),
+            references: vec![],
+            alias_map: HashMap::new(),
+        };
+        let dependent = IndexedFile {
+            relative_path: "pkg/service.py".to_string(),
+            language: LanguageId::Python,
+            classification: crate::domain::FileClassification::for_code_path("pkg/service.py"),
+            content: b"from pkg.db import connect\n\ndef run():\n    connect()\n".to_vec(),
+            symbols: vec![make_symbol("run", SymbolKind::Function, 3, 3)],
+            parse_status: ParseStatus::Parsed,
+            byte_len: 54,
+            content_hash: "service-py".to_string(),
+            references: vec![
+                ReferenceRecord {
+                    name: "db".to_string(),
+                    qualified_name: Some("pkg.db".to_string()),
+                    kind: ReferenceKind::Import,
+                    byte_range: (5, 11),
+                    line_range: (0, 0),
+                    enclosing_symbol_index: None,
+                },
+                ReferenceRecord {
+                    name: "connect".to_string(),
+                    qualified_name: Some("pkg.db.connect".to_string()),
+                    kind: ReferenceKind::Call,
+                    byte_range: (41, 47),
+                    line_range: (3, 3),
+                    enclosing_symbol_index: Some(0),
+                },
+            ],
+            alias_map: HashMap::new(),
+        };
+        let unrelated = IndexedFile {
+            relative_path: "pkg/other.py".to_string(),
+            language: LanguageId::Python,
+            classification: crate::domain::FileClassification::for_code_path("pkg/other.py"),
+            content: b"def run():\n    connect()\n".to_vec(),
+            symbols: vec![make_symbol("run", SymbolKind::Function, 1, 1)],
+            parse_status: ParseStatus::Parsed,
+            byte_len: 25,
+            content_hash: "other-py".to_string(),
+            references: vec![make_reference("connect", ReferenceKind::Call, 1)],
+            alias_map: HashMap::new(),
+        };
+        let state = make_state(vec![
+            ("pkg/db.py", target),
+            ("pkg/service.py", dependent),
+            ("pkg/other.py", unrelated),
+        ]);
+
+        let result = prompt_context_handler(
+            State(state),
+            Query(PromptContextParams {
+                text: "inspect pkg.db.connect".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            result.contains("pkg/service.py"),
+            "dotted qualified symbol aliases should keep exact-selector matches: {result}"
+        );
+        assert!(
+            !result.contains("pkg/other.py"),
+            "dotted qualified symbol aliases should drop unrelated same-name hits: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_prompt_context_handler_continued_dotted_qualified_symbol_alias_does_not_activate()
+    {
+        let target = IndexedFile {
+            relative_path: "pkg/db.py".to_string(),
+            language: LanguageId::Python,
+            classification: crate::domain::FileClassification::for_code_path("pkg/db.py"),
+            content: b"def connect():\n    pass\n".to_vec(),
+            symbols: vec![make_symbol("connect", SymbolKind::Function, 1, 1)],
+            parse_status: ParseStatus::Parsed,
+            byte_len: 24,
+            content_hash: "db-py".to_string(),
+            references: vec![],
+            alias_map: HashMap::new(),
+        };
+        let dependent = IndexedFile {
+            relative_path: "pkg/service.py".to_string(),
+            language: LanguageId::Python,
+            classification: crate::domain::FileClassification::for_code_path("pkg/service.py"),
+            content: b"from pkg.db import connect\n\ndef run():\n    connect()\n".to_vec(),
+            symbols: vec![make_symbol("run", SymbolKind::Function, 3, 3)],
+            parse_status: ParseStatus::Parsed,
+            byte_len: 54,
+            content_hash: "service-py".to_string(),
+            references: vec![
+                ReferenceRecord {
+                    name: "db".to_string(),
+                    qualified_name: Some("pkg.db".to_string()),
+                    kind: ReferenceKind::Import,
+                    byte_range: (5, 11),
+                    line_range: (0, 0),
+                    enclosing_symbol_index: None,
+                },
+                ReferenceRecord {
+                    name: "connect".to_string(),
+                    qualified_name: Some("pkg.db.connect".to_string()),
+                    kind: ReferenceKind::Call,
+                    byte_range: (41, 47),
+                    line_range: (3, 3),
+                    enclosing_symbol_index: Some(0),
+                },
+            ],
+            alias_map: HashMap::new(),
+        };
+        let unrelated = IndexedFile {
+            relative_path: "pkg/other.py".to_string(),
+            language: LanguageId::Python,
+            classification: crate::domain::FileClassification::for_code_path("pkg/other.py"),
+            content: b"def run():\n    connect()\n".to_vec(),
+            symbols: vec![make_symbol("run", SymbolKind::Function, 1, 1)],
+            parse_status: ParseStatus::Parsed,
+            byte_len: 25,
+            content_hash: "other-py".to_string(),
+            references: vec![make_reference("connect", ReferenceKind::Call, 1)],
+            alias_map: HashMap::new(),
+        };
+        let state = make_state(vec![
+            ("pkg/db.py", target),
+            ("pkg/service.py", dependent),
+            ("pkg/other.py", unrelated),
+        ]);
+
+        let result = prompt_context_handler(
+            State(state),
+            Query(PromptContextParams {
+                text: "inspect pkg.db.connect.more connect".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            result.contains("pkg/service.py"),
+            "continued dotted aliases should stay on the fallback path: {result}"
+        );
+        assert!(
+            result.contains("pkg/other.py"),
+            "continued dotted aliases should not collapse to one exact file: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_prompt_context_handler_dotted_qualified_symbol_alias_line_hint_disambiguates_selector(
+    ) {
+        let target = IndexedFile {
+            relative_path: "pkg/db.py".to_string(),
+            language: LanguageId::Python,
+            classification: crate::domain::FileClassification::for_code_path("pkg/db.py"),
+            content: b"def connect():\n    pass\n\ndef connect():\n    pass\n".to_vec(),
+            symbols: vec![
+                make_symbol("connect", SymbolKind::Function, 1, 1),
+                make_symbol("connect", SymbolKind::Function, 4, 4),
+            ],
+            parse_status: ParseStatus::Parsed,
+            byte_len: 49,
+            content_hash: "db-py".to_string(),
+            references: vec![],
+            alias_map: HashMap::new(),
+        };
+        let dependent = IndexedFile {
+            relative_path: "pkg/service.py".to_string(),
+            language: LanguageId::Python,
+            classification: crate::domain::FileClassification::for_code_path("pkg/service.py"),
+            content: b"from pkg.db import connect\n\ndef run():\n    connect()\n".to_vec(),
+            symbols: vec![make_symbol("run", SymbolKind::Function, 3, 3)],
+            parse_status: ParseStatus::Parsed,
+            byte_len: 54,
+            content_hash: "service-py".to_string(),
+            references: vec![
+                ReferenceRecord {
+                    name: "db".to_string(),
+                    qualified_name: Some("pkg.db".to_string()),
+                    kind: ReferenceKind::Import,
+                    byte_range: (5, 11),
+                    line_range: (0, 0),
+                    enclosing_symbol_index: None,
+                },
+                ReferenceRecord {
+                    name: "connect".to_string(),
+                    qualified_name: Some("pkg.db.connect".to_string()),
+                    kind: ReferenceKind::Call,
+                    byte_range: (41, 47),
+                    line_range: (3, 3),
+                    enclosing_symbol_index: Some(0),
+                },
+            ],
+            alias_map: HashMap::new(),
+        };
+        let unrelated = IndexedFile {
+            relative_path: "pkg/other.py".to_string(),
+            language: LanguageId::Python,
+            classification: crate::domain::FileClassification::for_code_path("pkg/other.py"),
+            content: b"def run():\n    connect()\n".to_vec(),
+            symbols: vec![make_symbol("run", SymbolKind::Function, 1, 1)],
+            parse_status: ParseStatus::Parsed,
+            byte_len: 25,
+            content_hash: "other-py".to_string(),
+            references: vec![make_reference("connect", ReferenceKind::Call, 1)],
+            alias_map: HashMap::new(),
+        };
+        let state = make_state(vec![
+            ("pkg/db.py", target),
+            ("pkg/service.py", dependent),
+            ("pkg/other.py", unrelated),
+        ]);
+
+        let result = prompt_context_handler(
+            State(state),
+            Query(PromptContextParams {
+                text: "inspect pkg.db.connect:4".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            !result.contains("Ambiguous symbol selector"),
+            "dotted qualified symbol aliases should allow direct line-hint disambiguation: {result}"
+        );
+        assert!(
+            result.contains("pkg/service.py"),
+            "dotted qualified symbol aliases with line hints should keep exact-selector matches: {result}"
+        );
+        assert!(
+            !result.contains("pkg/other.py"),
+            "dotted qualified symbol aliases with line hints should drop unrelated same-name hits: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_prompt_context_handler_dotted_qualified_symbol_alias_ignores_unrelated_colon_numbers(
+    ) {
+        let target = IndexedFile {
+            relative_path: "pkg/db.py".to_string(),
+            language: LanguageId::Python,
+            classification: crate::domain::FileClassification::for_code_path("pkg/db.py"),
+            content: b"def connect():\n    pass\n\ndef connect():\n    pass\n".to_vec(),
+            symbols: vec![
+                make_symbol("connect", SymbolKind::Function, 1, 1),
+                make_symbol("connect", SymbolKind::Function, 4, 4),
+            ],
+            parse_status: ParseStatus::Parsed,
+            byte_len: 49,
+            content_hash: "db-py".to_string(),
+            references: vec![],
+            alias_map: HashMap::new(),
+        };
+        let dependent = IndexedFile {
+            relative_path: "pkg/service.py".to_string(),
+            language: LanguageId::Python,
+            classification: crate::domain::FileClassification::for_code_path("pkg/service.py"),
+            content: b"from pkg.db import connect\n\ndef run():\n    connect()\n".to_vec(),
+            symbols: vec![make_symbol("run", SymbolKind::Function, 3, 3)],
+            parse_status: ParseStatus::Parsed,
+            byte_len: 54,
+            content_hash: "service-py".to_string(),
+            references: vec![
+                ReferenceRecord {
+                    name: "db".to_string(),
+                    qualified_name: Some("pkg.db".to_string()),
+                    kind: ReferenceKind::Import,
+                    byte_range: (5, 11),
+                    line_range: (0, 0),
+                    enclosing_symbol_index: None,
+                },
+                ReferenceRecord {
+                    name: "connect".to_string(),
+                    qualified_name: Some("pkg.db.connect".to_string()),
+                    kind: ReferenceKind::Call,
+                    byte_range: (41, 47),
+                    line_range: (3, 3),
+                    enclosing_symbol_index: Some(0),
+                },
+            ],
+            alias_map: HashMap::new(),
+        };
+        let state = make_state(vec![("pkg/db.py", target), ("pkg/service.py", dependent)]);
+
+        let result = prompt_context_handler(
+            State(state),
+            Query(PromptContextParams {
+                text: "inspect pkg.db.connect build:4".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            result.contains("Ambiguous symbol selector"),
+            "unrelated colon numbers should not disambiguate dotted qualified symbol aliases: {result}"
         );
     }
 
