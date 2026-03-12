@@ -99,10 +99,7 @@ Current resource templates:
 - `tokenizor://symbol/detail?path={path}&name={name}&kind={kind}`
 - `tokenizor://symbol/context?name={name}&file={file}`
 
-Important current caveat:
-
-- the tools have moved ahead of the resources in a few areas; for example, the file-content resource template now matches ordinary full-file, explicit-range, and contextual reads, including `show_line_numbers`, `header`, `around_line`, `around_match`, and `context_lines`, but it still does not expose symbolic or chunked file-content modes
-- exact-selector symbol inputs are implemented on tools, but the symbol-context resource template still exposes only `name` and optional `file`
+Resources cover common read patterns; tools handle the full parameter space including symbolic reads, chunked paging, and exact-selector disambiguation.
 
 ### Supported languages
 
@@ -125,49 +122,25 @@ Current language extractors exist for:
 - Dart
 - Elixir
 
-## What Is Not Implemented Yet
+## Roadmap
 
-These items are part of the direction for the project, but they are not in the current runtime yet:
+Near-term items not yet in the runtime:
 
-- SpacetimeDB as the control plane
-- local content-addressed blob storage for raw bytes and large derived artifacts
-- `index_repository`, `cancel_index_run`, `checkpoint_now`, and `repair_index`
-- `trace_symbol` and `inspect_match`
-- `get_file_content chunk_count_hint`
 - a lightweight non-code text lane for JSON, YAML, TOML, Markdown, logs, and similar plain-text files
 - transparent hook-based enrichment for Codex
-- any multi-machine, remote, or authenticated daemon deployment model
+- `chunk_count_hint` for `get_file_content`
 
-## Current Rough Edges and Open Work
+Longer-term goals tracked in `.planning/milestones/`:
 
-- resource and prompt surfaces still lag some of the newer tool capabilities
-- the file-content resource template still trails the tool on `around_symbol` and chunked reads
-- `get_file_content` still lacks `chunk_count_hint` and the broader lightweight non-code text lane from the source plan
-- current indexing is intentionally code-first; non-code text retrieval remains limited
-- long-running run management, checkpointing, repair workflows, and idempotent mutation semantics are still architecture goals rather than shipped features
-- the shortest path from file discovery to exact symbol/reference inspection is much better now, but a few workflow helpers still remain on the roadmap
+- recursive type resolution improvements (deeper cross-file inference)
+- trait/interface implementation mapping (`find_implementations`)
+- enriched file context (import/export summaries)
+- git temporal context (churn scores, co-change detection)
 
-## Read Lane Vs Retrieval Lane
+## Current Limitations
 
-Current `get_file_content` chunking is a deterministic read primitive, not an embedding or semantic-retrieval chunker.
-
-- the shipped chunking contract is exact-path, line-oriented, reproducible paging for inspection and tool follow-up
-- it is intentionally stable for prompts like "give me chunk 3 of this file" or "show me lines 301-450"
-- it does not use overlap, fuzzy boundaries, or token-sized recursive splitting, because those hurt reproducibility for direct reads
-
-If Tokenizor later adds an embedding-backed text lane or hybrid retrieval layer, that future ingestion path may use a different chunking strategy entirely. For code, the intended order remains:
-
-- symbol- and span-aware navigation first
-- deterministic line/range/context reads second
-- recursive or embedding-oriented chunking only in a future retrieval lane where recall matters more than exact paging stability
-
-## Why It Is Already Better Than Earlier Revisions
-
-- shell fallback is reduced by `search_files`, `resolve_path`, scoped `search_text`, and contextual `get_file_content`
-- search lanes now have scope controls, noise suppression (including inline Rust `#[cfg(test)]` module filtering), and relevance ranking that make larger repositories much more usable
-- exact-selector reference queries avoid many of the common-name collisions that made earlier navigation noisy
-- the local daemon lets multiple terminals share one project view instead of rebuilding local state repeatedly
-- hook and resource surfaces give the model cheap orientation before expensive tool usage
+- indexing is code-first; non-code text retrieval is limited
+- file content chunking is deterministic line-oriented paging, not embedding-based retrieval
 
 ## Installation
 
