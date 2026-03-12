@@ -713,6 +713,7 @@ pub struct TypeDependencyView {
 /// Owned definition-and-sections view for `get_context_bundle`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextBundleFoundView {
+    pub file_path: String,
     pub body: String,
     pub kind_label: String,
     pub line_range: (u32, u32),
@@ -1405,12 +1406,15 @@ impl LiveIndex {
         let type_names: Vec<&str> = type_refs
             .iter()
             .map(|r| r.name.as_str())
+            // Exclude the target symbol's own name to avoid self-referential dependencies.
+            .filter(|n| *n != name)
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
             .collect();
         let dependencies = self.resolve_type_dependencies(&type_names, 2);
 
         ContextBundleView::Found(ContextBundleFoundView {
+            file_path: file.relative_path.clone(),
             body,
             kind_label: sym_rec.kind.to_string(),
             line_range: sym_rec.line_range,
@@ -1764,6 +1768,11 @@ impl LiveIndex {
                     .iter()
                     .filter(|reference| {
                         if reference.kind != ReferenceKind::Call {
+                            return false;
+                        }
+
+                        // Filter stdlib/iterator noise from callees (same filter as find_references).
+                        if is_filtered_name(&reference.name) {
                             return false;
                         }
 

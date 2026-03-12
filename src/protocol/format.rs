@@ -1538,8 +1538,8 @@ pub fn context_bundle_result_view(view: &ContextBundleView) -> String {
         } => not_found_symbol_names(relative_path, symbol_names, name),
         ContextBundleView::Found(view) => {
             let mut output = format!(
-                "{}\n[{}, lines {}-{}, {} bytes]\n",
-                view.body, view.kind_label, view.line_range.0, view.line_range.1, view.byte_count
+                "{}\n[{}, {}:{}-{}, {} bytes]\n",
+                view.body, view.kind_label, view.file_path, view.line_range.0, view.line_range.1, view.byte_count
             );
             output.push_str(&format_context_bundle_section("Callers", &view.callers));
             output.push_str(&format_context_bundle_section("Callees", &view.callees));
@@ -3101,7 +3101,7 @@ mod tests {
         let result = context_bundle_result(&index, "src/lib.rs", "process", None);
         assert!(result.contains("fn process"), "body missing, got: {result}");
         assert!(
-            result.contains("[fn, lines"),
+            result.contains("[fn, src/lib.rs:"),
             "footer missing, got: {result}"
         );
         assert!(

@@ -757,7 +757,7 @@ fn symbol_context_text(
 
     if total < grand_total {
         lines.push(format!(
-            "... (showing {} of {} matches)",
+            "... (showing {} of {} matches — use `path` or `file` to narrow)",
             total, grand_total
         ));
     }
