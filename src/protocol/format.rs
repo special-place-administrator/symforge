@@ -862,6 +862,17 @@ pub fn file_content_from_indexed_file_with_context(
         );
     }
 
+    if let Some(around_symbol) = context.around_symbol.as_deref() {
+        return render_numbered_around_symbol_excerpt(
+            file,
+            around_symbol,
+            context.symbol_line,
+            context
+                .context_lines
+                .unwrap_or(DEFAULT_AROUND_LINE_CONTEXT_LINES),
+        );
+    }
+
     if let Some(around_match) = context.around_match.as_deref() {
         return render_numbered_around_match_excerpt(
             file,
@@ -872,7 +883,7 @@ pub fn file_content_from_indexed_file_with_context(
         );
     }
 
-    render_file_content_bytes(&file.content, context)
+    render_file_content_bytes(&file.relative_path, &file.content, context)
 }
 
 /// Compatibility renderer for `FileContentView`.
@@ -884,6 +895,7 @@ pub fn file_content_view(
     end_line: Option<u32>,
 ) -> String {
     render_file_content_bytes(
+        &view.relative_path,
         &view.content,
         search::ContentContext::line_range(start_line, end_line),
     )
@@ -891,7 +903,11 @@ pub fn file_content_view(
 
 const DEFAULT_AROUND_LINE_CONTEXT_LINES: u32 = 2;
 
-fn render_file_content_bytes(content: &[u8], context: search::ContentContext) -> String {
+fn render_file_content_bytes(
+    path: &str,
+    content: &[u8],
+    context: search::ContentContext,
+) -> String {
     let content = String::from_utf8_lossy(content);
     let lines: Vec<&str> = content.lines().collect();
 
@@ -905,25 +921,98 @@ fn render_file_content_bytes(content: &[u8], context: search::ContentContext) ->
         );
     }
 
-    match (context.start_line, context.end_line) {
-        (None, None) => content.into_owned(),
-        (start, end) => {
-            let start_idx = start.map(|s| s.saturating_sub(1) as usize).unwrap_or(0);
-            let end_idx = end.map(|e| e as usize).unwrap_or(usize::MAX);
+    if !context.show_line_numbers && !context.header {
+        return match (context.start_line, context.end_line) {
+            (None, None) => content.into_owned(),
+            (start, end) => render_raw_line_slice(&lines, start, end),
+        };
+    }
 
-            let sliced: Vec<&str> = lines
-                .iter()
-                .enumerate()
-                .filter_map(|(i, line)| {
-                    if i >= start_idx && i < end_idx {
-                        Some(*line)
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            sliced.join("\n")
-        }
+    render_ordinary_read(
+        path,
+        &lines,
+        context.start_line,
+        context.end_line,
+        context.show_line_numbers,
+        context.header,
+    )
+}
+
+fn render_raw_line_slice(lines: &[&str], start_line: Option<u32>, end_line: Option<u32>) -> String {
+    slice_lines(lines, start_line, end_line)
+        .into_iter()
+        .map(|(_, line)| line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn render_ordinary_read(
+    path: &str,
+    lines: &[&str],
+    start_line: Option<u32>,
+    end_line: Option<u32>,
+    show_line_numbers: bool,
+    header: bool,
+) -> String {
+    let selected = slice_lines(lines, start_line, end_line);
+    let body = if show_line_numbers {
+        selected
+            .iter()
+            .map(|(line_number, line)| format!("{line_number}: {line}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        selected
+            .iter()
+            .map(|(_, line)| *line)
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    if !header {
+        return body;
+    }
+
+    let header_line = if start_line.is_some() || end_line.is_some() {
+        render_ordinary_read_header(path, &selected)
+    } else {
+        path.to_string()
+    };
+
+    if body.is_empty() {
+        header_line
+    } else {
+        format!("{header_line}\n{body}")
+    }
+}
+
+fn slice_lines<'a>(
+    lines: &'a [&'a str],
+    start_line: Option<u32>,
+    end_line: Option<u32>,
+) -> Vec<(u32, &'a str)> {
+    let start_idx = start_line
+        .map(|start| start.saturating_sub(1) as usize)
+        .unwrap_or(0);
+    let end_idx = end_line.map(|end| end as usize).unwrap_or(usize::MAX);
+
+    lines
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, line)| {
+            if idx >= start_idx && idx < end_idx {
+                Some((idx as u32 + 1, *line))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn render_ordinary_read_header(path: &str, selected: &[(u32, &str)]) -> String {
+    match (selected.first(), selected.last()) {
+        (Some((first, _)), Some((last, _))) => format!("{path} [lines {first}-{last}]"),
+        _ => format!("{path} [lines empty]"),
     }
 }
 
@@ -962,6 +1051,93 @@ fn render_numbered_chunk_excerpt(file: &IndexedFile, chunk_index: u32, max_lines
         "{} [chunk {}/{}, lines {}-{}]\n{}",
         file.relative_path, chunk_index, total_chunks, start_line, end_line, body
     )
+}
+
+fn render_numbered_around_symbol_excerpt(
+    file: &IndexedFile,
+    around_symbol: &str,
+    symbol_line: Option<u32>,
+    context_lines: u32,
+) -> String {
+    let content = String::from_utf8_lossy(&file.content);
+    let lines: Vec<&str> = content.lines().collect();
+
+    match resolve_around_symbol_line(file, around_symbol, symbol_line) {
+        Ok(around_line) => render_numbered_around_line_excerpt(&lines, around_line, context_lines),
+        Err(AroundSymbolResolutionError::NotFound) => {
+            render_not_found_symbol(&file.relative_path, &file.symbols, around_symbol)
+        }
+        Err(AroundSymbolResolutionError::SelectorNotFound(symbol_line)) => {
+            format!(
+                "Symbol not found in {}: {} at line {}",
+                file.relative_path, around_symbol, symbol_line
+            )
+        }
+        Err(AroundSymbolResolutionError::Ambiguous(candidate_lines)) => {
+            let candidate_lines = candidate_lines
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "Ambiguous symbol selector for {around_symbol} in {}; pass `symbol_line` to disambiguate. Candidates: {candidate_lines}",
+                file.relative_path
+            )
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum AroundSymbolResolutionError {
+    NotFound,
+    SelectorNotFound(u32),
+    Ambiguous(Vec<u32>),
+}
+
+fn resolve_around_symbol_line(
+    file: &IndexedFile,
+    around_symbol: &str,
+    symbol_line: Option<u32>,
+) -> Result<u32, AroundSymbolResolutionError> {
+    let matching_symbols: Vec<&crate::domain::SymbolRecord> = file
+        .symbols
+        .iter()
+        .filter(|symbol| symbol.name == around_symbol)
+        .collect();
+
+    if matching_symbols.is_empty() {
+        return Err(AroundSymbolResolutionError::NotFound);
+    }
+
+    if let Some(symbol_line) = symbol_line {
+        let exact_matches: Vec<&crate::domain::SymbolRecord> = matching_symbols
+            .iter()
+            .copied()
+            .filter(|symbol| symbol.line_range.0 == symbol_line)
+            .collect();
+
+        return match exact_matches.as_slice() {
+            [symbol] => Ok(symbol.line_range.0.saturating_add(1)),
+            [] => Err(AroundSymbolResolutionError::SelectorNotFound(symbol_line)),
+            _ => Err(AroundSymbolResolutionError::Ambiguous(
+                dedup_symbol_candidate_lines(&exact_matches),
+            )),
+        };
+    }
+
+    match matching_symbols.as_slice() {
+        [symbol] => Ok(symbol.line_range.0.saturating_add(1)),
+        _ => Err(AroundSymbolResolutionError::Ambiguous(
+            dedup_symbol_candidate_lines(&matching_symbols),
+        )),
+    }
+}
+
+fn dedup_symbol_candidate_lines(symbols: &[&crate::domain::SymbolRecord]) -> Vec<u32> {
+    let mut candidate_lines: Vec<u32> = symbols.iter().map(|symbol| symbol.line_range.0).collect();
+    candidate_lines.sort_unstable();
+    candidate_lines.dedup();
+    candidate_lines
 }
 
 fn render_numbered_around_match_excerpt(
@@ -2215,6 +2391,34 @@ mod tests {
     }
 
     #[test]
+    fn test_file_content_from_indexed_file_with_context_renders_numbered_full_read() {
+        let content = b"line 1\nline 2\nline 3";
+        let (key, file) = make_file("src/main.rs", content, vec![]);
+        let index = make_index(vec![(key, file)]);
+
+        let result = file_content_from_indexed_file_with_context(
+            index.capture_shared_file("src/main.rs").unwrap().as_ref(),
+            search::ContentContext::line_range_with_format(None, None, true, false),
+        );
+
+        assert_eq!(result, "1: line 1\n2: line 2\n3: line 3");
+    }
+
+    #[test]
+    fn test_file_content_from_indexed_file_with_context_renders_headered_range_read() {
+        let content = b"line 1\nline 2\nline 3\nline 4";
+        let (key, file) = make_file("src/main.rs", content, vec![]);
+        let index = make_index(vec![(key, file)]);
+
+        let result = file_content_from_indexed_file_with_context(
+            index.capture_shared_file("src/main.rs").unwrap().as_ref(),
+            search::ContentContext::line_range_with_format(Some(2), Some(3), true, true),
+        );
+
+        assert_eq!(result, "src/main.rs [lines 2-3]\n2: line 2\n3: line 3");
+    }
+
+    #[test]
     fn test_file_content_from_indexed_file_with_context_renders_numbered_around_line_excerpt() {
         let content = b"line 1\nline 2\nline 3\nline 4\nline 5";
         let (key, file) = make_file("src/main.rs", content, vec![]);
@@ -2271,6 +2475,69 @@ mod tests {
         );
 
         assert_eq!(result, "Chunk 3 out of range for src/main.rs (2 chunks)");
+    }
+
+    #[test]
+    fn test_file_content_from_indexed_file_with_context_renders_around_symbol_excerpt() {
+        let content = b"line 1\nfn connect() {}\nline 3";
+        let (key, file) = make_file(
+            "src/main.rs",
+            content,
+            vec![make_symbol("connect", SymbolKind::Function, 0, 1, 1)],
+        );
+        let index = make_index(vec![(key, file)]);
+
+        let result = file_content_from_indexed_file_with_context(
+            index.capture_shared_file("src/main.rs").unwrap().as_ref(),
+            search::ContentContext::around_symbol("connect", None, Some(1)),
+        );
+
+        assert_eq!(result, "1: line 1\n2: fn connect() {}\n3: line 3");
+    }
+
+    #[test]
+    fn test_file_content_from_indexed_file_with_context_reports_ambiguous_around_symbol() {
+        let content = b"fn connect() {}\nline 2\nfn connect() {}";
+        let (key, file) = make_file(
+            "src/main.rs",
+            content,
+            vec![
+                make_symbol("connect", SymbolKind::Function, 0, 0, 0),
+                make_symbol("connect", SymbolKind::Function, 0, 2, 2),
+            ],
+        );
+        let index = make_index(vec![(key, file)]);
+
+        let result = file_content_from_indexed_file_with_context(
+            index.capture_shared_file("src/main.rs").unwrap().as_ref(),
+            search::ContentContext::around_symbol("connect", None, Some(1)),
+        );
+
+        assert_eq!(
+            result,
+            "Ambiguous symbol selector for connect in src/main.rs; pass `symbol_line` to disambiguate. Candidates: 0, 2"
+        );
+    }
+
+    #[test]
+    fn test_file_content_from_indexed_file_with_context_around_symbol_line_selects_exact_match() {
+        let content = b"fn connect() {}\nline 2\nfn connect() {}";
+        let (key, file) = make_file(
+            "src/main.rs",
+            content,
+            vec![
+                make_symbol("connect", SymbolKind::Function, 0, 0, 0),
+                make_symbol("connect", SymbolKind::Function, 0, 2, 2),
+            ],
+        );
+        let index = make_index(vec![(key, file)]);
+
+        let result = file_content_from_indexed_file_with_context(
+            index.capture_shared_file("src/main.rs").unwrap().as_ref(),
+            search::ContentContext::around_symbol("connect", Some(2), Some(0)),
+        );
+
+        assert_eq!(result, "3: fn connect() {}");
     }
 
     // --- guard messages ---

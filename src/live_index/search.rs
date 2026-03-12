@@ -123,21 +123,38 @@ pub struct ContentContext {
     pub end_line: Option<u32>,
     pub around_line: Option<u32>,
     pub around_match: Option<String>,
+    pub around_symbol: Option<String>,
+    pub symbol_line: Option<u32>,
     pub context_lines: Option<u32>,
     pub chunk_index: Option<u32>,
     pub max_lines: Option<u32>,
+    pub show_line_numbers: bool,
+    pub header: bool,
 }
 
 impl ContentContext {
     pub const fn line_range(start_line: Option<u32>, end_line: Option<u32>) -> Self {
+        Self::line_range_with_format(start_line, end_line, false, false)
+    }
+
+    pub const fn line_range_with_format(
+        start_line: Option<u32>,
+        end_line: Option<u32>,
+        show_line_numbers: bool,
+        header: bool,
+    ) -> Self {
         Self {
             start_line,
             end_line,
             around_line: None,
             around_match: None,
+            around_symbol: None,
+            symbol_line: None,
             context_lines: None,
             chunk_index: None,
             max_lines: None,
+            show_line_numbers,
+            header,
         }
     }
 
@@ -147,9 +164,13 @@ impl ContentContext {
             end_line: None,
             around_line: Some(around_line),
             around_match: None,
+            around_symbol: None,
+            symbol_line: None,
             context_lines,
             chunk_index: None,
             max_lines: None,
+            show_line_numbers: false,
+            header: false,
         }
     }
 
@@ -159,9 +180,33 @@ impl ContentContext {
             end_line: None,
             around_line: None,
             around_match: Some(around_match.into()),
+            around_symbol: None,
+            symbol_line: None,
             context_lines,
             chunk_index: None,
             max_lines: None,
+            show_line_numbers: false,
+            header: false,
+        }
+    }
+
+    pub fn around_symbol(
+        around_symbol: impl Into<String>,
+        symbol_line: Option<u32>,
+        context_lines: Option<u32>,
+    ) -> Self {
+        Self {
+            start_line: None,
+            end_line: None,
+            around_line: None,
+            around_match: None,
+            around_symbol: Some(around_symbol.into()),
+            symbol_line,
+            context_lines,
+            chunk_index: None,
+            max_lines: None,
+            show_line_numbers: false,
+            header: false,
         }
     }
 
@@ -171,9 +216,13 @@ impl ContentContext {
             end_line: None,
             around_line: None,
             around_match: None,
+            around_symbol: None,
+            symbol_line: None,
             context_lines: None,
             chunk_index: Some(chunk_index),
             max_lines: Some(max_lines),
+            show_line_numbers: false,
+            header: false,
         }
     }
 }
@@ -319,9 +368,24 @@ impl FileContentOptions {
         start_line: Option<u32>,
         end_line: Option<u32>,
     ) -> Self {
+        Self::for_explicit_path_read_with_format(path, start_line, end_line, false, false)
+    }
+
+    pub fn for_explicit_path_read_with_format(
+        path: impl Into<String>,
+        start_line: Option<u32>,
+        end_line: Option<u32>,
+        show_line_numbers: bool,
+        header: bool,
+    ) -> Self {
         Self {
             path_scope: PathScope::exact(path),
-            content_context: ContentContext::line_range(start_line, end_line),
+            content_context: ContentContext::line_range_with_format(
+                start_line,
+                end_line,
+                show_line_numbers,
+                header,
+            ),
         }
     }
 
@@ -355,6 +419,22 @@ impl FileContentOptions {
         Self {
             path_scope: PathScope::exact(path),
             content_context: ContentContext::chunk(chunk_index, max_lines),
+        }
+    }
+
+    pub fn for_explicit_path_read_around_symbol(
+        path: impl Into<String>,
+        around_symbol: impl Into<String>,
+        symbol_line: Option<u32>,
+        context_lines: Option<u32>,
+    ) -> Self {
+        Self {
+            path_scope: PathScope::exact(path),
+            content_context: ContentContext::around_symbol(
+                around_symbol,
+                symbol_line,
+                context_lines,
+            ),
         }
     }
 
@@ -1472,6 +1552,26 @@ mod tests {
     }
 
     #[test]
+    fn test_explicit_path_read_options_preserve_format_flags() {
+        let options = FileContentOptions::for_explicit_path_read_with_format(
+            "src/lib.rs",
+            Some(2),
+            Some(4),
+            true,
+            true,
+        );
+
+        assert_eq!(
+            options.path_scope,
+            PathScope::Exact("src/lib.rs".to_string())
+        );
+        assert_eq!(
+            options.content_context,
+            ContentContext::line_range_with_format(Some(2), Some(4), true, true)
+        );
+    }
+
+    #[test]
     fn test_explicit_path_read_around_line_options_are_exact() {
         let options =
             FileContentOptions::for_explicit_path_read_around_line("src/lib.rs", 3, Some(1));
@@ -1513,5 +1613,24 @@ mod tests {
             PathScope::Exact("src/lib.rs".to_string())
         );
         assert_eq!(options.content_context, ContentContext::chunk(2, 2));
+    }
+
+    #[test]
+    fn test_explicit_path_read_around_symbol_options_are_exact() {
+        let options = FileContentOptions::for_explicit_path_read_around_symbol(
+            "src/lib.rs",
+            "connect",
+            Some(3),
+            Some(1),
+        );
+
+        assert_eq!(
+            options.path_scope,
+            PathScope::Exact("src/lib.rs".to_string())
+        );
+        assert_eq!(
+            options.content_context,
+            ContentContext::around_symbol("connect", Some(3), Some(1))
+        );
     }
 }

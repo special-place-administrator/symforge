@@ -2,11 +2,11 @@
 doc_type: task
 task_id: 131
 title: P1 get_file_content around_symbol shell
-status: in_progress
+status: done
 sprint: tokenizor-upgrade-foundation
 parent_plan: 05-P-validation-and-backlog.md
 prev_task: 130-T-p1-get-file-content-around-symbol-contract-research.md
-next_task:
+next_task: 132-T-p1-get-file-content-ordinary-read-contract-research.md
 created: 2026-03-12
 updated: 2026-03-12
 ---
@@ -48,13 +48,16 @@ updated: 2026-03-12
 
 ## Completion Notes
 
-- pending
+- added exact-path `around_symbol` plus optional `symbol_line` support to `get_file_content`
+- file-local symbol reads now reuse numbered excerpt rendering and deterministic ambiguity messaging
+- exact symbol selectors match stored symbol lines while the excerpt anchor is converted to the corresponding user-visible file line
+- focused unit, tool, and integration coverage passed, followed by a green `cargo test`
 
 ## Carry Forward To Next Task
 
 Next task:
 
-- `TBD`
+- `132-T-p1-get-file-content-ordinary-read-contract-research.md`
 
 Carry forward:
 

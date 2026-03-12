@@ -734,6 +734,33 @@ fn test_get_file_content_with_line_range() {
 }
 
 #[test]
+fn test_get_file_content_with_numbered_headered_line_range() {
+    use tokenizor_agentic_mcp::live_index::search::ContentContext;
+    use tokenizor_agentic_mcp::protocol::format;
+
+    let dir = tempdir().unwrap();
+    write_file(
+        dir.path(),
+        "lines.rs",
+        "line one\nline two\nline three\nline four\nline five",
+    );
+
+    let shared = LiveIndex::load(dir.path()).unwrap();
+    let index = shared.read().unwrap();
+    let file = index.capture_shared_file("lines.rs").unwrap();
+
+    let result = format::file_content_from_indexed_file_with_context(
+        file.as_ref(),
+        ContentContext::line_range_with_format(Some(2), Some(4), true, true),
+    );
+
+    assert_eq!(
+        result,
+        "lines.rs [lines 2-4]\n2: line two\n3: line three\n4: line four"
+    );
+}
+
+#[test]
 fn test_get_file_content_with_around_line() {
     use tokenizor_agentic_mcp::live_index::search::ContentContext;
     use tokenizor_agentic_mcp::protocol::format;
@@ -806,6 +833,30 @@ fn test_get_file_content_with_chunked_read() {
         result,
         "lines.rs [chunk 2/3, lines 3-4]\n3: line three\n4: line four"
     );
+}
+
+#[test]
+fn test_get_file_content_with_around_symbol() {
+    use tokenizor_agentic_mcp::live_index::search::ContentContext;
+    use tokenizor_agentic_mcp::protocol::format;
+
+    let dir = tempdir().unwrap();
+    write_file(
+        dir.path(),
+        "lines.rs",
+        "line one\nfn connect() {}\nline three",
+    );
+
+    let shared = LiveIndex::load(dir.path()).unwrap();
+    let index = shared.read().unwrap();
+    let file = index.capture_shared_file("lines.rs").unwrap();
+
+    let result = format::file_content_from_indexed_file_with_context(
+        file.as_ref(),
+        ContentContext::around_symbol("connect", None, Some(1)),
+    );
+
+    assert_eq!(result, "1: line one\n2: fn connect() {}\n3: line three");
 }
 
 // ============================================================================

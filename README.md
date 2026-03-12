@@ -35,7 +35,7 @@ At the time of this README rewrite, `cargo test` is green in this repository.
 - `resolve_path` for exact path resolution from filenames and partial hints
 - `search_symbols` with `kind`, `path_prefix`, `language`, `limit`, `include_generated`, and `include_tests`
 - `search_text` with literal, OR-term, and regex search plus `path_prefix`, `language`, `limit`, `max_per_file`, `glob`, `exclude_glob`, symmetric `context`, `case_sensitive`, `whole_word`, and generated/test suppression
-- `get_file_content` with full-file reads, explicit line ranges, `around_line`, first-match `around_match`, and exact-path line-oriented chunked reads via `chunk_index` plus `max_lines`
+- `get_file_content` with full-file reads, explicit line ranges, optional ordinary-read `show_line_numbers` and `header`, `around_line`, first-match `around_match`, exact-path `around_symbol`, and exact-path line-oriented chunked reads via `chunk_index` plus `max_lines`
 - exact-selector reference navigation through `find_references`, `get_symbol_context`, and `get_context_bundle` using `path`, symbol kind, and symbol line
 - `find_dependents` with module- and namespace-aware attribution
 - prompt-submit hook routing that can use file hints, basename/extensionless aliases, module aliases, qualified symbol aliases, and `:line` hints to choose the right file or symbol more reliably
@@ -87,7 +87,7 @@ Current resource templates:
 
 Important current caveat:
 
-- the tools have moved ahead of the resources in a few areas; for example, `get_file_content` now supports `around_line`, `around_match`, and chunked reads, but the file-content resource template still only exposes `start_line` and `end_line`
+- the tools have moved ahead of the resources in a few areas; for example, the file-content resource template now matches ordinary full-file and explicit-range reads, including `show_line_numbers` and `header`, but it still does not expose contextual, symbolic, or chunked file-content modes
 - exact-selector symbol inputs are implemented on tools, but the symbol-context resource template still exposes only `name` and optional `file`
 
 ### Supported languages
@@ -119,16 +119,16 @@ These items are part of the direction for the project, but they are not in the c
 - local content-addressed blob storage for raw bytes and large derived artifacts
 - `index_repository`, `cancel_index_run`, `checkpoint_now`, and `repair_index`
 - `trace_symbol` and `inspect_match`
-- `get_file_content around_symbol`
-- a general `show_line_numbers` / header contract for ordinary full-file and explicit-range reads
+- `get_file_content chunk_count_hint`
 - a lightweight non-code text lane for JSON, YAML, TOML, Markdown, logs, and similar plain-text files
 - transparent hook-based enrichment for Codex
 - any multi-machine, remote, or authenticated daemon deployment model
 
 ## Current Rough Edges and Open Work
 
-- `get_file_content` now has deterministic line-oriented chunked paging, but it still lacks `around_symbol` and a broader ordinary-read header/line-number contract
 - resource and prompt surfaces still lag some of the newer tool capabilities
+- the file-content resource template still trails the tool on contextual modes, `around_symbol`, and chunked reads
+- `get_file_content` still lacks `chunk_count_hint` and the broader lightweight non-code text lane from the source plan
 - current indexing is intentionally code-first; non-code text retrieval remains limited
 - long-running run management, checkpointing, repair workflows, and idempotent mutation semantics are still architecture goals rather than shipped features
 - the shortest path from file discovery to exact symbol/reference inspection is much better now, but a few workflow helpers still remain on the roadmap
