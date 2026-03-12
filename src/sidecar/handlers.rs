@@ -14,7 +14,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::domain::ReferenceKind;
+use crate::domain::{LanguageId, ReferenceKind};
 use crate::sidecar::{SidecarState, SymbolSnapshot, build_with_budget};
 
 // ---------------------------------------------------------------------------
@@ -55,15 +55,7 @@ pub struct PromptContextParams {
 
 struct PromptFileHint {
     path: String,
-    match_kind: PromptFileHintMatchKind,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum PromptFileHintMatchKind {
-    ExactPath,
-    QualifiedExtensionlessPath,
-    Basename,
-    ExtensionlessAlias,
+    line_hint_alias: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -875,6 +867,8 @@ fn find_prompt_file_hint(
         .read()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let prompt_lower = prompt.to_ascii_lowercase();
+    let mut module_match: Option<PromptFileHint> = None;
+    let mut module_ambiguous = false;
     let mut qualified_path_match: Option<PromptFileHint> = None;
     let mut qualified_path_ambiguous = false;
     let mut basename_match: Option<PromptFileHint> = None;
@@ -882,12 +876,27 @@ fn find_prompt_file_hint(
     let mut stem_match: Option<PromptFileHint> = None;
     let mut stem_ambiguous = false;
 
-    for (path, _) in guard.all_files() {
+    for (path, file) in guard.all_files() {
         if prompt.contains(path) || prompt_lower.contains(&path.to_ascii_lowercase()) {
             return Ok(Some(PromptFileHint {
                 path: path.to_string(),
-                match_kind: PromptFileHintMatchKind::ExactPath,
+                line_hint_alias: None,
             }));
+        }
+
+        if let Some(module_alias) = prompt_module_alias(path, &file.language) {
+            if prompt_contains_exact_module_alias(prompt, &module_alias) {
+                if let Some(existing) = &module_match {
+                    if existing.path != path.as_str() {
+                        module_ambiguous = true;
+                    }
+                } else {
+                    module_match = Some(PromptFileHint {
+                        path: path.to_string(),
+                        line_hint_alias: Some(module_alias),
+                    });
+                }
+            }
         }
 
         if let Some(path_without_extension) = prompt_path_without_extension(path) {
@@ -899,7 +908,7 @@ fn find_prompt_file_hint(
                 } else {
                     qualified_path_match = Some(PromptFileHint {
                         path: path.to_string(),
-                        match_kind: PromptFileHintMatchKind::QualifiedExtensionlessPath,
+                        line_hint_alias: Some(path_without_extension),
                     });
                 }
             }
@@ -919,7 +928,7 @@ fn find_prompt_file_hint(
             } else {
                 basename_match = Some(PromptFileHint {
                     path: path.to_string(),
-                    match_kind: PromptFileHintMatchKind::Basename,
+                    line_hint_alias: Some(file_name.to_string()),
                 });
             }
         }
@@ -942,9 +951,13 @@ fn find_prompt_file_hint(
         } else {
             stem_match = Some(PromptFileHint {
                 path: path.to_string(),
-                match_kind: PromptFileHintMatchKind::ExtensionlessAlias,
+                line_hint_alias: Some(file_stem.to_string()),
             });
         }
+    }
+
+    if !module_ambiguous && module_match.is_some() {
+        return Ok(module_match);
     }
 
     if !qualified_path_ambiguous && qualified_path_match.is_some() {
@@ -991,21 +1004,7 @@ fn find_prompt_line_hint(prompt: &str, file_hint: Option<&PromptFileHint>) -> Op
         if let Some(line) = find_prompt_path_line_hint(prompt, &file_hint.path) {
             return Some(line);
         }
-        let alias = match file_hint.match_kind {
-            PromptFileHintMatchKind::ExactPath => None,
-            PromptFileHintMatchKind::QualifiedExtensionlessPath => {
-                prompt_path_without_extension(&file_hint.path)
-            }
-            PromptFileHintMatchKind::Basename => std::path::Path::new(&file_hint.path)
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(ToString::to_string),
-            PromptFileHintMatchKind::ExtensionlessAlias => std::path::Path::new(&file_hint.path)
-                .file_stem()
-                .and_then(|name| name.to_str())
-                .map(ToString::to_string),
-        };
-        if let Some(alias) = alias {
+        if let Some(alias) = &file_hint.line_hint_alias {
             if let Some(line) = find_prompt_path_line_hint(prompt, &alias) {
                 return Some(line);
             }
@@ -1060,6 +1059,107 @@ fn prompt_path_without_extension(path: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+fn prompt_module_alias(path: &str, language: &LanguageId) -> Option<String> {
+    let alias = match language {
+        LanguageId::Rust => {
+            let stripped = std::path::Path::new(path).strip_prefix("src").ok()?;
+            let mut components: Vec<String> = stripped
+                .components()
+                .filter_map(|component| component.as_os_str().to_str().map(String::from))
+                .collect();
+
+            if let Some(last) = components.last_mut()
+                && let Some(stem) = std::path::Path::new(last.as_str())
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+            {
+                *last = stem.to_string();
+            }
+
+            if matches!(
+                components.last().map(|value| value.as_str()),
+                Some("lib" | "main" | "mod")
+            ) {
+                components.pop();
+            }
+
+            if components.is_empty() {
+                Some("crate".to_string())
+            } else {
+                Some(format!("crate::{}", components.join("::")))
+            }
+        }
+        LanguageId::Python => {
+            let mut components: Vec<String> = std::path::Path::new(path)
+                .components()
+                .filter_map(|component| component.as_os_str().to_str().map(String::from))
+                .collect();
+
+            if let Some(last) = components.last_mut()
+                && let Some(stem) = std::path::Path::new(last.as_str())
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+            {
+                *last = stem.to_string();
+            }
+
+            if matches!(components.last().map(|value| value.as_str()), Some("__init__")) {
+                components.pop();
+            }
+
+            if components.is_empty() {
+                None
+            } else {
+                Some(components.join("."))
+            }
+        }
+        _ => None,
+    }?;
+
+    if alias.contains("::") || alias.contains('.') {
+        Some(alias)
+    } else {
+        None
+    }
+}
+
+fn prompt_contains_exact_module_alias(prompt: &str, alias: &str) -> bool {
+    let prompt_lower = prompt.to_ascii_lowercase();
+    let alias_lower = alias.to_ascii_lowercase();
+    let prompt_bytes = prompt_lower.as_bytes();
+    let alias_bytes = alias_lower.as_bytes();
+    let mut search_start = 0;
+
+    while let Some(offset) = prompt_lower[search_start..].find(&alias_lower) {
+        let start = search_start + offset;
+        let end = start + alias_bytes.len();
+
+        let prev_ok = start == 0
+            || !matches!(prompt_bytes[start - 1], b'a'..=b'z' | b'0'..=b'9' | b'_');
+
+        let next_ok = if end >= prompt_bytes.len() {
+            true
+        } else {
+            match prompt_bytes[end] {
+                b':' => prompt_bytes
+                    .get(end + 1)
+                    .map(|byte| byte.is_ascii_digit())
+                    .unwrap_or(false),
+                b'.' | b'/' => false,
+                byte => !matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'_'),
+            }
+        };
+
+        if prev_ok && next_ok {
+            return true;
+        }
+
+        search_start = start + 1;
+    }
+
+    false
 }
 
 fn prompt_tokens(prompt: &str) -> Vec<String> {
@@ -2176,6 +2276,264 @@ mod tests {
         assert!(
             !result.contains("src/other.rs"),
             "extensionless path alias should exclude unrelated same-name hits: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_prompt_context_handler_module_alias_line_hint_disambiguates_selector() {
+        let src_target = make_indexed_file(
+            "src/db.rs",
+            vec![
+                make_symbol("connect", SymbolKind::Function, 1, 1),
+                make_symbol("connect", SymbolKind::Function, 2, 2),
+            ],
+            vec![],
+            ParseStatus::Parsed,
+        );
+        let test_target = make_indexed_file(
+            "tests/db.py",
+            vec![make_symbol("connect", SymbolKind::Function, 1, 1)],
+            vec![],
+            ParseStatus::Parsed,
+        );
+        let src_dependent = IndexedFile {
+            relative_path: "src/service.rs".to_string(),
+            language: LanguageId::Rust,
+            classification: crate::domain::FileClassification::for_code_path("src/service.rs"),
+            content: b"use crate::db::connect;\nfn run() { connect(); }\n".to_vec(),
+            symbols: vec![make_symbol("run", SymbolKind::Function, 2, 2)],
+            parse_status: ParseStatus::Parsed,
+            byte_len: 46,
+            content_hash: "abc".to_string(),
+            references: vec![
+                ReferenceRecord {
+                    name: "db".to_string(),
+                    qualified_name: Some("crate::db".to_string()),
+                    kind: ReferenceKind::Import,
+                    byte_range: (0, 6),
+                    line_range: (0, 0),
+                    enclosing_symbol_index: Some(0),
+                },
+                ReferenceRecord {
+                    name: "connect".to_string(),
+                    qualified_name: Some("crate::db::connect".to_string()),
+                    kind: ReferenceKind::Call,
+                    byte_range: (10, 16),
+                    line_range: (1, 1),
+                    enclosing_symbol_index: Some(0),
+                },
+            ],
+            alias_map: HashMap::new(),
+        };
+        let unrelated = make_indexed_file(
+            "src/other.rs",
+            vec![make_symbol("run", SymbolKind::Function, 1, 1)],
+            vec![make_reference("connect", ReferenceKind::Call, 1)],
+            ParseStatus::Parsed,
+        );
+        let state = make_state(vec![
+            ("src/db.rs", src_target),
+            ("tests/db.py", test_target),
+            ("src/service.rs", src_dependent),
+            ("src/other.rs", unrelated),
+        ]);
+
+        let result = prompt_context_handler(
+            State(state),
+            Query(PromptContextParams {
+                text: "inspect crate::db:2 connect".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            !result.contains("Ambiguous symbol selector"),
+            "module alias should disambiguate the exact selector: {result}"
+        );
+        assert!(
+            result.contains("src/service.rs"),
+            "module alias should still return symbol context results: {result}"
+        );
+        assert!(
+            !result.contains("src/other.rs"),
+            "module alias should exclude unrelated same-name hits: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_prompt_context_handler_module_alias_without_line_prefers_exact_file_hint() {
+        let src_target = make_indexed_file(
+            "src/db.rs",
+            vec![make_symbol("connect", SymbolKind::Function, 2, 2)],
+            vec![],
+            ParseStatus::Parsed,
+        );
+        let test_target = make_indexed_file(
+            "tests/db.py",
+            vec![make_symbol("connect", SymbolKind::Function, 1, 1)],
+            vec![],
+            ParseStatus::Parsed,
+        );
+        let src_dependent = IndexedFile {
+            relative_path: "src/service.rs".to_string(),
+            language: LanguageId::Rust,
+            classification: crate::domain::FileClassification::for_code_path("src/service.rs"),
+            content: b"use crate::db::connect;\nfn run() { connect(); }\n".to_vec(),
+            symbols: vec![make_symbol("run", SymbolKind::Function, 2, 2)],
+            parse_status: ParseStatus::Parsed,
+            byte_len: 46,
+            content_hash: "abc".to_string(),
+            references: vec![
+                ReferenceRecord {
+                    name: "db".to_string(),
+                    qualified_name: Some("crate::db".to_string()),
+                    kind: ReferenceKind::Import,
+                    byte_range: (0, 6),
+                    line_range: (0, 0),
+                    enclosing_symbol_index: Some(0),
+                },
+                ReferenceRecord {
+                    name: "connect".to_string(),
+                    qualified_name: Some("crate::db::connect".to_string()),
+                    kind: ReferenceKind::Call,
+                    byte_range: (10, 16),
+                    line_range: (1, 1),
+                    enclosing_symbol_index: Some(0),
+                },
+            ],
+            alias_map: HashMap::new(),
+        };
+        let unrelated = make_indexed_file(
+            "src/other.rs",
+            vec![make_symbol("run", SymbolKind::Function, 1, 1)],
+            vec![make_reference("connect", ReferenceKind::Call, 1)],
+            ParseStatus::Parsed,
+        );
+        let state = make_state(vec![
+            ("src/db.rs", src_target),
+            ("tests/db.py", test_target),
+            ("src/service.rs", src_dependent),
+            ("src/other.rs", unrelated),
+        ]);
+
+        let result = prompt_context_handler(
+            State(state),
+            Query(PromptContextParams {
+                text: "inspect crate::db connect".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            !result.contains("Ambiguous symbol selector"),
+            "module alias without line should still resolve the exact file hint: {result}"
+        );
+        assert!(
+            result.contains("src/service.rs"),
+            "module alias without line should still return symbol context results: {result}"
+        );
+        assert!(
+            !result.contains("src/other.rs"),
+            "module alias without line should exclude unrelated same-name hits: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_prompt_context_handler_partial_module_alias_without_line_does_not_activate() {
+        let src_target = make_indexed_file(
+            "src/db.rs",
+            vec![make_symbol("connect", SymbolKind::Function, 2, 2)],
+            vec![],
+            ParseStatus::Parsed,
+        );
+        let src_dependent = make_indexed_file(
+            "src/service.rs",
+            vec![make_symbol("run", SymbolKind::Function, 1, 1)],
+            vec![make_reference("connect", ReferenceKind::Call, 1)],
+            ParseStatus::Parsed,
+        );
+        let alt_dependent = make_indexed_file(
+            "src/other.rs",
+            vec![make_symbol("run", SymbolKind::Function, 1, 1)],
+            vec![make_reference("connect", ReferenceKind::Call, 1)],
+            ParseStatus::Parsed,
+        );
+        let state = make_state(vec![
+            ("src/db.rs", src_target),
+            ("src/service.rs", src_dependent),
+            ("src/other.rs", alt_dependent),
+        ]);
+
+        let result = prompt_context_handler(
+            State(state),
+            Query(PromptContextParams {
+                text: "inspect crate::dbx connect".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            result.contains("src/service.rs"),
+            "partial module aliases should stay on the fallback path: {result}"
+        );
+        assert!(
+            result.contains("src/other.rs"),
+            "partial module aliases should not collapse to one exact file: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_prompt_context_handler_partial_module_alias_hint_does_not_activate() {
+        let src_target = make_indexed_file(
+            "src/db.rs",
+            vec![make_symbol("connect", SymbolKind::Function, 2, 2)],
+            vec![],
+            ParseStatus::Parsed,
+        );
+        let alt_target = make_indexed_file(
+            "src/data.rs",
+            vec![make_symbol("connect", SymbolKind::Function, 2, 2)],
+            vec![],
+            ParseStatus::Parsed,
+        );
+        let src_dependent = make_indexed_file(
+            "src/service.rs",
+            vec![make_symbol("run", SymbolKind::Function, 1, 1)],
+            vec![make_reference("connect", ReferenceKind::Call, 1)],
+            ParseStatus::Parsed,
+        );
+        let alt_dependent = make_indexed_file(
+            "src/other.rs",
+            vec![make_symbol("run", SymbolKind::Function, 1, 1)],
+            vec![make_reference("connect", ReferenceKind::Call, 1)],
+            ParseStatus::Parsed,
+        );
+        let state = make_state(vec![
+            ("src/db.rs", src_target),
+            ("src/data.rs", alt_target),
+            ("src/service.rs", src_dependent),
+            ("src/other.rs", alt_dependent),
+        ]);
+
+        let result = prompt_context_handler(
+            State(state),
+            Query(PromptContextParams {
+                text: "inspect crate::d:2 connect".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            result.contains("src/service.rs"),
+            "partial module aliases should stay on the fallback path: {result}"
+        );
+        assert!(
+            result.contains("src/other.rs"),
+            "partial module aliases should not collapse to one exact file: {result}"
         );
     }
 

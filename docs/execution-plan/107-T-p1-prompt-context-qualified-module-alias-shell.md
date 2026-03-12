@@ -2,11 +2,11 @@
 doc_type: task
 task_id: 107
 title: P1 prompt_context qualified module alias shell
-status: in_progress
+status: done
 sprint: tokenizor-upgrade-foundation
 parent_plan: 05-P-validation-and-backlog.md
 prev_task: 106-T-p1-prompt-context-qualified-module-alias-contract-research.md
-next_task: 
+next_task: 108-T-p1-prompt-context-module-alias-file-hint-contract-research.md
 created: 2026-03-12
 updated: 2026-03-12
 ---
@@ -45,13 +45,16 @@ updated: 2026-03-12
 
 ## Completion Notes
 
-- pending
+- extended prompt-context file-hint matching to recognize exact qualified module aliases such as `crate::db:2`
+- reused language-derived module-path aliases as the active `:line` alias for exact selector routing
+- preserved exact-path, basename, extensionless-path, bare-stem, and explicit `line N` behavior
+- added focused unit and endpoint coverage for the new module-alias line-hint route plus a partial-module guardrail
 
 ## Carry Forward To Next Task
 
 Next task:
 
-- `TBD`
+- `108-T-p1-prompt-context-module-alias-file-hint-contract-research.md`
 
 Carry forward:
 
@@ -61,4 +64,4 @@ Carry forward:
 
 Open points:
 
-- OPEN: whether later slices should support other language-specific qualified module forms
+- OPEN: whether exact qualified module aliases should also activate file hints without `:line`
