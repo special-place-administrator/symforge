@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.4.0...v0.4.1) (2026-03-12)
+
+
+### Bug Fixes
+
+* **release:** document conventional commit requirement ([1867bce](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/1867bce6a312079e6edd5b8ccf16fc0b43f4089d))
+
 ## [0.4.0](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/tokenizor_agentic_mcp-v0.3.12...tokenizor_agentic_mcp-v0.4.0) (2026-03-12)
 
 
