@@ -21,7 +21,7 @@ use tempfile::TempDir;
 use tokenizor_agentic_mcp::{
     cli::HookSubcommand,
     cli::hook::{event_name_for, fail_open_json, run_hook, success_json},
-    domain::{LanguageId, SymbolKind, SymbolRecord},
+    domain::{LanguageId, ReferenceKind, ReferenceRecord, SymbolKind, SymbolRecord},
     live_index::{IndexedFile, LiveIndex, ParseStatus, SharedIndex},
     sidecar::spawn_sidecar,
 };
@@ -507,6 +507,210 @@ async fn test_prompt_context_endpoint_prefers_file_hint() {
     assert!(
         body.contains("hello"),
         "prompt context should include the hinted file symbol"
+    );
+
+    let _ = handle.shutdown_tx.send(());
+    restore_cwd(&original);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_prompt_context_endpoint_combined_hint_uses_exact_selector() {
+    let tmp = TempDir::new().unwrap();
+    let _guard = CWD_LOCK.lock().await;
+    let original = stable_cwd();
+    std::env::set_current_dir(tmp.path()).unwrap();
+
+    let target = make_rust_file("src/db.rs", "connect");
+    let dependent = IndexedFile {
+        relative_path: "src/service.rs".to_string(),
+        language: LanguageId::Rust,
+        classification: tokenizor_agentic_mcp::domain::FileClassification::for_code_path(
+            "src/service.rs",
+        ),
+        content: b"use crate::db::connect;\nfn run() { connect(); }\n".to_vec(),
+        symbols: vec![SymbolRecord {
+            name: "run".to_string(),
+            kind: SymbolKind::Function,
+            depth: 0,
+            sort_order: 0,
+            byte_range: (24, 47),
+            line_range: (2, 2),
+        }],
+        parse_status: ParseStatus::Parsed,
+        byte_len: 47,
+        content_hash: "service".to_string(),
+        references: vec![
+            ReferenceRecord {
+                name: "db".to_string(),
+                qualified_name: Some("crate::db".to_string()),
+                kind: ReferenceKind::Import,
+                byte_range: (0, 6),
+                line_range: (0, 0),
+                enclosing_symbol_index: Some(0),
+            },
+            ReferenceRecord {
+                name: "connect".to_string(),
+                qualified_name: Some("crate::db::connect".to_string()),
+                kind: ReferenceKind::Call,
+                byte_range: (34, 40),
+                line_range: (1, 1),
+                enclosing_symbol_index: Some(0),
+            },
+        ],
+        alias_map: HashMap::new(),
+    };
+    let unrelated = IndexedFile {
+        relative_path: "src/other.rs".to_string(),
+        language: LanguageId::Rust,
+        classification: tokenizor_agentic_mcp::domain::FileClassification::for_code_path(
+            "src/other.rs",
+        ),
+        content: b"fn run() { connect(); }\n".to_vec(),
+        symbols: vec![SymbolRecord {
+            name: "run".to_string(),
+            kind: SymbolKind::Function,
+            depth: 0,
+            sort_order: 0,
+            byte_range: (0, 23),
+            line_range: (1, 1),
+        }],
+        parse_status: ParseStatus::Parsed,
+        byte_len: 23,
+        content_hash: "other".to_string(),
+        references: vec![ReferenceRecord {
+            name: "connect".to_string(),
+            qualified_name: None,
+            kind: ReferenceKind::Call,
+            byte_range: (11, 17),
+            line_range: (0, 0),
+            enclosing_symbol_index: Some(0),
+        }],
+        alias_map: HashMap::new(),
+    };
+    let index = build_shared_index(vec![target, dependent, unrelated]);
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+        .await
+        .expect("spawn_sidecar should succeed");
+
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let body = raw_http_get(
+        handle.port,
+        "/prompt-context",
+        "text=inspect%20src%2Fdb.rs%20connect",
+    )
+    .expect("GET /prompt-context must succeed");
+
+    assert!(
+        body.contains("src/service.rs"),
+        "combined prompt should keep exact-selector matches: {body}"
+    );
+    assert!(
+        !body.contains("src/other.rs"),
+        "combined prompt should drop unrelated same-name hits: {body}"
+    );
+
+    let _ = handle.shutdown_tx.send(());
+    restore_cwd(&original);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_prompt_context_endpoint_line_hint_disambiguates_exact_selector() {
+    let tmp = TempDir::new().unwrap();
+    let _guard = CWD_LOCK.lock().await;
+    let original = stable_cwd();
+    std::env::set_current_dir(tmp.path()).unwrap();
+
+    let target = IndexedFile {
+        relative_path: "src/db.rs".to_string(),
+        language: LanguageId::Rust,
+        classification: tokenizor_agentic_mcp::domain::FileClassification::for_code_path(
+            "src/db.rs",
+        ),
+        content: b"fn connect() {}\nfn connect() {}\n".to_vec(),
+        symbols: vec![
+            SymbolRecord {
+                name: "connect".to_string(),
+                kind: SymbolKind::Function,
+                depth: 0,
+                sort_order: 0,
+                byte_range: (0, 14),
+                line_range: (1, 1),
+            },
+            SymbolRecord {
+                name: "connect".to_string(),
+                kind: SymbolKind::Function,
+                depth: 0,
+                sort_order: 1,
+                byte_range: (16, 30),
+                line_range: (2, 2),
+            },
+        ],
+        parse_status: ParseStatus::Parsed,
+        byte_len: 31,
+        content_hash: "db".to_string(),
+        references: vec![],
+        alias_map: HashMap::new(),
+    };
+    let dependent = IndexedFile {
+        relative_path: "src/service.rs".to_string(),
+        language: LanguageId::Rust,
+        classification: tokenizor_agentic_mcp::domain::FileClassification::for_code_path(
+            "src/service.rs",
+        ),
+        content: b"use crate::db::connect;\nfn run() { connect(); }\n".to_vec(),
+        symbols: vec![SymbolRecord {
+            name: "run".to_string(),
+            kind: SymbolKind::Function,
+            depth: 0,
+            sort_order: 0,
+            byte_range: (24, 47),
+            line_range: (2, 2),
+        }],
+        parse_status: ParseStatus::Parsed,
+        byte_len: 47,
+        content_hash: "service".to_string(),
+        references: vec![
+            ReferenceRecord {
+                name: "db".to_string(),
+                qualified_name: Some("crate::db".to_string()),
+                kind: ReferenceKind::Import,
+                byte_range: (0, 6),
+                line_range: (0, 0),
+                enclosing_symbol_index: Some(0),
+            },
+            ReferenceRecord {
+                name: "connect".to_string(),
+                qualified_name: Some("crate::db::connect".to_string()),
+                kind: ReferenceKind::Call,
+                byte_range: (34, 40),
+                line_range: (1, 1),
+                enclosing_symbol_index: Some(0),
+            },
+        ],
+        alias_map: HashMap::new(),
+    };
+    let index = build_shared_index(vec![target, dependent]);
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+        .await
+        .expect("spawn_sidecar should succeed");
+
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let body = raw_http_get(
+        handle.port,
+        "/prompt-context",
+        "text=inspect%20src%2Fdb.rs%20connect%20line%202",
+    )
+    .expect("GET /prompt-context must succeed");
+
+    assert!(
+        !body.contains("Ambiguous symbol selector"),
+        "line hint should disambiguate combined prompt routing: {body}"
+    );
+    assert!(
+        body.contains("src/service.rs"),
+        "line hint should still produce symbol context output: {body}"
     );
 
     let _ = handle.shutdown_tx.send(());

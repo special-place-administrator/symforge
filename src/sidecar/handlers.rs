@@ -773,29 +773,48 @@ async fn prompt_context_text(
         return Ok(String::new());
     }
 
-    if let Some(path) = find_prompt_file_hint(state, prompt)? {
-        return outline_text(
-            state,
-            &OutlineParams {
-                path,
-                max_tokens: Some(160),
-            },
-            options,
-        );
-    }
+    let file_hint = find_prompt_file_hint(state, prompt)?;
+    let symbol_hint = find_prompt_symbol_hint(state, prompt)?;
+    let line_hint = find_prompt_line_hint(prompt);
 
-    if let Some(name) = find_prompt_symbol_hint(state, prompt)? {
-        return symbol_context_text(
-            state,
-            &SymbolContextParams {
-                name,
-                file: None,
-                path: None,
-                symbol_kind: None,
-                symbol_line: None,
-            },
-            options,
-        );
+    match (file_hint, symbol_hint) {
+        (Some(path), Some(name)) => {
+            return symbol_context_text(
+                state,
+                &SymbolContextParams {
+                    name,
+                    file: None,
+                    path: Some(path),
+                    symbol_kind: None,
+                    symbol_line: line_hint,
+                },
+                options,
+            );
+        }
+        (Some(path), None) => {
+            return outline_text(
+                state,
+                &OutlineParams {
+                    path,
+                    max_tokens: Some(160),
+                },
+                options,
+            );
+        }
+        (None, Some(name)) => {
+            return symbol_context_text(
+                state,
+                &SymbolContextParams {
+                    name,
+                    file: None,
+                    path: None,
+                    symbol_kind: None,
+                    symbol_line: None,
+                },
+                options,
+            );
+        }
+        (None, None) => {}
     }
 
     if prompt_requests_repo_map(prompt) {
@@ -896,6 +915,22 @@ fn find_prompt_symbol_hint(
     }
 
     Ok(None)
+}
+
+fn find_prompt_line_hint(prompt: &str) -> Option<u32> {
+    let tokens = prompt_tokens(prompt);
+    for window in tokens.windows(2) {
+        if !window[0].eq_ignore_ascii_case("line") {
+            continue;
+        }
+        if let Ok(line) = window[1].parse::<u32>() {
+            if line > 0 {
+                return Some(line);
+            }
+        }
+    }
+
+    None
 }
 
 fn prompt_tokens(prompt: &str) -> Vec<String> {
@@ -1478,6 +1513,261 @@ mod tests {
         assert!(
             result.contains("serve"),
             "prompt context should surface the file outline"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_prompt_context_handler_symbol_hint_uses_name_only_symbol_context() {
+        let target = make_indexed_file(
+            "src/db.rs",
+            vec![make_symbol("connect", SymbolKind::Function, 1, 1)],
+            vec![],
+            ParseStatus::Parsed,
+        );
+        let dependent = IndexedFile {
+            relative_path: "src/service.rs".to_string(),
+            language: LanguageId::Rust,
+            classification: crate::domain::FileClassification::for_code_path("src/service.rs"),
+            content: b"use crate::db::connect;\nfn run() { connect(); }\n".to_vec(),
+            symbols: vec![make_symbol("run", SymbolKind::Function, 2, 2)],
+            parse_status: ParseStatus::Parsed,
+            byte_len: 46,
+            content_hash: "abc".to_string(),
+            references: vec![
+                ReferenceRecord {
+                    name: "db".to_string(),
+                    qualified_name: Some("crate::db".to_string()),
+                    kind: ReferenceKind::Import,
+                    byte_range: (0, 6),
+                    line_range: (0, 0),
+                    enclosing_symbol_index: Some(0),
+                },
+                ReferenceRecord {
+                    name: "connect".to_string(),
+                    qualified_name: Some("crate::db::connect".to_string()),
+                    kind: ReferenceKind::Call,
+                    byte_range: (10, 16),
+                    line_range: (1, 1),
+                    enclosing_symbol_index: Some(0),
+                },
+            ],
+            alias_map: HashMap::new(),
+        };
+        let unrelated = make_indexed_file(
+            "src/other.rs",
+            vec![make_symbol("run", SymbolKind::Function, 1, 1)],
+            vec![make_reference("connect", ReferenceKind::Call, 1)],
+            ParseStatus::Parsed,
+        );
+        let state = make_state(vec![
+            ("src/db.rs", target),
+            ("src/service.rs", dependent),
+            ("src/other.rs", unrelated),
+        ]);
+
+        let result = prompt_context_handler(
+            State(state),
+            Query(PromptContextParams {
+                text: "where is connect used".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            result.contains("src/service.rs"),
+            "symbol-only prompt should use symbol context: {result}"
+        );
+        assert!(
+            result.contains("src/other.rs"),
+            "name-only symbol context should keep global same-name hits: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_prompt_context_handler_combined_file_and_symbol_hint_uses_exact_selector() {
+        let target = make_indexed_file(
+            "src/db.rs",
+            vec![make_symbol("connect", SymbolKind::Function, 1, 1)],
+            vec![],
+            ParseStatus::Parsed,
+        );
+        let dependent = IndexedFile {
+            relative_path: "src/service.rs".to_string(),
+            language: LanguageId::Rust,
+            classification: crate::domain::FileClassification::for_code_path("src/service.rs"),
+            content: b"use crate::db::connect;\nfn run() { connect(); }\n".to_vec(),
+            symbols: vec![make_symbol("run", SymbolKind::Function, 2, 2)],
+            parse_status: ParseStatus::Parsed,
+            byte_len: 46,
+            content_hash: "abc".to_string(),
+            references: vec![
+                ReferenceRecord {
+                    name: "db".to_string(),
+                    qualified_name: Some("crate::db".to_string()),
+                    kind: ReferenceKind::Import,
+                    byte_range: (0, 6),
+                    line_range: (0, 0),
+                    enclosing_symbol_index: Some(0),
+                },
+                ReferenceRecord {
+                    name: "connect".to_string(),
+                    qualified_name: Some("crate::db::connect".to_string()),
+                    kind: ReferenceKind::Call,
+                    byte_range: (10, 16),
+                    line_range: (1, 1),
+                    enclosing_symbol_index: Some(0),
+                },
+            ],
+            alias_map: HashMap::new(),
+        };
+        let unrelated = make_indexed_file(
+            "src/other.rs",
+            vec![make_symbol("run", SymbolKind::Function, 1, 1)],
+            vec![make_reference("connect", ReferenceKind::Call, 1)],
+            ParseStatus::Parsed,
+        );
+        let state = make_state(vec![
+            ("src/db.rs", target),
+            ("src/service.rs", dependent),
+            ("src/other.rs", unrelated),
+        ]);
+
+        let result = prompt_context_handler(
+            State(state),
+            Query(PromptContextParams {
+                text: "inspect src/db.rs connect".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            result.contains("src/service.rs"),
+            "combined prompt should use exact selector symbol context: {result}"
+        );
+        assert!(
+            !result.contains("src/other.rs"),
+            "exact selector should exclude unrelated same-name hits: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_prompt_context_handler_combined_hint_reports_exact_selector_ambiguity() {
+        let target = make_indexed_file(
+            "src/db.rs",
+            vec![
+                make_symbol("connect", SymbolKind::Function, 1, 1),
+                make_symbol("connect", SymbolKind::Function, 2, 2),
+            ],
+            vec![],
+            ParseStatus::Parsed,
+        );
+        let state = make_state(vec![("src/db.rs", target)]);
+
+        let result = prompt_context_handler(
+            State(state),
+            Query(PromptContextParams {
+                text: "inspect src/db.rs connect".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            result.contains("Ambiguous symbol selector"),
+            "combined prompt should surface exact-selector ambiguity: {result}"
+        );
+        assert!(result.contains("1"), "got: {result}");
+        assert!(result.contains("2"), "got: {result}");
+    }
+
+    #[tokio::test]
+    async fn test_prompt_context_handler_combined_hint_line_hint_disambiguates_selector() {
+        let target = make_indexed_file(
+            "src/db.rs",
+            vec![
+                make_symbol("connect", SymbolKind::Function, 1, 1),
+                make_symbol("connect", SymbolKind::Function, 2, 2),
+            ],
+            vec![],
+            ParseStatus::Parsed,
+        );
+        let dependent = IndexedFile {
+            relative_path: "src/service.rs".to_string(),
+            language: LanguageId::Rust,
+            classification: crate::domain::FileClassification::for_code_path("src/service.rs"),
+            content: b"use crate::db::connect;\nfn run() { connect(); }\n".to_vec(),
+            symbols: vec![make_symbol("run", SymbolKind::Function, 2, 2)],
+            parse_status: ParseStatus::Parsed,
+            byte_len: 46,
+            content_hash: "abc".to_string(),
+            references: vec![
+                ReferenceRecord {
+                    name: "db".to_string(),
+                    qualified_name: Some("crate::db".to_string()),
+                    kind: ReferenceKind::Import,
+                    byte_range: (0, 6),
+                    line_range: (0, 0),
+                    enclosing_symbol_index: Some(0),
+                },
+                ReferenceRecord {
+                    name: "connect".to_string(),
+                    qualified_name: Some("crate::db::connect".to_string()),
+                    kind: ReferenceKind::Call,
+                    byte_range: (10, 16),
+                    line_range: (1, 1),
+                    enclosing_symbol_index: Some(0),
+                },
+            ],
+            alias_map: HashMap::new(),
+        };
+        let state = make_state(vec![("src/db.rs", target), ("src/service.rs", dependent)]);
+
+        let result = prompt_context_handler(
+            State(state),
+            Query(PromptContextParams {
+                text: "inspect src/db.rs connect line 2".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            !result.contains("Ambiguous symbol selector"),
+            "line hint should disambiguate the exact selector: {result}"
+        );
+        assert!(
+            result.contains("src/service.rs"),
+            "line hint should still return symbol context results: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_prompt_context_handler_ignores_unlabeled_numbers_for_line_hint() {
+        let target = make_indexed_file(
+            "src/db.rs",
+            vec![
+                make_symbol("connect", SymbolKind::Function, 1, 1),
+                make_symbol("connect", SymbolKind::Function, 2, 2),
+            ],
+            vec![],
+            ParseStatus::Parsed,
+        );
+        let state = make_state(vec![("src/db.rs", target)]);
+
+        let result = prompt_context_handler(
+            State(state),
+            Query(PromptContextParams {
+                text: "inspect src/db.rs connect 2".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            result.contains("Ambiguous symbol selector"),
+            "unlabeled numbers should not count as line hints: {result}"
         );
     }
 

@@ -2,11 +2,11 @@
 doc_type: task
 task_id: 95
 title: P1 prompt_context symbol and file hint shell
-status: pending
+status: done
 sprint: tokenizor-upgrade-foundation
 parent_plan: 05-P-validation-and-backlog.md
 prev_task: 94-T-p1-prompt-context-symbol-file-hint-contract-research.md
-next_task: 
+next_task: 96-T-p1-prompt-context-symbol-line-hint-contract-research.md
 created: 2026-03-12
 updated: 2026-03-12
 ---
@@ -30,7 +30,7 @@ updated: 2026-03-12
 ## Expected Touch Points
 
 - `src/sidecar/handlers.rs`
-- possibly `src/protocol/tools.rs`
+- `tests/sidecar_integration.rs`
 
 ## Deliverable
 
@@ -46,20 +46,24 @@ updated: 2026-03-12
 
 ## Completion Notes
 
-- pending
+- routed prompt-context through exact-selector symbol context when both a file hint and a symbol hint are present
+- preserved the existing `file-only` outline path and `symbol-only` name-only symbol-context path
+- added focused handler tests for single-hint preservation, combined-hint exact selection, and exact-selector ambiguity
+- added sidecar endpoint coverage to prove `/prompt-context` preserves the combined-hint exact-selector behavior
 
 ## Carry Forward To Next Task
 
 Next task:
 
-- `TBD`
+- `96-T-p1-prompt-context-symbol-line-hint-contract-research.md`
 
 Carry forward:
 
 - keep this slice separate from broader prompt parsing work
 - preserve token-budget behavior
 - avoid adding a new prompt-only symbol renderer
+- if prompt-context is going to help with ambiguity next, prefer feeding the existing `symbol_line` selector instead of inventing a prompt-only disambiguation lane
 
 Open points:
 
-- OPEN: whether a later slice should let prompt-context surface line-disambiguation guidance more explicitly
+- OPEN: whether prompt-context should accept only explicit `line N` hints first, or also support looser line-reference phrasing later

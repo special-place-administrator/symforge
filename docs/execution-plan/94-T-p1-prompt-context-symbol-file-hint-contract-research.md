@@ -2,7 +2,7 @@
 doc_type: task
 task_id: 94
 title: P1 prompt_context symbol and file hint contract research
-status: in_progress
+status: done
 sprint: tokenizor-upgrade-foundation
 parent_plan: 05-P-validation-and-backlog.md
 prev_task: 93-T-p1-get-symbol-context-exact-selector-shell.md
@@ -46,7 +46,9 @@ updated: 2026-03-12
 
 ## Completion Notes
 
-- pending
+- added [94-R-p1-prompt-context-symbol-file-hint-contract-research.md](/E:/project/tokenizor_agentic_mcp/docs/execution-plan/94-R-p1-prompt-context-symbol-file-hint-contract-research.md)
+- fixed the precedence contract: `file + symbol` should route through exact-selector `symbol_context_text`, while `file-only`, `symbol-only`, and repo-map fallback stay unchanged
+- authored the follow-on execution slice as `95-T-p1-prompt-context-symbol-file-hint-shell.md`
 
 ## Carry Forward To Next Task
 
@@ -62,4 +64,4 @@ Carry forward:
 
 Open points:
 
-- OPEN: whether a file hint plus symbol hint should prefer exact symbol context immediately or still show outline when the symbol hint is weak
+- route the first shell through the existing prompt-context heuristic path instead of broadening prompt parsing
