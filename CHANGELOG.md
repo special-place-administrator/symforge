@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.6.0...v0.7.0) (2026-03-12)
+
+
+### Features
+
+* add import/export summaries to get_file_context ([62f38a9](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/62f38a949bbf4009e0d94b68a7566a20c0855b37))
+
 ## [0.6.0](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.5.0...v0.6.0) (2026-03-12)
 
 
