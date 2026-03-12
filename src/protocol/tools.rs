@@ -291,6 +291,22 @@ pub struct AnalyzeFileImpactInput {
     pub new_file: Option<bool>,
 }
 
+/// Input for `trace_symbol`.
+#[derive(Deserialize, Serialize, JsonSchema)]
+pub struct TraceSymbolInput {
+    /// File path containing the symbol.
+    pub path: String,
+    /// Symbol name to trace.
+    pub name: String,
+    /// Optional kind filter (e.g., "fn", "struct").
+    pub kind: Option<String>,
+    /// Optional line number to disambiguate overloaded symbols.
+    pub symbol_line: Option<u32>,
+    /// Optional list of output sections to include. When omitted, all sections are included.
+    /// Valid values: "dependents", "siblings", "implementations", "git".
+    pub sections: Option<Vec<String>>,
+}
+
 enum WhatChangedMode {
     Timestamp(i64),
     GitRef(String),

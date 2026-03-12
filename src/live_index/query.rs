@@ -744,6 +744,59 @@ pub enum ContextBundleView {
     Found(ContextBundleFoundView),
 }
 
+/// A sibling symbol at the same depth within the same file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SiblingSymbolView {
+    pub name: String,
+    pub kind_label: String,
+    pub line_range: (u32, u32),
+}
+
+/// Git activity snapshot for a single file (owned, display-ready).
+#[derive(Debug, Clone, PartialEq)]
+pub struct GitActivityView {
+    pub churn_score: f32,
+    pub churn_bar: String,
+    pub churn_label: String,
+    pub commit_count: u32,
+    pub last_relative: String,
+    pub last_hash: String,
+    pub last_message: String,
+    pub last_author: String,
+    pub last_timestamp: String,
+    pub owners: Vec<String>,
+    pub co_changes: Vec<(String, f32, u32)>,
+}
+
+/// Full trace result for a single symbol.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TraceSymbolFoundView {
+    pub context_bundle: ContextBundleFoundView,
+    pub dependents: FindDependentsView,
+    pub siblings: Vec<SiblingSymbolView>,
+    pub implementations: FindImplementationsView,
+    pub git_activity: Option<GitActivityView>,
+}
+
+/// Owned result view for `trace_symbol`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TraceSymbolView {
+    FileNotFound {
+        path: String,
+    },
+    AmbiguousSymbol {
+        path: String,
+        name: String,
+        candidate_lines: Vec<u32>,
+    },
+    SymbolNotFound {
+        relative_path: String,
+        symbol_names: Vec<String>,
+        name: String,
+    },
+    Found(TraceSymbolFoundView),
+}
+
 /// Owned repo outline view captured under a short read lock.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoOutlineView {
@@ -1423,6 +1476,112 @@ impl LiveIndex {
             callees: capture_section(&callee_pairs),
             type_usages: capture_section(&type_usages),
             dependencies,
+        })
+    }
+
+    /// Capture a full trace view for a symbol, composing existing captures.
+    ///
+    /// This is the one-call semantic investigation that replaces the common
+    /// search_symbols → get_context_bundle → find_dependents → get_file_context pattern.
+    pub fn capture_trace_symbol_view(
+        &self,
+        path: &str,
+        name: &str,
+        kind_filter: Option<&str>,
+        symbol_line: Option<u32>,
+        sections: Option<&[String]>,
+    ) -> TraceSymbolView {
+        // Reuse context_bundle for the core symbol + callers + callees + type_usages + deps.
+        let bundle = self.capture_context_bundle_view(path, name, kind_filter, symbol_line);
+
+        let found = match bundle {
+            ContextBundleView::FileNotFound { path } => {
+                return TraceSymbolView::FileNotFound { path }
+            }
+            ContextBundleView::AmbiguousSymbol {
+                path,
+                name,
+                candidate_lines,
+            } => {
+                return TraceSymbolView::AmbiguousSymbol {
+                    path,
+                    name,
+                    candidate_lines,
+                }
+            }
+            ContextBundleView::SymbolNotFound {
+                relative_path,
+                symbol_names,
+                name,
+            } => {
+                return TraceSymbolView::SymbolNotFound {
+                    relative_path,
+                    symbol_names,
+                    name,
+                }
+            }
+            ContextBundleView::Found(view) => view,
+        };
+
+        let wants = |section: &str| -> bool {
+            sections
+                .map(|s| s.iter().any(|v| v.eq_ignore_ascii_case(section)))
+                .unwrap_or(true)
+        };
+
+        // Dependents: files that import the target file.
+        let dependents = if wants("dependents") {
+            self.capture_find_dependents_view(path)
+        } else {
+            FindDependentsView { files: vec![] }
+        };
+
+        // Siblings: symbols at the same depth in the same file.
+        let siblings = if wants("siblings") {
+            self.get_file(path)
+                .map(|file| {
+                    // Find the target symbol to get its depth.
+                    let target_depth = file
+                        .symbols
+                        .iter()
+                        .find(|s| {
+                            s.name == name
+                                && kind_filter
+                                    .map(|k| s.kind.to_string().eq_ignore_ascii_case(k))
+                                    .unwrap_or(true)
+                                && symbol_line.map(|l| s.line_range.0 == l).unwrap_or(true)
+                        })
+                        .map(|s| s.depth)
+                        .unwrap_or(0);
+
+                    file.symbols
+                        .iter()
+                        .filter(|s| s.depth == target_depth && s.name != name)
+                        .map(|s| SiblingSymbolView {
+                            name: s.name.clone(),
+                            kind_label: s.kind.to_string(),
+                            line_range: s.line_range,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            vec![]
+        };
+
+        // Trait implementations.
+        let implementations = if wants("implementations") {
+            self.capture_find_implementations_view(name, None)
+        } else {
+            FindImplementationsView { entries: vec![] }
+        };
+
+        TraceSymbolView::Found(TraceSymbolFoundView {
+            context_bundle: found,
+            dependents,
+            siblings,
+            implementations,
+            git_activity: None, // Filled in by the tool method which has access to git_temporal.
         })
     }
 
