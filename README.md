@@ -81,7 +81,7 @@ Current static resources:
 Current resource templates:
 
 - `tokenizor://file/context?path={path}&max_tokens={max_tokens}`
-- `tokenizor://file/content?path={path}&start_line={start_line}&end_line={end_line}`
+- `tokenizor://file/content?path={path}&start_line={start_line}&end_line={end_line}&show_line_numbers={show_line_numbers}&header={header}`
 - `tokenizor://symbol/detail?path={path}&name={name}&kind={kind}`
 - `tokenizor://symbol/context?name={name}&file={file}`
 
