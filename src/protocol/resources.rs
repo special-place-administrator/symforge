@@ -19,8 +19,7 @@ pub(crate) const REPO_CHANGES_URI: &str = "tokenizor://repo/changes/uncommitted"
 
 pub(crate) const FILE_CONTEXT_TEMPLATE: &str =
     "tokenizor://file/context?path={path}&max_tokens={max_tokens}";
-pub(crate) const FILE_CONTENT_TEMPLATE: &str =
-    "tokenizor://file/content?path={path}&start_line={start_line}&end_line={end_line}";
+pub(crate) const FILE_CONTENT_TEMPLATE: &str = "tokenizor://file/content?path={path}&start_line={start_line}&end_line={end_line}&show_line_numbers={show_line_numbers}&header={header}";
 pub(crate) const SYMBOL_DETAIL_TEMPLATE: &str =
     "tokenizor://symbol/detail?path={path}&name={name}&kind={kind}";
 pub(crate) const SYMBOL_CONTEXT_TEMPLATE: &str =
@@ -39,6 +38,8 @@ enum ResourceRequest {
         path: String,
         start_line: Option<u32>,
         end_line: Option<u32>,
+        show_line_numbers: Option<bool>,
+        header: Option<bool>,
     },
     SymbolDetail {
         path: String,
@@ -147,13 +148,22 @@ impl TokenizorServer {
                 path,
                 start_line,
                 end_line,
+                show_line_numbers,
+                header,
             } => {
                 self.get_file_content(Parameters(GetFileContentInput {
                     path,
                     start_line,
                     end_line,
+                    chunk_index: None,
+                    max_lines: None,
                     around_line: None,
+                    around_match: None,
+                    around_symbol: None,
+                    symbol_line: None,
                     context_lines: None,
+                    show_line_numbers,
+                    header,
                 }))
                 .await
             }
@@ -284,6 +294,8 @@ fn parse_resource_uri(uri: &str) -> Result<ResourceRequest, String> {
             path: required_query(&query, "path")?,
             start_line: optional_query(&query, "start_line").transpose()?,
             end_line: optional_query(&query, "end_line").transpose()?,
+            show_line_numbers: optional_query(&query, "show_line_numbers").transpose()?,
+            header: optional_query(&query, "header").transpose()?,
         }),
         (Some("symbol"), "/detail") => Ok(ResourceRequest::SymbolDetail {
             path: required_query(&query, "path")?,
@@ -414,6 +426,7 @@ mod tests {
             .iter()
             .map(|template| template.uri_template.as_str())
             .collect();
+        assert!(uris.contains(&FILE_CONTENT_TEMPLATE));
         assert!(uris.contains(&FILE_CONTEXT_TEMPLATE));
         assert!(uris.contains(&SYMBOL_CONTEXT_TEMPLATE));
     }
@@ -445,5 +458,24 @@ mod tests {
             other => panic!("expected text resource, got {other:?}"),
         };
         assert!(text.contains("src/main.rs"));
+    }
+
+    #[tokio::test]
+    async fn test_read_templated_file_content_resource_with_ordinary_read_flags() {
+        let server = make_server();
+        let uri = build_uri(
+            "tokenizor://file/content",
+            &[
+                ("path", Some("src/main.rs".to_string())),
+                ("show_line_numbers", Some("true".to_string())),
+                ("header", Some("true".to_string())),
+            ],
+        );
+        let result = server.read_resource_uri(&uri).await.expect("read resource");
+        let text = match &result.contents[0] {
+            ResourceContents::TextResourceContents { text, .. } => text,
+            other => panic!("expected text resource, got {other:?}"),
+        };
+        assert_eq!(text, "src/main.rs\n1: fn main() {}");
     }
 }
