@@ -41,6 +41,7 @@ jobs:
         uses: googleapis/release-please-action@v4
         with:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          include-component-in-tag: false
           config-file: .github/release-please-config.json
           manifest-file: .github/.release-please-manifest.json
 
@@ -54,19 +55,38 @@ jobs:
         run: |
           git fetch --tags --force
 
+          CANONICAL_TAG_RE='^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'
           TAG_NAME=""
           VERSION=""
 
           if [[ -n "$MANUAL_TAG" ]]; then
+            if [[ ! "$MANUAL_TAG" =~ $CANONICAL_TAG_RE ]]; then
+              echo "::error::Manual rebuild tags must use canonical vX.Y.Z format. Received '$MANUAL_TAG'."
+              exit 1
+            fi
             TAG_NAME="$MANUAL_TAG"
           elif [[ "$RELEASE_CREATED" == "true" ]]; then
+            if [[ -z "$RELEASE_VERSION" ]]; then
+              echo "::error::release-please did not return a version for the created release."
+              exit 1
+            fi
             TAG_NAME="$RELEASE_TAG"
             VERSION="$RELEASE_VERSION"
+            EXPECTED_TAG="v$RELEASE_VERSION"
+            if [[ "$TAG_NAME" != "$EXPECTED_TAG" ]]; then
+              echo "::error::release-please returned tag '$TAG_NAME' but the canonical tag for this repository is '$EXPECTED_TAG'."
+              exit 1
+            fi
           else
             TAG_NAME="$(git tag --points-at "$GITHUB_SHA" 'v*' | sort -V | tail -n1)"
           fi
 
           if [[ -n "$TAG_NAME" ]]; then
+            if [[ ! "$TAG_NAME" =~ $CANONICAL_TAG_RE ]]; then
+              echo "::error::Resolved release tag '$TAG_NAME' does not match canonical vX.Y.Z format."
+              exit 1
+            fi
+
             if ! git rev-parse -q --verify "refs/tags/$TAG_NAME" >/dev/null; then
               echo "::error::Tag '$TAG_NAME' does not exist in this repository."
               exit 1
@@ -192,6 +212,7 @@ jobs:
       - name: Upload assets to GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: gh release upload "${{ needs.prepare-release.outputs.tag_name }}" artifacts/* --clobber
 
   npm-publish:

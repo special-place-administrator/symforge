@@ -203,6 +203,7 @@ Current updater behavior:
 - On every launch, the client also refuses to reuse a recorded daemon unless its reported version and executable path match the current binary; incompatible daemons are replaced automatically.
 
 Release, publish, and recovery procedure lives in `docs/release-process.md`.
+Canonical release tags use plain `vX.Y.Z`.
 
 If your platform is not in the list above, build from source instead.
 

@@ -73,7 +73,13 @@ def normalize_tag(tag: str | None) -> str | None:
     cleaned = tag.strip()
     if not cleaned:
         return None
-    return cleaned[1:] if cleaned.startswith("v") else cleaned
+    if cleaned.startswith("v") and SEMVER_RE.fullmatch(cleaned[1:]):
+        return cleaned[1:]
+    if SEMVER_RE.fullmatch(cleaned):
+        return cleaned
+    raise VersionSyncError(
+        f"canonical release tags must use plain vX.Y.Z format, got '{cleaned}'."
+    )
 
 
 def check_versions(root: Path, tag: str | None = None) -> list[str]:
@@ -87,11 +93,15 @@ def check_versions(root: Path, tag: str | None = None) -> list[str]:
                 f"{label} version '{versions[label]}' does not match release manifest '{canonical}'."
             )
 
-    tag_version = normalize_tag(tag)
-    if tag_version is not None and tag_version != canonical:
-        problems.append(
-            f"tag version '{tag_version}' does not match release manifest '{canonical}'."
-        )
+    try:
+        tag_version = normalize_tag(tag)
+    except VersionSyncError as error:
+        problems.append(str(error))
+    else:
+        if tag_version is not None and tag_version != canonical:
+            problems.append(
+                f"tag version '{tag_version}' does not match release manifest '{canonical}'."
+            )
 
     return problems
 

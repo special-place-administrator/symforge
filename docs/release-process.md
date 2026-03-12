@@ -59,6 +59,12 @@ python execution/release_ops.py push-main
 python execution/release_ops.py rebuild --tag v0.3.12
 ```
 
+GitHub repository prerequisites:
+
+- Settings -> Actions -> General -> Workflow permissions = `Read and write`
+- Settings -> Actions -> General -> Allow GitHub Actions to create and approve pull requests = enabled
+- canonical release tags must use plain `vX.Y.Z`
+
 ## Standard Release Flow
 
 1. Merge normal feature and fix PRs into `main`.
@@ -66,6 +72,8 @@ python execution/release_ops.py rebuild --tag v0.3.12
 3. `release-please` updates or creates the release PR.
 4. Merge the release PR when the proposed version and changelog are acceptable.
 5. The same workflow run creates the GitHub release tag, builds binaries, uploads release assets, and publishes the npm tarball.
+
+`python execution/release_ops.py status` now prints the detected GitHub repository slug and, when `gh` is authenticated, the current workflow-permission state so a fresh terminal can verify the prerequisite without guessing.
 
 ## Installed Runtime Self-Healing
 
@@ -120,6 +128,8 @@ If the GitHub release exists but asset upload or npm publish failed:
 
 This avoids ad hoc local rebuilds and keeps recovery inside GitHub.
 
+If GitHub reports `release-please failed: GitHub Actions is not permitted to create or approve pull requests`, fix the two repository settings above first. That failure is a repository Actions-permission problem, not a version-sync problem.
+
 ## Secrets And Environments
 
 Required secret:
@@ -154,6 +164,7 @@ The normal CI workflow now checks:
 - release-version alignment across the release manifest, Cargo, and npm manifests
 
 The release workflow also re-checks the version alignment against the resolved tag before building publish artifacts.
+It also refuses noncanonical tags so component-prefixed legacy tags cannot silently slip back into the normal path.
 
 ## Files Involved
 

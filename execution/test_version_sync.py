@@ -50,6 +50,16 @@ class VersionSyncTests(unittest.TestCase):
             problems,
         )
 
+    def test_check_versions_rejects_noncanonical_tag_shape(self) -> None:
+        root = self.make_repo()
+
+        problems = version_sync.check_versions(root, tag="tokenizor_agentic_mcp-v0.3.12")
+
+        self.assertIn(
+            "canonical release tags must use plain vX.Y.Z format, got 'tokenizor_agentic_mcp-v0.3.12'.",
+            problems,
+        )
+
     def test_set_version_updates_manifest_and_publishable_packages(self) -> None:
         root = self.make_repo()
 
