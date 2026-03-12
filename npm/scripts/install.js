@@ -119,18 +119,14 @@ function createInstaller(overrides = {}) {
       return [];
     }
 
+    // NOTE: PowerShell -and operators must stay on the same line as their
+    // operands — semicolons are statement terminators, not line joiners.
     const script = [
       "$target = [System.IO.Path]::GetFullPath($env:TOKENIZOR_TARGET_BIN)",
       "$comparer = [System.StringComparer]::OrdinalIgnoreCase",
-      "$procs = Get-CimInstance Win32_Process | Where-Object {",
-      "  $_.Name -eq 'tokenizor-mcp.exe' -and $_.ExecutablePath -and",
-      "  $comparer.Equals([System.IO.Path]::GetFullPath($_.ExecutablePath), $target)",
-      "}",
+      "$procs = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'tokenizor-mcp.exe' -and $_.ExecutablePath -and $comparer.Equals([System.IO.Path]::GetFullPath($_.ExecutablePath), $target) }",
       "$ids = @($procs | ForEach-Object { [int]$_.ProcessId })",
-      "if ($ids.Count -gt 0) {",
-      "  Stop-Process -Id $ids -Force -ErrorAction SilentlyContinue",
-      "  $ids | ConvertTo-Json -Compress",
-      "}",
+      "if ($ids.Count -gt 0) { Stop-Process -Id $ids -Force -ErrorAction SilentlyContinue; $ids | ConvertTo-Json -Compress }",
     ].join("; ");
 
     try {
@@ -170,16 +166,12 @@ function createInstaller(overrides = {}) {
     if (processMod.platform === "win32") {
       // Match tokenizor-mcp.exe processes whose CommandLine contains " daemon"
       // This avoids killing the MCP stdio process that Claude Code is using.
+      // NOTE: PowerShell -and operators must stay on the same line as their
+      // operands — semicolons are statement terminators, not line joiners.
       const script = [
-        "$procs = Get-CimInstance Win32_Process | Where-Object {",
-        "  $_.Name -eq 'tokenizor-mcp.exe' -and $_.CommandLine -and",
-        "  $_.CommandLine -match '\\bdaemon\\b'",
-        "}",
+        "$procs = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'tokenizor-mcp.exe' -and $_.CommandLine -and $_.CommandLine -match '\\bdaemon\\b' }",
         "$ids = @($procs | ForEach-Object { [int]$_.ProcessId })",
-        "if ($ids.Count -gt 0) {",
-        "  Stop-Process -Id $ids -Force -ErrorAction SilentlyContinue",
-        "  $ids | ConvertTo-Json -Compress",
-        "}",
+        "if ($ids.Count -gt 0) { Stop-Process -Id $ids -Force -ErrorAction SilentlyContinue; $ids | ConvertTo-Json -Compress }",
       ].join("; ");
 
       try {
