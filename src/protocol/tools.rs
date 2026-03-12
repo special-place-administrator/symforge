@@ -23,7 +23,8 @@ use rmcp::{tool, tool_router};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::live_index::store::IndexState;
+use crate::domain::LanguageId;
+use crate::live_index::{IndexedFile, search, store::IndexState};
 use crate::protocol::format;
 use crate::sidecar::handlers::{
     ImpactParams, OutlineParams, SymbolContextParams, impact_tool_text, outline_tool_text,
@@ -84,6 +85,16 @@ pub struct SearchSymbolsInput {
     pub query: String,
     /// Optional kind filter using display names such as `fn`, `class`, or `interface`.
     pub kind: Option<String>,
+    /// Optional relative path prefix scope, for example `src/` or `src/protocol`.
+    pub path_prefix: Option<String>,
+    /// Optional canonical language name such as `Rust`, `TypeScript`, `C#`, or `C++`.
+    pub language: Option<String>,
+    /// Optional maximum number of matches to return (default 50, capped at 100).
+    pub limit: Option<u32>,
+    /// When true, include generated files in the result set.
+    pub include_generated: Option<bool>,
+    /// When true, include test files in the result set.
+    pub include_tests: Option<bool>,
 }
 
 /// Input for `search_text`.
@@ -95,6 +106,44 @@ pub struct SearchTextInput {
     pub terms: Option<Vec<String>>,
     /// Interpret `query` as a regex pattern instead of a literal substring.
     pub regex: Option<bool>,
+    /// Optional relative path prefix scope, for example `src/` or `src/protocol`.
+    pub path_prefix: Option<String>,
+    /// Optional canonical language name such as `Rust`, `TypeScript`, `C#`, or `C++`.
+    pub language: Option<String>,
+    /// Optional maximum number of matches to return across all files (default 50).
+    pub limit: Option<u32>,
+    /// Optional maximum number of matches to return per file (default 5).
+    pub max_per_file: Option<u32>,
+    /// When true, include generated files in the result set.
+    pub include_generated: Option<bool>,
+    /// When true, include test files in the result set.
+    pub include_tests: Option<bool>,
+    /// Optional repo-relative include glob, for example `src/**/*.ts`.
+    pub glob: Option<String>,
+    /// Optional repo-relative exclude glob, for example `**/*.spec.ts`.
+    pub exclude_glob: Option<String>,
+    /// Optional symmetric number of surrounding lines to render around each match.
+    pub context: Option<u32>,
+    /// Optional case-sensitivity override. Literal mode defaults to false; regex mode defaults to true.
+    pub case_sensitive: Option<bool>,
+    /// When true, require whole-word matches for literal searches. Not supported with `regex=true`.
+    pub whole_word: Option<bool>,
+}
+
+/// Input for `search_files`.
+#[derive(Deserialize, Serialize, JsonSchema)]
+pub struct SearchFilesInput {
+    /// Filename, folder name, or partial path.
+    pub query: String,
+    /// Optional maximum number of matches to return (default 20, capped at 50).
+    pub limit: Option<u32>,
+}
+
+/// Input for `resolve_path`.
+#[derive(Deserialize, Serialize, JsonSchema)]
+pub struct ResolvePathInput {
+    /// Filename, partial path, or ambiguous path hint.
+    pub hint: String,
 }
 
 /// Input for `index_folder`.
@@ -133,6 +182,12 @@ pub struct FindReferencesInput {
     pub name: String,
     /// Filter by reference kind: "call", "import", "type_usage", or "all" (default: "all").
     pub kind: Option<String>,
+    /// Optional exact-selector path from `search_symbols`, for example `src/db.rs`.
+    pub path: Option<String>,
+    /// Optional selected symbol kind such as `fn`, `class`, or `struct`.
+    pub symbol_kind: Option<String>,
+    /// Optional selected symbol line from `search_symbols`.
+    pub symbol_line: Option<u32>,
 }
 
 /// Input for `find_dependents`.
@@ -160,6 +215,8 @@ pub struct GetContextBundleInput {
     pub name: String,
     /// Optional kind filter for the symbol lookup (e.g., "fn", "struct").
     pub kind: Option<String>,
+    /// Optional selected symbol line from `search_symbols`.
+    pub symbol_line: Option<u32>,
 }
 
 /// Input for `get_file_context`.
@@ -178,6 +235,12 @@ pub struct GetSymbolContextInput {
     pub name: String,
     /// Optional file filter.
     pub file: Option<String>,
+    /// Optional exact-selector path from `search_symbols`.
+    pub path: Option<String>,
+    /// Optional selected symbol kind such as `fn`, `class`, or `struct`.
+    pub symbol_kind: Option<String>,
+    /// Optional selected symbol line from `search_symbols`.
+    pub symbol_line: Option<u32>,
 }
 
 /// Input for `analyze_file_impact`.
@@ -288,6 +351,108 @@ fn parse_git_name_only_paths(output: &str) -> Vec<String> {
         .collect()
 }
 
+fn parse_language_filter(input: Option<&str>) -> Result<Option<LanguageId>, String> {
+    let Some(language) = input.map(str::trim).filter(|language| !language.is_empty()) else {
+        return Ok(None);
+    };
+
+    let normalized = language.to_ascii_lowercase();
+    let parsed = match normalized.as_str() {
+        "rust" => Some(LanguageId::Rust),
+        "python" => Some(LanguageId::Python),
+        "javascript" => Some(LanguageId::JavaScript),
+        "typescript" => Some(LanguageId::TypeScript),
+        "go" => Some(LanguageId::Go),
+        "java" => Some(LanguageId::Java),
+        "c" => Some(LanguageId::C),
+        "c++" => Some(LanguageId::Cpp),
+        "c#" => Some(LanguageId::CSharp),
+        "ruby" => Some(LanguageId::Ruby),
+        "php" => Some(LanguageId::Php),
+        "swift" => Some(LanguageId::Swift),
+        "kotlin" => Some(LanguageId::Kotlin),
+        "dart" => Some(LanguageId::Dart),
+        "perl" => Some(LanguageId::Perl),
+        "elixir" => Some(LanguageId::Elixir),
+        _ => None,
+    };
+
+    parsed.map(Some).ok_or_else(|| {
+        "Unsupported language filter. Use one of: Rust, Python, JavaScript, TypeScript, Go, Java, C, C++, C#, Ruby, PHP, Swift, Kotlin, Dart, Perl, Elixir.".to_string()
+    })
+}
+
+fn normalize_path_prefix(input: Option<&str>) -> search::PathScope {
+    let Some(prefix) = input.map(str::trim).filter(|prefix| !prefix.is_empty()) else {
+        return search::PathScope::any();
+    };
+
+    let normalized = prefix
+        .replace('\\', "/")
+        .trim_start_matches("./")
+        .trim_start_matches('/')
+        .trim_end_matches('/')
+        .to_string();
+
+    if normalized.is_empty() {
+        search::PathScope::any()
+    } else {
+        search::PathScope::prefix(normalized)
+    }
+}
+
+fn normalize_search_text_glob(input: Option<&str>) -> Option<String> {
+    input
+        .map(str::trim)
+        .filter(|pattern| !pattern.is_empty())
+        .map(|pattern| {
+            pattern
+                .replace('\\', "/")
+                .trim_start_matches("./")
+                .trim_start_matches('/')
+                .to_string()
+        })
+        .filter(|pattern| !pattern.is_empty())
+}
+
+fn search_symbols_options_from_input(
+    input: &SearchSymbolsInput,
+) -> Result<search::SymbolSearchOptions, String> {
+    Ok(search::SymbolSearchOptions {
+        path_scope: normalize_path_prefix(input.path_prefix.as_deref()),
+        search_scope: search::SearchScope::Code,
+        result_limit: search::ResultLimit::new(input.limit.unwrap_or(50).min(100) as usize),
+        noise_policy: search::NoisePolicy {
+            include_generated: input.include_generated.unwrap_or(false),
+            include_tests: input.include_tests.unwrap_or(false),
+            include_vendor: true,
+        },
+        language_filter: parse_language_filter(input.language.as_deref())?,
+    })
+}
+
+fn search_text_options_from_input(
+    input: &SearchTextInput,
+) -> Result<search::TextSearchOptions, String> {
+    Ok(search::TextSearchOptions {
+        path_scope: normalize_path_prefix(input.path_prefix.as_deref()),
+        search_scope: search::SearchScope::Code,
+        noise_policy: search::NoisePolicy {
+            include_generated: input.include_generated.unwrap_or(false),
+            include_tests: input.include_tests.unwrap_or(false),
+            include_vendor: true,
+        },
+        language_filter: parse_language_filter(input.language.as_deref())?,
+        total_limit: input.limit.unwrap_or(50) as usize,
+        max_per_file: input.max_per_file.unwrap_or(5) as usize,
+        glob: normalize_search_text_glob(input.glob.as_deref()),
+        exclude_glob: normalize_search_text_glob(input.exclude_glob.as_deref()),
+        context: input.context.map(|context| context as usize),
+        case_sensitive: input.case_sensitive,
+        whole_word: input.whole_word.unwrap_or(false),
+    })
+}
+
 fn sidecar_state_for_server(server: &TokenizorServer) -> SidecarState {
     SidecarState {
         index: Arc::clone(&server.index),
@@ -295,6 +460,22 @@ fn sidecar_state_for_server(server: &TokenizorServer) -> SidecarState {
         repo_root: server.repo_root.clone(),
         symbol_cache: Arc::new(RwLock::new(HashMap::new())),
     }
+}
+
+enum CapturedGetSymbolsEntry {
+    SymbolLookup {
+        file: Arc<IndexedFile>,
+        name: String,
+        kind: Option<String>,
+    },
+    CodeSlice {
+        file: Arc<IndexedFile>,
+        start_byte: usize,
+        end_byte: Option<usize>,
+    },
+    FileNotFound {
+        path: String,
+    },
 }
 
 // ─── Tool handlers ───────────────────────────────────────────────────────────
@@ -316,6 +497,23 @@ macro_rules! loading_guard {
     };
 }
 
+fn loading_guard_message_from_published(
+    published: &crate::live_index::PublishedIndexState,
+) -> Option<String> {
+    match published.status {
+        crate::live_index::PublishedIndexStatus::Ready => None,
+        crate::live_index::PublishedIndexStatus::Empty => Some(format::empty_guard_message()),
+        crate::live_index::PublishedIndexStatus::Loading => Some(format::loading_guard_message()),
+        crate::live_index::PublishedIndexStatus::Degraded => Some(format!(
+            "Index degraded: {}",
+            published
+                .degraded_summary
+                .as_deref()
+                .unwrap_or("circuit breaker tripped")
+        )),
+    }
+}
+
 #[tool_router(vis = "pub(crate)")]
 impl TokenizorServer {
     /// Return the symbol outline for a file. Shows functions, structs, classes with line ranges.
@@ -326,11 +524,15 @@ impl TokenizorServer {
         if let Some(result) = self.proxy_tool_call("get_file_outline", &params.0).await {
             return result;
         }
-        let guard = self.index.read().expect("lock poisoned");
-        loading_guard!(guard);
-        let result = format::file_outline(&guard, &params.0.path);
-        drop(guard);
-        result
+        let file = {
+            let guard = self.index.read().expect("lock poisoned");
+            loading_guard!(guard);
+            guard.capture_shared_file(&params.0.path)
+        };
+        match file {
+            Some(file) => format::file_outline_from_indexed_file(file.as_ref()),
+            None => format::not_found_file(&params.0.path),
+        }
     }
 
     /// Look up a specific symbol by file path and name. Returns full source code.
@@ -341,16 +543,19 @@ impl TokenizorServer {
         if let Some(result) = self.proxy_tool_call("get_symbol", &params.0).await {
             return result;
         }
-        let guard = self.index.read().expect("lock poisoned");
-        loading_guard!(guard);
-        let result = format::symbol_detail(
-            &guard,
-            &params.0.path,
-            &params.0.name,
-            params.0.kind.as_deref(),
-        );
-        drop(guard);
-        result
+        let file = {
+            let guard = self.index.read().expect("lock poisoned");
+            loading_guard!(guard);
+            guard.capture_shared_file(&params.0.path)
+        };
+        match file {
+            Some(file) => format::symbol_detail_from_indexed_file(
+                file.as_ref(),
+                &params.0.name,
+                params.0.kind.as_deref(),
+            ),
+            None => format::not_found_file(&params.0.path),
+        }
     }
 
     /// Batch lookup of symbols or code slices. Each target can be a symbol name or byte range.
@@ -361,38 +566,54 @@ impl TokenizorServer {
         if let Some(result) = self.proxy_tool_call("get_symbols", &params.0).await {
             return result;
         }
-        let guard = self.index.read().expect("lock poisoned");
-        loading_guard!(guard);
+        let captured = {
+            let guard = self.index.read().expect("lock poisoned");
+            loading_guard!(guard);
 
-        let mut results: Vec<String> = Vec::new();
-        for target in &params.0.targets {
-            let entry = match target.name.as_deref() {
-                Some(name) => {
-                    // Symbol lookup
-                    format::symbol_detail(&guard, &target.path, name, target.kind.as_deref())
+            params
+                .0
+                .targets
+                .iter()
+                .map(|target| match target.name.as_deref() {
+                    Some(name) => match guard.capture_shared_file(&target.path) {
+                        Some(file) => CapturedGetSymbolsEntry::SymbolLookup {
+                            file,
+                            name: name.to_string(),
+                            kind: target.kind.clone(),
+                        },
+                        None => CapturedGetSymbolsEntry::FileNotFound {
+                            path: target.path.clone(),
+                        },
+                    },
+                    None => match guard.capture_shared_file(&target.path) {
+                        None => CapturedGetSymbolsEntry::FileNotFound {
+                            path: target.path.clone(),
+                        },
+                        Some(file) => CapturedGetSymbolsEntry::CodeSlice {
+                            file,
+                            start_byte: target.start_byte.unwrap_or(0) as usize,
+                            end_byte: target.end_byte.map(|e| e as usize),
+                        },
+                    },
+                })
+                .collect::<Vec<_>>()
+        };
+
+        captured
+            .into_iter()
+            .map(|entry| match entry {
+                CapturedGetSymbolsEntry::SymbolLookup { file, name, kind } => {
+                    format::symbol_detail_from_indexed_file(file.as_ref(), &name, kind.as_deref())
                 }
-                None => {
-                    // Code slice by byte range
-                    match guard.get_file(&target.path) {
-                        None => format::not_found_file(&target.path),
-                        Some(file) => {
-                            let start = target.start_byte.unwrap_or(0) as usize;
-                            let end = target
-                                .end_byte
-                                .map(|e| e as usize)
-                                .unwrap_or(file.content.len());
-                            let end = end.min(file.content.len());
-                            let slice = &file.content[start.min(end)..end];
-                            let text = String::from_utf8_lossy(slice).into_owned();
-                            format!("{}\n{}", target.path, text)
-                        }
-                    }
-                }
-            };
-            results.push(entry);
-        }
-        drop(guard);
-        results.join("\n---\n")
+                CapturedGetSymbolsEntry::CodeSlice {
+                    file,
+                    start_byte,
+                    end_byte,
+                } => format::code_slice_from_indexed_file(file.as_ref(), start_byte, end_byte),
+                CapturedGetSymbolsEntry::FileNotFound { path } => format::not_found_file(&path),
+            })
+            .collect::<Vec<_>>()
+            .join("\n---\n")
     }
 
     /// Show the file tree with language and symbol counts per file.
@@ -404,11 +625,12 @@ impl TokenizorServer {
         {
             return result;
         }
-        let guard = self.index.read().expect("lock poisoned");
-        loading_guard!(guard);
-        let result = format::repo_outline(&guard, &self.project_name.clone());
-        drop(guard);
-        result
+        let published = self.index.published_state();
+        if let Some(message) = loading_guard_message_from_published(&published) {
+            return message;
+        }
+        let view = self.index.published_repo_outline();
+        format::repo_outline_view(&view, &self.project_name)
     }
 
     /// Show the compact repo map used for session-start enrichment.
@@ -476,6 +698,9 @@ impl TokenizorServer {
         let symbol_context = SymbolContextParams {
             name: params.0.name.clone(),
             file: params.0.file.clone(),
+            path: params.0.path.clone(),
+            symbol_kind: params.0.symbol_kind.clone(),
+            symbol_line: params.0.symbol_line,
         };
         match symbol_context_tool_text(&state, &symbol_context) {
             Ok(result) => result,
@@ -521,15 +746,21 @@ impl TokenizorServer {
         if let Some(result) = self.proxy_tool_call("search_symbols", &params.0).await {
             return result;
         }
-        let guard = self.index.read().expect("lock poisoned");
-        loading_guard!(guard);
-        let result = format::search_symbols_result_with_kind(
-            &guard,
-            &params.0.query,
-            params.0.kind.as_deref(),
-        );
-        drop(guard);
-        result
+        let options = match search_symbols_options_from_input(&params.0) {
+            Ok(options) => options,
+            Err(message) => return message,
+        };
+        let result = {
+            let guard = self.index.read().expect("lock poisoned");
+            loading_guard!(guard);
+            search::search_symbols_with_options(
+                &guard,
+                &params.0.query,
+                params.0.kind.as_deref(),
+                &options,
+            )
+        };
+        format::search_symbols_result_view(&result, &params.0.query)
     }
 
     /// Full-text search across all indexed file contents.
@@ -538,16 +769,52 @@ impl TokenizorServer {
         if let Some(result) = self.proxy_tool_call("search_text", &params.0).await {
             return result;
         }
-        let guard = self.index.read().expect("lock poisoned");
-        loading_guard!(guard);
-        let result = format::search_text_result_with_options(
-            &guard,
-            params.0.query.as_deref(),
-            params.0.terms.as_deref(),
-            params.0.regex.unwrap_or(false),
-        );
-        drop(guard);
-        result
+        let options = match search_text_options_from_input(&params.0) {
+            Ok(options) => options,
+            Err(message) => return message,
+        };
+        let result = {
+            let guard = self.index.read().expect("lock poisoned");
+            loading_guard!(guard);
+            search::search_text_with_options(
+                &guard,
+                params.0.query.as_deref(),
+                params.0.terms.as_deref(),
+                params.0.regex.unwrap_or(false),
+                &options,
+            )
+        };
+        format::search_text_result_view(result)
+    }
+
+    /// Search indexed file paths using bounded ranked code-lane discovery.
+    #[tool(description = "Search indexed file paths using bounded ranked code-lane discovery.")]
+    pub(crate) async fn search_files(&self, params: Parameters<SearchFilesInput>) -> String {
+        if let Some(result) = self.proxy_tool_call("search_files", &params.0).await {
+            return result;
+        }
+        let view = {
+            let guard = self.index.read().expect("lock poisoned");
+            loading_guard!(guard);
+            guard.capture_search_files_view(&params.0.query, params.0.limit.unwrap_or(20) as usize)
+        };
+        format::search_files_result_view(&view)
+    }
+
+    /// Resolve filenames, partial paths, and ambiguous path hints to one exact indexed project path.
+    #[tool(
+        description = "Resolve filenames, partial paths, and ambiguous path hints to one exact indexed project path."
+    )]
+    pub(crate) async fn resolve_path(&self, params: Parameters<ResolvePathInput>) -> String {
+        if let Some(result) = self.proxy_tool_call("resolve_path", &params.0).await {
+            return result;
+        }
+        let view = {
+            let guard = self.index.read().expect("lock poisoned");
+            loading_guard!(guard);
+            guard.capture_resolve_path_view(&params.0.hint)
+        };
+        format::resolve_path_result_view(&view)
     }
 
     /// Report server health: index status, file counts, load duration, watcher state.
@@ -562,11 +829,9 @@ impl TokenizorServer {
         if let Some(result) = self.proxy_tool_call_without_params("health").await {
             return result;
         }
-        let guard = self.index.read().expect("lock poisoned");
+        let published = self.index.published_state();
         let watcher_guard = self.watcher_info.lock().unwrap();
-        let mut result = format::health_report_with_watcher(&guard, &watcher_guard);
-        drop(watcher_guard);
-        drop(guard);
+        let mut result = format::health_report_from_published_state(&published, &watcher_guard);
 
         // Append token savings section if the sidecar's TokenStats are available.
         if let Some(ref stats) = self.token_stats {
@@ -590,12 +855,11 @@ impl TokenizorServer {
             return result;
         }
         let root = PathBuf::from(&params.0.path);
-        let mut guard = self.index.write().expect("lock poisoned");
-        match guard.reload(&root) {
+        match self.index.reload(&root) {
             Ok(()) => {
-                let file_count = guard.file_count();
-                let symbol_count = guard.symbol_count();
-                drop(guard);
+                let published = self.index.published_state();
+                let file_count = published.file_count;
+                let symbol_count = published.symbol_count;
 
                 // Restart the file watcher at the new root so freshness continues.
                 crate::watcher::restart_watcher(
@@ -626,11 +890,12 @@ impl TokenizorServer {
 
         match mode {
             WhatChangedMode::Timestamp(since_ts) => {
-                let guard = self.index.read().expect("lock poisoned");
-                loading_guard!(guard);
-                let result = format::what_changed_result(&guard, since_ts);
-                drop(guard);
-                result
+                let view = {
+                    let guard = self.index.read().expect("lock poisoned");
+                    loading_guard!(guard);
+                    guard.capture_what_changed_timestamp_view()
+                };
+                format::what_changed_timestamp_view(&view, since_ts)
             }
             WhatChangedMode::Uncommitted => {
                 let guard = self.index.read().expect("lock poisoned");
@@ -678,16 +943,25 @@ impl TokenizorServer {
         if let Some(result) = self.proxy_tool_call("get_file_content", &params.0).await {
             return result;
         }
-        let guard = self.index.read().expect("lock poisoned");
-        loading_guard!(guard);
-        let result = format::file_content(
-            &guard,
-            &params.0.path,
+        let options = search::FileContentOptions::for_explicit_path_read(
+            params.0.path.clone(),
             params.0.start_line,
             params.0.end_line,
         );
-        drop(guard);
-        result
+        let file = {
+            let guard = self.index.read().expect("lock poisoned");
+            loading_guard!(guard);
+            guard.capture_shared_file_for_scope(&options.path_scope)
+        };
+        match file {
+            Some(file) => {
+                format::file_content_from_indexed_file_with_context(
+                    file.as_ref(),
+                    options.content_context,
+                )
+            }
+            None => format::not_found_file(&params.0.path),
+        }
     }
 
     /// Find all references (call sites, imports, type usages) for a symbol across the codebase.
@@ -698,12 +972,26 @@ impl TokenizorServer {
         if let Some(result) = self.proxy_tool_call("find_references", &params.0).await {
             return result;
         }
-        let guard = self.index.read().expect("lock poisoned");
-        loading_guard!(guard);
         let input = &params.0;
-        let result = format::find_references_result(&guard, &input.name, input.kind.as_deref());
-        drop(guard);
-        result
+        let result = {
+            let guard = self.index.read().expect("lock poisoned");
+            loading_guard!(guard);
+            if let Some(path) = input.path.as_deref() {
+                guard.capture_find_references_view_for_symbol(
+                    path,
+                    &input.name,
+                    input.symbol_kind.as_deref(),
+                    input.symbol_line,
+                    input.kind.as_deref(),
+                )
+            } else {
+                Ok(guard.capture_find_references_view(&input.name, input.kind.as_deref()))
+            }
+        };
+        match result {
+            Ok(view) => format::find_references_result_view(&view, &input.name),
+            Err(error) => error,
+        }
     }
 
     /// Find all files that import or depend on the given file.
@@ -712,12 +1000,13 @@ impl TokenizorServer {
         if let Some(result) = self.proxy_tool_call("find_dependents", &params.0).await {
             return result;
         }
-        let guard = self.index.read().expect("lock poisoned");
-        loading_guard!(guard);
         let input = &params.0;
-        let result = format::find_dependents_result(&guard, &input.path);
-        drop(guard);
-        result
+        let view = {
+            let guard = self.index.read().expect("lock poisoned");
+            loading_guard!(guard);
+            guard.capture_find_dependents_view(&input.path)
+        };
+        format::find_dependents_result_view(&view, &input.path)
     }
 
     /// Browse the source file tree with symbol counts per file and directory.
@@ -726,13 +1015,14 @@ impl TokenizorServer {
         if let Some(result) = self.proxy_tool_call("get_file_tree", &params.0).await {
             return result;
         }
-        let guard = self.index.read().expect("lock poisoned");
-        loading_guard!(guard);
+        let published = self.index.published_state();
+        if let Some(message) = loading_guard_message_from_published(&published) {
+            return message;
+        }
         let path = params.0.path.as_deref().unwrap_or("");
         let depth = params.0.depth.unwrap_or(2).min(5);
-        let result = format::file_tree(&guard, path, depth);
-        drop(guard);
-        result
+        let view = self.index.published_repo_outline();
+        format::file_tree_view(&view.files, path, depth)
     }
 
     /// Get full context for a symbol: definition body, callers, callees, and type usages in one call.
@@ -746,13 +1036,18 @@ impl TokenizorServer {
         if let Some(result) = self.proxy_tool_call("get_context_bundle", &params.0).await {
             return result;
         }
-        let guard = self.index.read().expect("lock poisoned");
-        loading_guard!(guard);
         let input = &params.0;
-        let result =
-            format::context_bundle_result(&guard, &input.path, &input.name, input.kind.as_deref());
-        drop(guard);
-        result
+        let view = {
+            let guard = self.index.read().expect("lock poisoned");
+            loading_guard!(guard);
+            guard.capture_context_bundle_view(
+                &input.path,
+                &input.name,
+                input.kind.as_deref(),
+                input.symbol_line,
+            )
+        };
+        format::context_bundle_result_view(&view)
     }
 }
 
@@ -765,7 +1060,7 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::process::Command;
-    use std::sync::{Arc, RwLock};
+    use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     use crate::domain::{LanguageId, ReferenceKind, ReferenceRecord, SymbolKind, SymbolRecord};
@@ -793,6 +1088,7 @@ mod tests {
             IndexedFile {
                 relative_path: path.to_string(),
                 language: LanguageId::Rust,
+                classification: crate::domain::FileClassification::for_code_path(path),
                 content: content.to_vec(),
                 symbols,
                 parse_status: ParseStatus::Parsed,
@@ -815,9 +1111,29 @@ mod tests {
         (key, file)
     }
 
+    fn make_ref(
+        name: &str,
+        qualified_name: Option<&str>,
+        kind: ReferenceKind,
+        line: u32,
+        enclosing_symbol_index: Option<u32>,
+    ) -> ReferenceRecord {
+        ReferenceRecord {
+            name: name.to_string(),
+            qualified_name: qualified_name.map(str::to_string),
+            kind,
+            byte_range: (line * 10, line * 10 + 6),
+            line_range: (line, line),
+            enclosing_symbol_index,
+        }
+    }
+
     fn make_live_index_ready(files: Vec<(String, IndexedFile)>) -> LiveIndex {
         use crate::live_index::trigram::TrigramIndex;
-        let files_map = files.into_iter().collect::<HashMap<_, _>>();
+        let files_map = files
+            .into_iter()
+            .map(|(path, file)| (path, std::sync::Arc::new(file)))
+            .collect::<HashMap<_, _>>();
         let trigram_index = TrigramIndex::build_from_files(&files_map);
         let mut index = LiveIndex {
             files: files_map,
@@ -826,10 +1142,15 @@ mod tests {
             load_duration: Duration::from_millis(10),
             cb_state: CircuitBreakerState::new(0.20),
             is_empty: false,
+            load_source: crate::live_index::store::IndexLoadSource::FreshLoad,
+            snapshot_verify_state: crate::live_index::store::SnapshotVerifyState::NotNeeded,
             reverse_index: HashMap::new(),
+            files_by_basename: HashMap::new(),
+            files_by_dir_component: HashMap::new(),
             trigram_index,
         };
         index.rebuild_reverse_index();
+        index.rebuild_path_indices();
         index
     }
 
@@ -842,7 +1163,11 @@ mod tests {
             load_duration: Duration::ZERO,
             cb_state: CircuitBreakerState::new(0.20),
             is_empty: true,
+            load_source: crate::live_index::store::IndexLoadSource::EmptyBootstrap,
+            snapshot_verify_state: crate::live_index::store::SnapshotVerifyState::NotNeeded,
             reverse_index: HashMap::new(),
+            files_by_basename: HashMap::new(),
+            files_by_dir_component: HashMap::new(),
             trigram_index: TrigramIndex::new(),
         }
     }
@@ -864,7 +1189,11 @@ mod tests {
             load_duration: Duration::ZERO,
             cb_state: cb,
             is_empty: false,
+            load_source: crate::live_index::store::IndexLoadSource::FreshLoad,
+            snapshot_verify_state: crate::live_index::store::SnapshotVerifyState::NotNeeded,
             reverse_index: HashMap::new(),
+            files_by_basename: HashMap::new(),
+            files_by_dir_component: HashMap::new(),
             trigram_index: TrigramIndex::new(),
         }
     }
@@ -872,7 +1201,7 @@ mod tests {
     fn make_server_with_root(index: LiveIndex, repo_root: Option<PathBuf>) -> TokenizorServer {
         use crate::watcher::WatcherInfo;
         use std::sync::Mutex;
-        let shared = Arc::new(RwLock::new(index));
+        let shared = crate::live_index::SharedIndexHandle::shared(index);
         let watcher_info = Arc::new(Mutex::new(WatcherInfo::default()));
         TokenizorServer::new(
             shared,
@@ -1032,6 +1361,13 @@ mod tests {
             result.contains("test_project"),
             "repo outline should use project_name, got: {result}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_get_repo_outline_loading_guard_empty() {
+        let server = make_server(make_live_index_empty());
+        let result = server.get_repo_outline().await;
+        assert_eq!(result, crate::protocol::format::empty_guard_message());
     }
 
     #[tokio::test]
@@ -1205,6 +1541,9 @@ mod tests {
             .get_symbol_context(Parameters(super::GetSymbolContextInput {
                 name: "target".to_string(),
                 file: None,
+                path: None,
+                symbol_kind: None,
+                symbol_line: None,
             }))
             .await;
 
@@ -1216,6 +1555,133 @@ mod tests {
             result.contains("in fn caller"),
             "symbol context should include enclosing symbol names; got: {result}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_get_symbol_context_exact_selector_excludes_unrelated_same_name_hits() {
+        let target = make_file(
+            "src/db.rs",
+            b"pub fn connect() {}\n",
+            vec![make_symbol("connect", SymbolKind::Function, 1, 1)],
+        );
+        let dependent = make_file_with_refs(
+            "src/service.rs",
+            b"use crate::db::connect;\nfn run() { connect(); }\n",
+            vec![make_symbol("run", SymbolKind::Function, 2, 2)],
+            vec![
+                make_ref("db", Some("crate::db"), ReferenceKind::Import, 0, None),
+                make_ref(
+                    "connect",
+                    Some("crate::db::connect"),
+                    ReferenceKind::Call,
+                    1,
+                    Some(0),
+                ),
+            ],
+        );
+        let unrelated = make_file_with_refs(
+            "src/other.rs",
+            b"fn run() { connect(); }\n",
+            vec![make_symbol("run", SymbolKind::Function, 1, 1)],
+            vec![make_ref("connect", None, ReferenceKind::Call, 0, Some(0))],
+        );
+        let server = make_server(make_live_index_ready(vec![target, dependent, unrelated]));
+
+        let result = server
+            .get_symbol_context(Parameters(super::GetSymbolContextInput {
+                name: "connect".to_string(),
+                file: None,
+                path: Some("src/db.rs".to_string()),
+                symbol_kind: Some("fn".to_string()),
+                symbol_line: Some(1),
+            }))
+            .await;
+
+        assert!(result.contains("src/service.rs"), "expected dependent hit: {result}");
+        assert!(
+            !result.contains("src/other.rs"),
+            "unrelated same-name file should be excluded: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_symbol_context_exact_selector_requires_line_for_ambiguous_symbol() {
+        let target = make_file(
+            "src/db.rs",
+            b"fn connect() {}\nfn connect() {}\n",
+            vec![
+                make_symbol("connect", SymbolKind::Function, 1, 1),
+                make_symbol("connect", SymbolKind::Function, 2, 2),
+            ],
+        );
+        let server = make_server(make_live_index_ready(vec![target]));
+
+        let result = server
+            .get_symbol_context(Parameters(super::GetSymbolContextInput {
+                name: "connect".to_string(),
+                file: None,
+                path: Some("src/db.rs".to_string()),
+                symbol_kind: Some("fn".to_string()),
+                symbol_line: None,
+            }))
+            .await;
+
+        assert!(result.contains("Ambiguous symbol selector"), "got: {result}");
+        assert!(result.contains("1"), "got: {result}");
+        assert!(result.contains("2"), "got: {result}");
+    }
+
+    #[tokio::test]
+    async fn test_get_symbol_context_exact_selector_respects_file_filter() {
+        let target = make_file(
+            "src/db.rs",
+            b"pub fn connect() {}\n",
+            vec![make_symbol("connect", SymbolKind::Function, 1, 1)],
+        );
+        let service = make_file_with_refs(
+            "src/service.rs",
+            b"use crate::db::connect;\nfn run() { connect(); }\n",
+            vec![make_symbol("run", SymbolKind::Function, 2, 2)],
+            vec![
+                make_ref("db", Some("crate::db"), ReferenceKind::Import, 0, None),
+                make_ref(
+                    "connect",
+                    Some("crate::db::connect"),
+                    ReferenceKind::Call,
+                    1,
+                    Some(0),
+                ),
+            ],
+        );
+        let api = make_file_with_refs(
+            "src/api.rs",
+            b"use crate::db::connect;\nfn expose() { connect(); }\n",
+            vec![make_symbol("expose", SymbolKind::Function, 2, 2)],
+            vec![
+                make_ref("db", Some("crate::db"), ReferenceKind::Import, 0, None),
+                make_ref(
+                    "connect",
+                    Some("crate::db::connect"),
+                    ReferenceKind::Call,
+                    1,
+                    Some(0),
+                ),
+            ],
+        );
+        let server = make_server(make_live_index_ready(vec![target, service, api]));
+
+        let result = server
+            .get_symbol_context(Parameters(super::GetSymbolContextInput {
+                name: "connect".to_string(),
+                file: Some("src/service.rs".to_string()),
+                path: Some("src/db.rs".to_string()),
+                symbol_kind: Some("fn".to_string()),
+                symbol_line: Some(1),
+            }))
+            .await;
+
+        assert!(result.contains("src/service.rs"), "got: {result}");
+        assert!(!result.contains("src/api.rs"), "got: {result}");
     }
 
     #[tokio::test]
@@ -1254,6 +1720,11 @@ mod tests {
             .search_symbols(Parameters(super::SearchSymbolsInput {
                 query: "find".to_string(),
                 kind: None,
+                path_prefix: None,
+                language: None,
+                limit: None,
+                include_generated: None,
+                include_tests: None,
             }))
             .await;
         assert!(
@@ -1276,6 +1747,11 @@ mod tests {
             .search_symbols(Parameters(super::SearchSymbolsInput {
                 query: "job".to_string(),
                 kind: Some("class".to_string()),
+                path_prefix: None,
+                language: None,
+                limit: None,
+                include_generated: None,
+                include_tests: None,
             }))
             .await;
         assert!(
@@ -1289,6 +1765,178 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_search_symbols_hides_generated_and_test_noise_by_default() {
+        let server = make_server(make_live_index_ready(vec![
+            make_file(
+                "src/job.rs",
+                b"struct Job {}\n",
+                vec![make_symbol("Job", SymbolKind::Class, 1, 1)],
+            ),
+            make_file(
+                "src/generated/job_generated.rs",
+                b"struct JobGenerated {}\n",
+                vec![make_symbol("JobGenerated", SymbolKind::Class, 2, 2)],
+            ),
+            make_file(
+                "tests/job_test.rs",
+                b"struct JobTest {}\n",
+                vec![make_symbol("JobTest", SymbolKind::Class, 3, 3)],
+            ),
+        ]));
+
+        let result = server
+            .search_symbols(Parameters(super::SearchSymbolsInput {
+                query: "job".to_string(),
+                kind: Some("class".to_string()),
+                path_prefix: None,
+                language: None,
+                limit: None,
+                include_generated: None,
+                include_tests: None,
+            }))
+            .await;
+
+        assert!(result.contains("class Job"), "expected primary hit: {result}");
+        assert!(
+            !result.contains("JobGenerated"),
+            "generated symbol noise should be hidden by default: {result}"
+        );
+        assert!(
+            !result.contains("JobTest"),
+            "test symbol noise should be hidden by default: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_symbols_tool_can_include_generated_without_tests() {
+        let server = make_server(make_live_index_ready(vec![
+            make_file(
+                "src/job.rs",
+                b"struct Job {}\n",
+                vec![make_symbol("Job", SymbolKind::Class, 1, 1)],
+            ),
+            make_file(
+                "src/generated/job_generated.rs",
+                b"struct JobGenerated {}\n",
+                vec![make_symbol("JobGenerated", SymbolKind::Class, 2, 2)],
+            ),
+            make_file(
+                "tests/job_test.rs",
+                b"struct JobTest {}\n",
+                vec![make_symbol("JobTest", SymbolKind::Class, 3, 3)],
+            ),
+        ]));
+
+        let result = server
+            .search_symbols(Parameters(super::SearchSymbolsInput {
+                query: "job".to_string(),
+                kind: Some("class".to_string()),
+                path_prefix: None,
+                language: None,
+                limit: None,
+                include_generated: Some(true),
+                include_tests: None,
+            }))
+            .await;
+
+        assert!(result.contains("class Job"), "expected primary hit: {result}");
+        assert!(
+            result.contains("JobGenerated"),
+            "generated symbol should be visible when opted in: {result}"
+        );
+        assert!(
+            !result.contains("JobTest"),
+            "test noise should stay hidden without explicit opt-in: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_symbols_tool_can_include_tests_without_generated() {
+        let server = make_server(make_live_index_ready(vec![
+            make_file(
+                "src/job.rs",
+                b"struct Job {}\n",
+                vec![make_symbol("Job", SymbolKind::Class, 1, 1)],
+            ),
+            make_file(
+                "src/generated/job_generated.rs",
+                b"struct JobGenerated {}\n",
+                vec![make_symbol("JobGenerated", SymbolKind::Class, 2, 2)],
+            ),
+            make_file(
+                "tests/job_test.rs",
+                b"struct JobTest {}\n",
+                vec![make_symbol("JobTest", SymbolKind::Class, 3, 3)],
+            ),
+        ]));
+
+        let result = server
+            .search_symbols(Parameters(super::SearchSymbolsInput {
+                query: "job".to_string(),
+                kind: Some("class".to_string()),
+                path_prefix: None,
+                language: None,
+                limit: None,
+                include_generated: None,
+                include_tests: Some(true),
+            }))
+            .await;
+
+        assert!(result.contains("class Job"), "expected primary hit: {result}");
+        assert!(
+            !result.contains("JobGenerated"),
+            "generated noise should stay hidden without explicit opt-in: {result}"
+        );
+        assert!(
+            result.contains("JobTest"),
+            "test symbol should be visible when opted in: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_symbols_tool_respects_scope_language_limit_and_kind() {
+        let rust_model = make_file(
+            "src/models/job.rs",
+            b"struct Job {}\nfn JobRunner() {}\n",
+            vec![
+                make_symbol("Job", SymbolKind::Class, 1, 1),
+                make_symbol("JobRunner", SymbolKind::Function, 2, 2),
+            ],
+        );
+        let mut ts_ui = make_file(
+            "src/ui/job.ts",
+            b"class JobCard {}\nclass JobList {}\n",
+            vec![
+                make_symbol("JobCard", SymbolKind::Class, 1, 1),
+                make_symbol("JobList", SymbolKind::Class, 2, 2),
+            ],
+        );
+        ts_ui.1.language = LanguageId::TypeScript;
+        let server = make_server(make_live_index_ready(vec![rust_model, ts_ui]));
+
+        let result = server
+            .search_symbols(Parameters(super::SearchSymbolsInput {
+                query: "job".to_string(),
+                kind: Some("class".to_string()),
+                path_prefix: Some("src/ui".to_string()),
+                language: Some("TypeScript".to_string()),
+                limit: Some(1),
+                include_generated: None,
+                include_tests: None,
+            }))
+            .await;
+
+        assert!(result.contains("1 matches in 1 files"), "expected bounded output: {result}");
+        assert!(result.contains("class JobCard"), "expected scoped class hit: {result}");
+        assert!(!result.contains("JobList"), "limit should truncate later hits: {result}");
+        assert!(
+            !result.contains("src/models/job.rs"),
+            "path scope should exclude rust model: {result}"
+        );
+        assert!(!result.contains("fn JobRunner"), "kind filter should exclude function: {result}");
+    }
+
+    #[tokio::test]
     async fn test_search_text_returns_results() {
         let (key, file) = make_file("src/lib.rs", b"fn find_user() {}", vec![]);
         let server = make_server(make_live_index_ready(vec![(key, file)]));
@@ -1297,6 +1945,17 @@ mod tests {
                 query: Some("find".to_string()),
                 terms: None,
                 regex: None,
+                path_prefix: None,
+                language: None,
+                limit: None,
+                max_per_file: None,
+                include_generated: None,
+                include_tests: None,
+                glob: None,
+                exclude_glob: None,
+                context: None,
+                case_sensitive: None,
+                whole_word: None,
             }))
             .await;
         assert!(
@@ -1318,6 +1977,17 @@ mod tests {
                 query: None,
                 terms: Some(vec!["TODO".to_string(), "FIXME".to_string()]),
                 regex: None,
+                path_prefix: None,
+                language: None,
+                limit: None,
+                max_per_file: None,
+                include_generated: None,
+                include_tests: None,
+                glob: None,
+                exclude_glob: None,
+                context: None,
+                case_sensitive: None,
+                whole_word: None,
             }))
             .await;
         assert!(
@@ -1332,6 +2002,322 @@ mod tests {
             !result.contains("NOTE: ignored"),
             "unmatched line should be absent: {result}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_search_text_hides_generated_and_test_noise_by_default() {
+        let server = make_server(make_live_index_ready(vec![
+            make_file("src/real.rs", b"needle visible", vec![]),
+            make_file("tests/generated/noise.rs", b"needle hidden", vec![]),
+        ]));
+        let result = server
+            .search_text(Parameters(super::SearchTextInput {
+                query: Some("needle".to_string()),
+                terms: None,
+                regex: None,
+                path_prefix: None,
+                language: None,
+                limit: None,
+                max_per_file: None,
+                include_generated: None,
+                include_tests: None,
+                glob: None,
+                exclude_glob: None,
+                context: None,
+                case_sensitive: None,
+                whole_word: None,
+            }))
+            .await;
+
+        assert!(result.contains("src/real.rs"), "expected visible file: {result}");
+        assert!(
+            !result.contains("tests/generated/noise.rs"),
+            "generated/test noise should be hidden by default: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_text_tool_respects_scope_language_and_caps() {
+        let mut ts_app = make_file("src/app.ts", b"needle one\nneedle two\nneedle three\n", vec![]);
+        ts_app.1.language = LanguageId::TypeScript;
+        let mut ts_lib = make_file("src/lib.ts", b"needle four\nneedle five\n", vec![]);
+        ts_lib.1.language = LanguageId::TypeScript;
+        let noise = make_file("tests/generated/noise.ts", b"needle hidden\nneedle hidden two\n", vec![]);
+        let rust = make_file("src/lib.rs", b"needle rust\nneedle rust two\n", vec![]);
+        let server = make_server(make_live_index_ready(vec![ts_app, ts_lib, noise, rust]));
+
+        let result = server
+            .search_text(Parameters(super::SearchTextInput {
+                query: Some("needle".to_string()),
+                terms: None,
+                regex: None,
+                path_prefix: Some("src".to_string()),
+                language: Some("TypeScript".to_string()),
+                limit: Some(3),
+                max_per_file: Some(2),
+                include_generated: Some(false),
+                include_tests: Some(false),
+                glob: None,
+                exclude_glob: None,
+                context: None,
+                case_sensitive: None,
+                whole_word: None,
+            }))
+            .await;
+
+        assert!(result.contains("src/app.ts"), "expected app.ts: {result}");
+        assert!(result.contains("src/lib.ts"), "expected lib.ts: {result}");
+        assert!(!result.contains("needle three"), "per-file cap should truncate app.ts: {result}");
+        assert!(!result.contains("needle five"), "total cap should truncate final result set: {result}");
+        assert!(
+            !result.contains("tests/generated/noise.ts"),
+            "noise file should be excluded: {result}"
+        );
+        assert!(!result.contains("src/lib.rs"), "language filter should exclude Rust: {result}");
+    }
+
+    #[tokio::test]
+    async fn test_search_text_tool_context_renders_windows() {
+        let server = make_server(make_live_index_ready(vec![make_file(
+            "src/lib.rs",
+            b"line 1\nline 2\nneedle 3\nline 4\nneedle 5\nline 6\nline 7\nline 8\nneedle 9\nline 10\n",
+            vec![],
+        )]));
+
+        let result = server
+            .search_text(Parameters(super::SearchTextInput {
+                query: Some("needle".to_string()),
+                terms: None,
+                regex: None,
+                path_prefix: None,
+                language: None,
+                limit: None,
+                max_per_file: None,
+                include_generated: None,
+                include_tests: None,
+                glob: None,
+                exclude_glob: None,
+                context: Some(1),
+                case_sensitive: None,
+                whole_word: None,
+            }))
+            .await;
+
+        assert!(result.contains("  2: line 2"), "context line missing: {result}");
+        assert!(result.contains("> 3: needle 3"), "match marker missing: {result}");
+        assert!(result.contains("  ..."), "separator missing: {result}");
+    }
+
+    #[tokio::test]
+    async fn test_search_text_tool_respects_glob_and_exclude_glob() {
+        let server = make_server(make_live_index_ready(vec![
+            make_file("src/app.ts", b"needle app\n", vec![]),
+            make_file("src/app.spec.ts", b"needle spec\n", vec![]),
+            make_file("src/nested/feature.ts", b"needle nested\n", vec![]),
+            make_file("src/lib.rs", b"needle rust\n", vec![]),
+        ]));
+
+        let result = server
+            .search_text(Parameters(super::SearchTextInput {
+                query: Some("needle".to_string()),
+                terms: None,
+                regex: None,
+                path_prefix: Some("src".to_string()),
+                language: None,
+                limit: None,
+                max_per_file: None,
+                include_generated: None,
+                include_tests: None,
+                glob: Some("src/**/*.ts".to_string()),
+                exclude_glob: Some("**/*.spec.ts".to_string()),
+                context: None,
+                case_sensitive: None,
+                whole_word: None,
+            }))
+            .await;
+
+        assert!(result.contains("src/app.ts"), "expected app.ts: {result}");
+        assert!(
+            result.contains("src/nested/feature.ts"),
+            "expected nested ts file: {result}"
+        );
+        assert!(
+            !result.contains("src/app.spec.ts"),
+            "exclude_glob should suppress spec file: {result}"
+        );
+        assert!(
+            !result.contains("src/lib.rs"),
+            "include glob should suppress rust file: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_text_tool_reports_invalid_glob() {
+        let server = make_server(make_live_index_ready(vec![make_file(
+            "src/app.ts",
+            b"needle app\n",
+            vec![],
+        )]));
+
+        let result = server
+            .search_text(Parameters(super::SearchTextInput {
+                query: Some("needle".to_string()),
+                terms: None,
+                regex: None,
+                path_prefix: None,
+                language: None,
+                limit: None,
+                max_per_file: None,
+                include_generated: None,
+                include_tests: None,
+                glob: Some("[".to_string()),
+                exclude_glob: None,
+                context: None,
+                case_sensitive: None,
+                whole_word: None,
+            }))
+            .await;
+
+        assert!(
+            result.contains("Invalid glob for `glob`"),
+            "expected invalid glob error, got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_text_tool_respects_case_sensitive_and_whole_word() {
+        let server = make_server(make_live_index_ready(vec![make_file(
+            "src/lib.rs",
+            b"Needle\nneedle\nNeedleCase\nNeedle suffix\n",
+            vec![],
+        )]));
+
+        let result = server
+            .search_text(Parameters(super::SearchTextInput {
+                query: Some("Needle".to_string()),
+                terms: None,
+                regex: None,
+                path_prefix: None,
+                language: None,
+                limit: None,
+                max_per_file: None,
+                include_generated: None,
+                include_tests: None,
+                glob: None,
+                exclude_glob: None,
+                context: None,
+                case_sensitive: Some(true),
+                whole_word: Some(true),
+            }))
+            .await;
+
+        assert!(result.contains("  1: Needle"), "exact whole-word match missing: {result}");
+        assert!(
+            result.contains("  4: Needle suffix"),
+            "whole-word prefix match on a line should remain visible: {result}"
+        );
+        assert!(
+            !result.contains("  2: needle"),
+            "case-sensitive search should exclude lowercase line: {result}"
+        );
+        assert!(
+            !result.contains("  3: NeedleCase"),
+            "whole-word search should exclude embedded identifier match: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_text_tool_reports_regex_whole_word_rejection() {
+        let server = make_server(make_live_index_ready(vec![make_file(
+            "src/lib.rs",
+            b"needle\n",
+            vec![],
+        )]));
+
+        let result = server
+            .search_text(Parameters(super::SearchTextInput {
+                query: Some("needle".to_string()),
+                terms: None,
+                regex: Some(true),
+                path_prefix: None,
+                language: None,
+                limit: None,
+                max_per_file: None,
+                include_generated: None,
+                include_tests: None,
+                glob: None,
+                exclude_glob: None,
+                context: None,
+                case_sensitive: None,
+                whole_word: Some(true),
+            }))
+            .await;
+
+        assert!(
+            result.contains("whole_word is not supported when `regex=true`"),
+            "expected regex/whole_word rejection, got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_files_returns_ranked_paths() {
+        let server = make_server(make_live_index_ready(vec![
+            make_file("src/protocol/tools.rs", b"fn a() {}", vec![]),
+            make_file("src/sidecar/tools.rs", b"fn b() {}", vec![]),
+            make_file("src/protocol/tools_helper.rs", b"fn c() {}", vec![]),
+        ]));
+        let result = server
+            .search_files(Parameters(super::SearchFilesInput {
+                query: "protocol/tools.rs".to_string(),
+                limit: Some(20),
+            }))
+            .await;
+        assert!(result.contains("2 matching files"), "got: {result}");
+        assert!(result.contains("── Strong path matches ──"), "got: {result}");
+        assert!(result.contains("── Basename matches ──"), "got: {result}");
+        assert!(result.contains("src/protocol/tools.rs"), "got: {result}");
+        assert!(result.contains("src/sidecar/tools.rs"), "got: {result}");
+        assert!(!result.contains("tools_helper.rs"), "got: {result}");
+    }
+
+    #[tokio::test]
+    async fn test_search_files_not_found() {
+        let server = make_server(make_live_index_ready(vec![]));
+        let result = server
+            .search_files(Parameters(super::SearchFilesInput {
+                query: "README.md".to_string(),
+                limit: None,
+            }))
+            .await;
+        assert_eq!(result, "No indexed source files matching 'README.md'");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_path_returns_exact_match() {
+        let (key, file) = make_file("src/protocol/tools.rs", b"fn tool() {}", vec![]);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let result = server
+            .resolve_path(Parameters(super::ResolvePathInput {
+                hint: "src/protocol/tools.rs".to_string(),
+            }))
+            .await;
+        assert_eq!(result, "src/protocol/tools.rs");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_path_returns_ambiguous_matches() {
+        let server = make_server(make_live_index_ready(vec![
+            make_file("src/lib.rs", b"fn src_lib() {}", vec![]),
+            make_file("tests/lib.rs", b"fn test_lib() {}", vec![]),
+        ]));
+        let result = server
+            .resolve_path(Parameters(super::ResolvePathInput {
+                hint: "lib.rs".to_string(),
+            }))
+            .await;
+        assert!(result.contains("Ambiguous path hint 'lib.rs'"), "got: {result}");
+        assert!(result.contains("src/lib.rs"), "got: {result}");
+        assert!(result.contains("tests/lib.rs"), "got: {result}");
     }
 
     #[tokio::test]
@@ -1363,6 +2349,10 @@ mod tests {
         assert!(
             !result.starts_with("Index"),
             "should not return guard message, got: {result}"
+        );
+        assert!(
+            result.contains("fn bar() {"),
+            "symbol lookup branch should return symbol body, got: {result}"
         );
     }
 
@@ -1511,6 +2501,21 @@ mod tests {
         assert_eq!(result, "File not found: nonexistent.rs");
     }
 
+    #[tokio::test]
+    async fn test_get_file_content_line_range_preserves_public_contract() {
+        let content = b"line 1\nline 2\nline 3\nline 4";
+        let (key, file) = make_file("src/lib.rs", content, vec![]);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let result = server
+            .get_file_content(Parameters(super::GetFileContentInput {
+                path: "src/lib.rs".to_string(),
+                start_line: Some(2),
+                end_line: Some(3),
+            }))
+            .await;
+        assert_eq!(result, "line 2\nline 3");
+    }
+
     // ── INFR-05: No v1 tools in server ──────────────────────────────────────
 
     #[test]
@@ -1542,12 +2547,12 @@ mod tests {
     }
 
     #[test]
-    fn test_exactly_18_tools_registered() {
+    fn test_exactly_20_tools_registered() {
         let server = make_server(make_live_index_ready(vec![]));
         let tool_count = server.tool_router.list_all().len();
         assert_eq!(
-            tool_count, 18,
-            "server must expose exactly 18 tools after adding shared hook-parity tools; found {tool_count}"
+            tool_count, 20,
+            "server must expose exactly 20 tools after adding search_files; found {tool_count}"
         );
     }
 
@@ -1591,6 +2596,9 @@ mod tests {
             .find_references(Parameters(super::FindReferencesInput {
                 name: "process".to_string(),
                 kind: None,
+                path: None,
+                symbol_kind: None,
+                symbol_line: None,
             }))
             .await;
         assert_eq!(result, crate::protocol::format::empty_guard_message());
@@ -1615,9 +2623,99 @@ mod tests {
                 path: "src/lib.rs".to_string(),
                 name: "process".to_string(),
                 kind: None,
+                symbol_line: None,
             }))
             .await;
         assert_eq!(result, crate::protocol::format::empty_guard_message());
+    }
+
+    #[tokio::test]
+    async fn test_get_context_bundle_delegates_to_formatter() {
+        let server = make_server(make_live_index_ready(vec![]));
+        let result = server
+            .get_context_bundle(Parameters(super::GetContextBundleInput {
+                path: "src/nonexistent.rs".to_string(),
+                name: "process".to_string(),
+                kind: None,
+                symbol_line: None,
+            }))
+            .await;
+        assert!(result.contains("File not found"), "got: {result}");
+    }
+
+    #[tokio::test]
+    async fn test_get_context_bundle_exact_selector_uses_line_and_exact_callers() {
+        let target = make_file(
+            "src/db.rs",
+            b"fn connect() { first(); }\nfn connect() { second(); }\n",
+            vec![
+                make_symbol("connect", SymbolKind::Function, 1, 1),
+                make_symbol("connect", SymbolKind::Function, 2, 2),
+            ],
+        );
+        let dependent = make_file_with_refs(
+            "src/service.rs",
+            b"use crate::db::connect;\nfn run() { connect(); }\n",
+            vec![make_symbol("run", SymbolKind::Function, 2, 2)],
+            vec![
+                make_ref("db", Some("crate::db"), ReferenceKind::Import, 0, None),
+                make_ref(
+                    "connect",
+                    Some("crate::db::connect"),
+                    ReferenceKind::Call,
+                    1,
+                    Some(0),
+                ),
+            ],
+        );
+        let unrelated = make_file_with_refs(
+            "src/other.rs",
+            b"fn run() { connect(); }\n",
+            vec![make_symbol("run", SymbolKind::Function, 1, 1)],
+            vec![make_ref("connect", None, ReferenceKind::Call, 0, Some(0))],
+        );
+        let server = make_server(make_live_index_ready(vec![target, dependent, unrelated]));
+
+        let result = server
+            .get_context_bundle(Parameters(super::GetContextBundleInput {
+                path: "src/db.rs".to_string(),
+                name: "connect".to_string(),
+                kind: Some("fn".to_string()),
+                symbol_line: Some(2),
+            }))
+            .await;
+
+        assert!(result.contains("src/service.rs"), "expected dependent hit: {result}");
+        assert!(
+            !result.contains("src/other.rs"),
+            "unrelated same-name file should be excluded: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_context_bundle_exact_selector_requires_line_for_ambiguous_symbol() {
+        let target = make_file(
+            "src/db.rs",
+            b"fn connect() {}\nfn connect() {}\n",
+            vec![
+                make_symbol("connect", SymbolKind::Function, 1, 1),
+                make_symbol("connect", SymbolKind::Function, 2, 2),
+            ],
+        );
+        let server = make_server(make_live_index_ready(vec![target]));
+
+        let result = server
+            .get_context_bundle(Parameters(super::GetContextBundleInput {
+                path: "src/db.rs".to_string(),
+                name: "connect".to_string(),
+                kind: Some("fn".to_string()),
+                symbol_line: None,
+            }))
+            .await;
+
+        assert!(result.contains("Ambiguous symbol selector"), "got: {result}");
+        assert!(result.contains("1"), "got: {result}");
+        assert!(result.contains("2"), "got: {result}");
     }
 
     #[tokio::test]
@@ -1627,10 +2725,87 @@ mod tests {
             .find_references(Parameters(super::FindReferencesInput {
                 name: "nonexistent_xyz".to_string(),
                 kind: None,
+                path: None,
+                symbol_kind: None,
+                symbol_line: None,
             }))
             .await;
         // Should get "No references found" not a guard message
         assert!(result.contains("No references found"), "got: {result}");
+    }
+
+    #[tokio::test]
+    async fn test_find_references_exact_selector_excludes_unrelated_same_name_hits() {
+        let target = make_file(
+            "src/db.rs",
+            b"pub fn connect() {}\n",
+            vec![make_symbol("connect", SymbolKind::Function, 1, 1)],
+        );
+        let dependent = make_file_with_refs(
+            "src/service.rs",
+            b"use crate::db::connect;\nfn run() { connect(); }\n",
+            vec![make_symbol("run", SymbolKind::Function, 2, 2)],
+            vec![
+                make_ref("db", Some("crate::db"), ReferenceKind::Import, 0, None),
+                make_ref(
+                    "connect",
+                    Some("crate::db::connect"),
+                    ReferenceKind::Call,
+                    1,
+                    Some(0),
+                ),
+            ],
+        );
+        let unrelated = make_file_with_refs(
+            "src/other.rs",
+            b"fn run() { connect(); }\n",
+            vec![make_symbol("run", SymbolKind::Function, 1, 1)],
+            vec![make_ref("connect", None, ReferenceKind::Call, 0, Some(0))],
+        );
+        let server = make_server(make_live_index_ready(vec![target, dependent, unrelated]));
+
+        let result = server
+            .find_references(Parameters(super::FindReferencesInput {
+                name: "connect".to_string(),
+                kind: Some("call".to_string()),
+                path: Some("src/db.rs".to_string()),
+                symbol_kind: Some("fn".to_string()),
+                symbol_line: Some(1),
+            }))
+            .await;
+
+        assert!(result.contains("src/service.rs"), "expected dependent hit: {result}");
+        assert!(
+            !result.contains("src/other.rs"),
+            "unrelated same-name file should be excluded: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_find_references_exact_selector_requires_line_for_ambiguous_symbol() {
+        let target = make_file(
+            "src/db.rs",
+            b"fn connect() {}\nfn connect() {}\n",
+            vec![
+                make_symbol("connect", SymbolKind::Function, 1, 1),
+                make_symbol("connect", SymbolKind::Function, 10, 10),
+            ],
+        );
+        let server = make_server(make_live_index_ready(vec![target]));
+
+        let result = server
+            .find_references(Parameters(super::FindReferencesInput {
+                name: "connect".to_string(),
+                kind: Some("call".to_string()),
+                path: Some("src/db.rs".to_string()),
+                symbol_kind: Some("fn".to_string()),
+                symbol_line: None,
+            }))
+            .await;
+
+        assert!(result.contains("Ambiguous symbol selector"), "got: {result}");
+        assert!(result.contains("1"), "got: {result}");
+        assert!(result.contains("10"), "got: {result}");
     }
 
     #[tokio::test]

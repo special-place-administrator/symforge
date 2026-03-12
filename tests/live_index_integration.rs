@@ -765,7 +765,7 @@ fn test_persist_round_trip() {
     let snapshot =
         persist::load_snapshot(dir.path()).expect("snapshot should be loadable after serialize");
 
-    assert_eq!(snapshot.version, 1, "snapshot version should be 1");
+    assert_eq!(snapshot.version, 2, "snapshot version should match current schema");
     assert_eq!(snapshot.files.len(), 2, "snapshot should contain 2 files");
     assert!(
         snapshot.files.contains_key("main.rs"),
@@ -777,9 +777,8 @@ fn test_persist_round_trip() {
     );
 
     // Convert snapshot back to LiveIndex and wrap in Arc<RwLock>
-    use std::sync::{Arc, RwLock};
     let loaded_index = persist::snapshot_to_live_index(snapshot);
-    let shared_loaded = Arc::new(RwLock::new(loaded_index));
+    let shared_loaded = tokenizor_agentic_mcp::live_index::SharedIndexHandle::shared(loaded_index);
     let loaded = shared_loaded.read().unwrap();
 
     // Verify file count matches
