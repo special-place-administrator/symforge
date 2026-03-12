@@ -160,8 +160,14 @@ impl TokenizorServer {
                     .await
             }
             ResourceRequest::SymbolContext { name, file } => {
-                self.get_symbol_context(Parameters(GetSymbolContextInput { name, file }))
-                    .await
+                self.get_symbol_context(Parameters(GetSymbolContextInput {
+                    name,
+                    file,
+                    path: None,
+                    symbol_kind: None,
+                    symbol_line: None,
+                }))
+                .await
             }
         };
 

@@ -40,6 +40,12 @@ pub struct SymbolContextParams {
     pub name: String,
     /// Optional: restrict search to a specific file.
     pub file: Option<String>,
+    /// Optional exact-selector path from `search_symbols`.
+    pub path: Option<String>,
+    /// Optional selected symbol kind such as `fn`, `class`, or `struct`.
+    pub symbol_kind: Option<String>,
+    /// Optional selected symbol line from `search_symbols`.
+    pub symbol_line: Option<u32>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -560,7 +566,20 @@ fn symbol_context_text(
         .read()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let raw = guard.find_references_for_name(&params.name, None, false);
+    let raw = if let Some(path) = params.path.as_deref() {
+        match guard.find_exact_references_for_symbol(
+            path,
+            &params.name,
+            params.symbol_kind.as_deref(),
+            params.symbol_line,
+            None,
+        ) {
+            Ok(refs) => refs,
+            Err(error) => return Ok(error),
+        }
+    } else {
+        guard.find_references_for_name(&params.name, None, false)
+    };
 
     // Group by file, applying optional file filter, capping at 10 total matches.
     let mut map: std::collections::HashMap<String, Vec<(u32, String, Option<String>)>> =
@@ -766,7 +785,17 @@ async fn prompt_context_text(
     }
 
     if let Some(name) = find_prompt_symbol_hint(state, prompt)? {
-        return symbol_context_text(state, &SymbolContextParams { name, file: None }, options);
+        return symbol_context_text(
+            state,
+            &SymbolContextParams {
+                name,
+                file: None,
+                path: None,
+                symbol_kind: None,
+                symbol_line: None,
+            },
+            options,
+        );
     }
 
     if prompt_requests_repo_map(prompt) {
@@ -1236,6 +1265,9 @@ mod tests {
         let params = SymbolContextParams {
             name: "process".to_string(),
             file: None,
+            path: None,
+            symbol_kind: None,
+            symbol_line: None,
         };
         let result = symbol_context_handler(State(state), Query(params))
             .await
@@ -1265,6 +1297,9 @@ mod tests {
         let params = SymbolContextParams {
             name: "target".to_string(),
             file: None,
+            path: None,
+            symbol_kind: None,
+            symbol_line: None,
         };
         let result = symbol_context_handler(State(state), Query(params))
             .await
@@ -1284,6 +1319,99 @@ mod tests {
             "should indicate truncation: {}",
             result
         );
+    }
+
+    #[tokio::test]
+    async fn test_symbol_context_handler_exact_selector_excludes_unrelated_same_name_hits() {
+        let target = make_indexed_file(
+            "src/db.rs",
+            vec![make_symbol("connect", SymbolKind::Function, 1, 1)],
+            vec![],
+            ParseStatus::Parsed,
+        );
+        let dependent = IndexedFile {
+            relative_path: "src/service.rs".to_string(),
+            language: LanguageId::Rust,
+            classification: crate::domain::FileClassification::for_code_path("src/service.rs"),
+            content: b"use crate::db::connect;\nfn run() { connect(); }\n".to_vec(),
+            symbols: vec![make_symbol("run", SymbolKind::Function, 2, 2)],
+            parse_status: ParseStatus::Parsed,
+            byte_len: 46,
+            content_hash: "abc".to_string(),
+            references: vec![
+                ReferenceRecord {
+                    name: "db".to_string(),
+                    qualified_name: Some("crate::db".to_string()),
+                    kind: ReferenceKind::Import,
+                    byte_range: (0, 6),
+                    line_range: (0, 0),
+                    enclosing_symbol_index: Some(0),
+                },
+                ReferenceRecord {
+                    name: "connect".to_string(),
+                    qualified_name: Some("crate::db::connect".to_string()),
+                    kind: ReferenceKind::Call,
+                    byte_range: (10, 16),
+                    line_range: (1, 1),
+                    enclosing_symbol_index: Some(0),
+                },
+            ],
+            alias_map: HashMap::new(),
+        };
+        let unrelated = make_indexed_file(
+            "src/other.rs",
+            vec![make_symbol("run", SymbolKind::Function, 1, 1)],
+            vec![make_reference("connect", ReferenceKind::Call, 1)],
+            ParseStatus::Parsed,
+        );
+        let state = make_state(vec![
+            ("src/db.rs", target),
+            ("src/service.rs", dependent),
+            ("src/other.rs", unrelated),
+        ]);
+
+        let params = SymbolContextParams {
+            name: "connect".to_string(),
+            file: None,
+            path: Some("src/db.rs".to_string()),
+            symbol_kind: Some("fn".to_string()),
+            symbol_line: Some(1),
+        };
+        let result = symbol_context_handler(State(state), Query(params))
+            .await
+            .unwrap();
+
+        assert!(result.contains("src/service.rs"), "got: {result}");
+        assert!(!result.contains("src/other.rs"), "got: {result}");
+    }
+
+    #[tokio::test]
+    async fn test_symbol_context_handler_exact_selector_requires_line_for_ambiguous_symbol() {
+        let target = make_indexed_file(
+            "src/db.rs",
+            vec![
+                make_symbol("connect", SymbolKind::Function, 1, 1),
+                make_symbol("connect", SymbolKind::Function, 2, 2),
+            ],
+            vec![],
+            ParseStatus::Parsed,
+        );
+        let state = make_state(vec![("src/db.rs", target)]);
+
+        let params = SymbolContextParams {
+            name: "connect".to_string(),
+            file: None,
+            path: Some("src/db.rs".to_string()),
+            symbol_kind: Some("fn".to_string()),
+            symbol_line: None,
+        };
+        let result = symbol_context_handler(State(state), Query(params))
+            .await
+            .unwrap();
+
+        assert!(result.contains("Ambiguous symbol selector"), "got: {result}");
+        assert!(result.contains("1"), "got: {result}");
+        assert!(result.contains("2"), "got: {result}");
     }
 
     // -----------------------------------------------------------------------

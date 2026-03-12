@@ -2,7 +2,7 @@
 doc_type: task
 task_id: 92
 title: P1 get_symbol_context exact selector contract research
-status: in_progress
+status: done
 sprint: tokenizor-upgrade-foundation
 parent_plan: 05-P-validation-and-backlog.md
 prev_task: 91-T-p1-get-context-bundle-exact-selector-shell.md
@@ -48,7 +48,14 @@ updated: 2026-03-12
 
 ## Completion Notes
 
-- pending
+- added [92-R-p1-get-symbol-context-exact-selector-contract-research.md](/E:/project/tokenizor_agentic_mcp/docs/execution-plan/92-R-p1-get-symbol-context-exact-selector-contract-research.md)
+- recommendation:
+  - preserve current name-only behavior unless an exact selector is provided
+  - add `path`, `symbol_kind`, and `symbol_line` so `search_symbols` output can chain directly into `get_symbol_context`
+  - keep current `file` semantics as an output filter, not the symbol selector
+  - reuse shared exact-selector query helpers from `find_references` / `get_context_bundle`
+  - keep successful grouped output unchanged and use stable error strings for missing or ambiguous selectors
+- authored the follow-on execution slice as `93-T-p1-get-symbol-context-exact-selector-shell.md`
 
 ## Carry Forward To Next Task
 
@@ -62,6 +69,6 @@ Carry forward:
 - keep this research separate from stable symbol-id substrate work
 - prefer reusing shared exact-selector query helpers over inventing sidecar-only matching rules
 
-Open points:
+Resolved point:
 
-- OPEN: whether the exact selector should be routed through the sidecar handler directly or via a shared owned query view first
+- route the first shell through the sidecar handler but back it with shared exact-selector query helpers instead of sidecar-local matching logic

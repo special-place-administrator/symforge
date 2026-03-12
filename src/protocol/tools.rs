@@ -235,6 +235,12 @@ pub struct GetSymbolContextInput {
     pub name: String,
     /// Optional file filter.
     pub file: Option<String>,
+    /// Optional exact-selector path from `search_symbols`.
+    pub path: Option<String>,
+    /// Optional selected symbol kind such as `fn`, `class`, or `struct`.
+    pub symbol_kind: Option<String>,
+    /// Optional selected symbol line from `search_symbols`.
+    pub symbol_line: Option<u32>,
 }
 
 /// Input for `analyze_file_impact`.
@@ -692,6 +698,9 @@ impl TokenizorServer {
         let symbol_context = SymbolContextParams {
             name: params.0.name.clone(),
             file: params.0.file.clone(),
+            path: params.0.path.clone(),
+            symbol_kind: params.0.symbol_kind.clone(),
+            symbol_line: params.0.symbol_line,
         };
         match symbol_context_tool_text(&state, &symbol_context) {
             Ok(result) => result,
@@ -1532,6 +1541,9 @@ mod tests {
             .get_symbol_context(Parameters(super::GetSymbolContextInput {
                 name: "target".to_string(),
                 file: None,
+                path: None,
+                symbol_kind: None,
+                symbol_line: None,
             }))
             .await;
 
@@ -1543,6 +1555,133 @@ mod tests {
             result.contains("in fn caller"),
             "symbol context should include enclosing symbol names; got: {result}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_get_symbol_context_exact_selector_excludes_unrelated_same_name_hits() {
+        let target = make_file(
+            "src/db.rs",
+            b"pub fn connect() {}\n",
+            vec![make_symbol("connect", SymbolKind::Function, 1, 1)],
+        );
+        let dependent = make_file_with_refs(
+            "src/service.rs",
+            b"use crate::db::connect;\nfn run() { connect(); }\n",
+            vec![make_symbol("run", SymbolKind::Function, 2, 2)],
+            vec![
+                make_ref("db", Some("crate::db"), ReferenceKind::Import, 0, None),
+                make_ref(
+                    "connect",
+                    Some("crate::db::connect"),
+                    ReferenceKind::Call,
+                    1,
+                    Some(0),
+                ),
+            ],
+        );
+        let unrelated = make_file_with_refs(
+            "src/other.rs",
+            b"fn run() { connect(); }\n",
+            vec![make_symbol("run", SymbolKind::Function, 1, 1)],
+            vec![make_ref("connect", None, ReferenceKind::Call, 0, Some(0))],
+        );
+        let server = make_server(make_live_index_ready(vec![target, dependent, unrelated]));
+
+        let result = server
+            .get_symbol_context(Parameters(super::GetSymbolContextInput {
+                name: "connect".to_string(),
+                file: None,
+                path: Some("src/db.rs".to_string()),
+                symbol_kind: Some("fn".to_string()),
+                symbol_line: Some(1),
+            }))
+            .await;
+
+        assert!(result.contains("src/service.rs"), "expected dependent hit: {result}");
+        assert!(
+            !result.contains("src/other.rs"),
+            "unrelated same-name file should be excluded: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_symbol_context_exact_selector_requires_line_for_ambiguous_symbol() {
+        let target = make_file(
+            "src/db.rs",
+            b"fn connect() {}\nfn connect() {}\n",
+            vec![
+                make_symbol("connect", SymbolKind::Function, 1, 1),
+                make_symbol("connect", SymbolKind::Function, 2, 2),
+            ],
+        );
+        let server = make_server(make_live_index_ready(vec![target]));
+
+        let result = server
+            .get_symbol_context(Parameters(super::GetSymbolContextInput {
+                name: "connect".to_string(),
+                file: None,
+                path: Some("src/db.rs".to_string()),
+                symbol_kind: Some("fn".to_string()),
+                symbol_line: None,
+            }))
+            .await;
+
+        assert!(result.contains("Ambiguous symbol selector"), "got: {result}");
+        assert!(result.contains("1"), "got: {result}");
+        assert!(result.contains("2"), "got: {result}");
+    }
+
+    #[tokio::test]
+    async fn test_get_symbol_context_exact_selector_respects_file_filter() {
+        let target = make_file(
+            "src/db.rs",
+            b"pub fn connect() {}\n",
+            vec![make_symbol("connect", SymbolKind::Function, 1, 1)],
+        );
+        let service = make_file_with_refs(
+            "src/service.rs",
+            b"use crate::db::connect;\nfn run() { connect(); }\n",
+            vec![make_symbol("run", SymbolKind::Function, 2, 2)],
+            vec![
+                make_ref("db", Some("crate::db"), ReferenceKind::Import, 0, None),
+                make_ref(
+                    "connect",
+                    Some("crate::db::connect"),
+                    ReferenceKind::Call,
+                    1,
+                    Some(0),
+                ),
+            ],
+        );
+        let api = make_file_with_refs(
+            "src/api.rs",
+            b"use crate::db::connect;\nfn expose() { connect(); }\n",
+            vec![make_symbol("expose", SymbolKind::Function, 2, 2)],
+            vec![
+                make_ref("db", Some("crate::db"), ReferenceKind::Import, 0, None),
+                make_ref(
+                    "connect",
+                    Some("crate::db::connect"),
+                    ReferenceKind::Call,
+                    1,
+                    Some(0),
+                ),
+            ],
+        );
+        let server = make_server(make_live_index_ready(vec![target, service, api]));
+
+        let result = server
+            .get_symbol_context(Parameters(super::GetSymbolContextInput {
+                name: "connect".to_string(),
+                file: Some("src/service.rs".to_string()),
+                path: Some("src/db.rs".to_string()),
+                symbol_kind: Some("fn".to_string()),
+                symbol_line: Some(1),
+            }))
+            .await;
+
+        assert!(result.contains("src/service.rs"), "got: {result}");
+        assert!(!result.contains("src/api.rs"), "got: {result}");
     }
 
     #[tokio::test]

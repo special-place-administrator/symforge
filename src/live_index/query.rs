@@ -1066,6 +1066,20 @@ impl LiveIndex {
         symbol_line: Option<u32>,
         kind_filter: Option<&str>,
     ) -> Result<FindReferencesView, String> {
+        let kind_enum = parse_reference_kind_filter(kind_filter);
+        let refs =
+            self.find_exact_references_for_symbol(path, name, symbol_kind, symbol_line, kind_enum)?;
+        Ok(self.build_find_references_view(&refs))
+    }
+
+    pub fn find_exact_references_for_symbol<'a>(
+        &'a self,
+        path: &'a str,
+        name: &str,
+        symbol_kind: Option<&str>,
+        symbol_line: Option<u32>,
+        kind_filter: Option<ReferenceKind>,
+    ) -> Result<Vec<(&'a str, &'a ReferenceRecord)>, String> {
         let Some(file) = self.get_file(path) else {
             return Err(format!("File not found: {path}"));
         };
@@ -1073,7 +1087,7 @@ impl LiveIndex {
         match resolve_symbol_selector(file, name, symbol_kind, symbol_line) {
             SymbolSelectorMatch::NotFound => {
                 let selector = render_symbol_selector(name, symbol_kind, symbol_line);
-                return Err(format!("Symbol not found in {path}: {selector}"));
+                Err(format!("Symbol not found in {path}: {selector}"))
             }
             SymbolSelectorMatch::Ambiguous(candidate_lines) => {
                 let candidate_lines = candidate_lines
@@ -1081,23 +1095,14 @@ impl LiveIndex {
                     .map(u32::to_string)
                     .collect::<Vec<_>>()
                     .join(", ");
-                return Err(format!(
+                Err(format!(
                     "Ambiguous symbol selector for {name} in {path}; pass `symbol_line` to disambiguate. Candidates: {candidate_lines}"
-                ));
+                ))
             }
-            SymbolSelectorMatch::Selected(_, _) => {}
+            SymbolSelectorMatch::Selected(_, _) => {
+                Ok(self.collect_exact_symbol_references(path, file, name, kind_filter))
+            }
         }
-
-        let kind_enum = parse_reference_kind_filter(kind_filter);
-        let mut refs = self.collect_exact_symbol_references(path, file, name, kind_enum);
-
-        refs.sort_by(|a, b| {
-            a.0.cmp(b.0)
-                .then(a.1.line_range.0.cmp(&b.1.line_range.0))
-                .then(a.1.byte_range.0.cmp(&b.1.byte_range.0))
-        });
-
-        Ok(self.build_find_references_view(&refs))
     }
 
     fn collect_exact_symbol_references<'a>(

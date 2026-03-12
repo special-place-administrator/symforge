@@ -2,11 +2,11 @@
 doc_type: task
 task_id: 93
 title: P1 get_symbol_context exact selector shell
-status: pending
+status: done
 sprint: tokenizor-upgrade-foundation
 parent_plan: 05-P-validation-and-backlog.md
 prev_task: 92-T-p1-get-symbol-context-exact-selector-contract-research.md
-next_task: 
+next_task: 94-T-p1-prompt-context-symbol-file-hint-contract-research.md
 created: 2026-03-12
 updated: 2026-03-12
 ---
@@ -48,13 +48,20 @@ updated: 2026-03-12
 
 ## Completion Notes
 
-- pending
+- extended `get_symbol_context` with optional exact-selector inputs: `path`, `symbol_kind`, and `symbol_line`
+- preserved current name-only behavior when `path` is omitted
+- routed the sidecar-backed symbol-context path through the shared exact-selector query helper in `src/live_index/query.rs`
+- kept the current compact grouped output and 10-match cap while returning stable user-facing error strings for missing or ambiguous selectors
+- preserved `file` as an output filter and added focused coverage to prove it still composes with exact-selector mode
+- verification run for this task:
+  - `cargo test symbol_context -- --nocapture`
+  - `cargo test`
 
 ## Carry Forward To Next Task
 
 Next task:
 
-- `TBD`
+- `94-T-p1-prompt-context-symbol-file-hint-contract-research.md`
 
 Carry forward:
 
@@ -62,6 +69,6 @@ Carry forward:
 - preserve the current compact grouped output and cap
 - keep sidecar token-budget behavior unchanged
 
-Open points:
+Resolved point:
 
-- OPEN: whether the next follow-on should extend exact selection into prompt-context symbol hints or pause for a broader P1 priority check
+- the next follow-on should target prompt-context file+symbol hint fusion, which is the smallest remaining consumer of the old name-only symbol-context path
