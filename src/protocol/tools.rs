@@ -1044,6 +1044,10 @@ impl TokenizorServer {
             }
         }
 
+        // Append git temporal summary.
+        result.push('\n');
+        result.push_str(&format::git_temporal_health_line(&self.index.git_temporal()));
+
         result
     }
 
@@ -1071,6 +1075,12 @@ impl TokenizorServer {
                     Arc::clone(&self.watcher_info),
                 );
                 tracing::info!(root = %root.display(), "file watcher restarted after index_folder");
+
+                // Refresh git temporal data for the new root.
+                crate::live_index::git_temporal::spawn_git_temporal_computation(
+                    Arc::clone(&self.index),
+                    root,
+                );
 
                 format!("Indexed {} files, {} symbols.", file_count, symbol_count)
             }

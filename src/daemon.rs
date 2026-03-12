@@ -811,6 +811,12 @@ impl ProjectInstance {
             Arc::clone(&watcher_info),
         );
 
+        // Kick off background git temporal analysis (non-blocking).
+        live_index::git_temporal::spawn_git_temporal_computation(
+            Arc::clone(&index),
+            canonical_root.to_path_buf(),
+        );
+
         Ok(Self {
             project_id: project_key(canonical_root),
             canonical_root: canonical_root.to_path_buf(),
@@ -844,6 +850,12 @@ impl ProjectInstance {
             .unwrap_or("project")
             .to_string();
         self.project_id = project_key(canonical_root);
+
+        // Refresh git temporal data after reload.
+        live_index::git_temporal::spawn_git_temporal_computation(
+            Arc::clone(&self.index),
+            canonical_root.to_path_buf(),
+        );
 
         Ok((file_count, symbol_count))
     }

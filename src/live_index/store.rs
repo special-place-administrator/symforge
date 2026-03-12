@@ -316,6 +316,10 @@ pub struct SharedIndexHandle {
     published_state: RwLock<Arc<PublishedIndexState>>,
     published_repo_outline: RwLock<Arc<RepoOutlineView>>,
     next_generation: AtomicU64,
+    /// Git temporal intelligence — independently locked side-table with
+    /// per-file churn, ownership, and co-change data. Populated asynchronously
+    /// after index load/reload completes.
+    git_temporal: RwLock<Arc<super::git_temporal::GitTemporalIndex>>,
 }
 
 /// Write guard that republishes lightweight handle state when mutated data is released.
@@ -334,6 +338,9 @@ impl SharedIndexHandle {
             published_state: RwLock::new(published_state),
             published_repo_outline: RwLock::new(published_repo_outline),
             next_generation: AtomicU64::new(1),
+            git_temporal: RwLock::new(Arc::new(
+                super::git_temporal::GitTemporalIndex::pending(),
+            )),
         }
     }
 
@@ -412,6 +419,16 @@ impl SharedIndexHandle {
         let published_repo_outline = Arc::new(live.capture_repo_outline_view());
         *self.published_state.write().expect("lock poisoned") = published_state;
         *self.published_repo_outline.write().expect("lock poisoned") = published_repo_outline;
+    }
+
+    /// Read the current git temporal index (lock-free Arc clone).
+    pub fn git_temporal(&self) -> Arc<super::git_temporal::GitTemporalIndex> {
+        self.git_temporal.read().expect("lock poisoned").clone()
+    }
+
+    /// Atomically replace the git temporal index with a new version.
+    pub fn update_git_temporal(&self, index: super::git_temporal::GitTemporalIndex) {
+        *self.git_temporal.write().expect("lock poisoned") = Arc::new(index);
     }
 }
 

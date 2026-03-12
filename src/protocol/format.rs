@@ -1671,6 +1671,49 @@ pub fn format_token_savings(snap: &crate::sidecar::StatsSnapshot) -> String {
     lines.join("\n")
 }
 
+/// Format a one-line git temporal summary for the health report.
+pub fn git_temporal_health_line(
+    temporal: &crate::live_index::git_temporal::GitTemporalIndex,
+) -> String {
+    use crate::live_index::git_temporal::GitTemporalState;
+
+    match &temporal.state {
+        GitTemporalState::Pending => "Git temporal: pending".to_string(),
+        GitTemporalState::Computing => "Git temporal: computing...".to_string(),
+        GitTemporalState::Unavailable(reason) => {
+            format!("Git temporal: unavailable ({reason})")
+        }
+        GitTemporalState::Ready => {
+            let stats = &temporal.stats;
+            let mut lines = vec![format!(
+                "Git temporal: ready ({} commits over {}d, computed in {}ms)",
+                stats.total_commits_analyzed,
+                stats.analysis_window_days,
+                stats.compute_duration.as_millis(),
+            )];
+
+            if !stats.hotspots.is_empty() {
+                let top: Vec<String> = stats
+                    .hotspots
+                    .iter()
+                    .take(5)
+                    .map(|(path, score)| format!("{path} ({score:.2})"))
+                    .collect();
+                lines.push(format!("  Hotspots: {}", top.join(", ")));
+            }
+
+            if !stats.most_coupled.is_empty() {
+                let (a, b, score) = &stats.most_coupled[0];
+                lines.push(format!(
+                    "  Strongest coupling: {a} \u{2194} {b} ({score:.2})"
+                ));
+            }
+
+            lines.join("\n")
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

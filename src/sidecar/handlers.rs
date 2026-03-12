@@ -268,6 +268,51 @@ fn outline_text(
 
     drop(guard);
 
+    // Build "Git activity" section from temporal intelligence.
+    {
+        use crate::live_index::git_temporal::{
+            churn_bar, churn_label, relative_time, GitTemporalState,
+        };
+        let temporal = state.index.git_temporal();
+        if temporal.state == GitTemporalState::Ready {
+            if let Some(history) = temporal.files.get(&params.path) {
+                lines.push(String::new());
+                lines.push(format!(
+                    "Git activity:  {} {:.2} ({})    {} commits, last {}",
+                    churn_bar(history.churn_score),
+                    history.churn_score,
+                    churn_label(history.churn_score),
+                    history.commit_count,
+                    relative_time(history.last_commit.days_ago),
+                ));
+                lines.push(format!(
+                    "  Last:  {} \"{}\" ({}, {})",
+                    history.last_commit.hash,
+                    history.last_commit.message_head,
+                    history.last_commit.author,
+                    history.last_commit.timestamp,
+                ));
+                if !history.contributors.is_empty() {
+                    let owners: Vec<String> = history
+                        .contributors
+                        .iter()
+                        .map(|c| format!("{} {:.0}%", c.author, c.percentage))
+                        .collect();
+                    lines.push(format!("  Owners: {}", owners.join(", ")));
+                }
+                if !history.co_changes.is_empty() {
+                    lines.push("  Co-changes:".to_string());
+                    for entry in &history.co_changes {
+                        lines.push(format!(
+                            "    {}  ({:.2} coupling, {} shared commits)",
+                            entry.path, entry.coupling_score, entry.shared_commits,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
     // Apply budget enforcement.
     let max_bytes = params.max_tokens.unwrap_or(200) * 4;
     let (mut text, _remaining) = build_with_budget(&lines, max_bytes);

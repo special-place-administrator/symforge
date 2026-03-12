@@ -42,6 +42,7 @@ At the time of this README rewrite, `cargo test` is green in this repository.
 - Automatic hook registration for Claude Code
 - Local snapshot persistence at `.tokenizor/index.bin`
 - File watching and incremental re-indexing for supported source files
+- Background git temporal analysis — computes churn, ownership, and co-change metrics after index load
 
 ### Search and navigation gains
 
@@ -51,7 +52,7 @@ At the time of this README rewrite, `cargo test` is green in this repository.
 - `search_text` with literal, OR-term, and regex search plus `path_prefix`, `language`, `limit`, `max_per_file`, `glob`, `exclude_glob`, symmetric `context`, `case_sensitive`, `whole_word`, generated/test suppression, and relevance-ranked results (files sorted by match count rather than alphabetically)
 - `get_file_content` with full-file reads, explicit line ranges, optional `show_line_numbers` and `header` for full-file or explicit-range reads, `around_line`, first-match `around_match`, exact-path `around_symbol`, and exact-path line-oriented chunked reads via `chunk_index` plus `max_lines`; error messages show valid parameter combinations for the attempted mode
 - exact-selector reference navigation through `find_references`, `get_symbol_context`, and `get_context_bundle` using `path`, symbol kind, and symbol line; `find_references` supports `limit` and `max_per_file` for bounded output; `get_context_bundle` automatically resolves type dependencies — custom types referenced in the symbol's signature and body are included with their full definitions, recursively up to depth 2 (e.g. if a function takes `UserConfig` which contains an `Address` field, both type bodies are returned in a single call)
-- `get_file_context` with enriched import/export summaries — shows grouped import sources with symbol counts ("Imports from N sources") and grouped consumers with reference counts ("Used by M files"), alongside the symbol outline and key references
+- `get_file_context` with enriched import/export summaries — shows grouped import sources with symbol counts ("Imports from N sources") and grouped consumers with reference counts ("Used by M files"), alongside the symbol outline and key references; also includes a **Git activity** section with exponential-decay churn score (14-day half-life, rank-normalized 0.0–1.0 with visual bar), last commit summary, ownership distribution (top contributors by commit share), and Jaccard co-change coupling (files that frequently change together)
 - `find_dependents` with module- and namespace-aware attribution, `limit`/`max_per_file` output bounds, and optional `format` parameter for Mermaid flowchart or Graphviz DOT graph output
 - `find_implementations` for trait/interface implementation mapping — given a trait name returns all implementors, given a type name returns all traits it implements; bidirectional search with `direction` parameter; supports Rust (`impl Trait for Struct`), TypeScript/Java (`implements`), C# (base list), Python (class inheritance), C++, Ruby, PHP, Swift
 - prompt-submit hook routing that can use file hints, basename/extensionless aliases, module aliases, qualified symbol aliases, and `:line` hints to choose the right file or symbol more reliably

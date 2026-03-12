@@ -231,6 +231,14 @@ async fn run_local_mcp_server_async(
         tracing::info!("file watcher started");
     }
 
+    // Kick off background git temporal analysis (non-blocking).
+    if let Some(ref root) = watcher_root {
+        live_index::git_temporal::spawn_git_temporal_computation(
+            Arc::clone(&index),
+            root.clone(),
+        );
+    }
+
     // Spawn HTTP sidecar after watcher, before MCP serve.
     // The sidecar shares the same Arc<LiveIndex> so mutations are immediately visible.
     let bind_host =
