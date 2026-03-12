@@ -175,6 +175,7 @@ pub struct SymbolSearchOptions {
     pub search_scope: SearchScope,
     pub result_limit: ResultLimit,
     pub noise_policy: NoisePolicy,
+    pub language_filter: Option<LanguageId>,
 }
 
 impl Default for SymbolSearchOptions {
@@ -184,6 +185,7 @@ impl Default for SymbolSearchOptions {
             search_scope: SearchScope::default(),
             result_limit: ResultLimit::default(),
             noise_policy: NoisePolicy::default(),
+            language_filter: None,
         }
     }
 }
@@ -195,6 +197,7 @@ impl SymbolSearchOptions {
             search_scope: SearchScope::Code,
             result_limit: ResultLimit::new(result_limit),
             noise_policy: NoisePolicy::permissive(),
+            language_filter: None,
         }
     }
 }
@@ -383,6 +386,10 @@ pub fn search_symbols_with_options(
         if !options.path_scope.matches(path)
             || !options.search_scope.allows(&file.classification)
             || !options.noise_policy.allows(&file.classification)
+            || options
+                .language_filter
+                .as_ref()
+                .is_some_and(|language| &file.language != language)
         {
             continue;
         }
@@ -925,6 +932,48 @@ mod tests {
     }
 
     #[test]
+    fn test_search_module_symbol_search_with_options_respects_path_language_and_limit() {
+        let rust_model = make_file(
+            "src/models/job.rs",
+            "",
+            vec![
+                make_symbol("Job", SymbolKind::Class, 1),
+                make_symbol("JobRunner", SymbolKind::Function, 2),
+            ],
+        );
+        let mut ts_ui = make_file(
+            "src/ui/job.ts",
+            "",
+            vec![
+                make_symbol("JobCard", SymbolKind::Class, 3),
+                make_symbol("JobList", SymbolKind::Class, 4),
+            ],
+        );
+        ts_ui.1.language = LanguageId::TypeScript;
+        let noise = make_file(
+            "tests/job_test.rs",
+            "",
+            vec![make_symbol("JobTest", SymbolKind::Function, 5)],
+        );
+        let index = make_index(vec![rust_model, ts_ui, noise]);
+        let options = SymbolSearchOptions {
+            path_scope: PathScope::prefix("src/ui"),
+            search_scope: SearchScope::Code,
+            result_limit: ResultLimit::new(1),
+            noise_policy: NoisePolicy::permissive(),
+            language_filter: Some(LanguageId::TypeScript),
+        };
+
+        let result = search_symbols_with_options(&index, "job", Some("class"), &options);
+
+        assert_eq!(result.file_count, 1);
+        assert_eq!(result.hits.len(), 1);
+        assert_eq!(result.hits[0].path, "src/ui/job.ts");
+        assert_eq!(result.hits[0].name, "JobCard");
+        assert_eq!(result.hits[0].kind, "class");
+    }
+
+    #[test]
     fn test_search_module_text_search_with_options_respects_scope_and_path() {
         let mut text_classification = crate::domain::FileClassification::for_code_path("docs/readme.md");
         text_classification.class = FileClass::Text;
@@ -967,6 +1016,7 @@ mod tests {
         assert_eq!(options.search_scope, SearchScope::Code);
         assert_eq!(options.result_limit, ResultLimit::new(17));
         assert_eq!(options.noise_policy, NoisePolicy::permissive());
+        assert_eq!(options.language_filter, None);
     }
 
     #[test]

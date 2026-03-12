@@ -85,6 +85,12 @@ pub struct SearchSymbolsInput {
     pub query: String,
     /// Optional kind filter using display names such as `fn`, `class`, or `interface`.
     pub kind: Option<String>,
+    /// Optional relative path prefix scope, for example `src/` or `src/protocol`.
+    pub path_prefix: Option<String>,
+    /// Optional canonical language name such as `Rust`, `TypeScript`, `C#`, or `C++`.
+    pub language: Option<String>,
+    /// Optional maximum number of matches to return (default 50, capped at 100).
+    pub limit: Option<u32>,
 }
 
 /// Input for `search_text`.
@@ -327,7 +333,7 @@ fn parse_git_name_only_paths(output: &str) -> Vec<String> {
         .collect()
 }
 
-fn parse_search_text_language_filter(input: Option<&str>) -> Result<Option<LanguageId>, String> {
+fn parse_language_filter(input: Option<&str>) -> Result<Option<LanguageId>, String> {
     let Some(language) = input.map(str::trim).filter(|language| !language.is_empty()) else {
         return Ok(None);
     };
@@ -358,7 +364,7 @@ fn parse_search_text_language_filter(input: Option<&str>) -> Result<Option<Langu
     })
 }
 
-fn normalize_search_text_path_prefix(input: Option<&str>) -> search::PathScope {
+fn normalize_path_prefix(input: Option<&str>) -> search::PathScope {
     let Some(prefix) = input.map(str::trim).filter(|prefix| !prefix.is_empty()) else {
         return search::PathScope::any();
     };
@@ -391,18 +397,30 @@ fn normalize_search_text_glob(input: Option<&str>) -> Option<String> {
         .filter(|pattern| !pattern.is_empty())
 }
 
+fn search_symbols_options_from_input(
+    input: &SearchSymbolsInput,
+) -> Result<search::SymbolSearchOptions, String> {
+    Ok(search::SymbolSearchOptions {
+        path_scope: normalize_path_prefix(input.path_prefix.as_deref()),
+        search_scope: search::SearchScope::Code,
+        result_limit: search::ResultLimit::new(input.limit.unwrap_or(50).min(100) as usize),
+        noise_policy: search::NoisePolicy::permissive(),
+        language_filter: parse_language_filter(input.language.as_deref())?,
+    })
+}
+
 fn search_text_options_from_input(
     input: &SearchTextInput,
 ) -> Result<search::TextSearchOptions, String> {
     Ok(search::TextSearchOptions {
-        path_scope: normalize_search_text_path_prefix(input.path_prefix.as_deref()),
+        path_scope: normalize_path_prefix(input.path_prefix.as_deref()),
         search_scope: search::SearchScope::Code,
         noise_policy: search::NoisePolicy {
             include_generated: input.include_generated.unwrap_or(false),
             include_tests: input.include_tests.unwrap_or(false),
             include_vendor: true,
         },
-        language_filter: parse_search_text_language_filter(input.language.as_deref())?,
+        language_filter: parse_language_filter(input.language.as_deref())?,
         total_limit: input.limit.unwrap_or(50) as usize,
         max_per_file: input.max_per_file.unwrap_or(5) as usize,
         glob: normalize_search_text_glob(input.glob.as_deref()),
@@ -703,10 +721,19 @@ impl TokenizorServer {
         if let Some(result) = self.proxy_tool_call("search_symbols", &params.0).await {
             return result;
         }
+        let options = match search_symbols_options_from_input(&params.0) {
+            Ok(options) => options,
+            Err(message) => return message,
+        };
         let result = {
             let guard = self.index.read().expect("lock poisoned");
             loading_guard!(guard);
-            search::search_symbols(&guard, &params.0.query, params.0.kind.as_deref(), 50)
+            search::search_symbols_with_options(
+                &guard,
+                &params.0.query,
+                params.0.kind.as_deref(),
+                &options,
+            )
         };
         format::search_symbols_result_view(&result, &params.0.query)
     }
@@ -1503,6 +1530,9 @@ mod tests {
             .search_symbols(Parameters(super::SearchSymbolsInput {
                 query: "find".to_string(),
                 kind: None,
+                path_prefix: None,
+                language: None,
+                limit: None,
             }))
             .await;
         assert!(
@@ -1525,6 +1555,9 @@ mod tests {
             .search_symbols(Parameters(super::SearchSymbolsInput {
                 query: "job".to_string(),
                 kind: Some("class".to_string()),
+                path_prefix: None,
+                language: None,
+                limit: None,
             }))
             .await;
         assert!(
@@ -1535,6 +1568,47 @@ mod tests {
             !result.contains("fn JobRunner"),
             "function should be filtered out: {result}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_search_symbols_tool_respects_scope_language_limit_and_kind() {
+        let rust_model = make_file(
+            "src/models/job.rs",
+            b"struct Job {}\nfn JobRunner() {}\n",
+            vec![
+                make_symbol("Job", SymbolKind::Class, 1, 1),
+                make_symbol("JobRunner", SymbolKind::Function, 2, 2),
+            ],
+        );
+        let mut ts_ui = make_file(
+            "src/ui/job.ts",
+            b"class JobCard {}\nclass JobList {}\n",
+            vec![
+                make_symbol("JobCard", SymbolKind::Class, 1, 1),
+                make_symbol("JobList", SymbolKind::Class, 2, 2),
+            ],
+        );
+        ts_ui.1.language = LanguageId::TypeScript;
+        let server = make_server(make_live_index_ready(vec![rust_model, ts_ui]));
+
+        let result = server
+            .search_symbols(Parameters(super::SearchSymbolsInput {
+                query: "job".to_string(),
+                kind: Some("class".to_string()),
+                path_prefix: Some("src/ui".to_string()),
+                language: Some("TypeScript".to_string()),
+                limit: Some(1),
+            }))
+            .await;
+
+        assert!(result.contains("1 matches in 1 files"), "expected bounded output: {result}");
+        assert!(result.contains("class JobCard"), "expected scoped class hit: {result}");
+        assert!(!result.contains("JobList"), "limit should truncate later hits: {result}");
+        assert!(
+            !result.contains("src/models/job.rs"),
+            "path scope should exclude rust model: {result}"
+        );
+        assert!(!result.contains("fn JobRunner"), "kind filter should exclude function: {result}");
     }
 
     #[tokio::test]

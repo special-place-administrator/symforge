@@ -2,11 +2,11 @@
 doc_type: task
 task_id: 84
 title: P1 search_symbols scope contract research
-status: in_progress
+status: done
 sprint: tokenizor-upgrade-foundation
 parent_plan: 05-P-validation-and-backlog.md
 prev_task: 83-T-phase3-search-text-match-semantics-shell.md
-next_task: 
+next_task: 85-T-p1-search-symbols-scope-filter-shell.md
 created: 2026-03-12
 updated: 2026-03-12
 ---
@@ -48,13 +48,20 @@ updated: 2026-03-12
 
 ## Completion Notes
 
-- pending
+- added [84-R-p1-search-symbols-scope-contract-research.md](/E:/project/tokenizor_agentic_mcp/docs/execution-plan/84-R-p1-search-symbols-scope-contract-research.md)
+- recommendation:
+  - add `path_prefix`, `language`, and `limit` first
+  - keep the current code-lane and noise-permissive defaults
+  - preserve the current `kind` filter and output format
+  - defer generated/test suppression to a separate follow-on slice
+  - default `limit` to 50 and cap the first shell at 100
+- authored the next execution slice as `85-T-p1-search-symbols-scope-filter-shell.md`
 
 ## Carry Forward To Next Task
 
 Next task:
 
-- `TBD`
+- `85-T-p1-search-symbols-scope-filter-shell.md`
 
 Carry forward:
 
@@ -64,4 +71,4 @@ Carry forward:
 
 Open points:
 
-- OPEN: whether generated/test suppression for `search_symbols` should land in the first scoped shell or remain a separate follow-on slice
+- OPEN: whether generated/test suppression for `search_symbols` should land immediately after the first scoped shell or wait for ranking work
