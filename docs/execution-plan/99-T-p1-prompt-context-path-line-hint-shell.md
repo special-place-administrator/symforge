@@ -2,11 +2,11 @@
 doc_type: task
 task_id: 99
 title: P1 prompt_context path:line hint shell
-status: pending
+status: done
 sprint: tokenizor-upgrade-foundation
 parent_plan: 05-P-validation-and-backlog.md
 prev_task: 98-T-p1-prompt-context-path-line-hint-contract-research.md
-next_task: 
+next_task: 100-T-p1-prompt-context-basename-line-hint-contract-research.md
 created: 2026-03-12
 updated: 2026-03-12
 ---
@@ -45,20 +45,24 @@ updated: 2026-03-12
 
 ## Completion Notes
 
-- pending
+- extended prompt-context line-hint extraction so `<resolved-path>:<line>` feeds `symbol_line` for the combined file+symbol exact-selector path
+- preserved the existing explicit `line N` flow and the ambiguity fallback when no usable line hint exists
+- added focused handler tests for `path:line` success and unrelated colon-number rejection
+- added sidecar endpoint coverage for the `path:line` route
 
 ## Carry Forward To Next Task
 
 Next task:
 
-- `TBD`
+- `100-T-p1-prompt-context-basename-line-hint-contract-research.md`
 
 Carry forward:
 
 - keep colon parsing anchored to the resolved file hint
 - preserve the current exact-selector fallback when no usable line hint exists
 - avoid broadening this slice into full prompt grammar parsing
+- if the next slice expands to basename-derived hints, require the basename to already resolve uniquely before treating `file.rs:line` as actionable
 
 Open points:
 
-- OPEN: whether a later slice should support basename-only `file.rs:42`
+- OPEN: whether prompt-context should also accept unique basename-derived `file.rs:42` hints

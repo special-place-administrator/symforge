@@ -2,7 +2,7 @@
 doc_type: task
 task_id: 98
 title: P1 prompt_context path:line hint contract research
-status: in_progress
+status: done
 sprint: tokenizor-upgrade-foundation
 parent_plan: 05-P-validation-and-backlog.md
 prev_task: 97-T-p1-prompt-context-symbol-line-hint-shell.md
@@ -46,7 +46,10 @@ updated: 2026-03-12
 
 ## Completion Notes
 
-- pending
+- added [98-R-p1-prompt-context-path-line-hint-contract-research.md](/E:/project/tokenizor_agentic_mcp/docs/execution-plan/98-R-p1-prompt-context-path-line-hint-contract-research.md)
+- narrowed colon-based line parsing to exact matches against the resolved file hint
+- preserved the existing `line N` path and the exact-selector ambiguity fallback when no usable line hint exists
+- authored the follow-on execution slice as `99-T-p1-prompt-context-path-line-hint-shell.md`
 
 ## Carry Forward To Next Task
 
@@ -62,4 +65,4 @@ Carry forward:
 
 Open points:
 
-- OPEN: whether the first shell should support only exact-path matches or also basename-derived `file.rs:42`
+- route the first shell through the existing combined file+symbol path without broadening basename matching yet
