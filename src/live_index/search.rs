@@ -124,6 +124,8 @@ pub struct ContentContext {
     pub around_line: Option<u32>,
     pub around_match: Option<String>,
     pub context_lines: Option<u32>,
+    pub chunk_index: Option<u32>,
+    pub max_lines: Option<u32>,
 }
 
 impl ContentContext {
@@ -134,6 +136,8 @@ impl ContentContext {
             around_line: None,
             around_match: None,
             context_lines: None,
+            chunk_index: None,
+            max_lines: None,
         }
     }
 
@@ -144,6 +148,8 @@ impl ContentContext {
             around_line: Some(around_line),
             around_match: None,
             context_lines,
+            chunk_index: None,
+            max_lines: None,
         }
     }
 
@@ -154,6 +160,20 @@ impl ContentContext {
             around_line: None,
             around_match: Some(around_match.into()),
             context_lines,
+            chunk_index: None,
+            max_lines: None,
+        }
+    }
+
+    pub const fn chunk(chunk_index: u32, max_lines: u32) -> Self {
+        Self {
+            start_line: None,
+            end_line: None,
+            around_line: None,
+            around_match: None,
+            context_lines: None,
+            chunk_index: Some(chunk_index),
+            max_lines: Some(max_lines),
         }
     }
 }
@@ -324,6 +344,17 @@ impl FileContentOptions {
         Self {
             path_scope: PathScope::exact(path),
             content_context: ContentContext::around_match(around_match, context_lines),
+        }
+    }
+
+    pub fn for_explicit_path_read_chunk(
+        path: impl Into<String>,
+        chunk_index: u32,
+        max_lines: u32,
+    ) -> Self {
+        Self {
+            path_scope: PathScope::exact(path),
+            content_context: ContentContext::chunk(chunk_index, max_lines),
         }
     }
 
@@ -1471,5 +1502,16 @@ mod tests {
             options.content_context,
             ContentContext::around_match("needle", Some(1))
         );
+    }
+
+    #[test]
+    fn test_explicit_path_read_chunk_options_are_exact() {
+        let options = FileContentOptions::for_explicit_path_read_chunk("src/lib.rs", 2, 2);
+
+        assert_eq!(
+            options.path_scope,
+            PathScope::Exact("src/lib.rs".to_string())
+        );
+        assert_eq!(options.content_context, ContentContext::chunk(2, 2));
     }
 }

@@ -152,6 +152,8 @@ impl TokenizorServer {
                     path,
                     start_line,
                     end_line,
+                    chunk_index: None,
+                    max_lines: None,
                     around_line: None,
                     around_match: None,
                     context_lines: None,

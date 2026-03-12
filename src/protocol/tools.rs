@@ -173,6 +173,10 @@ pub struct GetFileContentInput {
     pub start_line: Option<u32>,
     /// Last line to include (1-indexed, inclusive).
     pub end_line: Option<u32>,
+    /// Select a 1-based chunk from the file using `max_lines` as the chunk size.
+    pub chunk_index: Option<u32>,
+    /// Maximum number of lines to include in a chunked read.
+    pub max_lines: Option<u32>,
     /// Center the read around this 1-indexed line.
     pub around_line: Option<u32>,
     /// Center the read around the first case-insensitive literal match in the file.
@@ -462,6 +466,49 @@ fn search_text_options_from_input(
 fn file_content_options_from_input(
     input: &GetFileContentInput,
 ) -> Result<search::FileContentOptions, String> {
+    if input.max_lines.is_some() && input.chunk_index.is_none() {
+        return Err(
+            "Invalid get_file_content request: `max_lines` requires `chunk_index`.".to_string(),
+        );
+    }
+
+    if let Some(chunk_index) = input.chunk_index {
+        let Some(max_lines) = input.max_lines else {
+            return Err(
+                "Invalid get_file_content request: `chunk_index` requires `max_lines`.".to_string(),
+            );
+        };
+
+        if chunk_index == 0 {
+            return Err(
+                "Invalid get_file_content request: `chunk_index` must be 1 or greater.".to_string(),
+            );
+        }
+
+        if max_lines == 0 {
+            return Err(
+                "Invalid get_file_content request: `max_lines` must be 1 or greater.".to_string(),
+            );
+        }
+
+        if input.start_line.is_some()
+            || input.end_line.is_some()
+            || input.around_line.is_some()
+            || input.around_match.is_some()
+        {
+            return Err(
+                "Invalid get_file_content request: chunked reads cannot be combined with `start_line`, `end_line`, `around_line`, or `around_match`."
+                    .to_string(),
+            );
+        }
+
+        return Ok(search::FileContentOptions::for_explicit_path_read_chunk(
+            input.path.clone(),
+            chunk_index,
+            max_lines,
+        ));
+    }
+
     if let Some(raw_around_match) = input.around_match.as_deref() {
         let around_match = raw_around_match.trim();
         if around_match.is_empty() {
@@ -2593,6 +2640,8 @@ mod tests {
                 path: "src/lib.rs".to_string(),
                 start_line: None,
                 end_line: None,
+                chunk_index: None,
+                max_lines: None,
                 around_line: None,
                 around_match: None,
                 context_lines: None,
@@ -2612,6 +2661,8 @@ mod tests {
                 path: "nonexistent.rs".to_string(),
                 start_line: None,
                 end_line: None,
+                chunk_index: None,
+                max_lines: None,
                 around_line: None,
                 around_match: None,
                 context_lines: None,
@@ -2630,6 +2681,8 @@ mod tests {
                 path: "src/lib.rs".to_string(),
                 start_line: Some(2),
                 end_line: Some(3),
+                chunk_index: None,
+                max_lines: None,
                 around_line: None,
                 around_match: None,
                 context_lines: None,
@@ -2648,6 +2701,8 @@ mod tests {
                 path: "src/lib.rs".to_string(),
                 start_line: None,
                 end_line: None,
+                chunk_index: None,
+                max_lines: None,
                 around_line: Some(3),
                 around_match: None,
                 context_lines: Some(1),
@@ -2666,6 +2721,8 @@ mod tests {
                 path: "src/lib.rs".to_string(),
                 start_line: Some(2),
                 end_line: None,
+                chunk_index: None,
+                max_lines: None,
                 around_line: Some(2),
                 around_match: None,
                 context_lines: Some(1),
@@ -2687,12 +2744,57 @@ mod tests {
                 path: "src/lib.rs".to_string(),
                 start_line: None,
                 end_line: None,
+                chunk_index: None,
+                max_lines: None,
                 around_line: None,
                 around_match: Some("todo".to_string()),
                 context_lines: Some(1),
             }))
             .await;
         assert_eq!(result, "1: line 1\n2: TODO first\n3: line 3");
+    }
+
+    #[tokio::test]
+    async fn test_get_file_content_chunked_read_renders_header_and_numbered_lines() {
+        let content = b"line 1\nline 2\nline 3\nline 4\nline 5";
+        let (key, file) = make_file("src/lib.rs", content, vec![]);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let result = server
+            .get_file_content(Parameters(super::GetFileContentInput {
+                path: "src/lib.rs".to_string(),
+                start_line: None,
+                end_line: None,
+                chunk_index: Some(2),
+                max_lines: Some(2),
+                around_line: None,
+                around_match: None,
+                context_lines: None,
+            }))
+            .await;
+        assert_eq!(
+            result,
+            "src/lib.rs [chunk 2/3, lines 3-4]\n3: line 3\n4: line 4"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_file_content_reports_out_of_range_chunk() {
+        let content = b"line 1\nline 2\nline 3";
+        let (key, file) = make_file("src/lib.rs", content, vec![]);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let result = server
+            .get_file_content(Parameters(super::GetFileContentInput {
+                path: "src/lib.rs".to_string(),
+                start_line: None,
+                end_line: None,
+                chunk_index: Some(3),
+                max_lines: Some(2),
+                around_line: None,
+                around_match: None,
+                context_lines: None,
+            }))
+            .await;
+        assert_eq!(result, "Chunk 3 out of range for src/lib.rs (2 chunks)");
     }
 
     #[tokio::test]
@@ -2705,12 +2807,60 @@ mod tests {
                 path: "src/lib.rs".to_string(),
                 start_line: None,
                 end_line: None,
+                chunk_index: None,
+                max_lines: None,
                 around_line: None,
                 around_match: Some("needle".to_string()),
                 context_lines: Some(1),
             }))
             .await;
         assert_eq!(result, "No matches for 'needle' in src/lib.rs");
+    }
+
+    #[tokio::test]
+    async fn test_get_file_content_rejects_chunked_read_with_other_selectors() {
+        let content = b"line 1\nline 2\nline 3";
+        let (key, file) = make_file("src/lib.rs", content, vec![]);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let result = server
+            .get_file_content(Parameters(super::GetFileContentInput {
+                path: "src/lib.rs".to_string(),
+                start_line: Some(2),
+                end_line: None,
+                chunk_index: Some(1),
+                max_lines: Some(2),
+                around_line: None,
+                around_match: None,
+                context_lines: None,
+            }))
+            .await;
+        assert_eq!(
+            result,
+            "Invalid get_file_content request: chunked reads cannot be combined with `start_line`, `end_line`, `around_line`, or `around_match`."
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_file_content_rejects_chunk_index_without_max_lines() {
+        let content = b"line 1\nline 2\nline 3";
+        let (key, file) = make_file("src/lib.rs", content, vec![]);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let result = server
+            .get_file_content(Parameters(super::GetFileContentInput {
+                path: "src/lib.rs".to_string(),
+                start_line: None,
+                end_line: None,
+                chunk_index: Some(1),
+                max_lines: None,
+                around_line: None,
+                around_match: None,
+                context_lines: None,
+            }))
+            .await;
+        assert_eq!(
+            result,
+            "Invalid get_file_content request: `chunk_index` requires `max_lines`."
+        );
     }
 
     #[tokio::test]
@@ -2723,6 +2873,8 @@ mod tests {
                 path: "src/lib.rs".to_string(),
                 start_line: None,
                 end_line: Some(3),
+                chunk_index: None,
+                max_lines: None,
                 around_line: Some(2),
                 around_match: Some("line".to_string()),
                 context_lines: Some(1),

@@ -35,7 +35,7 @@ At the time of this README rewrite, `cargo test` is green in this repository.
 - `resolve_path` for exact path resolution from filenames and partial hints
 - `search_symbols` with `kind`, `path_prefix`, `language`, `limit`, `include_generated`, and `include_tests`
 - `search_text` with literal, OR-term, and regex search plus `path_prefix`, `language`, `limit`, `max_per_file`, `glob`, `exclude_glob`, symmetric `context`, `case_sensitive`, `whole_word`, and generated/test suppression
-- `get_file_content` with full-file reads, explicit line ranges, `around_line`, and first-match `around_match`
+- `get_file_content` with full-file reads, explicit line ranges, `around_line`, first-match `around_match`, and exact-path line-oriented chunked reads via `chunk_index` plus `max_lines`
 - exact-selector reference navigation through `find_references`, `get_symbol_context`, and `get_context_bundle` using `path`, symbol kind, and symbol line
 - `find_dependents` with module- and namespace-aware attribution
 - prompt-submit hook routing that can use file hints, basename/extensionless aliases, module aliases, qualified symbol aliases, and `:line` hints to choose the right file or symbol more reliably
@@ -87,7 +87,7 @@ Current resource templates:
 
 Important current caveat:
 
-- the tools have moved ahead of the resources in a few areas; for example, `get_file_content` now supports `around_line` and `around_match`, but the file-content resource template still only exposes `start_line` and `end_line`
+- the tools have moved ahead of the resources in a few areas; for example, `get_file_content` now supports `around_line`, `around_match`, and chunked reads, but the file-content resource template still only exposes `start_line` and `end_line`
 - exact-selector symbol inputs are implemented on tools, but the symbol-context resource template still exposes only `name` and optional `file`
 
 ### Supported languages
@@ -119,7 +119,6 @@ These items are part of the direction for the project, but they are not in the c
 - local content-addressed blob storage for raw bytes and large derived artifacts
 - `index_repository`, `cancel_index_run`, `checkpoint_now`, and `repair_index`
 - `trace_symbol` and `inspect_match`
-- `get_file_content` chunking
 - `get_file_content around_symbol`
 - a general `show_line_numbers` / header contract for ordinary full-file and explicit-range reads
 - a lightweight non-code text lane for JSON, YAML, TOML, Markdown, logs, and similar plain-text files
@@ -128,11 +127,25 @@ These items are part of the direction for the project, but they are not in the c
 
 ## Current Rough Edges and Open Work
 
-- `get_file_content` is much better than before, but it still is not a complete shell replacement for large-file paging until chunking lands
+- `get_file_content` now has deterministic line-oriented chunked paging, but it still lacks `around_symbol` and a broader ordinary-read header/line-number contract
 - resource and prompt surfaces still lag some of the newer tool capabilities
 - current indexing is intentionally code-first; non-code text retrieval remains limited
 - long-running run management, checkpointing, repair workflows, and idempotent mutation semantics are still architecture goals rather than shipped features
 - the shortest path from file discovery to exact symbol/reference inspection is much better now, but a few workflow helpers still remain on the roadmap
+
+## Read Lane Vs Retrieval Lane
+
+Current `get_file_content` chunking is a deterministic read primitive, not an embedding or semantic-retrieval chunker.
+
+- the shipped chunking contract is exact-path, line-oriented, reproducible paging for inspection and tool follow-up
+- it is intentionally stable for prompts like "give me chunk 3 of this file" or "show me lines 301-450"
+- it does not use overlap, fuzzy boundaries, or token-sized recursive splitting, because those hurt reproducibility for direct reads
+
+If Tokenizor later adds an embedding-backed text lane or hybrid retrieval layer, that future ingestion path may use a different chunking strategy entirely. For code, the intended order remains:
+
+- symbol- and span-aware navigation first
+- deterministic line/range/context reads second
+- recursive or embedding-oriented chunking only in a future retrieval lane where recall matters more than exact paging stability
 
 ## Why It Is Already Better Than Earlier Revisions
 

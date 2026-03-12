@@ -781,6 +781,33 @@ fn test_get_file_content_with_around_match() {
     assert_eq!(result, "1: line one\n2: TODO first\n3: line three");
 }
 
+#[test]
+fn test_get_file_content_with_chunked_read() {
+    use tokenizor_agentic_mcp::live_index::search::ContentContext;
+    use tokenizor_agentic_mcp::protocol::format;
+
+    let dir = tempdir().unwrap();
+    write_file(
+        dir.path(),
+        "lines.rs",
+        "line one\nline two\nline three\nline four\nline five",
+    );
+
+    let shared = LiveIndex::load(dir.path()).unwrap();
+    let index = shared.read().unwrap();
+    let file = index.capture_shared_file("lines.rs").unwrap();
+
+    let result = format::file_content_from_indexed_file_with_context(
+        file.as_ref(),
+        ContentContext::chunk(2, 2),
+    );
+
+    assert_eq!(
+        result,
+        "lines.rs [chunk 2/3, lines 3-4]\n3: line three\n4: line four"
+    );
+}
+
 // ============================================================================
 // Phase 7 Plan 03: Persistence Integration Tests
 // ============================================================================

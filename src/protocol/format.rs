@@ -854,6 +854,14 @@ pub fn file_content_from_indexed_file_with_context(
     file: &IndexedFile,
     context: search::ContentContext,
 ) -> String {
+    if let Some(chunk_index) = context.chunk_index {
+        return render_numbered_chunk_excerpt(
+            file,
+            chunk_index,
+            context.max_lines.expect("chunked reads require max_lines"),
+        );
+    }
+
     if let Some(around_match) = context.around_match.as_deref() {
         return render_numbered_around_match_excerpt(
             file,
@@ -919,6 +927,43 @@ fn render_file_content_bytes(content: &[u8], context: search::ContentContext) ->
     }
 }
 
+fn render_numbered_chunk_excerpt(file: &IndexedFile, chunk_index: u32, max_lines: u32) -> String {
+    let content = String::from_utf8_lossy(&file.content);
+    let lines: Vec<&str> = content.lines().collect();
+    let chunk_size = max_lines as usize;
+
+    if chunk_index == 0 || chunk_size == 0 {
+        return out_of_range_file_chunk(&file.relative_path, chunk_index, 0);
+    }
+
+    let total_chunks = lines.len().div_ceil(chunk_size);
+    if total_chunks == 0 {
+        return out_of_range_file_chunk(&file.relative_path, chunk_index, 0);
+    }
+
+    let chunk_number = chunk_index as usize;
+    if chunk_number > total_chunks {
+        return out_of_range_file_chunk(&file.relative_path, chunk_index, total_chunks);
+    }
+
+    let start_idx = (chunk_number - 1) * chunk_size;
+    let end_idx = (start_idx + chunk_size).min(lines.len());
+    let start_line = start_idx + 1;
+    let end_line = end_idx;
+
+    let body = lines[start_idx..end_idx]
+        .iter()
+        .enumerate()
+        .map(|(offset, line)| format!("{}: {line}", start_line + offset))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!(
+        "{} [chunk {}/{}, lines {}-{}]\n{}",
+        file.relative_path, chunk_index, total_chunks, start_line, end_line, body
+    )
+}
+
 fn render_numbered_around_match_excerpt(
     file: &IndexedFile,
     around_match: &str,
@@ -975,6 +1020,10 @@ pub fn not_found_file(path: &str) -> String {
 /// "No matches for '{query}' in {path}"
 pub fn not_found_file_match(path: &str, query: &str) -> String {
     format!("No matches for '{query}' in {path}")
+}
+
+fn out_of_range_file_chunk(path: &str, chunk_index: u32, total_chunks: usize) -> String {
+    format!("Chunk {chunk_index} out of range for {path} ({total_chunks} chunks)")
 }
 
 /// "No symbol {name} in {path}. Symbols in that file: {comma-separated list}"
@@ -2191,6 +2240,37 @@ mod tests {
         );
 
         assert_eq!(result, "1: line 1\n2: TODO first\n3: line 3");
+    }
+
+    #[test]
+    fn test_file_content_from_indexed_file_with_context_renders_chunked_excerpt_header() {
+        let content = b"line 1\nline 2\nline 3\nline 4\nline 5";
+        let (key, file) = make_file("src/main.rs", content, vec![]);
+        let index = make_index(vec![(key, file)]);
+
+        let result = file_content_from_indexed_file_with_context(
+            index.capture_shared_file("src/main.rs").unwrap().as_ref(),
+            search::ContentContext::chunk(2, 2),
+        );
+
+        assert_eq!(
+            result,
+            "src/main.rs [chunk 2/3, lines 3-4]\n3: line 3\n4: line 4"
+        );
+    }
+
+    #[test]
+    fn test_file_content_from_indexed_file_with_context_reports_out_of_range_chunk() {
+        let content = b"line 1\nline 2\nline 3";
+        let (key, file) = make_file("src/main.rs", content, vec![]);
+        let index = make_index(vec![(key, file)]);
+
+        let result = file_content_from_indexed_file_with_context(
+            index.capture_shared_file("src/main.rs").unwrap().as_ref(),
+            search::ContentContext::chunk(3, 2),
+        );
+
+        assert_eq!(result, "Chunk 3 out of range for src/main.rs (2 chunks)");
     }
 
     // --- guard messages ---

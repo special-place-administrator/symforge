@@ -2,11 +2,11 @@
 doc_type: task
 task_id: 129
 title: P1 get_file_content chunking shell
-status: in_progress
+status: done
 sprint: tokenizor-upgrade-foundation
 parent_plan: 05-P-validation-and-backlog.md
 prev_task: 128-T-p1-get-file-content-chunking-contract-research.md
-next_task:
+next_task: 130-T-p1-get-file-content-around-symbol-contract-research.md
 created: 2026-03-12
 updated: 2026-03-12
 ---
@@ -48,13 +48,16 @@ updated: 2026-03-12
 
 ## Completion Notes
 
-- pending
+- added exact-path `chunk_index` plus `max_lines` support to `get_file_content`
+- chunked reads now render a stable one-line header with path, chunk position, and covered line range
+- chunked reads reject mixing with explicit ranges or `around_*` selectors, and out-of-range chunk requests return a stable message
+- focused unit, tool, and integration coverage passed, followed by a green `cargo test`
 
 ## Carry Forward To Next Task
 
 Next task:
 
-- `TBD`
+- `130-T-p1-get-file-content-around-symbol-contract-research.md`
 
 Carry forward:
 
@@ -65,3 +68,4 @@ Carry forward:
 Open points:
 
 - whether later slices should add caller-provided chunk-count hints or explicit next/prev helpers
+- whether later symbol-anchored reads should center on symbol start lines only or preserve multi-line symbol spans
