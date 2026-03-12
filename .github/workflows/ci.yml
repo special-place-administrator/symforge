@@ -8,7 +8,23 @@ on:
   workflow_dispatch:
 
 jobs:
+  release-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run version sync tests
+        run: python -m unittest discover -s execution -p 'test_*.py'
+
+      - name: Verify release metadata stays aligned
+        run: python execution/version_sync.py check
+
   rust:
+    needs: release-version
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,6 +39,7 @@ jobs:
         run: cargo test --all-targets -- --test-threads=1
 
   npm:
+    needs: release-version
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

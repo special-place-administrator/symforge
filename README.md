@@ -199,6 +199,10 @@ Current updater behavior:
 - On Windows, the npm installer first tries to replace the installed binary in place.
 - If the installed Tokenizor binary is locked, the installer tries to stop running `tokenizor-mcp.exe` processes that are using the installed binary path, then retries the replacement.
 - If replacement is still not possible, the installer stages `tokenizor-mcp.pending.exe` and the wrapper applies it on the next successful launch.
+- On every launch, the npm wrapper checks that the installed binary version matches the wrapper package version and reruns the installer automatically if the binary is missing or mismatched.
+- On every launch, the client also refuses to reuse a recorded daemon unless its reported version and executable path match the current binary; incompatible daemons are replaced automatically.
+
+Release, publish, and recovery procedure lives in `docs/release-process.md`.
 
 If your platform is not in the list above, build from source instead.
 
@@ -339,6 +343,43 @@ cargo test
 ```
 
 The Cargo package name in this repository is `tokenizor_agentic_mcp`.
+
+## Developer Setup
+
+Developer setup scripts now use the current `init` flow instead of printing legacy manual config.
+
+Windows:
+
+```powershell
+.\setup.bat --client all
+```
+
+Unix:
+
+```bash
+bash scripts/setup.sh --client all
+```
+
+## Release Process
+
+GitHub releases are now managed through `release-please` plus GitHub Actions.
+
+Operational details live in [docs/release-process.md](/C:/AI_STUFF/PROGRAMMING/tokenizor_agentic_mcp/docs/release-process.md).
+
+Fresh-terminal operator entrypoint:
+
+```bash
+python execution/release_ops.py guide
+```
+
+Quick checks:
+
+```bash
+python execution/release_ops.py status
+python execution/release_ops.py preflight
+python execution/version_sync.py check
+python execution/version_sync.py current
+```
 
 ## License
 

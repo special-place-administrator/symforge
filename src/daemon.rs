@@ -21,8 +21,8 @@ use crate::protocol::TokenizorServer;
 use crate::protocol::tools::{
     AnalyzeFileImpactInput, FindDependentsInput, FindReferencesInput, GetContextBundleInput,
     GetFileContentInput, GetFileContextInput, GetFileOutlineInput, GetFileTreeInput,
-    GetSymbolContextInput, GetSymbolInput, GetSymbolsInput, IndexFolderInput, SearchSymbolsInput,
-    SearchTextInput, WhatChangedInput,
+    GetSymbolContextInput, GetSymbolInput, GetSymbolsInput, IndexFolderInput, ResolvePathInput,
+    SearchFilesInput, SearchSymbolsInput, SearchTextInput, WhatChangedInput,
 };
 use crate::sidecar::{SidecarState, SymbolSnapshot, TokenStats};
 use crate::watcher::{self, WatcherInfo};
@@ -53,6 +53,7 @@ pub struct DaemonState {
     next_session_id: AtomicU64,
     projects: RwLock<HashMap<String, ProjectInstance>>,
     sessions: RwLock<HashMap<String, SessionRecord>>,
+    identity: DaemonIdentity,
 }
 
 struct ProjectInstance {
@@ -143,6 +144,8 @@ pub struct ProjectHealth {
 pub struct DaemonHealth {
     pub project_count: usize,
     pub session_count: usize,
+    pub daemon_version: String,
+    pub executable_path: String,
 }
 
 #[derive(Clone)]
@@ -155,12 +158,19 @@ struct SessionRuntime {
     symbol_cache: Arc<RwLock<HashMap<String, Vec<SymbolSnapshot>>>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DaemonIdentity {
+    version: String,
+    executable_path: String,
+}
+
 impl DaemonState {
     pub fn new() -> Self {
         Self {
             next_session_id: AtomicU64::new(1),
             projects: RwLock::new(HashMap::new()),
             sessions: RwLock::new(HashMap::new()),
+            identity: current_daemon_identity(),
         }
     }
 
@@ -417,6 +427,8 @@ impl DaemonState {
         DaemonHealth {
             project_count: self.projects.read().expect("lock poisoned").len(),
             session_count: self.sessions.read().expect("lock poisoned").len(),
+            daemon_version: self.identity.version.clone(),
+            executable_path: self.identity.executable_path.clone(),
         }
     }
 }
@@ -567,41 +579,51 @@ pub async fn connect_or_spawn_session(
 }
 
 async fn ensure_daemon_running() -> anyhow::Result<u16> {
-    if let Some(port) = daemon_port_if_healthy().await? {
+    let identity = current_daemon_identity();
+    if let Some(port) = daemon_port_if_compatible(&identity).await? {
         return Ok(port);
     }
 
     if let Some(_lock) = try_acquire_start_lock()? {
-        if let Some(port) = daemon_port_if_healthy().await? {
+        if let Some(port) = daemon_port_if_compatible(&identity).await? {
             return Ok(port);
         }
+        stop_incompatible_recorded_daemon(&identity).await?;
         spawn_daemon_process()?;
-        wait_for_daemon_ready().await
+        wait_for_daemon_ready(&identity).await
     } else {
-        wait_for_daemon_ready().await
+        wait_for_daemon_ready(&identity).await
     }
 }
 
-async fn daemon_port_if_healthy() -> anyhow::Result<Option<u16>> {
+async fn daemon_port_if_compatible(identity: &DaemonIdentity) -> anyhow::Result<Option<u16>> {
     let port = match read_daemon_port_file() {
         Ok(port) => port,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error).context("reading daemon port file"),
     };
 
-    if daemon_health_ok(port).await {
-        Ok(Some(port))
-    } else {
-        Ok(None)
+    match daemon_health(port).await {
+        Some(health) if daemon_health_matches(&health, identity) => Ok(Some(port)),
+        Some(health) => {
+            tracing::warn!(
+                recorded_port = port,
+                recorded_version = %health.daemon_version,
+                expected_version = %identity.version,
+                recorded_executable = %health.executable_path,
+                expected_executable = %identity.executable_path,
+                "recorded tokenizor daemon is incompatible with the current executable"
+            );
+            Ok(None)
+        }
+        None => Ok(None),
     }
 }
 
-async fn wait_for_daemon_ready() -> anyhow::Result<u16> {
+async fn wait_for_daemon_ready(identity: &DaemonIdentity) -> anyhow::Result<u16> {
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
     loop {
-        if let Ok(port) = read_daemon_port_file()
-            && daemon_health_ok(port).await
-        {
+        if let Some(port) = daemon_port_if_compatible(identity).await? {
             return Ok(port);
         }
 
@@ -613,13 +635,61 @@ async fn wait_for_daemon_ready() -> anyhow::Result<u16> {
     }
 }
 
-async fn daemon_health_ok(port: u16) -> bool {
+async fn daemon_health(port: u16) -> Option<DaemonHealth> {
     reqwest::Client::new()
         .get(format!("http://127.0.0.1:{port}/health"))
         .send()
         .await
-        .map(|response| response.status().is_success())
-        .unwrap_or(false)
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .json::<DaemonHealth>()
+        .await
+        .ok()
+}
+
+async fn daemon_health_ok(port: u16) -> bool {
+    daemon_health(port).await.is_some()
+}
+
+async fn stop_incompatible_recorded_daemon(identity: &DaemonIdentity) -> anyhow::Result<()> {
+    let port = match read_daemon_port_file() {
+        Ok(port) => port,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error).context("reading daemon port file"),
+    };
+
+    let Some(health) = daemon_health(port).await else {
+        cleanup_daemon_files();
+        return Ok(());
+    };
+
+    if daemon_health_matches(&health, identity) {
+        return Ok(());
+    }
+
+    if let Ok(pid) = read_daemon_pid_file() {
+        if let Err(error) = terminate_process(pid) {
+            tracing::warn!(
+                pid,
+                "failed to terminate incompatible tokenizor daemon automatically: {error}"
+            );
+        }
+        wait_for_daemon_unhealthy(port).await;
+    }
+
+    cleanup_daemon_files();
+    Ok(())
+}
+
+async fn wait_for_daemon_unhealthy(port: u16) {
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(3);
+    while tokio::time::Instant::now() < deadline {
+        if !daemon_health_ok(port).await {
+            break;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    }
 }
 
 fn try_acquire_start_lock() -> anyhow::Result<Option<DaemonStartLock>> {
@@ -657,6 +727,38 @@ fn spawn_daemon_process() -> anyhow::Result<()> {
         .spawn()
         .context("spawning detached tokenizor daemon")?;
     Ok(())
+}
+
+fn current_daemon_identity() -> DaemonIdentity {
+    let executable_path = std::env::current_exe()
+        .ok()
+        .map(|path| normalized_path_string(&path))
+        .unwrap_or_else(|| "unknown".to_string());
+    DaemonIdentity {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        executable_path,
+    }
+}
+
+fn daemon_health_matches(health: &DaemonHealth, identity: &DaemonIdentity) -> bool {
+    if health.daemon_version != identity.version {
+        return false;
+    }
+
+    if health.executable_path == "unknown" || identity.executable_path == "unknown" {
+        return true;
+    }
+
+    stable_path_identity(&health.executable_path) == stable_path_identity(&identity.executable_path)
+}
+
+fn stable_path_identity(path: &str) -> String {
+    let normalized = path.replace('\\', "/");
+    if cfg!(windows) {
+        normalized.to_lowercase()
+    } else {
+        normalized
+    }
 }
 
 impl ProjectInstance {
@@ -1045,6 +1147,12 @@ async fn execute_tool_call(
         "search_text" => Ok(server
             .search_text(Parameters(decode_params::<SearchTextInput>(params)?))
             .await),
+        "search_files" => Ok(server
+            .search_files(Parameters(decode_params::<SearchFilesInput>(params)?))
+            .await),
+        "resolve_path" => Ok(server
+            .resolve_path(Parameters(decode_params::<ResolvePathInput>(params)?))
+            .await),
         "health" => Ok(server.health().await),
         "index_folder" => Ok(server
             .index_folder(Parameters(decode_params::<IndexFolderInput>(params)?))
@@ -1142,6 +1250,14 @@ fn write_daemon_pid_file(pid: u32) -> io::Result<()> {
     std::fs::write(daemon_dir()?.join(DAEMON_PID_FILE), pid.to_string())
 }
 
+fn read_daemon_pid_file() -> io::Result<u32> {
+    let contents = std::fs::read_to_string(daemon_dir()?.join(DAEMON_PID_FILE))?;
+    contents
+        .trim()
+        .parse::<u32>()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
 fn read_daemon_port_file() -> io::Result<u16> {
     let contents = std::fs::read_to_string(daemon_dir()?.join(DAEMON_PORT_FILE))?;
     contents
@@ -1154,6 +1270,32 @@ fn cleanup_daemon_files() {
     if let Ok(dir) = daemon_dir() {
         let _ = std::fs::remove_file(dir.join(DAEMON_PORT_FILE));
         let _ = std::fs::remove_file(dir.join(DAEMON_PID_FILE));
+    }
+}
+
+fn terminate_process(pid: u32) -> io::Result<()> {
+    #[cfg(windows)]
+    let status = std::process::Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+
+    #[cfg(not(windows))]
+    let status = std::process::Command::new("kill")
+        .args(["-TERM", &pid.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "process termination command exited with status {status}"
+        )))
     }
 }
 
@@ -1194,6 +1336,35 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
+    }
+
+    async fn spawn_fake_health_server(
+        health: DaemonHealth,
+    ) -> (u16, tokio::sync::oneshot::Sender<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind fake daemon");
+        let port = listener.local_addr().expect("listener addr").port();
+        let app = Router::new().route(
+            "/health",
+            get({
+                let health = health.clone();
+                move || {
+                    let health = health.clone();
+                    async move { Json(health) }
+                }
+            }),
+        );
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let shutdown = async move {
+                let _ = shutdown_rx.await;
+            };
+            let _ = axum::serve(listener, app)
+                .with_graceful_shutdown(shutdown)
+                .await;
+        });
+        (port, shutdown_tx)
     }
 
     struct EnvVarGuard {
@@ -1424,6 +1595,8 @@ mod tests {
             .expect("health body");
         assert_eq!(daemon_health.project_count, 0);
         assert_eq!(daemon_health.session_count, 0);
+        assert_eq!(daemon_health.daemon_version, env!("CARGO_PKG_VERSION"));
+        assert!(!daemon_health.executable_path.is_empty());
 
         let opened = client
             .post(format!("{base_url}/v1/sessions/open"))
@@ -1516,6 +1689,8 @@ mod tests {
             .expect("final health body");
         assert_eq!(final_health.project_count, 0);
         assert_eq!(final_health.session_count, 0);
+        assert_eq!(final_health.daemon_version, env!("CARGO_PKG_VERSION"));
+        assert!(!final_health.executable_path.is_empty());
 
         let _ = handle.shutdown_tx.send(());
         wait_for_path_absent(&daemon_home.path().join(DAEMON_PORT_FILE)).await;
@@ -1581,8 +1756,132 @@ mod tests {
             "repo outline should include the indexed file, got: {body}"
         );
 
+        let search_files = client
+            .post(format!(
+                "{base_url}/v1/sessions/{}/tools/search_files",
+                opened.session_id
+            ))
+            .json(&serde_json::json!({
+                "query": "main.rs",
+                "limit": 5
+            }))
+            .send()
+            .await
+            .expect("search_files request");
+
+        assert!(
+            search_files.status().is_success(),
+            "search_files endpoint should succeed, got {}",
+            search_files.status()
+        );
+
+        let search_files_body = search_files.text().await.expect("search_files body");
+        assert!(
+            search_files_body.contains("src/main.rs"),
+            "search_files should return the indexed file, got: {search_files_body}"
+        );
+
+        let resolve_path = client
+            .post(format!(
+                "{base_url}/v1/sessions/{}/tools/resolve_path",
+                opened.session_id
+            ))
+            .json(&serde_json::json!({
+                "hint": "main.rs"
+            }))
+            .send()
+            .await
+            .expect("resolve_path request");
+
+        assert!(
+            resolve_path.status().is_success(),
+            "resolve_path endpoint should succeed, got {}",
+            resolve_path.status()
+        );
+
+        let resolve_path_body = resolve_path.text().await.expect("resolve_path body");
+        assert!(
+            resolve_path_body.contains("src/main.rs"),
+            "resolve_path should return the indexed file, got: {resolve_path_body}"
+        );
+
         let _ = handle.shutdown_tx.send(());
         wait_for_path_absent(&daemon_home.path().join(DAEMON_PORT_FILE)).await;
+    }
+
+    #[tokio::test]
+    async fn test_daemon_port_if_compatible_accepts_matching_identity() {
+        let _env_lock = env_lock().await;
+        let daemon_home = TempDir::new().expect("daemon home");
+        let _env_guard = EnvVarGuard::set("TOKENIZOR_HOME", daemon_home.path());
+
+        let health = DaemonState::new().health();
+        let (port, shutdown_tx) = spawn_fake_health_server(health).await;
+        std::fs::write(daemon_home.path().join(DAEMON_PORT_FILE), port.to_string())
+            .expect("write daemon port");
+
+        let identity = current_daemon_identity();
+        let selected = daemon_port_if_compatible(&identity)
+            .await
+            .expect("compatible health lookup");
+
+        assert_eq!(selected, Some(port));
+
+        let _ = shutdown_tx.send(());
+    }
+
+    #[tokio::test]
+    async fn test_daemon_port_if_compatible_rejects_version_mismatch() {
+        let _env_lock = env_lock().await;
+        let daemon_home = TempDir::new().expect("daemon home");
+        let _env_guard = EnvVarGuard::set("TOKENIZOR_HOME", daemon_home.path());
+
+        let health = DaemonHealth {
+            project_count: 0,
+            session_count: 0,
+            daemon_version: "0.0.0".to_string(),
+            executable_path: current_daemon_identity().executable_path,
+        };
+        let (port, shutdown_tx) = spawn_fake_health_server(health).await;
+        std::fs::write(daemon_home.path().join(DAEMON_PORT_FILE), port.to_string())
+            .expect("write daemon port");
+
+        let identity = current_daemon_identity();
+        let selected = daemon_port_if_compatible(&identity)
+            .await
+            .expect("mismatch health lookup");
+
+        assert_eq!(selected, None);
+
+        let _ = shutdown_tx.send(());
+    }
+
+    #[tokio::test]
+    async fn test_stop_incompatible_recorded_daemon_cleans_port_file_without_pid() {
+        let _env_lock = env_lock().await;
+        let daemon_home = TempDir::new().expect("daemon home");
+        let _env_guard = EnvVarGuard::set("TOKENIZOR_HOME", daemon_home.path());
+
+        let health = DaemonHealth {
+            project_count: 0,
+            session_count: 0,
+            daemon_version: "0.0.0".to_string(),
+            executable_path: current_daemon_identity().executable_path,
+        };
+        let (port, shutdown_tx) = spawn_fake_health_server(health).await;
+        std::fs::write(daemon_home.path().join(DAEMON_PORT_FILE), port.to_string())
+            .expect("write daemon port");
+
+        stop_incompatible_recorded_daemon(&current_daemon_identity())
+            .await
+            .expect("stop incompatible daemon");
+
+        assert!(
+            !daemon_home.path().join(DAEMON_PORT_FILE).exists(),
+            "incompatible daemon port file should be cleared"
+        );
+
+        let _ = shutdown_tx.send(());
     }
 
     #[tokio::test]

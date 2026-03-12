@@ -1,5 +1,8 @@
 # NPM Release Workflow Implementation Plan
 
+> Status: implemented and superseded.
+> Current operator guidance lives in [docs/release-process.md](/C:/AI_STUFF/PROGRAMMING/tokenizor_agentic_mcp/docs/release-process.md) and `python execution/release_ops.py guide`.
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Make the GitHub release workflow build the actual npm package artifact, validate release version consistency, and publish the exact tarball that was built.

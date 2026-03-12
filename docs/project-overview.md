@@ -1,5 +1,8 @@
 # tokenizor_agentic_mcp - Project Overview
 
+> Historical note: this BMAD-generated snapshot predates the current shipped CLI and release/install workflow.
+> Do not use it as the operator runbook. Use [README.md](/C:/AI_STUFF/PROGRAMMING/tokenizor_agentic_mcp/README.md), [docs/release-process.md](/C:/AI_STUFF/PROGRAMMING/tokenizor_agentic_mcp/docs/release-process.md), and `python execution/release_ops.py guide` for current operations.
+
 **Date:** 2026-03-07
 **Type:** Backend platform foundation
 **Architecture:** Rust-native MCP server scaffold evolving toward a durable code-indexing runtime

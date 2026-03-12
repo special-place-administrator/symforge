@@ -6,6 +6,7 @@
 - [Tokenizor Project Direction](tokenizor_project_direction.md)
 - [Provider CLI Integration Research](provider_cli_integration_research.md)
 - [Provider CLI Runtime Architecture](provider_cli_runtime_architecture.md)
+- [Release And Update Process](release-process.md)
 
 ## Intent
 
@@ -18,3 +19,5 @@ The linked documents are the current baseline for:
 - theory evaluation
 - the probable architecture
 - the probable source/runtime scaffold
+- the current release, publish, install, and runtime self-healing procedure
+- the canonical fresh-terminal operator command set in `execution/release_ops.py`

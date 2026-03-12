@@ -2,52 +2,92 @@ name: Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to rebuild or republish, for example v0.3.12
+        required: false
+        type: string
 
 permissions:
   contents: write
+  issues: write
+  pull-requests: write
 
 jobs:
-  validate-release-version:
+  prepare-release:
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.versions.outputs.version }}
-      npm_tarball: ${{ steps.versions.outputs.npm_tarball }}
+      release_created: ${{ steps.context.outputs.release_created }}
+      tag_name: ${{ steps.context.outputs.tag_name }}
+      version: ${{ steps.context.outputs.version }}
+      release_ref: ${{ steps.context.outputs.release_ref }}
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          fetch-depth: 0
 
-      - id: versions
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run version sync tests
+        run: python -m unittest discover -s execution -p 'test_*.py'
+
+      - id: release
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.tag == '' }}
+        uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          config-file: .github/release-please-config.json
+          manifest-file: .github/.release-please-manifest.json
+
+      - id: context
         shell: bash
+        env:
+          MANUAL_TAG: ${{ inputs.tag }}
+          RELEASE_CREATED: ${{ steps.release.outputs.release_created }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag_name }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: |
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          CARGO_VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
-          NPM_VERSION="$(node -p "require('./npm/package.json').version")"
+          git fetch --tags --force
 
-          if [[ -z "$TAG_VERSION" ]]; then
-            echo "::error::Unable to derive version from tag '${GITHUB_REF_NAME}'."
-            exit 1
+          TAG_NAME=""
+          VERSION=""
+
+          if [[ -n "$MANUAL_TAG" ]]; then
+            TAG_NAME="$MANUAL_TAG"
+          elif [[ "$RELEASE_CREATED" == "true" ]]; then
+            TAG_NAME="$RELEASE_TAG"
+            VERSION="$RELEASE_VERSION"
+          else
+            TAG_NAME="$(git tag --points-at "$GITHUB_SHA" 'v*' | sort -V | tail -n1)"
           fi
 
-          if [[ "$TAG_VERSION" != "$CARGO_VERSION" ]]; then
-            echo "::error::Tag version '$TAG_VERSION' does not match Cargo.toml version '$CARGO_VERSION'."
-            exit 1
-          fi
+          if [[ -n "$TAG_NAME" ]]; then
+            if ! git rev-parse -q --verify "refs/tags/$TAG_NAME" >/dev/null; then
+              echo "::error::Tag '$TAG_NAME' does not exist in this repository."
+              exit 1
+            fi
 
-          if [[ "$TAG_VERSION" != "$NPM_VERSION" ]]; then
-            echo "::error::Tag version '$TAG_VERSION' does not match npm/package.json version '$NPM_VERSION'."
-            exit 1
-          fi
+            if [[ -z "$VERSION" ]]; then
+              VERSION="${TAG_NAME#v}"
+            fi
 
-          echo "version=$TAG_VERSION" >> "$GITHUB_OUTPUT"
-          echo "npm_tarball=tokenizor-mcp-$TAG_VERSION.tgz" >> "$GITHUB_OUTPUT"
+            echo "release_created=true" >> "$GITHUB_OUTPUT"
+            echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "release_ref=$TAG_NAME" >> "$GITHUB_OUTPUT"
+          else
+            echo "release_created=false" >> "$GITHUB_OUTPUT"
+            echo "release_ref=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          fi
 
   build:
-    needs: validate-release-version
+    needs: prepare-release
+    if: needs.prepare-release.outputs.release_created == 'true'
     strategy:
       matrix:
         include:
@@ -71,6 +111,15 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-release.outputs.release_ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify release versions
+        run: python execution/version_sync.py check --tag "${{ needs.prepare-release.outputs.tag_name }}"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -92,10 +141,20 @@ jobs:
           if-no-files-found: error
 
   build-npm-package:
-    needs: validate-release-version
+    needs: prepare-release
+    if: needs.prepare-release.outputs.release_created == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-release.outputs.release_ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify release versions
+        run: python execution/version_sync.py check --tag "${{ needs.prepare-release.outputs.tag_name }}"
 
       - uses: actions/setup-node@v4
         with:
@@ -113,35 +172,36 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: npm-package
-          path: npm/${{ needs.validate-release-version.outputs.npm_tarball }}
+          path: npm/tokenizor-mcp-${{ needs.prepare-release.outputs.version }}.tgz
           if-no-files-found: error
 
-  release:
+  upload-release-assets:
     needs:
+      - prepare-release
       - build
       - build-npm-package
+    if: needs.prepare-release.outputs.release_created == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: artifacts/*
-          generate_release_notes: true
+      - name: Upload assets to GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ needs.prepare-release.outputs.tag_name }}" artifacts/* --clobber
 
   npm-publish:
     needs:
-      - validate-release-version
+      - prepare-release
       - build-npm-package
-      - release
+      - upload-release-assets
+    if: needs.prepare-release.outputs.release_created == 'true'
     runs-on: ubuntu-latest
+    environment: npm-publish
     steps:
       - uses: actions/setup-node@v4
         with:
@@ -157,11 +217,11 @@ jobs:
       - name: Verify npm package artifact
         shell: bash
         run: |
-          TAR_PATH="./dist/${{ needs.validate-release-version.outputs.npm_tarball }}"
+          TAR_PATH="./dist/tokenizor-mcp-${{ needs.prepare-release.outputs.version }}.tgz"
           test -f "$TAR_PATH"
           ls -l "$TAR_PATH"
 
       - name: Publish to npm
-        run: npm publish "./dist/${{ needs.validate-release-version.outputs.npm_tarball }}" --access public
+        run: npm publish "./dist/tokenizor-mcp-${{ needs.prepare-release.outputs.version }}.tgz" --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
