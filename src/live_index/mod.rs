@@ -8,10 +8,11 @@ pub mod trigram;
 pub use query::{
     ContextBundleFoundView, ContextBundleReferenceView, ContextBundleSectionView,
     ContextBundleView, DependentFileView, DependentLineView, FileContentView, FileOutlineView,
-    FindDependentsView, FindImplementationsView, FindReferencesView, HealthStats,
+    FindDependentsView, FindImplementationsView, FindReferencesView, GitActivityView, HealthStats,
     ImplementationEntryView, ReferenceContextLineView, ReferenceFileView, ReferenceHitView,
     RepoOutlineFileView, RepoOutlineView, ResolvePathView, SearchFilesHit, SearchFilesTier,
-    SearchFilesView, SymbolDetailView, TypeDependencyView, WhatChangedTimestampView,
+    SearchFilesView, SiblingSymbolView, SymbolDetailView, TraceSymbolView, TypeDependencyView,
+    WhatChangedTimestampView,
 };
 pub use store::{
     CircuitBreakerState, IndexLoadSource, IndexState, IndexedFile, LiveIndex, ParseStatus,

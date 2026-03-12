@@ -30,10 +30,10 @@ impl Default for OutputLimits {
 }
 
 use crate::live_index::{
-    ContextBundleSectionView, ContextBundleView, FileContentView, FileOutlineView,
-    FindDependentsView, FindImplementationsView, FindReferencesView, HealthStats, IndexedFile,
-    LiveIndex, PublishedIndexState, RepoOutlineFileView, RepoOutlineView, ResolvePathView,
-    SearchFilesTier, SearchFilesView, SymbolDetailView, TypeDependencyView,
+    ContextBundleFoundView, ContextBundleSectionView, ContextBundleView, FileContentView,
+    FileOutlineView, FindDependentsView, FindImplementationsView, FindReferencesView, HealthStats,
+    IndexedFile, LiveIndex, PublishedIndexState, RepoOutlineFileView, RepoOutlineView,
+    ResolvePathView, SearchFilesTier, SearchFilesView, SymbolDetailView, TypeDependencyView,
     WhatChangedTimestampView, search,
 };
 
@@ -1536,23 +1536,116 @@ pub fn context_bundle_result_view(view: &ContextBundleView) -> String {
             symbol_names,
             name,
         } => not_found_symbol_names(relative_path, symbol_names, name),
-        ContextBundleView::Found(view) => {
-            let mut output = format!(
-                "{}\n[{}, {}:{}-{}, {} bytes]\n",
-                view.body, view.kind_label, view.file_path, view.line_range.0, view.line_range.1, view.byte_count
-            );
-            output.push_str(&format_context_bundle_section("Callers", &view.callers));
-            output.push_str(&format_context_bundle_section("Callees", &view.callees));
-            output.push_str(&format_context_bundle_section(
-                "Type usages",
-                &view.type_usages,
-            ));
-            if !view.dependencies.is_empty() {
-                output.push_str(&format_type_dependencies(&view.dependencies));
+        ContextBundleView::Found(view) => render_context_bundle_found(view),
+    }
+}
+
+fn render_context_bundle_found(view: &ContextBundleFoundView) -> String {
+    let mut output = format!(
+        "{}\n[{}, {}:{}-{}, {} bytes]\n",
+        view.body, view.kind_label, view.file_path, view.line_range.0, view.line_range.1, view.byte_count
+    );
+    output.push_str(&format_context_bundle_section("Callers", &view.callers));
+    output.push_str(&format_context_bundle_section("Callees", &view.callees));
+    output.push_str(&format_context_bundle_section(
+        "Type usages",
+        &view.type_usages,
+    ));
+    if !view.dependencies.is_empty() {
+        output.push_str(&format_type_dependencies(&view.dependencies));
+    }
+    output
+}
+
+/// Format results of `trace_symbol`.
+pub fn trace_symbol_result_view(view: &crate::live_index::TraceSymbolView, name: &str) -> String {
+    match view {
+        crate::live_index::TraceSymbolView::FileNotFound { path } => not_found_file(path),
+        crate::live_index::TraceSymbolView::AmbiguousSymbol {
+            path,
+            name,
+            candidate_lines,
+        } => format!(
+            "Ambiguous symbol selector for {name} in {path}; pass `symbol_line` to disambiguate. Candidates: {}",
+            candidate_lines
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        crate::live_index::TraceSymbolView::SymbolNotFound {
+            relative_path,
+            symbol_names,
+            name,
+        } => not_found_symbol_names(relative_path, symbol_names, name),
+        crate::live_index::TraceSymbolView::Found(found) => {
+            let mut output = render_context_bundle_found(&found.context_bundle);
+
+            if !found.siblings.is_empty() {
+                output.push_str(&format_siblings(&found.siblings));
             }
+
+            if !found.dependents.files.is_empty() {
+                output.push_str("\n\n");
+                output.push_str(&find_dependents_result_view(
+                    &found.dependents,
+                    &found.context_bundle.file_path,
+                    &OutputLimits::default(),
+                ));
+            }
+
+            if !found.implementations.entries.is_empty() {
+                output.push_str("\n\n");
+                output.push_str(&find_implementations_result_view(
+                    &found.implementations,
+                    name,
+                    &OutputLimits::default(),
+                ));
+            }
+
+            if let Some(git) = &found.git_activity {
+                output.push_str(&format_trace_git_activity(git));
+            }
+
             output
         }
     }
+}
+
+fn format_siblings(siblings: &[crate::live_index::SiblingSymbolView]) -> String {
+    let mut lines = vec!["\nNearby siblings:".to_string()];
+    for sib in siblings {
+        lines.push(format!(
+            "  {:<12} {:<30} {}-{}",
+            sib.kind_label, sib.name, sib.line_range.0, sib.line_range.1
+        ));
+    }
+    lines.join("\n")
+}
+
+fn format_trace_git_activity(git: &crate::live_index::GitActivityView) -> String {
+    let mut lines = vec![String::new()];
+    lines.push(format!(
+        "Git activity:  {} {:.2} ({})    {} commits, last {}",
+        git.churn_bar, git.churn_score, git.churn_label, git.commit_count, git.last_relative,
+    ));
+    lines.push(format!(
+        "  Last:  {} \"{}\" ({}, {})",
+        git.last_hash, git.last_message, git.last_author, git.last_timestamp,
+    ));
+    if !git.owners.is_empty() {
+        lines.push(format!("  Owners: {}", git.owners.join(", ")));
+    }
+    if !git.co_changes.is_empty() {
+        lines.push("  Co-changes:".to_string());
+        for (path, coupling, shared) in &git.co_changes {
+            lines.push(format!(
+                "    {}  ({:.2} coupling, {} shared commits)",
+                path, coupling, shared,
+            ));
+        }
+    }
+    lines.join("\n")
 }
 
 fn format_context_bundle_section(title: &str, section: &ContextBundleSectionView) -> String {

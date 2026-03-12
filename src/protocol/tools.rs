@@ -1004,6 +1004,69 @@ impl TokenizorServer {
         format::search_text_result_view(result)
     }
 
+    /// One-call semantic investigation for an exact symbol.
+    #[tool(description = "One-call semantic investigation for an exact symbol.")]
+    pub(crate) async fn trace_symbol(&self, params: Parameters<TraceSymbolInput>) -> String {
+        if let Some(result) = self.proxy_tool_call("trace_symbol", &params.0).await {
+            return result;
+        }
+
+        let mut trace_view = {
+            let guard = self.index.read().expect("lock poisoned");
+            loading_guard!(guard);
+            guard.capture_trace_symbol_view(
+                &params.0.path,
+                &params.0.name,
+                params.0.kind.as_deref(),
+                params.0.symbol_line,
+                params.0.sections.as_deref(),
+            )
+        };
+
+        // Fill in git activity if it was requested (or if all sections requested)
+        if let crate::live_index::TraceSymbolView::Found(ref mut found) = trace_view {
+            let wants_git = params
+                .0
+                .sections
+                .as_ref()
+                .map(|s| s.iter().any(|v| v.eq_ignore_ascii_case("git")))
+                .unwrap_or(true);
+
+            if wants_git {
+                let temporal = self.index.git_temporal();
+                if temporal.state == crate::live_index::git_temporal::GitTemporalState::Ready {
+                    if let Some(history) = temporal.files.get(&params.0.path) {
+                        use crate::live_index::git_temporal::{churn_bar, churn_label, relative_time};
+
+                        found.git_activity = Some(crate::live_index::GitActivityView {
+                            churn_score: history.churn_score,
+                            churn_bar: churn_bar(history.churn_score),
+                            churn_label: churn_label(history.churn_score).to_string(),
+                            commit_count: history.commit_count,
+                            last_relative: relative_time(history.last_commit.days_ago),
+                            last_hash: history.last_commit.hash.clone(),
+                            last_message: history.last_commit.message_head.clone(),
+                            last_author: history.last_commit.author.clone(),
+                            last_timestamp: history.last_commit.timestamp.clone(),
+                            owners: history
+                                .contributors
+                                .iter()
+                                .map(|c| format!("{} {:.0}%", c.author, c.percentage))
+                                .collect(),
+                            co_changes: history
+                                .co_changes
+                                .iter()
+                                .map(|e| (e.path.clone(), e.coupling_score, e.shared_commits))
+                                .collect(),
+                        });
+                    }
+                }
+            }
+        }
+
+        format::trace_symbol_result_view(&trace_view, &params.0.name)
+    }
+
     /// Search indexed file paths using bounded ranked code-lane discovery.
     #[tool(description = "Search indexed file paths using bounded ranked code-lane discovery.")]
     pub(crate) async fn search_files(&self, params: Parameters<SearchFilesInput>) -> String {
@@ -3559,9 +3622,32 @@ mod tests {
         // Sanity check: we should have a reasonable number of tools.
         // Update this lower bound when removing tools; it prevents accidental regressions.
         assert!(
-            tool_count >= 21,
-            "server should expose at least 21 tools; found {tool_count}"
+            tool_count >= 22,
+            "server should expose at least 22 tools; found {tool_count}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_trace_symbol_delegates_to_formatter() {
+        let target = make_file(
+            "src/lib.rs",
+            b"fn process() {}\n",
+            vec![make_symbol("process", SymbolKind::Function, 1, 1)],
+        );
+        let server = make_server(make_live_index_ready(vec![target]));
+
+        let result = server
+            .trace_symbol(Parameters(super::TraceSymbolInput {
+                path: "src/lib.rs".to_string(),
+                name: "process".to_string(),
+                kind: None,
+                symbol_line: None,
+                sections: None,
+            }))
+            .await;
+
+        assert!(result.contains("fn process"), "got: {result}");
+        assert!(result.contains("Callers (0)"), "got: {result}");
     }
 
     #[tokio::test]
