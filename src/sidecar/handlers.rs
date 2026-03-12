@@ -181,9 +181,59 @@ fn outline_text(
         ));
     }
 
+    // Build "Imports from" section.
+    // Group import references by source (qualified_name or name), count per source.
+    {
+        let mut import_sources: std::collections::HashMap<&str, usize> =
+            std::collections::HashMap::new();
+        for reference in &file.references {
+            if reference.kind == ReferenceKind::Import {
+                let source = reference
+                    .qualified_name
+                    .as_deref()
+                    .unwrap_or(&reference.name);
+                *import_sources.entry(source).or_insert(0) += 1;
+            }
+        }
+        if !import_sources.is_empty() {
+            let mut sorted: Vec<_> = import_sources.into_iter().collect();
+            sorted.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+            lines.push(String::new());
+            lines.push(format!("Imports from ({} sources):", sorted.len()));
+            for (source, count) in sorted.iter().take(10) {
+                lines.push(format!("  {} ({} symbols)", source, count));
+            }
+            if sorted.len() > 10 {
+                lines.push(format!("  ...and {} more", sorted.len() - 10));
+            }
+        }
+    }
+
+    // Build "Used by" section.
+    // Group dependents by consuming file, count references per consumer.
+    let attributed_dependents = guard.find_dependents_for_file(&params.path);
+    {
+        let mut consumers: std::collections::HashMap<&str, usize> =
+            std::collections::HashMap::new();
+        for (file_path, _) in &attributed_dependents {
+            *consumers.entry(*file_path).or_insert(0) += 1;
+        }
+        if !consumers.is_empty() {
+            let mut sorted: Vec<_> = consumers.into_iter().collect();
+            sorted.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+            lines.push(String::new());
+            lines.push(format!("Used by ({} files):", sorted.len()));
+            for (consumer, count) in sorted.iter().take(10) {
+                lines.push(format!("  {} ({} refs)", consumer, count));
+            }
+            if sorted.len() > 10 {
+                lines.push(format!("  ...and {} more", sorted.len() - 10));
+            }
+        }
+    }
+
     // Build "Key references" section.
     // Rank symbols by caller count descending, take top 5, show up to 3 callers each.
-    let attributed_dependents = guard.find_dependents_for_file(&params.path);
     let mut symbol_callers: Vec<(String, Vec<(String, u32)>)> = Vec::new();
 
     for sym in &file.symbols {

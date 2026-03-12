@@ -1705,6 +1705,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_get_file_context_shows_imports_and_used_by_sections() {
+        let callee = make_symbol("target", SymbolKind::Function, 1, 3);
+        let caller = make_symbol("caller", SymbolKind::Function, 1, 3);
+        // caller.rs imports from crate::target and calls target().
+        let caller_file = make_file_with_refs(
+            "src/caller.rs",
+            b"use crate::target;\nfn caller() { target(); }",
+            vec![caller],
+            vec![
+                ReferenceRecord {
+                    name: "target".to_string(),
+                    qualified_name: Some("crate::target".to_string()),
+                    kind: ReferenceKind::Import,
+                    byte_range: (4, 10),
+                    line_range: (0, 0),
+                    enclosing_symbol_index: None,
+                },
+                ReferenceRecord {
+                    name: "target".to_string(),
+                    qualified_name: None,
+                    kind: ReferenceKind::Call,
+                    byte_range: (30, 36),
+                    line_range: (1, 1),
+                    enclosing_symbol_index: Some(0),
+                },
+            ],
+        );
+        let target_file = make_file("src/target.rs", b"fn target() {}", vec![callee]);
+        let server = make_server(make_live_index_ready(vec![target_file, caller_file]));
+
+        // Check caller.rs — should have "Imports from" section.
+        let caller_result = server
+            .get_file_context(Parameters(super::GetFileContextInput {
+                path: "src/caller.rs".to_string(),
+                max_tokens: Some(2000),
+            }))
+            .await;
+        assert!(
+            caller_result.contains("Imports from"),
+            "caller should show imports section; got: {caller_result}"
+        );
+        assert!(
+            caller_result.contains("crate::target"),
+            "caller should list crate::target as import source; got: {caller_result}"
+        );
+
+        // Check target.rs — should have "Used by" section.
+        let target_result = server
+            .get_file_context(Parameters(super::GetFileContextInput {
+                path: "src/target.rs".to_string(),
+                max_tokens: Some(2000),
+            }))
+            .await;
+        assert!(
+            target_result.contains("Used by"),
+            "target should show used-by section; got: {target_result}"
+        );
+        assert!(
+            target_result.contains("src/caller.rs"),
+            "target should list caller.rs as consumer; got: {target_result}"
+        );
+    }
+
+    #[tokio::test]
     async fn test_get_file_context_ignores_generic_name_noise_without_real_dependency() {
         let target = make_symbol("main", SymbolKind::Function, 1, 3);
         let helper = make_symbol("helper", SymbolKind::Function, 1, 4);
