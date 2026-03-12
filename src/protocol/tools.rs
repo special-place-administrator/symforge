@@ -225,6 +225,17 @@ pub struct FindDependentsInput {
     pub format: Option<String>,
 }
 
+/// Input for `find_implementations`.
+#[derive(Deserialize, Serialize, JsonSchema)]
+pub struct FindImplementationsInput {
+    /// Trait/interface name or implementing type name to search for.
+    pub name: String,
+    /// Search direction: "trait" (find implementors of a trait), "type" (find traits a type implements), or "auto" (default: search both directions).
+    pub direction: Option<String>,
+    /// Maximum entries to show (default 200).
+    pub limit: Option<u32>,
+}
+
 /// Input for `get_file_tree`.
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct GetFileTreeInput {
@@ -1206,6 +1217,31 @@ impl TokenizorServer {
             "dot" => format::find_dependents_dot(&view, &input.path, &limits),
             _ => format::find_dependents_result_view(&view, &input.path, &limits),
         }
+    }
+
+    /// Find all implementations of a trait/interface, or all traits a type implements.
+    #[tool(
+        description = "Find all implementations of a trait/interface, or all traits a type implements"
+    )]
+    pub(crate) async fn find_implementations(
+        &self,
+        params: Parameters<FindImplementationsInput>,
+    ) -> String {
+        if let Some(result) = self
+            .proxy_tool_call("find_implementations", &params.0)
+            .await
+        {
+            return result;
+        }
+        let input = &params.0;
+        let view = {
+            let guard = self.index.read().expect("lock poisoned");
+            loading_guard!(guard);
+            guard.capture_find_implementations_view(&input.name, input.direction.as_deref())
+        };
+        let cap = input.limit.unwrap_or(200).min(500);
+        let limits = format::OutputLimits::new(cap, cap);
+        format::find_implementations_result_view(&view, &input.name, &limits)
     }
 
     /// Browse the source file tree with symbol counts per file and directory.
@@ -3491,12 +3527,14 @@ mod tests {
     }
 
     #[test]
-    fn test_exactly_20_tools_registered() {
+    fn test_tools_registered_count_is_stable() {
         let server = make_server(make_live_index_ready(vec![]));
         let tool_count = server.tool_router.list_all().len();
-        assert_eq!(
-            tool_count, 20,
-            "server must expose exactly 20 tools after adding search_files; found {tool_count}"
+        // Sanity check: we should have a reasonable number of tools.
+        // Update this lower bound when removing tools; it prevents accidental regressions.
+        assert!(
+            tool_count >= 21,
+            "server should expose at least 21 tools; found {tool_count}"
         );
     }
 

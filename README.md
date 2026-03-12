@@ -53,6 +53,7 @@ At the time of this README rewrite, `cargo test` is green in this repository.
 - exact-selector reference navigation through `find_references`, `get_symbol_context`, and `get_context_bundle` using `path`, symbol kind, and symbol line; `find_references` supports `limit` and `max_per_file` for bounded output; `get_context_bundle` automatically resolves type dependencies — custom types referenced in the symbol's signature and body are included with their full definitions, recursively up to depth 2 (e.g. if a function takes `UserConfig` which contains an `Address` field, both type bodies are returned in a single call)
 - `get_file_context` with enriched import/export summaries — shows grouped import sources with symbol counts ("Imports from N sources") and grouped consumers with reference counts ("Used by M files"), alongside the symbol outline and key references
 - `find_dependents` with module- and namespace-aware attribution, `limit`/`max_per_file` output bounds, and optional `format` parameter for Mermaid flowchart or Graphviz DOT graph output
+- `find_implementations` for trait/interface implementation mapping — given a trait name returns all implementors, given a type name returns all traits it implements; bidirectional search with `direction` parameter; supports Rust (`impl Trait for Struct`), TypeScript/Java (`implements`), C# (base list), Python (class inheritance), C++, Ruby, PHP, Swift
 - prompt-submit hook routing that can use file hints, basename/extensionless aliases, module aliases, qualified symbol aliases, and `:line` hints to choose the right file or symbol more reliably
 
 ### MCP surface implemented today
@@ -76,6 +77,7 @@ Current tools:
 - `get_file_content`
 - `find_references`
 - `find_dependents`
+- `find_implementations`
 - `get_file_tree`
 - `get_context_bundle`
 - `what_changed`
@@ -133,7 +135,6 @@ Near-term items not yet in the runtime:
 
 Longer-term goals tracked in `.planning/milestones/`:
 
-- trait/interface implementation mapping (`find_implementations`)
 - git temporal context (churn scores, co-change detection)
 
 ## Current Limitations

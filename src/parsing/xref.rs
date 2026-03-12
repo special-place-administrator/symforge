@@ -34,6 +34,11 @@ const RUST_XREF_QUERY: &str = r#"
 
 ; Type references (in function params, return types, struct fields, etc.)
 (type_identifier) @ref.type
+
+; Trait implementations: impl Trait for Struct
+(impl_item trait: (type_identifier) @ref.implements type: (type_identifier) @ref.implements_target)
+(impl_item trait: (scoped_type_identifier) @ref.implements type: (type_identifier) @ref.implements_target)
+(impl_item trait: (generic_type) @ref.implements type: (type_identifier) @ref.implements_target)
 "#;
 
 const PYTHON_XREF_QUERY: &str = r#"
@@ -55,6 +60,11 @@ const PYTHON_XREF_QUERY: &str = r#"
 
 ; Type annotations: x: MyType
 (type (identifier) @ref.type)
+
+; Class inheritance: class Foo(Base)
+(class_definition
+  name: (identifier) @ref.implements_target
+  superclasses: (argument_list (identifier) @ref.implements))
 "#;
 
 const JS_XREF_QUERY: &str = r#"
@@ -92,6 +102,20 @@ const TS_XREF_QUERY: &str = r#"
 
 ; TypeScript type references: param: MyType
 (type_identifier) @ref.type
+
+; Class implements: class Foo implements Bar
+(class_declaration
+  name: (type_identifier) @ref.implements_target
+  (class_heritage
+    (implements_clause
+      (type_identifier) @ref.implements)))
+
+; Class extends: class Foo extends Bar
+(class_declaration
+  name: (type_identifier) @ref.implements_target
+  (class_heritage
+    (extends_clause
+      value: (identifier) @ref.implements)))
 "#;
 
 const GO_XREF_QUERY: &str = r#"
@@ -120,6 +144,17 @@ const JAVA_XREF_QUERY: &str = r#"
 
 ; Type references
 (type_identifier) @ref.type
+
+; Class implements: class Foo implements Bar
+(class_declaration
+  name: (identifier) @ref.implements_target
+  interfaces: (super_interfaces
+    (type_list (type_identifier) @ref.implements)))
+
+; Class extends: class Foo extends Bar
+(class_declaration
+  name: (identifier) @ref.implements_target
+  superclass: (superclass (type_identifier) @ref.implements))
 "#;
 
 const C_XREF_QUERY: &str = r#"
@@ -159,6 +194,12 @@ const CPP_XREF_QUERY: &str = r#"
 
 ; Using declarations: using std::string
 (using_declaration (qualified_identifier) @import.original)
+
+; Class inheritance: class Foo : public Bar
+(class_specifier
+  name: (type_identifier) @ref.implements_target
+  (base_class_clause
+    (type_identifier) @ref.implements))
 "#;
 
 const CSHARP_XREF_QUERY: &str = r#"
@@ -183,6 +224,17 @@ const CSHARP_XREF_QUERY: &str = r#"
 (parameter type: (type) @ref.type)
 (variable_declaration type: (type) @ref.type)
 (property_declaration type: (type) @ref.type)
+
+; Class implements/extends: class Foo : IBar, Base
+(class_declaration
+  name: (identifier) @ref.implements_target
+  (base_list (identifier) @ref.implements))
+(class_declaration
+  name: (identifier) @ref.implements_target
+  (base_list (qualified_name) @ref.implements))
+(class_declaration
+  name: (identifier) @ref.implements_target
+  (base_list (generic_name) @ref.implements))
 "#;
 
 const RUBY_XREF_QUERY: &str = r#"
@@ -196,6 +248,14 @@ const RUBY_XREF_QUERY: &str = r#"
 
 ; Constant references: MyClass, MY_CONST
 (constant) @ref.type
+
+; Class inheritance: class Foo < Bar
+(class
+  name: (constant) @ref.implements_target
+  (superclass (constant) @ref.implements))
+(class
+  name: (constant) @ref.implements_target
+  (superclass (scope_resolution) @ref.implements))
 "#;
 
 const KOTLIN_XREF_QUERY: &str = r#"
@@ -250,6 +310,16 @@ const PHP_XREF_QUERY: &str = r#"
 
 ; Type references in class extends/implements
 (named_type (name) @ref.type)
+
+; Class implements: class Foo implements Bar
+(class_declaration
+  name: (name) @ref.implements_target
+  (class_interface_clause (name) @ref.implements))
+
+; Class extends: class Foo extends Bar
+(class_declaration
+  name: (name) @ref.implements_target
+  (base_clause (name) @ref.implements))
 "#;
 
 const SWIFT_XREF_QUERY: &str = r#"
@@ -264,6 +334,12 @@ const SWIFT_XREF_QUERY: &str = r#"
 ; Type references
 (user_type
   (type_identifier) @ref.type)
+
+; Protocol conformance: class Foo: Bar, Protocol
+(class_declaration
+  name: (type_identifier) @ref.implements_target
+  (inheritance_specifier
+    (user_type (type_identifier) @ref.implements)))
 "#;
 
 const PERL_XREF_QUERY: &str = r#"
@@ -571,6 +647,8 @@ pub fn extract_references(
         let mut ref_macro: Option<Node> = None;
         let mut import_original: Option<Node> = None;
         let mut import_alias: Option<Node> = None;
+        let mut ref_implements: Option<Node> = None;
+        let mut ref_implements_target: Option<Node> = None;
 
         for capture in m.captures {
             let name = capture_names[capture.index as usize];
@@ -599,6 +677,12 @@ pub fn extract_references(
                 }
                 "import.alias" => {
                     import_alias = Some(node);
+                }
+                "ref.implements" => {
+                    ref_implements = Some(node);
+                }
+                "ref.implements_target" => {
+                    ref_implements_target = Some(node);
                 }
                 _ => {}
             }
@@ -715,6 +799,27 @@ pub fn extract_references(
                     qualified_name: None,
                     kind: ReferenceKind::MacroUse,
                     byte_range: (macro_node.start_byte() as u32, macro_node.end_byte() as u32),
+                    line_range: (start.row as u32, end.row as u32),
+                    enclosing_symbol_index: None,
+                });
+            }
+        }
+
+        // Implements / inherits relationship
+        if let (Some(impl_node), Some(target_node)) = (ref_implements, ref_implements_target)
+            && let Ok(impl_text) = impl_node.utf8_text(source_bytes)
+            && let Ok(target_text) = target_node.utf8_text(source_bytes)
+        {
+            let trait_name = impl_text.trim().to_string();
+            let implementor = target_text.trim().to_string();
+            if !trait_name.is_empty() && !implementor.is_empty() {
+                let start = impl_node.start_position();
+                let end = impl_node.end_position();
+                references.push(ReferenceRecord {
+                    name: trait_name,
+                    qualified_name: Some(implementor),
+                    kind: ReferenceKind::Implements,
+                    byte_range: (impl_node.start_byte() as u32, impl_node.end_byte() as u32),
                     line_range: (start.row as u32, end.row as u32),
                     enclosing_symbol_index: None,
                 });
@@ -871,6 +976,124 @@ mod tests {
             has_ref(&refs, "MyStruct", ReferenceKind::TypeUsage),
             "refs: {:?}",
             refs
+        );
+    }
+
+    #[test]
+    fn test_rust_impl_trait_for_struct() {
+        let source = r#"
+            struct MyStruct;
+            trait Display {}
+            impl Display for MyStruct {}
+        "#;
+        let (refs, _) = parse_and_extract(source, LanguageId::Rust);
+        let impl_refs: Vec<_> = refs
+            .iter()
+            .filter(|r| r.kind == ReferenceKind::Implements)
+            .collect();
+        assert_eq!(
+            impl_refs.len(),
+            1,
+            "should find 1 implements ref, got: {:?}",
+            impl_refs
+        );
+        assert_eq!(impl_refs[0].name, "Display");
+        assert_eq!(impl_refs[0].qualified_name.as_deref(), Some("MyStruct"));
+    }
+
+    #[test]
+    fn test_rust_impl_scoped_trait_for_struct() {
+        let source = r#"
+            struct Foo;
+            impl std::fmt::Display for Foo {
+                fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result { Ok(()) }
+            }
+        "#;
+        let (refs, _) = parse_and_extract(source, LanguageId::Rust);
+        let impl_refs: Vec<_> = refs
+            .iter()
+            .filter(|r| r.kind == ReferenceKind::Implements)
+            .collect();
+        assert_eq!(
+            impl_refs.len(),
+            1,
+            "should find 1 implements ref, got: {:?}",
+            impl_refs
+        );
+        assert!(
+            impl_refs[0].name.contains("Display"),
+            "trait name should contain Display, got: {}",
+            impl_refs[0].name
+        );
+        assert_eq!(impl_refs[0].qualified_name.as_deref(), Some("Foo"));
+    }
+
+    #[test]
+    fn test_python_class_inheritance() {
+        let source = "class Dog(Animal):\n    pass";
+        let (refs, _) = parse_and_extract(source, LanguageId::Python);
+        let impl_refs: Vec<_> = refs
+            .iter()
+            .filter(|r| r.kind == ReferenceKind::Implements)
+            .collect();
+        assert_eq!(
+            impl_refs.len(),
+            1,
+            "should find 1 implements ref, got: {:?}",
+            impl_refs
+        );
+        assert_eq!(impl_refs[0].name, "Animal");
+        assert_eq!(impl_refs[0].qualified_name.as_deref(), Some("Dog"));
+    }
+
+    #[test]
+    fn test_ts_class_implements() {
+        let source = "class Foo implements Bar {}";
+        let (refs, _) = parse_and_extract(source, LanguageId::TypeScript);
+        let impl_refs: Vec<_> = refs
+            .iter()
+            .filter(|r| r.kind == ReferenceKind::Implements)
+            .collect();
+        assert!(
+            impl_refs
+                .iter()
+                .any(|r| r.name == "Bar" && r.qualified_name.as_deref() == Some("Foo")),
+            "should find Foo implements Bar, got: {:?}",
+            impl_refs
+        );
+    }
+
+    #[test]
+    fn test_csharp_class_base_list() {
+        let source = "class MyService : IService {}";
+        let (refs, _) = parse_and_extract(source, LanguageId::CSharp);
+        let impl_refs: Vec<_> = refs
+            .iter()
+            .filter(|r| r.kind == ReferenceKind::Implements)
+            .collect();
+        assert!(
+            impl_refs
+                .iter()
+                .any(|r| r.name == "IService" && r.qualified_name.as_deref() == Some("MyService")),
+            "should find MyService : IService, got: {:?}",
+            impl_refs
+        );
+    }
+
+    #[test]
+    fn test_java_class_implements() {
+        let source = "class Foo implements Runnable {}";
+        let (refs, _) = parse_and_extract(source, LanguageId::Java);
+        let impl_refs: Vec<_> = refs
+            .iter()
+            .filter(|r| r.kind == ReferenceKind::Implements)
+            .collect();
+        assert!(
+            impl_refs
+                .iter()
+                .any(|r| r.name == "Runnable" && r.qualified_name.as_deref() == Some("Foo")),
+            "should find Foo implements Runnable, got: {:?}",
+            impl_refs
         );
     }
 

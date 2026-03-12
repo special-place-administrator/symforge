@@ -31,9 +31,10 @@ impl Default for OutputLimits {
 
 use crate::live_index::{
     ContextBundleSectionView, ContextBundleView, FileContentView, FileOutlineView,
-    FindDependentsView, FindReferencesView, HealthStats, IndexedFile, LiveIndex,
-    PublishedIndexState, RepoOutlineFileView, RepoOutlineView, ResolvePathView, SearchFilesTier,
-    SearchFilesView, SymbolDetailView, TypeDependencyView, WhatChangedTimestampView, search,
+    FindDependentsView, FindImplementationsView, FindReferencesView, HealthStats, IndexedFile,
+    LiveIndex, PublishedIndexState, RepoOutlineFileView, RepoOutlineView, ResolvePathView,
+    SearchFilesTier, SearchFilesView, SymbolDetailView, TypeDependencyView,
+    WhatChangedTimestampView, search,
 };
 
 /// Format the file outline for a given path.
@@ -1319,6 +1320,51 @@ pub fn find_references_result_view(
 
     while lines.last().map(|l| l.is_empty()).unwrap_or(false) {
         lines.pop();
+    }
+
+    lines.join("\n")
+}
+
+/// Format results of `find_implementations`.
+pub fn find_implementations_result_view(
+    view: &FindImplementationsView,
+    name: &str,
+    limits: &OutputLimits,
+) -> String {
+    if view.entries.is_empty() {
+        return format!("No implementations found for \"{name}\"");
+    }
+
+    let total = view.entries.len();
+    let shown = total.min(limits.max_files * limits.max_per_file);
+    let mut lines = vec![format!("{total} implementation(s) found for \"{name}\"")];
+    lines.push(String::new());
+
+    // Group by trait name for readable output
+    let mut current_trait: Option<&str> = None;
+    for (i, entry) in view.entries.iter().enumerate() {
+        if i >= shown {
+            break;
+        }
+        if current_trait != Some(&entry.trait_name) {
+            if current_trait.is_some() {
+                lines.push(String::new());
+            }
+            lines.push(format!("trait/interface {}:", entry.trait_name));
+            current_trait = Some(&entry.trait_name);
+        }
+        lines.push(format!(
+            "  {} ({}:{})",
+            entry.implementor,
+            entry.file_path,
+            entry.line + 1
+        ));
+    }
+
+    let remaining = total.saturating_sub(shown);
+    if remaining > 0 {
+        lines.push(String::new());
+        lines.push(format!("... and {remaining} more"));
     }
 
     lines.join("\n")

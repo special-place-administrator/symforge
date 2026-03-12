@@ -303,6 +303,9 @@ pub enum ReferenceKind {
     TypeUsage,
     /// A macro invocation.
     MacroUse,
+    /// A trait/interface implementation relationship.
+    /// `name` holds the trait/interface name, `qualified_name` holds the implementing type.
+    Implements,
 }
 
 impl fmt::Display for ReferenceKind {
@@ -312,6 +315,7 @@ impl fmt::Display for ReferenceKind {
             Self::Import => "import",
             Self::TypeUsage => "type_usage",
             Self::MacroUse => "macro_use",
+            Self::Implements => "implements",
         };
         write!(f, "{s}")
     }

@@ -657,6 +657,25 @@ pub struct FindReferencesView {
     pub files: Vec<ReferenceFileView>,
 }
 
+/// One entry in a `find_implementations` result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImplementationEntryView {
+    /// The trait/interface name.
+    pub trait_name: String,
+    /// The implementing type name.
+    pub implementor: String,
+    /// File where the implements reference was found.
+    pub file_path: String,
+    /// Line of the implements reference.
+    pub line: u32,
+}
+
+/// Owned grouped view for `find_implementations`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FindImplementationsView {
+    pub entries: Vec<ImplementationEntryView>,
+}
+
 /// One compact reference entry rendered inside a context-bundle section.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextBundleReferenceView {
@@ -1087,6 +1106,57 @@ impl LiveIndex {
         let kind_enum = parse_reference_kind_filter(kind_filter);
         let refs = self.find_references_for_name(name, kind_enum, false);
         self.build_find_references_view(&refs)
+    }
+
+    /// Find all implementations of a trait/interface, or all traits a type implements.
+    ///
+    /// `name` is the trait or type to search for.
+    /// `direction`: `None` or `Some("auto")` searches both directions.
+    ///   `Some("trait")` treats `name` as a trait and returns implementors.
+    ///   `Some("type")` treats `name` as a type and returns its traits.
+    pub fn capture_find_implementations_view(
+        &self,
+        name: &str,
+        direction: Option<&str>,
+    ) -> FindImplementationsView {
+        let mut entries: Vec<ImplementationEntryView> = Vec::new();
+
+        for (file_path, file) in &self.files {
+            for reference in &file.references {
+                if reference.kind != ReferenceKind::Implements {
+                    continue;
+                }
+                let trait_name = &reference.name;
+                let implementor = match &reference.qualified_name {
+                    Some(qn) => qn,
+                    None => continue,
+                };
+
+                let matches = match direction {
+                    Some("trait") => trait_name == name,
+                    Some("type") => implementor == name,
+                    _ => trait_name == name || implementor == name,
+                };
+
+                if matches {
+                    entries.push(ImplementationEntryView {
+                        trait_name: trait_name.clone(),
+                        implementor: implementor.clone(),
+                        file_path: file_path.clone(),
+                        line: reference.line_range.0,
+                    });
+                }
+            }
+        }
+
+        // Sort: group by trait name, then by implementor
+        entries.sort_by(|a, b| {
+            a.trait_name
+                .cmp(&b.trait_name)
+                .then(a.implementor.cmp(&b.implementor))
+        });
+
+        FindImplementationsView { entries }
     }
 
     pub fn capture_find_references_view_for_symbol(
