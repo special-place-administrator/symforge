@@ -47,6 +47,8 @@ pub struct DaemonSessionClient {
     project_id: String,
     session_id: String,
     project_name: String,
+    /// Stored so reconnection can re-open a session at the same project root.
+    project_root: Option<PathBuf>,
 }
 
 pub struct DaemonState {
@@ -447,7 +449,13 @@ impl DaemonSessionClient {
             project_id,
             session_id,
             project_name,
+            project_root: None,
         }
+    }
+
+    fn with_project_root(mut self, root: PathBuf) -> Self {
+        self.project_root = Some(root);
+        self
     }
 
     #[cfg(test)]
@@ -476,11 +484,31 @@ impl DaemonSessionClient {
         &self.base_url
     }
 
+    pub fn project_root(&self) -> Option<&Path> {
+        self.project_root.as_deref()
+    }
+
     pub fn port(&self) -> Option<u16> {
         self.base_url
             .rsplit(':')
             .next()
             .and_then(|value| value.parse::<u16>().ok())
+    }
+
+    /// Attempt to reconnect to the daemon after a connection failure.
+    ///
+    /// Calls `ensure_daemon_running` (which will spawn a new daemon if needed),
+    /// opens a fresh session, and returns the new client. The caller should
+    /// replace their stored client with the returned one.
+    pub async fn reconnect(&self) -> anyhow::Result<DaemonSessionClient> {
+        let project_root = self
+            .project_root
+            .as_deref()
+            .context("cannot reconnect: no project root stored")?;
+        tracing::info!("attempting daemon reconnection for project {}", self.project_name);
+        let new_client =
+            connect_or_spawn_session(project_root, "mcp-stdio", Some(std::process::id())).await?;
+        Ok(new_client.with_project_root(project_root.to_path_buf()))
     }
 
     pub async fn call_tool_value(
@@ -575,7 +603,8 @@ pub async fn connect_or_spawn_session(
         opened.project_id,
         opened.session_id,
         opened.project_name,
-    ))
+    )
+    .with_project_root(project_root.to_path_buf()))
 }
 
 async fn ensure_daemon_running() -> anyhow::Result<u16> {

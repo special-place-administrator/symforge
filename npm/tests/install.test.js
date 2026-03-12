@@ -102,8 +102,13 @@ test("locked Windows binary is replaced after stopping running Tokenizor process
 
   await installer.main();
 
-  assert.equal(execCalls.length, 1);
-  assert.equal(execCalls[0].command, "powershell.exe");
+  const powershellCalls = execCalls.filter((c) => c.command === "powershell.exe");
+  const initCalls = execCalls.filter((c) => c.command !== "powershell.exe");
+  // stopAllRunningProcesses + stopRunningWindowsProcesses (EPERM fallback)
+  assert.equal(powershellCalls.length, 2);
+  // runAutoInit calls the installed binary
+  assert.equal(initCalls.length, 1);
+  assert.match(initCalls[0].args.join(" "), /init/);
   assert.equal(
     fsOverrides.writes.filter((entry) => entry.target === binPath).length,
     2
@@ -112,8 +117,9 @@ test("locked Windows binary is replaced after stopping running Tokenizor process
     fsOverrides.writes.some((entry) => entry.target === pendingPath),
     false
   );
-  assert.match(logs.join("\n"), /Stopping 2 running Tokenizor process/);
+  assert.match(logs.join("\n"), /Stopped.*tokenizor-mcp daemon process/);
   assert.match(logs.join("\n"), /Installed:/);
+  assert.match(logs.join("\n"), /Auto-configuring/);
 });
 
 test("installer stages a pending binary when the executable is still locked after stopping processes", async () => {

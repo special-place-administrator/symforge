@@ -88,14 +88,44 @@ function createLauncher(overrides = {}) {
     }
   }
 
+  function detectClients() {
+    const clients = [];
+    const home = osMod.homedir();
+    if (fsMod.existsSync(pathMod.join(home, ".claude"))) clients.push("claude");
+    if (fsMod.existsSync(pathMod.join(home, ".codex"))) clients.push("codex");
+    if (clients.length === 0 || clients.length >= 2) return "all";
+    return clients[0];
+  }
+
+  function runAutoInit() {
+    const client = detectClients();
+    consoleMod.error(`tokenizor-mcp: auto-configuring for ${client}...`);
+    try {
+      const output = execFileSyncFn(binPath, ["init", "--client", client], {
+        encoding: "utf8",
+        timeout: 15000,
+        env: processMod.env,
+      });
+      relayInstallerOutput(output);
+    } catch (error) {
+      consoleMod.error(
+        `tokenizor-mcp: auto-init warning: ${error.message}`
+      );
+    }
+  }
+
   function ensureInstalledBinary() {
-    applyPendingUpdate();
+    const pendingApplied = applyPendingUpdate();
 
     const expectedVersion = packageJson.version;
     const hasBinary = fsMod.existsSync(binPath);
     const installedVersion = hasBinary ? getInstalledVersion() : null;
 
     if (installedVersion === expectedVersion) {
+      // If a pending update was just applied, run init to ensure config matches
+      if (pendingApplied) {
+        runAutoInit();
+      }
       return;
     }
 
@@ -126,11 +156,13 @@ function createLauncher(overrides = {}) {
 
   return {
     applyPendingUpdate,
+    detectClients,
     ensureInstalledBinary,
     getInstalledVersion,
     getBinaryPath: () => binPath,
     getPendingPath: () => pendingPath,
     main,
+    runAutoInit,
   };
 }
 

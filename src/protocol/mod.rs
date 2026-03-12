@@ -4,6 +4,7 @@ pub mod resources;
 pub mod tools;
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use rmcp::RoleServer;
@@ -45,7 +46,11 @@ pub struct TokenizorServer {
     pub(crate) token_stats: Option<Arc<TokenStats>>,
     /// Optional daemon-backed proxy session. When present, tool calls are forwarded to the
     /// shared daemon-owned project runtime instead of the local in-process index.
-    pub(crate) daemon_client: Option<crate::daemon::DaemonSessionClient>,
+    /// Wrapped in `tokio::sync::RwLock` so reconnection can swap in a fresh client.
+    pub(crate) daemon_client: Option<Arc<tokio::sync::RwLock<crate::daemon::DaemonSessionClient>>>,
+    /// Set to `true` after a failed reconnection attempt. Prevents repeated reconnect
+    /// storms — once degraded, all subsequent calls fall through to local execution.
+    pub(crate) daemon_degraded: Arc<AtomicBool>,
 }
 
 impl TokenizorServer {
@@ -69,21 +74,25 @@ impl TokenizorServer {
             repo_root: Arc::new(RwLock::new(repo_root)),
             token_stats,
             daemon_client: None,
+            daemon_degraded: Arc::new(AtomicBool::new(false)),
         }
     }
 
     pub fn new_daemon_proxy(daemon_client: crate::daemon::DaemonSessionClient) -> Self {
         use crate::watcher::WatcherInfo;
 
+        let project_name = daemon_client.project_name().to_string();
+        let repo_root = daemon_client.project_root().map(|p| p.to_path_buf());
         Self {
             index: crate::live_index::LiveIndex::empty(),
             tool_router: Self::tool_router(),
             prompt_router: Self::prompt_router(),
-            project_name: daemon_client.project_name().to_string(),
+            project_name,
             watcher_info: Arc::new(Mutex::new(WatcherInfo::default())),
-            repo_root: Arc::new(RwLock::new(None)),
+            repo_root: Arc::new(RwLock::new(repo_root)),
             token_stats: None,
-            daemon_client: Some(daemon_client),
+            daemon_client: Some(Arc::new(tokio::sync::RwLock::new(daemon_client))),
+            daemon_degraded: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -100,27 +109,118 @@ impl TokenizorServer {
         *self.repo_root.write().expect("lock poisoned") = repo_root;
     }
 
+    /// Forward a tool call to the daemon. Returns:
+    /// - `Some(result)` on success
+    /// - `None` on connection failure (after one reconnect attempt), signalling
+    ///   the caller to fall through to local execution
     pub(crate) async fn proxy_tool_call<T>(&self, tool_name: &str, params: &T) -> Option<String>
     where
         T: serde::Serialize,
     {
-        let daemon_client = self.daemon_client.as_ref()?;
+        let daemon_lock = self.daemon_client.as_ref()?;
+
+        // If we've already failed to reconnect, skip the proxy entirely.
+        if self.daemon_degraded.load(Ordering::Relaxed) {
+            return None;
+        }
+
         let value = match serde_json::to_value(params) {
             Ok(value) => value,
             Err(error) => return Some(format!("Daemon proxy serialization failed: {error}")),
         };
 
-        Some(
-            match daemon_client.call_tool_value(tool_name, value).await {
-                Ok(result) => result,
-                Err(error) => format!("Daemon proxy failed: {error}"),
-            },
-        )
+        // First attempt.
+        {
+            let client = daemon_lock.read().await;
+            match client.call_tool_value(tool_name, value.clone()).await {
+                Ok(result) => return Some(result),
+                Err(error) => {
+                    tracing::warn!(
+                        tool = tool_name,
+                        "daemon proxy call failed, attempting reconnect: {error}"
+                    );
+                }
+            }
+        }
+
+        // Reconnect attempt — take a write lock so only one caller does this.
+        let reconnected = {
+            let mut client = daemon_lock.write().await;
+            match client.reconnect().await {
+                Ok(new_client) => {
+                    tracing::info!("daemon reconnected successfully");
+                    *client = new_client;
+                    true
+                }
+                Err(reconnect_error) => {
+                    tracing::warn!(
+                        "daemon reconnect failed, falling back to local execution: {reconnect_error}"
+                    );
+                    self.daemon_degraded.store(true, Ordering::Relaxed);
+                    self.ensure_local_index().await;
+                    false
+                }
+            }
+        };
+
+        if !reconnected {
+            return None;
+        }
+
+        // Retry with the fresh client.
+        {
+            let client = daemon_lock.read().await;
+            match client.call_tool_value(tool_name, value).await {
+                Ok(result) => Some(result),
+                Err(error) => {
+                    tracing::warn!(
+                        tool = tool_name,
+                        "daemon proxy call failed after reconnect, falling back to local: {error}"
+                    );
+                    self.daemon_degraded.store(true, Ordering::Relaxed);
+                    self.ensure_local_index().await;
+                    None
+                }
+            }
+        }
     }
 
     pub(crate) async fn proxy_tool_call_without_params(&self, tool_name: &str) -> Option<String> {
         self.proxy_tool_call(tool_name, &serde_json::json!({}))
             .await
+    }
+
+    /// Lazily initialize the local index when the daemon is unreachable.
+    /// Uses `SharedIndexHandle::reload` to populate the empty in-process index
+    /// from disk, enabling graceful degradation to local-only mode.
+    async fn ensure_local_index(&self) {
+        // If the index already has files, nothing to do.
+        if self.index.published_state().file_count > 0 {
+            return;
+        }
+
+        let repo_root = self.capture_repo_root();
+        if let Some(root) = repo_root {
+            tracing::info!(
+                root = %root.display(),
+                "daemon unreachable — loading local index as fallback"
+            );
+            match self.index.reload(&root) {
+                Ok(()) => {
+                    let published = self.index.published_state();
+                    tracing::info!(
+                        files = published.file_count,
+                        symbols = published.symbol_count,
+                        "local fallback index loaded"
+                    );
+                }
+                Err(error) => {
+                    tracing::error!("failed to load local fallback index: {error}");
+                }
+            }
+        } else {
+            tracing::warn!("daemon unreachable and no repo root available for local fallback");
+        }
     }
 }
 

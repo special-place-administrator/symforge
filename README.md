@@ -171,11 +171,17 @@ npm install -g tokenizor-mcp
 
 Current updater behavior:
 
+- The installer proactively stops tokenizor-mcp daemon processes before updating. The stdio MCP process (if serving an active Claude Code session) is left running to avoid disrupting the session.
 - On Windows, the npm installer first tries to replace the installed binary in place.
-- If the installed Tokenizor binary is locked, the installer tries to stop running `tokenizor-mcp.exe` processes that are using the installed binary path, then retries the replacement.
-- If replacement is still not possible, the installer stages `tokenizor-mcp.pending.exe` and the wrapper applies it on the next successful launch.
+- If the installed Tokenizor binary is still locked (active MCP session), the installer stages `tokenizor-mcp.pending.exe` and the wrapper applies it on the next successful launch.
 - On every launch, the npm wrapper checks that the installed binary version matches the wrapper package version and reruns the installer automatically if the binary is missing or mismatched.
 - On every launch, the client also refuses to reuse a recorded daemon unless its reported version and executable path match the current binary; incompatible daemons are replaced automatically.
+
+Automatic client initialization:
+
+- After a successful install or update, the installer auto-detects installed CLI agents (Claude Code, Codex) and runs `init` automatically — no manual `tokenizor-mcp init` needed.
+- When an update is staged as `.pending` (active MCP session), auto-init runs on the next launch after the pending binary is applied.
+- Existing hooks and MCP registrations are updated in place; non-Tokenizor entries are preserved.
 
 Release, publish, and recovery procedure lives in `docs/release-process.md`.
 Canonical release tags use plain `vX.Y.Z`.
@@ -203,7 +209,7 @@ Current `hook` subcommands:
 
 ## Client Initialization
 
-Initialize configured clients:
+Client initialization runs automatically during `npm install -g tokenizor-mcp`. To re-run manually:
 
 ```bash
 tokenizor-mcp init
@@ -262,6 +268,15 @@ When the stdio server starts:
 2. If a project root is found, Tokenizor tries to connect to or start a local daemon-backed session for that project.
 3. If daemon connection fails, Tokenizor falls back to local in-process mode.
 4. If auto-indexing is disabled or no project root is found, Tokenizor starts with an empty index.
+
+### Daemon resilience
+
+If the daemon becomes unreachable during a session (killed, crashed, or updated):
+
+1. The next tool call detects the connection failure and attempts to reconnect — spawning a new daemon and opening a fresh session automatically.
+2. If reconnection succeeds, the tool call completes normally with a brief delay.
+3. If reconnection fails, the MCP server enters degraded mode: it loads a local in-process index from disk and serves all subsequent tool calls locally for the remainder of the session.
+4. Once in degraded mode, no further reconnect attempts are made to avoid reconnection storms.
 
 ### Local daemon
 
