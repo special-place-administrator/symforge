@@ -841,6 +841,9 @@ pub fn search_files_result_view(view: &SearchFilesView) -> String {
                 if last_tier != Some(hit.tier) {
                     last_tier = Some(hit.tier);
                     let header = match hit.tier {
+                        SearchFilesTier::CoChange => {
+                            "── Co-changed files (git temporal coupling) ──"
+                        }
                         SearchFilesTier::StrongPath => "── Strong path matches ──",
                         SearchFilesTier::Basename => "── Basename matches ──",
                         SearchFilesTier::LoosePath => "── Loose path matches ──",
@@ -850,7 +853,16 @@ pub fn search_files_result_view(view: &SearchFilesView) -> String {
                     }
                     lines.push(header.to_string());
                 }
-                lines.push(format!("  {}", hit.path));
+                if let (Some(score), Some(shared)) = (hit.coupling_score, hit.shared_commits) {
+                    lines.push(format!(
+                        "  {}  ({:.0}% coupled, {} shared commits)",
+                        hit.path,
+                        score * 100.0,
+                        shared
+                    ));
+                } else {
+                    lines.push(format!("  {}", hit.path));
+                }
             }
 
             if *overflow_count > 0 {
@@ -2662,14 +2674,20 @@ mod tests {
                 crate::live_index::SearchFilesHit {
                     tier: SearchFilesTier::StrongPath,
                     path: "src/protocol/tools.rs".to_string(),
+                    coupling_score: None,
+                    shared_commits: None,
                 },
                 crate::live_index::SearchFilesHit {
                     tier: SearchFilesTier::Basename,
                     path: "src/sidecar/tools.rs".to_string(),
+                    coupling_score: None,
+                    shared_commits: None,
                 },
                 crate::live_index::SearchFilesHit {
                     tier: SearchFilesTier::LoosePath,
                     path: "src/protocol/tools_helper.rs".to_string(),
+                    coupling_score: None,
+                    shared_commits: None,
                 },
             ],
         };

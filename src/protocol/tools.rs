@@ -24,7 +24,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::LanguageId;
-use crate::live_index::{IndexedFile, search, store::IndexState};
+use crate::live_index::{
+    IndexedFile, SearchFilesHit, SearchFilesTier, SearchFilesView, search, store::IndexState,
+};
 use crate::protocol::format;
 use crate::sidecar::handlers::{
     ImpactParams, OutlineParams, SymbolContextParams, impact_tool_text, outline_tool_text,
@@ -139,6 +141,8 @@ pub struct SearchFilesInput {
     pub limit: Option<u32>,
     /// Optional current file path to boost local results.
     pub current_file: Option<String>,
+    /// Find files that frequently co-change with this file (uses git temporal coupling data).
+    pub changed_with: Option<String>,
 }
 
 /// Input for `resolve_path`.
@@ -1109,6 +1113,37 @@ impl TokenizorServer {
         if let Some(result) = self.proxy_tool_call("search_files", &params.0).await {
             return result;
         }
+
+        // Handle changed_with (git temporal coupling)
+        if let Some(ref target_path) = params.0.changed_with {
+            let temporal = self.index.git_temporal();
+            if temporal.state == crate::live_index::git_temporal::GitTemporalState::Ready {
+                if let Some(history) = temporal.files.get(target_path.as_str()) {
+                    let hits: Vec<SearchFilesHit> = history
+                        .co_changes
+                        .iter()
+                        .map(|entry| SearchFilesHit {
+                            tier: SearchFilesTier::CoChange,
+                            path: entry.path.clone(),
+                            coupling_score: Some(entry.coupling_score),
+                            shared_commits: Some(entry.shared_commits),
+                        })
+                        .collect();
+                    let total = hits.len();
+                    return format::search_files_result_view(&SearchFilesView::Found {
+                        query: format!("co-changes with {target_path}"),
+                        total_matches: total,
+                        overflow_count: 0,
+                        hits,
+                    });
+                }
+                return format!(
+                    "No git history found for '{target_path}'. Check the file path is correct."
+                );
+            }
+            return "Git temporal data is not yet available. It loads asynchronously after the first index.".to_string();
+        }
+
         let view = {
             let guard = self.index.read().expect("lock poisoned");
             loading_guard!(guard);
@@ -2873,6 +2908,7 @@ mod tests {
                 query: "protocol/tools.rs".to_string(),
                 limit: Some(20),
                 current_file: None,
+                changed_with: None,
             }))
             .await;
         assert!(result.contains("2 matching files"), "got: {result}");
@@ -2894,9 +2930,31 @@ mod tests {
                 query: "src/service.rs".to_string(),
                 limit: None,
                 current_file: None,
+                changed_with: None,
             }))
             .await;
         assert_eq!(result, "No indexed source files matching 'src/service.rs'");
+    }
+
+    #[tokio::test]
+    async fn test_search_files_changed_with_returns_graceful_message() {
+        // Without git temporal data loaded, should return informative message
+        let (key, file) = make_file("src/daemon.rs", b"fn foo() {}", vec![]);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let result = server
+            .search_files(Parameters(super::SearchFilesInput {
+                query: String::new(),
+                limit: None,
+                current_file: None,
+                changed_with: Some("src/daemon.rs".to_string()),
+            }))
+            .await;
+        // Without git temporal data, should return informative message (not an error/panic)
+        assert!(!result.contains("panic"), "should not panic, got: {result}");
+        assert!(
+            result.contains("temporal") || result.contains("git"),
+            "should mention temporal data status, got: {result}"
+        );
     }
 
     #[tokio::test]

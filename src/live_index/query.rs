@@ -604,18 +604,21 @@ pub enum ResolvePathView {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SearchFilesTier {
+    CoChange,
     StrongPath,
     Basename,
     LoosePath,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SearchFilesHit {
     pub tier: SearchFilesTier,
     pub path: String,
+    pub coupling_score: Option<f32>,
+    pub shared_commits: Option<u32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum SearchFilesView {
     EmptyQuery,
     NotFound {
@@ -1169,14 +1172,20 @@ impl LiveIndex {
         hits.extend(strong_hits.into_iter().map(|path| SearchFilesHit {
             tier: SearchFilesTier::StrongPath,
             path,
+            coupling_score: None,
+            shared_commits: None,
         }));
         hits.extend(basename_only_hits.into_iter().map(|path| SearchFilesHit {
             tier: SearchFilesTier::Basename,
             path,
+            coupling_score: None,
+            shared_commits: None,
         }));
         hits.extend(loose_hits.into_iter().map(|path| SearchFilesHit {
             tier: SearchFilesTier::LoosePath,
             path,
+            coupling_score: None,
+            shared_commits: None,
         }));
 
         let overflow_count = total_matches.saturating_sub(limit);
@@ -2717,10 +2726,14 @@ mod tests {
                     SearchFilesHit {
                         tier: SearchFilesTier::StrongPath,
                         path: "src/protocol/tools.rs".to_string(),
+                        coupling_score: None,
+                        shared_commits: None,
                     },
                     SearchFilesHit {
                         tier: SearchFilesTier::Basename,
                         path: "src/sidecar/tools.rs".to_string(),
+                        coupling_score: None,
+                        shared_commits: None,
                     },
                 ],
             }
@@ -2755,10 +2768,14 @@ mod tests {
                     SearchFilesHit {
                         tier: SearchFilesTier::LoosePath,
                         path: "src/live_index/query.rs".to_string(),
+                        coupling_score: None,
+                        shared_commits: None,
                     },
                     SearchFilesHit {
                         tier: SearchFilesTier::LoosePath,
                         path: "src/live_index/store.rs".to_string(),
+                        coupling_score: None,
+                        shared_commits: None,
                     },
                 ],
             }
