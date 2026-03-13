@@ -976,9 +976,11 @@ fn loading_guard_message_from_published(
 
 #[tool_router(vis = "pub(crate)")]
 impl TokenizorServer {
-    /// Return the symbol outline for a file. Shows functions, structs, classes with line ranges.
+    /// Return the symbol outline for a file — every function, struct, enum, class, trait, and impl with line ranges.
+    /// Use this instead of reading the whole file when you only need to know what symbols exist and where they are.
+    /// Output is compact (typically 50–90% smaller than the raw file). Pair with get_symbol to read a specific body.
     #[tool(
-        description = "Return the symbol outline for a file. Shows functions, structs, classes with line ranges."
+        description = "Return the symbol outline for a file — every function, struct, enum, class, trait, and impl with line ranges. Use instead of reading the whole file when you need to know what symbols exist. Pair with get_symbol to read a specific body."
     )]
     pub(crate) async fn get_file_outline(&self, params: Parameters<GetFileOutlineInput>) -> String {
         if let Some(result) = self.proxy_tool_call("get_file_outline", &params.0).await {
@@ -1000,9 +1002,11 @@ impl TokenizorServer {
         }
     }
 
-    /// Look up a specific symbol by file path and name. Returns full source code.
+    /// Look up a single symbol by file path and name. Returns the full source code of that symbol.
+    /// Requires an exact file path and symbol name. Use search_symbols first if you don't know the exact name,
+    /// or get_file_outline to see all symbols in a file. On miss, shows the 5 closest fuzzy matches.
     #[tool(
-        description = "Look up a specific symbol by file path and name. Returns full source code."
+        description = "Look up a single symbol by exact file path and name — returns its full source code. Use search_symbols first if you don't know the exact name, or get_file_outline to see what's in the file. On miss, shows closest fuzzy matches."
     )]
     pub(crate) async fn get_symbol(&self, params: Parameters<GetSymbolInput>) -> String {
         if let Some(result) = self.proxy_tool_call("get_symbol", &params.0).await {
@@ -1023,9 +1027,11 @@ impl TokenizorServer {
         }
     }
 
-    /// Batch lookup of symbols or code slices. Each target can be a symbol name or byte range.
+    /// Batch lookup: retrieve multiple symbols or code slices in one call. Each target specifies a file path
+    /// plus either a symbol name (returns full body) or a byte range (returns raw code slice). Use this to
+    /// fetch several symbols from different files without making separate get_symbol calls.
     #[tool(
-        description = "Batch lookup of symbols or code slices. Each target can be a symbol name or byte range."
+        description = "Batch lookup: retrieve multiple symbols or code slices in one call. Each target is a file path + symbol name (full body) or byte range (raw slice). Avoids multiple get_symbol round-trips."
     )]
     pub(crate) async fn get_symbols(&self, params: Parameters<GetSymbolsInput>) -> String {
         if let Some(result) = self.proxy_tool_call("get_symbols", &params.0).await {
@@ -1081,8 +1087,11 @@ impl TokenizorServer {
             .join("\n---\n")
     }
 
-    /// Show the file tree with language and symbol counts per file.
-    #[tool(description = "Show the file tree with language and symbol counts per file.")]
+    /// Full symbol outline of the entire project — every file with every symbol name, kind, and line range.
+    /// Large output. Prefer get_repo_map for a compact project overview or get_file_outline for a single file.
+    #[tool(
+        description = "Full symbol outline of the entire project — every file with every symbol, kind, and line range. Large output. Prefer get_repo_map for a compact overview or get_file_outline for one file."
+    )]
     pub(crate) async fn get_repo_outline(&self) -> String {
         if let Some(result) = self
             .proxy_tool_call_without_params("get_repo_outline")
@@ -1098,8 +1107,11 @@ impl TokenizorServer {
         format::repo_outline_view(&view, &self.project_name)
     }
 
-    /// Show the compact repo map used for session-start enrichment.
-    #[tool(description = "Show the compact repo map used for session-start enrichment.")]
+    /// Compact project overview: file count, language breakdown, symbol count, and directory tree with
+    /// per-directory file/symbol counts. Best first call in a session to orient yourself. Fits in ~500 tokens.
+    #[tool(
+        description = "Compact project overview: total files, language breakdown, symbol count, and directory tree with per-directory stats. Best first call in a session to orient yourself. ~500 tokens."
+    )]
     pub(crate) async fn get_repo_map(&self) -> String {
         if let Some(result) = self.proxy_tool_call_without_params("get_repo_map").await {
             return result;
@@ -1119,9 +1131,11 @@ impl TokenizorServer {
         }
     }
 
-    /// Show enriched file context with symbol outline and key external references.
+    /// Rich file summary: symbol outline, grouped imports (with source counts), grouped consumers (files
+    /// that import this one), key references, and git activity (churn score, ownership, co-change coupling,
+    /// last commit). Use this to understand a file's role and relationships before editing it.
     #[tool(
-        description = "Show enriched file context with symbol outline and key external references."
+        description = "Rich file summary: symbol outline, imports, consumers, references, and git activity (churn, ownership, co-changes). Use to understand a file's role before editing. Much smaller than reading the raw file."
     )]
     pub(crate) async fn get_file_context(&self, params: Parameters<GetFileContextInput>) -> String {
         if let Some(result) = self.proxy_tool_call("get_file_context", &params.0).await {
@@ -1156,8 +1170,12 @@ impl TokenizorServer {
         }
     }
 
-    /// Show grouped references for a symbol with enclosing-symbol annotations.
-    #[tool(description = "Show grouped references for a symbol with enclosing-symbol annotations.")]
+    /// Deep context for a symbol: definition, all callers grouped by file with enclosing-symbol annotations,
+    /// callees, and type usages. Heavier than get_symbol (which only returns the source body) — use this when
+    /// you need to understand how a symbol is used across the codebase, not just what it contains.
+    #[tool(
+        description = "Deep context for a symbol: definition, callers (grouped by file with enclosing symbols), callees, type usages. Heavier than get_symbol (source body only) — use when you need to understand usage across the codebase."
+    )]
     pub(crate) async fn get_symbol_context(
         &self,
         params: Parameters<GetSymbolContextInput>,
@@ -1197,8 +1215,12 @@ impl TokenizorServer {
         }
     }
 
-    /// Re-read a file from disk, update the index, and report symbol impact.
-    #[tool(description = "Re-read a file from disk, update the index, and report symbol impact.")]
+    /// Call AFTER editing a file. Re-reads it from disk, updates the index, and reports what changed:
+    /// added/removed/modified symbols, broken references, and affected dependents. Use new_file=true
+    /// for newly created files. This is the only tool that writes to the index (besides index_folder).
+    #[tool(
+        description = "Call AFTER editing a file. Re-reads from disk, updates the index, reports added/removed/modified symbols and affected dependents. The only tool that updates the index besides index_folder."
+    )]
     pub(crate) async fn analyze_file_impact(
         &self,
         params: Parameters<AnalyzeFileImpactInput>,
@@ -1226,8 +1248,12 @@ impl TokenizorServer {
         }
     }
 
-    /// Search for symbols by name substring across all indexed files.
-    #[tool(description = "Search for symbols by name substring across all indexed files.")]
+    /// Find symbols by name substring across the entire project. Returns symbol name, kind, file path, and
+    /// line range. Use this when you know part of a symbol name but not which file it's in. Filter by kind
+    /// (fn/struct/class), language, or path prefix. For text patterns in file content, use search_text instead.
+    #[tool(
+        description = "Find symbols by name substring across the project — returns name, kind, file, line range. Use when you know part of a symbol name but not the file. For text content search, use search_text instead."
+    )]
     pub(crate) async fn search_symbols(&self, params: Parameters<SearchSymbolsInput>) -> String {
         if params.0.query.trim().is_empty() {
             return "search_symbols requires a non-empty query. Provide a symbol name or substring to search for.".to_string();
@@ -1252,8 +1278,13 @@ impl TokenizorServer {
         format::search_symbols_result_view(&result, &params.0.query)
     }
 
-    /// Full-text search across all indexed file contents.
-    #[tool(description = "Full-text search across all indexed file contents.")]
+    /// Full-text search across file contents — literal, OR-terms, or regex. Results show the matching line
+    /// with its enclosing symbol for context. Options: group_by='symbol' (one line per symbol) or 'usage'
+    /// (filter out imports/comments); follow_refs=true (inline callers of each matched symbol). For finding
+    /// symbols by name, use search_symbols instead. For finding files by path, use search_files.
+    #[tool(
+        description = "Full-text search across file contents (literal, OR-terms, or regex). Shows matches with enclosing symbol context. group_by='symbol'|'usage' to deduplicate; follow_refs=true for callers. For symbol name search use search_symbols; for file path search use search_files."
+    )]
     pub(crate) async fn search_text(&self, params: Parameters<SearchTextInput>) -> String {
         if let Some(result) = self.proxy_tool_call("search_text", &params.0).await {
             return result;
@@ -1283,8 +1314,13 @@ impl TokenizorServer {
         format::search_text_result_view(result, params.0.group_by.as_deref())
     }
 
-    /// One-call semantic investigation for an exact symbol.
-    #[tool(description = "One-call semantic investigation for an exact symbol.")]
+    /// Most comprehensive symbol analysis — returns definition body, all callers, all callees, trait
+    /// implementations, type dependencies, and git activity in one call. Requires exact path + name.
+    /// Heavier than get_symbol_context (which shows callers only) or get_symbol (source body only).
+    /// Use when you need the complete picture of a symbol before refactoring or understanding control flow.
+    #[tool(
+        description = "Most comprehensive symbol analysis: definition, callers, callees, trait implementations, type dependencies, git activity — all in one call. Requires exact path + name. Heavier than get_symbol_context (callers only) or get_symbol (body only). Use for complete picture before refactoring."
+    )]
     pub(crate) async fn trace_symbol(&self, params: Parameters<TraceSymbolInput>) -> String {
         if let Some(result) = self.proxy_tool_call("trace_symbol", &params.0).await {
             return result;
@@ -1348,9 +1384,12 @@ impl TokenizorServer {
         format::trace_symbol_result_view(&trace_view, &params.0.name)
     }
 
-    /// Inspect a specific match line with context, enclosing symbol, and siblings.
+    /// Deep-dive into a specific line from search_text results. Given a file path and line number, shows
+    /// the line in full symbol context with surrounding code, enclosing symbol body, sibling symbols in
+    /// the same file, callers, and type dependencies. Use AFTER search_text to understand a match without
+    /// reading the entire file. Lighter than trace_symbol (doesn't need an exact symbol name).
     #[tool(
-        description = "Inspect a specific match line with context, enclosing symbol, and siblings."
+        description = "Deep-dive a search_text match: given path + line number, shows the line in full symbol context with callers and type deps. Use AFTER search_text to understand a hit. Lighter than trace_symbol (no exact symbol name needed)."
     )]
     pub(crate) async fn inspect_match(&self, params: Parameters<InspectMatchInput>) -> String {
         if let Some(result) = self.proxy_tool_call("inspect_match", &params.0).await {
@@ -1366,8 +1405,13 @@ impl TokenizorServer {
         format::inspect_match_result_view(&view)
     }
 
-    /// Search indexed file paths using bounded ranked code-lane discovery.
-    #[tool(description = "Search indexed file paths using bounded ranked code-lane discovery.")]
+    /// Find files by path, filename, or folder name — ranked by relevance. Use when you need to locate a file
+    /// but don't know its exact path. With changed_with=path, finds files that frequently co-change with the
+    /// given file (git temporal coupling). For searching file contents, use search_text. For symbol names, use
+    /// search_symbols.
+    #[tool(
+        description = "Find files by path/filename/folder — ranked by relevance. With changed_with=path, finds co-changing files via git temporal coupling. For file content search use search_text; for symbol names use search_symbols."
+    )]
     pub(crate) async fn search_files(&self, params: Parameters<SearchFilesInput>) -> String {
         if let Some(result) = self.proxy_tool_call("search_files", &params.0).await {
             return result;
@@ -1419,9 +1463,11 @@ impl TokenizorServer {
         format::search_files_result_view(&view)
     }
 
-    /// Resolve filenames, partial paths, and ambiguous path hints to one exact indexed project path.
+    /// Resolve an ambiguous filename or partial path to one exact project path. Returns the single best match
+    /// or a ranked list of candidates. Use when you have a filename like "config.ts" and need the full relative
+    /// path. Unlike search_files (which returns ranked results for browsing), this is optimized for exact resolution.
     #[tool(
-        description = "Resolve filenames, partial paths, and ambiguous path hints to one exact indexed project path."
+        description = "Resolve an ambiguous filename or partial path to one exact project path. Returns best match or ranked candidates. Unlike search_files (ranked browsing), this is for exact path resolution."
     )]
     pub(crate) async fn resolve_path(&self, params: Parameters<ResolvePathInput>) -> String {
         if let Some(result) = self.proxy_tool_call("resolve_path", &params.0).await {
@@ -1435,13 +1481,11 @@ impl TokenizorServer {
         format::resolve_path_result_view(&view)
     }
 
-    /// Report server health: index status, file counts, load duration, watcher state.
-    ///
-    /// When the HTTP sidecar is running, also reports token savings from hook fires this session.
-    ///
-    /// This tool always responds regardless of index state (no loading guard).
+    /// Diagnostic tool: index status (loading/ready/empty), file count, symbol count, load duration,
+    /// watcher state, token savings this session, and git temporal data status. Always responds even
+    /// if the index is still loading. Use to verify Tokenizor is working or to check session stats.
     #[tool(
-        description = "Report server health: index status, file counts, load duration, watcher state."
+        description = "Diagnostic: index status, file/symbol counts, load time, watcher state, token savings, git temporal status. Always responds even during loading. Use to verify Tokenizor is working."
     )]
     pub(crate) async fn health(&self) -> String {
         if let Some(result) = self.proxy_tool_call_without_params("health").await {
@@ -1470,9 +1514,11 @@ impl TokenizorServer {
         result
     }
 
-    /// Reload the index from a directory path. Replaces current index entirely.
+    /// Reindex a directory from scratch — replaces the entire current index, restarts the file watcher,
+    /// and triggers fresh git temporal analysis. Use when switching projects or after major filesystem
+    /// changes. All subsequent tool calls will use the new index. This is destructive to the current index.
     #[tool(
-        description = "Reload the index from a directory path. Replaces current index entirely."
+        description = "Reindex a directory from scratch — replaces the current index, restarts watcher, triggers git temporal analysis. Use when switching projects. Destructive to current index."
     )]
     pub(crate) async fn index_folder(&self, params: Parameters<IndexFolderInput>) -> String {
         if let Some(result) = self.proxy_tool_call("index_folder", &params.0).await {
@@ -1515,9 +1561,12 @@ impl TokenizorServer {
         }
     }
 
-    /// Show files changed since a Unix timestamp, git ref, or current uncommitted state.
+    /// List files that changed — three modes: (1) uncommitted=true for current git working tree changes,
+    /// (2) git_ref="HEAD~5" or "main" for changes relative to a ref, (3) since=timestamp for files newer
+    /// than a Unix epoch. Use to resume work after a break or to scope impact of recent changes. For
+    /// symbol-level diffs between refs, use diff_symbols instead.
     #[tool(
-        description = "Show files changed since a Unix timestamp, git ref, or current uncommitted state."
+        description = "List changed files: uncommitted=true for working tree, git_ref='HEAD~5' for ref comparison, since=timestamp for recent changes. For symbol-level diffs use diff_symbols instead."
     )]
     pub(crate) async fn what_changed(&self, params: Parameters<WhatChangedInput>) -> String {
         if let Some(result) = self.proxy_tool_call("what_changed", &params.0).await {
@@ -1578,8 +1627,13 @@ impl TokenizorServer {
         }
     }
 
-    /// Serve file content from memory with optional line range.
-    #[tool(description = "Serve file content from memory with optional line range.")]
+    /// Read raw file content from the index. Supports multiple read modes: full file, explicit line range
+    /// (start_line/end_line), centered reads (around_line, around_match, around_symbol), or chunked paging
+    /// (chunk_index + max_lines). For structured understanding of a file use get_file_outline or get_file_context
+    /// instead — they're smaller and more informative. Use this only when you need the actual source text.
+    #[tool(
+        description = "Read raw file content. Modes: full file, line range, around_line/around_match/around_symbol, or chunked paging. For structured file understanding use get_file_outline or get_file_context — they're smaller. Use this only when you need actual source text."
+    )]
     pub(crate) async fn get_file_content(&self, params: Parameters<GetFileContentInput>) -> String {
         if let Some(result) = self.proxy_tool_call("get_file_content", &params.0).await {
             return result;
@@ -1604,7 +1658,7 @@ impl TokenizorServer {
 
     /// Find all references (call sites, imports, type usages) for a symbol across the codebase.
     #[tool(
-        description = "Find all references (call sites, imports, type usages) for a symbol across the codebase"
+        description = "Find all references (call sites, imports, type usages) for a symbol, grouped by file with enclosing-symbol annotations. Lighter than get_symbol_context (no callee/type resolution) or trace_symbol (no git/implementations). Use when you just need 'who calls this?'."
     )]
     pub(crate) async fn find_references(&self, params: Parameters<FindReferencesInput>) -> String {
         if let Some(result) = self.proxy_tool_call("find_references", &params.0).await {
@@ -1634,8 +1688,12 @@ impl TokenizorServer {
         }
     }
 
-    /// Find all files that import or depend on the given file.
-    #[tool(description = "Find all files that import or depend on the given file")]
+    /// File-level dependency graph: which files import or depend on the given file. Shows import lines
+    /// with context. Supports text, Mermaid flowchart, or Graphviz DOT output via format parameter.
+    /// Unlike find_references (symbol-level), this works at file-module granularity.
+    #[tool(
+        description = "File-level dependency graph: which files import the given file. Shows import lines with context. Supports text/Mermaid/Graphviz output. Unlike find_references (symbol-level), this is file-module granularity."
+    )]
     pub(crate) async fn find_dependents(&self, params: Parameters<FindDependentsInput>) -> String {
         if let Some(result) = self.proxy_tool_call("find_dependents", &params.0).await {
             return result;
@@ -1658,7 +1716,7 @@ impl TokenizorServer {
 
     /// Find all implementations of a trait/interface, or all traits a type implements.
     #[tool(
-        description = "Find all implementations of a trait/interface, or all traits a type implements"
+        description = "Find trait/interface implementations bidirectionally: given a trait name, find all implementors; given a type name, find all traits it implements. Supports Rust, TypeScript, Java, C#, Python, C++, Ruby, PHP, Swift."
     )]
     pub(crate) async fn find_implementations(
         &self,
@@ -1681,8 +1739,12 @@ impl TokenizorServer {
         format::find_implementations_result_view(&view, &input.name, &limits)
     }
 
-    /// Browse the source file tree with symbol counts per file and directory.
-    #[tool(description = "Browse the source file tree with symbol counts per file and directory.")]
+    /// Browsable file tree with per-file symbol counts and language tags. Supports subtree path and depth
+    /// limit. Use to navigate directory structure interactively. For a compact whole-project summary,
+    /// use get_repo_map instead.
+    #[tool(
+        description = "Browsable file tree with per-file symbol counts and language tags. Supports subtree path and depth limit. For a compact whole-project summary use get_repo_map instead."
+    )]
     pub(crate) async fn get_file_tree(&self, params: Parameters<GetFileTreeInput>) -> String {
         if let Some(result) = self.proxy_tool_call("get_file_tree", &params.0).await {
             return result;
@@ -1699,7 +1761,7 @@ impl TokenizorServer {
 
     /// Get full context for a symbol: definition body, callers, callees, and type usages in one call.
     #[tool(
-        description = "Get full context for a symbol: definition body, callers, callees, and type usages in one call"
+        description = "One-call context package: symbol body + full definitions of all referenced custom types, resolved recursively to depth 2. Use before editing a function to see its signature types. Heavier than get_symbol (body only), lighter than trace_symbol (no callers/git)."
     )]
     pub(crate) async fn get_context_bundle(
         &self,
@@ -1818,7 +1880,7 @@ impl TokenizorServer {
 
     /// Query git temporal coupling — find files that co-change with a given file.
     #[tool(
-        description = "Query git temporal coupling data for a file. Returns co-changing files (ranked by Jaccard coupling), churn score, ownership, and recent commit info. Use when you want to understand a file's change relationships."
+        description = "Git temporal data for a specific file: co-changing files (Jaccard coupling), churn score, ownership distribution, last commit. Unlike search_files changed_with (quick co-change list), this returns the full temporal profile. Requires git temporal data to be loaded (check health)."
     )]
     pub(crate) async fn get_co_changes(&self, params: Parameters<GetCoChangesInput>) -> String {
         if let Some(result) = self.proxy_tool_call("get_co_changes", &params.0).await {
@@ -1851,7 +1913,7 @@ impl TokenizorServer {
 
     /// Compare symbols between two git refs — shows added, removed, and modified symbols.
     #[tool(
-        description = "Symbol-level diff between two git refs for code review. Shows which functions, structs, and other symbols were added, removed, or modified. Defaults to comparing main...HEAD."
+        description = "Symbol-level diff between two git refs (default: main...HEAD). Shows +added, -removed, ~modified symbols per changed file. Use for code review to see what functions/structs changed. Unlike what_changed (file-level list), this shows which symbols within each file were affected."
     )]
     pub(crate) async fn diff_symbols(&self, params: Parameters<DiffSymbolsInput>) -> String {
         if let Some(result) = self.proxy_tool_call("diff_symbols", &params.0).await {
