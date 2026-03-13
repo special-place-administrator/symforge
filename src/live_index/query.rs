@@ -1721,7 +1721,7 @@ impl LiveIndex {
         let enclosing = enclosing_symbol.map(|s| EnclosingSymbolView {
             name: s.name.clone(),
             kind_label: s.kind.to_string(),
-            line_range: s.line_range,
+            line_range: (s.line_range.0 + 1, s.line_range.1 + 1),
         });
 
         // 3. Find siblings (same depth as enclosing, or depth 0).
@@ -1733,7 +1733,7 @@ impl LiveIndex {
             .map(|s| SiblingSymbolView {
                 name: s.name.clone(),
                 kind_label: s.kind.to_string(),
-                line_range: s.line_range,
+                line_range: (s.line_range.0 + 1, s.line_range.1 + 1),
             })
             .collect();
 

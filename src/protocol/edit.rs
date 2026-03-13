@@ -290,6 +290,9 @@ pub struct InsertSymbolInput {
     pub symbol_line: Option<u32>,
     /// Code to insert. Will be indented to match the target symbol's indentation.
     pub content: String,
+    /// Where to insert relative to the target symbol: `"before"` or `"after"` (default `"after"`).
+    #[serde(default)]
+    pub position: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]

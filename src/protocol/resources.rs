@@ -8,8 +8,8 @@ use rmcp::model::{
 
 use super::TokenizorServer;
 use crate::protocol::tools::{
-    GetFileContentInput, GetFileContextInput, GetSymbolContextInput, GetSymbolInput,
-    WhatChangedInput,
+    GetFileContentInput, GetFileContextInput, GetRepoMapInput, GetSymbolContextInput,
+    GetSymbolInput, WhatChangedInput,
 };
 
 pub(crate) const REPO_HEALTH_URI: &str = "tokenizor://repo/health";
@@ -133,13 +133,23 @@ impl TokenizorServer {
     async fn render_resource_text(&self, request: ResourceRequest) -> Result<String, String> {
         let text = match request {
             ResourceRequest::RepoHealth => self.health().await,
-            ResourceRequest::RepoOutline => self.get_repo_outline().await,
-            ResourceRequest::RepoMap => self.get_repo_map().await,
+            ResourceRequest::RepoOutline => self.get_repo_map(Parameters(GetRepoMapInput {
+                detail: Some("full".to_string()),
+                path: None,
+                depth: None,
+            })).await,
+            ResourceRequest::RepoMap => self.get_repo_map(Parameters(GetRepoMapInput {
+                detail: None,
+                path: None,
+                depth: None,
+            })).await,
             ResourceRequest::RepoChangesUncommitted => {
                 self.what_changed(Parameters(WhatChangedInput {
                     since: None,
                     git_ref: None,
                     uncommitted: None,
+                    path_prefix: None,
+                    language: None,
                 }))
                 .await
             }
@@ -178,7 +188,7 @@ impl TokenizorServer {
                 .await
             }
             ResourceRequest::SymbolDetail { path, name, kind } => {
-                self.get_symbol(Parameters(GetSymbolInput { path, name, kind }))
+                self.get_symbol(Parameters(GetSymbolInput { path, name, kind, targets: None }))
                     .await
             }
             ResourceRequest::SymbolContext { name, file } => {
@@ -189,6 +199,7 @@ impl TokenizorServer {
                     symbol_kind: None,
                     symbol_line: None,
                     verbosity: None,
+                    bundle: None,
                 }))
                 .await
             }

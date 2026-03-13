@@ -216,6 +216,13 @@ impl TokenizorServer {
                         symbols = published.symbol_count,
                         "local fallback index loaded"
                     );
+
+                    // Spawn git temporal computation so co-change queries work
+                    // after daemon degradation (mirrors index_folder behaviour).
+                    crate::live_index::git_temporal::spawn_git_temporal_computation(
+                        Arc::clone(&self.index),
+                        root,
+                    );
                 }
                 Err(error) => {
                     tracing::error!("failed to load local fallback index: {error}");
