@@ -60,6 +60,15 @@ jobs:
           echo "Auto-merging release PR #$PR"
           gh pr merge "$PR" --merge --delete-branch
 
+      - name: Re-trigger workflow after auto-merge
+        if: ${{ steps.release.outputs.prs_created == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          sleep 10
+          echo "Re-triggering release workflow to detect merged release"
+          gh workflow run release.yml
+
       - id: context
         shell: bash
         env:
