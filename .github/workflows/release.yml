@@ -46,7 +46,8 @@ jobs:
           config-file: .github/release-please-config.json
           manifest-file: .github/.release-please-manifest.json
 
-      - name: Auto-merge release PR
+      - name: Auto-merge and release
+        id: auto_release
         if: ${{ steps.release.outputs.prs_created == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
@@ -58,17 +59,38 @@ jobs:
             echo "No pending release PR found — skipping auto-merge"
             exit 0
           fi
-          echo "Auto-merging release PR #$PR"
+
+          # Extract version from PR title (format: "chore(main): release X.Y.Z")
+          VERSION=$(gh pr view "$PR" --json title --jq '.title' | grep -oP '\d+\.\d+\.\d+')
+          if [[ -z "$VERSION" ]]; then
+            echo "::error::Could not extract version from release PR #$PR"
+            exit 1
+          fi
+          TAG="v$VERSION"
+          echo "Merging release PR #$PR for $TAG"
+
+          # Merge the PR
           gh pr merge "$PR" --merge --delete-branch
 
-      - name: Re-trigger workflow after auto-merge
-        if: ${{ steps.release.outputs.prs_created == 'true' }}
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
-        run: |
+          # Wait for merge to propagate
           sleep 10
-          echo "Re-triggering release workflow to detect merged release"
-          gh workflow run release.yml
+
+          # Fetch the merge commit
+          git fetch origin main
+          MERGE_SHA=$(git rev-parse origin/main)
+
+          # Create the GitHub release (which also creates the tag)
+          # Extract release notes from the PR body
+          BODY=$(gh pr view "$PR" --json body --jq '.body')
+          echo "Creating release $TAG at $MERGE_SHA"
+          gh release create "$TAG" \
+            --target "$MERGE_SHA" \
+            --title "$TAG" \
+            --notes "$BODY"
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "merge_sha=$MERGE_SHA" >> "$GITHUB_OUTPUT"
 
       - id: context
         shell: bash
@@ -77,6 +99,9 @@ jobs:
           RELEASE_CREATED: ${{ steps.release.outputs.release_created }}
           RELEASE_TAG: ${{ steps.release.outputs.tag_name }}
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          AUTO_TAG: ${{ steps.auto_release.outputs.tag }}
+          AUTO_VERSION: ${{ steps.auto_release.outputs.version }}
+          AUTO_SHA: ${{ steps.auto_release.outputs.merge_sha }}
         run: |
           git fetch --tags --force
 
@@ -90,6 +115,10 @@ jobs:
               exit 1
             fi
             TAG_NAME="$MANUAL_TAG"
+          elif [[ -n "$AUTO_TAG" ]]; then
+            # Auto-merged and released in this run
+            TAG_NAME="$AUTO_TAG"
+            VERSION="$AUTO_VERSION"
           elif [[ "$RELEASE_CREATED" == "true" ]]; then
             if [[ -z "$RELEASE_VERSION" ]]; then
               echo "::error::release-please did not return a version for the created release."
