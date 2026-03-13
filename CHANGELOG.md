@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.11.1](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.11.0...v0.11.1) (2026-03-13)
+
+
+### Bug Fixes
+
+* prevent analyze_file_impact from destroying index, fix close_ses… ([5af91cf](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/5af91cf906781b8c902b7ac96637a066a572d915))
+* prevent analyze_file_impact from destroying index, fix close_session deadlock ([9e29787](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/9e29787709f064538ff379c234172c11e43d69cd))
+
 ## [0.11.0](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.10.0...v0.11.0) (2026-03-13)
 
 
