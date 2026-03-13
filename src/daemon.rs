@@ -183,15 +183,16 @@ impl DaemonState {
         let canonical_root = canonical_project_root(Path::new(&request.project_root))?;
         let project_id = project_key(&canonical_root);
 
-        if !self
-            .projects
-            .read()
-            .expect("lock poisoned")
-            .contains_key(&project_id)
         {
-            let project = ProjectInstance::load(&canonical_root)?;
+            // Hold the write lock for the entire check-and-insert to prevent
+            // TOCTOU: two concurrent callers for the same project_id must not
+            // both call ProjectInstance::load (which spawns watcher tasks and
+            // starts git-temporal analysis), leaving an orphaned task behind.
             let mut projects = self.projects.write().expect("lock poisoned");
-            projects.entry(project_id.clone()).or_insert(project);
+            if !projects.contains_key(&project_id) {
+                let project = ProjectInstance::load(&canonical_root)?;
+                projects.insert(project_id.clone(), project);
+            }
         }
 
         let session_id = format!(
@@ -361,46 +362,58 @@ impl DaemonState {
                 .ok_or_else(|| anyhow::anyhow!("unknown session '{session_id}'"))?
         };
 
-        let mut projects = self.projects.write().expect("lock poisoned");
+        let needs_reassign = current_project_id != target_project_id;
 
-        if current_project_id != target_project_id {
-            if !projects.contains_key(&target_project_id) {
-                let project = ProjectInstance::load(&target_root)?;
-                projects.insert(target_project_id.clone(), project);
+        // All project-map mutations happen inside this block so the write guard
+        // is fully released before we touch sessions.write() below — preventing
+        // the lock-order inversion with close_session (sessions → projects).
+        let (file_count, symbol_count) = {
+            let mut projects = self.projects.write().expect("lock poisoned");
+
+            if needs_reassign {
+                if !projects.contains_key(&target_project_id) {
+                    let project = ProjectInstance::load(&target_root)?;
+                    projects.insert(target_project_id.clone(), project);
+                }
+
+                if let Some(current_project) = projects.get_mut(&current_project_id) {
+                    current_project.session_ids.remove(session_id);
+                }
+
+                if let Some(target_project) = projects.get_mut(&target_project_id) {
+                    target_project.session_ids.insert(session_id.to_string());
+                }
+
+                let should_remove_old = projects
+                    .get(&current_project_id)
+                    .map(|project| project.session_ids.is_empty())
+                    .unwrap_or(false);
+                if should_remove_old && let Some(removed) = projects.remove(&current_project_id) {
+                    let mut watcher_task = removed.watcher_task;
+                    abort_watcher_task(&mut watcher_task);
+                }
             }
 
-            if let Some(current_project) = projects.get_mut(&current_project_id) {
-                current_project.session_ids.remove(session_id);
-            }
+            let target_project = projects
+                .get_mut(&target_project_id)
+                .ok_or_else(|| anyhow::anyhow!("missing target project after reload"))?;
+            target_project.reload(&target_root)?
+        }; // projects write lock released here
 
-            if let Some(target_project) = projects.get_mut(&target_project_id) {
-                target_project.session_ids.insert(session_id.to_string());
-            }
-
+        // Update the session's project association *after* the projects lock is
+        // released to maintain lock order (projects before sessions everywhere).
+        if needs_reassign {
             if let Some(session) = self
                 .sessions
                 .write()
                 .expect("lock poisoned")
                 .get_mut(session_id)
             {
-                session.project_id = target_project_id.clone();
+                session.project_id = target_project_id;
                 session.last_seen_at = SystemTime::now();
-            }
-
-            let should_remove_old = projects
-                .get(&current_project_id)
-                .map(|project| project.session_ids.is_empty())
-                .unwrap_or(false);
-            if should_remove_old && let Some(removed) = projects.remove(&current_project_id) {
-                let mut watcher_task = removed.watcher_task;
-                abort_watcher_task(&mut watcher_task);
             }
         }
 
-        let target_project = projects
-            .get_mut(&target_project_id)
-            .ok_or_else(|| anyhow::anyhow!("missing target project after reload"))?;
-        let (file_count, symbol_count) = target_project.reload(&target_root)?;
         Ok(format!(
             "Indexed {} files, {} symbols.",
             file_count, symbol_count

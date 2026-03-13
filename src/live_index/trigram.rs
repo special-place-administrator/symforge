@@ -16,10 +16,10 @@ use crate::live_index::store::IndexedFile;
 /// `path_to_id`: relative_path -> file_id for update/remove.
 /// `next_id`: auto-increment counter for fresh IDs.
 pub struct TrigramIndex {
-    map: HashMap<[u8; 3], Vec<u32>>,
-    id_to_path: HashMap<u32, String>,
-    path_to_id: HashMap<String, u32>,
-    next_id: u32,
+    map: HashMap<[u8; 3], Vec<u64>>,
+    id_to_path: HashMap<u64, String>,
+    path_to_id: HashMap<String, u64>,
+    next_id: u64,
 }
 
 impl TrigramIndex {
@@ -68,7 +68,7 @@ impl TrigramIndex {
         let trigrams = extract_trigrams(query);
 
         // Collect posting lists for each trigram in the query
-        let mut posting_lists: Vec<&Vec<u32>> =
+        let mut posting_lists: Vec<&Vec<u64>> =
             trigrams.iter().filter_map(|t| self.map.get(t)).collect();
 
         if posting_lists.is_empty() {
@@ -80,7 +80,7 @@ impl TrigramIndex {
         posting_lists.sort_by_key(|l| l.len());
 
         // AND-intersection: start with shortest list
-        let mut candidates: Vec<u32> = posting_lists[0].clone();
+        let mut candidates: Vec<u64> = posting_lists[0].clone();
         for list in &posting_lists[1..] {
             candidates.retain(|id| list.binary_search(id).is_ok());
             if candidates.is_empty() {
@@ -187,7 +187,7 @@ impl TrigramIndex {
     }
 
     /// Get existing file_id for path or allocate a new one.
-    fn get_or_alloc_id(&mut self, path: &str) -> u32 {
+    fn get_or_alloc_id(&mut self, path: &str) -> u64 {
         if let Some(&id) = self.path_to_id.get(path) {
             return id;
         }

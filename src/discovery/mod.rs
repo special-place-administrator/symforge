@@ -30,8 +30,9 @@ pub fn discover_files(root: &Path) -> Result<Vec<DiscoveredFile>> {
             let entry = entry_result.ok()?;
             let path = entry.path().to_path_buf();
 
-            // Only process regular files
-            if !path.is_file() {
+            // Use the already-known file_type from the walker instead of
+            // path.is_file() which would issue a redundant stat() syscall.
+            if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
                 return None;
             }
 
