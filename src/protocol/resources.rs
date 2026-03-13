@@ -211,6 +211,7 @@ impl TokenizorServer {
                     symbol_line: None,
                     verbosity: None,
                     bundle: None,
+                    sections: None,
                 }))
                 .await
             }

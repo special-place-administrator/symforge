@@ -471,6 +471,12 @@ pub struct GetSymbolContextInput {
     /// When true, switch to bundle mode: returns symbol body + full definitions of all referenced custom types, resolved recursively. Best for edit preparation. Requires path.
     #[serde(default, deserialize_with = "lenient_bool")]
     pub bundle: Option<bool>,
+    /// Optional trace-analysis sections. When provided, switches to trace mode: definition,
+    /// callers, callees, implementations, type dependencies, git activity.
+    /// Valid values: "dependents", "siblings", "implementations", "git".
+    /// Omit for default symbol-context mode. Pass empty array for all trace sections.
+    #[serde(default)]
+    pub sections: Option<Vec<String>>,
 }
 
 /// Input for `analyze_file_impact`.
@@ -1276,13 +1282,14 @@ impl TokenizorServer {
         }
     }
 
-    /// Symbol usage analysis with two modes. Default: definition + callers grouped by file + callees + type usages.
-    /// bundle=true: symbol body + full definitions of all referenced custom types, resolved recursively — best
-    /// for edit preparation. Set verbosity='signature' for ~80% smaller output.
+    /// Symbol usage analysis with three modes. (1) Default: definition + callers grouped by file + callees + type usages.
+    /// (2) bundle=true: symbol body + full definitions of all referenced custom types, resolved recursively — best
+    /// for edit preparation (requires path). (3) sections=[...]: comprehensive trace analysis — definition, callers,
+    /// callees, implementations, type dependencies, git activity. Valid sections: 'dependents', 'siblings',
+    /// 'implementations', 'git' (empty array = all). Set verbosity='signature' for ~80% smaller output.
     /// NOT for just the symbol body (use get_symbol).
-    /// NOT for full refactoring context with dependents and git (use trace_symbol).
     #[tool(
-        description = "Symbol usage analysis with two modes. Default: definition + callers grouped by file + callees + type usages. bundle=true: symbol body + full definitions of all referenced custom types, resolved recursively — best for edit preparation (requires path). Set verbosity='signature' for ~80% smaller output. NOT for just the symbol body (use get_symbol). NOT for full refactoring context with dependents and git (use trace_symbol)."
+        description = "Symbol usage analysis with three modes. (1) Default: definition + callers grouped by file + callees + type usages. (2) bundle=true: symbol body + full definitions of all referenced custom types, resolved recursively — best for edit preparation (requires path). (3) sections=[...]: comprehensive trace analysis — definition, callers, callees, implementations, type dependencies, git activity. Valid sections: 'dependents', 'siblings', 'implementations', 'git' (empty array = all). Set verbosity='signature' for ~80% smaller output. NOT for just the symbol body (use get_symbol)."
     )]
     pub(crate) async fn get_symbol_context(
         &self,
@@ -1328,6 +1335,31 @@ impl TokenizorServer {
             let result = format::context_bundle_result_view(&view, verbosity);
             let footer = format::compact_savings_footer(result.len(), raw_chars);
             return format!("{result}{footer}");
+        }
+
+        // Trace mode: comprehensive symbol analysis (absorbed from trace_symbol)
+        if params.0.sections.is_some() {
+            let path = match params.0.path.as_deref() {
+                Some(p) => p.to_string(),
+                None => return "Error: sections requires the 'path' parameter.".to_string(),
+            };
+
+            // Convert sections: Some(empty vec) = all sections (like trace_symbol's None)
+            let sections_param = params
+                .0
+                .sections
+                .as_ref()
+                .and_then(|s| if s.is_empty() { None } else { Some(s.clone()) });
+
+            let trace_input = TraceSymbolInput {
+                path: path.clone(),
+                name: params.0.name.clone(),
+                kind: params.0.symbol_kind.clone(),
+                symbol_line: params.0.symbol_line,
+                sections: sections_param,
+                verbosity: params.0.verbosity.clone(),
+            };
+            return self.trace_symbol(Parameters(trace_input)).await;
         }
 
         // Default: symbol context mode
@@ -1537,14 +1569,8 @@ impl TokenizorServer {
         format::search_text_result_view(result, params.0.group_by.as_deref())
     }
 
-    /// Most comprehensive symbol analysis. Definition, callers, callees, implementations, type
-    /// dependencies, git activity — all in one call. Set verbosity='signature' for ~80% smaller output.
-    /// Use sections=['dependents','git'] to limit output. Use before refactoring when you need the
-    /// complete picture.
-    /// NOT for quick reads (use get_symbol). NOT for edit prep (use get_symbol_context with bundle=true).
-    #[tool(
-        description = "Most comprehensive symbol analysis. Definition, callers, callees, implementations, type dependencies, git activity — all in one call. Set verbosity='signature' for ~80% smaller output. Use sections=['dependents','git'] to limit output. Use before refactoring when you need the complete picture. NOT for quick reads (use get_symbol). NOT for edit prep (use get_symbol_context with bundle=true)."
-    )]
+    /// Internal: trace_symbol logic, called by get_symbol_context when sections are provided.
+    /// Also called directly by daemon backward-compat alias.
     pub(crate) async fn trace_symbol(&self, params: Parameters<TraceSymbolInput>) -> String {
         if let Some(result) = self.proxy_tool_call("trace_symbol", &params.0).await {
             return result;
@@ -3144,6 +3170,7 @@ mod tests {
                 symbol_line: None,
                 verbosity: None,
                 bundle: None,
+                sections: None,
             }))
             .await;
 
@@ -3196,6 +3223,7 @@ mod tests {
                 symbol_line: Some(1),
                 verbosity: None,
                 bundle: None,
+                sections: None,
             }))
             .await;
 
@@ -3230,6 +3258,7 @@ mod tests {
                 symbol_line: None,
                 verbosity: None,
                 bundle: None,
+                sections: None,
             }))
             .await;
 
@@ -3289,6 +3318,7 @@ mod tests {
                 symbol_line: Some(1),
                 verbosity: None,
                 bundle: None,
+                sections: None,
             }))
             .await;
 
@@ -4960,8 +4990,8 @@ mod tests {
         // Sanity check: we should have a reasonable number of tools.
         // Update this lower bound when removing tools; it prevents accidental regressions.
         assert!(
-            tool_count >= 25,
-            "server should expose at least 25 tools; found {tool_count}"
+            tool_count >= 24,
+            "server should expose at least 24 tools; found {tool_count}"
         );
     }
 
@@ -4987,6 +5017,62 @@ mod tests {
 
         assert!(result.contains("fn process"), "got: {result}");
         assert!(result.contains("Callers (0)"), "got: {result}");
+    }
+
+    #[tokio::test]
+    async fn test_get_symbol_context_trace_mode() {
+        let target = make_file(
+            "src/lib.rs",
+            b"fn process() {}\n",
+            vec![make_symbol("process", SymbolKind::Function, 1, 1)],
+        );
+        let server = make_server(make_live_index_ready(vec![target]));
+
+        let result = server
+            .get_symbol_context(Parameters(super::GetSymbolContextInput {
+                name: "process".to_string(),
+                file: None,
+                path: Some("src/lib.rs".to_string()),
+                symbol_kind: None,
+                symbol_line: None,
+                verbosity: None,
+                bundle: None,
+                sections: Some(vec!["dependents".to_string()]),
+            }))
+            .await;
+
+        assert!(
+            result.contains("fn process"),
+            "trace mode should show definition, got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_symbol_context_trace_mode_requires_path() {
+        let target = make_file(
+            "src/lib.rs",
+            b"fn process() {}\n",
+            vec![make_symbol("process", SymbolKind::Function, 1, 1)],
+        );
+        let server = make_server(make_live_index_ready(vec![target]));
+
+        let result = server
+            .get_symbol_context(Parameters(super::GetSymbolContextInput {
+                name: "process".to_string(),
+                file: None,
+                path: None,
+                symbol_kind: None,
+                symbol_line: None,
+                verbosity: None,
+                bundle: None,
+                sections: Some(vec![]),
+            }))
+            .await;
+
+        assert!(
+            result.contains("Error: sections requires"),
+            "should require path, got: {result}"
+        );
     }
 
     #[tokio::test]
@@ -5097,6 +5183,7 @@ mod tests {
                 symbol_line: None,
                 verbosity: None,
                 bundle: Some(true),
+                sections: None,
             }))
             .await;
         assert_eq!(result, crate::protocol::format::empty_guard_message());
@@ -5114,6 +5201,7 @@ mod tests {
                 symbol_line: None,
                 verbosity: None,
                 bundle: Some(true),
+                sections: None,
             }))
             .await;
         assert!(result.contains("File not found"), "got: {result}");
@@ -5161,6 +5249,7 @@ mod tests {
                 symbol_line: Some(2),
                 verbosity: None,
                 bundle: Some(true),
+                sections: None,
             }))
             .await;
 
@@ -5195,6 +5284,7 @@ mod tests {
                 symbol_line: None,
                 verbosity: None,
                 bundle: Some(true),
+                sections: None,
             }))
             .await;
 

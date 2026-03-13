@@ -193,7 +193,6 @@ const TOKENIZOR_TOOL_NAMES: &[&str] = &[
     "mcp__tokenizor__find_references",
     "mcp__tokenizor__find_dependents",
     "mcp__tokenizor__find_implementations",
-    "mcp__tokenizor__trace_symbol",
     "mcp__tokenizor__inspect_match",
     "mcp__tokenizor__analyze_file_impact",
     "mcp__tokenizor__what_changed",
