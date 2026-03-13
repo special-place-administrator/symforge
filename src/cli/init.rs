@@ -30,6 +30,8 @@ struct InitPaths {
     claude_memory: PathBuf,
     codex_config: PathBuf,
     codex_agents: PathBuf,
+    gemini_settings: PathBuf,
+    gemini_memory: PathBuf,
 }
 
 impl InitPaths {
@@ -40,6 +42,8 @@ impl InitPaths {
             claude_memory: home.join(".claude").join("CLAUDE.md"),
             codex_config: home.join(".codex").join("config.toml"),
             codex_agents: home.join(".codex").join("AGENTS.md"),
+            gemini_settings: home.join(".gemini").join("settings.json"),
+            gemini_memory: home.join(".gemini").join("GEMINI.md"),
         }
     }
 }
@@ -100,6 +104,20 @@ pub fn run_init_with_context(
         eprintln!("Codex guidance written to {}", paths.codex_agents.display());
         eprintln!(
             "note: Codex gets MCP tools only. No documented Codex hook/session-start enrichment interface was found, so transparent enrichment remains Claude-only."
+        );
+    }
+
+    if matches!(client, InitClient::Gemini | InitClient::All) {
+        register_gemini_mcp_server(&paths.gemini_settings, &binary_path_str)?;
+        eprintln!(
+            "Gemini MCP server registered in {}",
+            paths.gemini_settings.display()
+        );
+
+        upsert_guidance_markdown(&paths.gemini_memory, &gemini_guidance_block())?;
+        eprintln!(
+            "Gemini guidance written to {}",
+            paths.gemini_memory.display()
         );
     }
 
@@ -423,6 +441,48 @@ fn merge_codex_project_doc_fallbacks(config: &mut DocumentMut) {
     }
 }
 
+/// Register tokenizor as an MCP server in `~/.gemini/settings.json`.
+///
+/// Gemini CLI stores MCP servers under `mcpServers` in a JSON settings file.
+/// We update only the `tokenizor` entry and preserve the rest of the file.
+pub fn register_gemini_mcp_server(
+    gemini_settings_path: &std::path::Path,
+    binary_path: &str,
+) -> anyhow::Result<()> {
+    if let Some(parent) = gemini_settings_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+
+    let mut config: Value = if gemini_settings_path.exists() {
+        let raw = std::fs::read_to_string(gemini_settings_path)
+            .with_context(|| format!("reading {}", gemini_settings_path.display()))?;
+        serde_json::from_str(&raw)
+            .with_context(|| format!("parsing {}", gemini_settings_path.display()))?
+    } else {
+        json!({})
+    };
+
+    let command_path = native_command_path(binary_path);
+
+    if !config["mcpServers"].is_object() {
+        config["mcpServers"] = json!({});
+    }
+    config["mcpServers"]["tokenizor"] = json!({
+        "command": command_path,
+        "args": [],
+        "timeout": 120
+    });
+
+    // Auto-allow all tools
+    merge_allowed_tools(&mut config);
+
+    let pretty = serde_json::to_string_pretty(&config)?;
+    std::fs::write(gemini_settings_path, pretty)
+        .with_context(|| format!("writing {}", gemini_settings_path.display()))?;
+    Ok(())
+}
+
 fn upsert_guidance_markdown(path: &std::path::Path, guidance_block: &str) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -473,6 +533,12 @@ fn claude_guidance_block() -> String {
 fn codex_guidance_block() -> String {
     format!(
         "{TOKENIZOR_GUIDANCE_START}\n## Tokenizor MCP\n- Prefer the Tokenizor MCP for codebase navigation when the `tokenizor` server is connected.\n- Start with `get_repo_map`, `get_repo_outline`, `get_file_context`, or `get_symbol_context` before broad raw file scans.\n- Use `analyze_file_impact` after edits and `what_changed` when resuming work.\n- Codex is configured to read `CLAUDE.md` project guidance too, so treat project Tokenizor instructions there as authoritative when `AGENTS.md` is absent.\n{TOKENIZOR_GUIDANCE_END}"
+    )
+}
+
+fn gemini_guidance_block() -> String {
+    format!(
+        "{TOKENIZOR_GUIDANCE_START}\n## Tokenizor MCP\n- Prefer the Tokenizor MCP for codebase navigation when the `tokenizor` server is connected.\n- Start with `get_repo_map`, `get_repo_outline`, `get_file_context`, or `get_symbol_context` before broad raw file scans.\n- Use `analyze_file_impact` after edits and `what_changed` when resuming work.\n{TOKENIZOR_GUIDANCE_END}"
     )
 }
 
@@ -801,5 +867,46 @@ mod tests {
         register_codex_mcp_server(&config_path, "/usr/bin/tokenizor-mcp").unwrap();
         let content = std::fs::read_to_string(&config_path).unwrap();
         assert!(content.contains("search_symbols"), "should contain tool names: {content}");
+    }
+
+    #[test]
+    fn test_gemini_registration_creates_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings_path = dir.path().join("settings.json");
+        register_gemini_mcp_server(&settings_path, "/usr/bin/tokenizor-mcp").unwrap();
+        let content = std::fs::read_to_string(&settings_path).unwrap();
+        let config: Value = serde_json::from_str(&content).unwrap();
+        assert!(config["mcpServers"]["tokenizor"]["command"].is_string());
+    }
+
+    #[test]
+    fn test_gemini_registration_includes_allowed_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings_path = dir.path().join("settings.json");
+        register_gemini_mcp_server(&settings_path, "/usr/bin/tokenizor-mcp").unwrap();
+        let content = std::fs::read_to_string(&settings_path).unwrap();
+        let config: Value = serde_json::from_str(&content).unwrap();
+        let allowed = config["allowedTools"].as_array().expect("allowedTools must be array");
+        assert!(
+            allowed.iter().any(|v| v.as_str() == Some("mcp__tokenizor__search_symbols")),
+            "should include search_symbols in allowedTools"
+        );
+    }
+
+    #[test]
+    fn test_gemini_registration_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings_path = dir.path().join("settings.json");
+        register_gemini_mcp_server(&settings_path, "/usr/bin/tokenizor-mcp").unwrap();
+        register_gemini_mcp_server(&settings_path, "/usr/bin/tokenizor-mcp").unwrap();
+        let content = std::fs::read_to_string(&settings_path).unwrap();
+        let config: Value = serde_json::from_str(&content).unwrap();
+        let allowed = config["allowedTools"].as_array().expect("allowedTools must be array");
+        // Count occurrences of a specific tool to verify no duplicates
+        let count = allowed
+            .iter()
+            .filter(|v| v.as_str() == Some("mcp__tokenizor__search_symbols"))
+            .count();
+        assert_eq!(count, 1, "allowedTools should not have duplicate entries after idempotent run");
     }
 }
