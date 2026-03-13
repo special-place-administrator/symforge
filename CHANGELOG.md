@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.16.0](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.15.0...v0.16.0) (2026-03-13)
+
+
+### Features
+
+* add symbol-addressed edit tools (Tier 1) ([3dec094](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/3dec094cb89417e7b7208caea808b151f109dbf1))
+* rewrite tool descriptions with NOT-for redirects, fix verbosity polish ([466f207](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/466f207b1959df08f30d04d7e6eb3338938340d0))
+* symbol-addressed edit tools + description redirects + verbosity fixes ([ba9e587](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/ba9e587d2c38e08b9e0881ebfc02bbf1c18db283))
+
 ## [0.15.0](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.14.2...v0.15.0) (2026-03-13)
 
 
