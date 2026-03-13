@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.2](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.14.1...v0.14.2) (2026-03-13)
+
+
+### Bug Fixes
+
+* simplify release pipeline — let PAT-triggered run handle release ([508fbc2](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/508fbc247d7b54f79cce14526b8e755fca7acdba))
+
 ## [0.14.1](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.14.0...v0.14.1) (2026-03-13)
 
 
