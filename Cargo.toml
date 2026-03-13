@@ -43,6 +43,7 @@ notify-debouncer-full = "0.7"
 regex = "1.11"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 globset = "0.4"
+git2 = { version = "0.20", features = ["vendored-libgit2"] }
 
 [features]
 # v1 feature gate: keeps retrieval_conformance.rs compiling without v1 domain types.
