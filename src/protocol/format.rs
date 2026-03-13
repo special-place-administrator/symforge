@@ -32,9 +32,9 @@ impl Default for OutputLimits {
 use crate::live_index::{
     ContextBundleFoundView, ContextBundleSectionView, ContextBundleView, FileContentView,
     FileOutlineView, FindDependentsView, FindImplementationsView, FindReferencesView, HealthStats,
-    IndexedFile, LiveIndex, PublishedIndexState, RepoOutlineFileView, RepoOutlineView,
-    ResolvePathView, SearchFilesTier, SearchFilesView, SymbolDetailView, TypeDependencyView,
-    WhatChangedTimestampView, search, InspectMatchView,
+    IndexedFile, InspectMatchView, LiveIndex, PublishedIndexState, RepoOutlineFileView,
+    RepoOutlineView, ResolvePathView, SearchFilesTier, SearchFilesView, SymbolDetailView,
+    TypeDependencyView, WhatChangedTimestampView, search,
 };
 
 /// Format the file outline for a given path.
@@ -805,7 +805,6 @@ pub fn search_files(index: &LiveIndex, query: &str, limit: usize) -> String {
     search_files_result_view(&view)
 }
 
-
 pub fn search_files_result_view(view: &SearchFilesView) -> String {
     match view {
         SearchFilesView::EmptyQuery => "Path search requires a non-empty query.".to_string(),
@@ -1549,7 +1548,12 @@ pub fn context_bundle_result_view(view: &ContextBundleView) -> String {
 fn render_context_bundle_found(view: &ContextBundleFoundView) -> String {
     let mut output = format!(
         "{}\n[{}, {}:{}-{}, {} bytes]\n",
-        view.body, view.kind_label, view.file_path, view.line_range.0, view.line_range.1, view.byte_count
+        view.body,
+        view.kind_label,
+        view.file_path,
+        view.line_range.0,
+        view.line_range.1,
+        view.byte_count
     );
     output.push_str(&format_context_bundle_section("Callers", &view.callers));
     output.push_str(&format_context_bundle_section("Callees", &view.callees));
@@ -1660,7 +1664,7 @@ pub fn inspect_match_result_view(view: &InspectMatchView) -> String {
         InspectMatchView::FileNotFound { path } => not_found_file(path),
         InspectMatchView::Found(found) => {
             let mut output = String::new();
-            
+
             // 1. Excerpt
             output.push_str(&found.excerpt);
             output.push('\n');

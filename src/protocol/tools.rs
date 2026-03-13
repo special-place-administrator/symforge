@@ -1049,7 +1049,9 @@ impl TokenizorServer {
                 let temporal = self.index.git_temporal();
                 if temporal.state == crate::live_index::git_temporal::GitTemporalState::Ready {
                     if let Some(history) = temporal.files.get(&params.0.path) {
-                        use crate::live_index::git_temporal::{churn_bar, churn_label, relative_time};
+                        use crate::live_index::git_temporal::{
+                            churn_bar, churn_label, relative_time,
+                        };
 
                         found.git_activity = Some(crate::live_index::GitActivityView {
                             churn_score: history.churn_score,
@@ -1081,7 +1083,9 @@ impl TokenizorServer {
     }
 
     /// Inspect a specific match line with context, enclosing symbol, and siblings.
-    #[tool(description = "Inspect a specific match line with context, enclosing symbol, and siblings.")]
+    #[tool(
+        description = "Inspect a specific match line with context, enclosing symbol, and siblings."
+    )]
     pub(crate) async fn inspect_match(&self, params: Parameters<InspectMatchInput>) -> String {
         if let Some(result) = self.proxy_tool_call("inspect_match", &params.0).await {
             return result;
@@ -1090,11 +1094,7 @@ impl TokenizorServer {
         let view = {
             let guard = self.index.read().expect("lock poisoned");
             loading_guard!(guard);
-            guard.capture_inspect_match_view(
-                &params.0.path,
-                params.0.line,
-                params.0.context,
-            )
+            guard.capture_inspect_match_view(&params.0.path, params.0.line, params.0.context)
         };
 
         format::inspect_match_result_view(&view)
@@ -1162,7 +1162,9 @@ impl TokenizorServer {
 
         // Append git temporal summary.
         result.push('\n');
-        result.push_str(&format::git_temporal_health_line(&self.index.git_temporal()));
+        result.push_str(&format::git_temporal_health_line(
+            &self.index.git_temporal(),
+        ));
 
         result
     }

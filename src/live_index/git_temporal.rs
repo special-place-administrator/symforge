@@ -43,10 +43,8 @@ pub fn spawn_git_temporal_computation(index: SharedIndex, repo_root: PathBuf) {
         });
 
         // Run the computation on a blocking thread (it calls `git` via Command).
-        let result = tokio::task::spawn_blocking(move || {
-            GitTemporalIndex::compute(&repo_root)
-        })
-        .await;
+        let result =
+            tokio::task::spawn_blocking(move || GitTemporalIndex::compute(&repo_root)).await;
 
         match result {
             Ok(temporal) => {
@@ -355,18 +353,13 @@ impl GitTemporalIndex {
         // ── Phase 2: Rank-normalize churn scores ────────────────────────
 
         let mut churn_entries: Vec<(String, f64)> = file_raw_churn.into_iter().collect();
-        churn_entries
-            .sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        churn_entries.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
 
         let file_count = churn_entries.len();
         let mut normalized_churn: HashMap<String, f32> = HashMap::with_capacity(file_count);
         for (rank, (path, _raw)) in churn_entries.iter().enumerate() {
             let score = if file_count <= 1 {
-                if churn_entries[0].1 > 0.0 {
-                    1.0
-                } else {
-                    0.0
-                }
+                if churn_entries[0].1 > 0.0 { 1.0 } else { 0.0 }
             } else {
                 rank as f32 / (file_count - 1) as f32
             };
@@ -512,10 +505,7 @@ impl GitTemporalIndex {
             .iter()
             .map(|(path, h)| (path.clone(), h.churn_score))
             .collect();
-        hotspots.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        hotspots.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         hotspots.truncate(HOTSPOT_CAP);
 
         let mut most_coupled: Vec<(String, String, f32)> = pair_counts
@@ -543,10 +533,7 @@ impl GitTemporalIndex {
                 Some((a.clone(), b.clone(), jaccard))
             })
             .collect();
-        most_coupled.sort_by(|a, b| {
-            b.2.partial_cmp(&a.2)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        most_coupled.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
         most_coupled.truncate(COUPLED_PAIRS_CAP);
 
         Self {
@@ -1124,7 +1111,10 @@ mod tests {
     #[test]
     fn test_unavailable_state() {
         let idx = GitTemporalIndex::unavailable("no git".to_string());
-        assert_eq!(idx.state, GitTemporalState::Unavailable("no git".to_string()));
+        assert_eq!(
+            idx.state,
+            GitTemporalState::Unavailable("no git".to_string())
+        );
     }
 
     // ── Path normalization ──────────────────────────────────────────────
@@ -1202,8 +1192,7 @@ impl GitTemporalIndex {
         }
 
         let mut churn_entries: Vec<(String, f64)> = file_raw_churn.into_iter().collect();
-        churn_entries
-            .sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        churn_entries.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         let file_count = churn_entries.len();
         let mut normalized_churn: HashMap<String, f32> = HashMap::with_capacity(file_count);
         for (rank, (path, _)) in churn_entries.iter().enumerate() {
@@ -1236,21 +1225,45 @@ impl GitTemporalIndex {
             if *shared < MIN_SHARED_COMMITS {
                 continue;
             }
-            let count_a = file_commit_indices.get(file_a).map(|v| v.len() as u32).unwrap_or(0);
-            let count_b = file_commit_indices.get(file_b).map(|v| v.len() as u32).unwrap_or(0);
+            let count_a = file_commit_indices
+                .get(file_a)
+                .map(|v| v.len() as u32)
+                .unwrap_or(0);
+            let count_b = file_commit_indices
+                .get(file_b)
+                .map(|v| v.len() as u32)
+                .unwrap_or(0);
             let union = count_a + count_b - shared;
-            if union == 0 { continue; }
+            if union == 0 {
+                continue;
+            }
             let jaccard = *shared as f32 / union as f32;
-            if jaccard < MIN_JACCARD { continue; }
-            file_co_changes.entry(file_a.clone()).or_default().push(CoChangeEntry {
-                path: file_b.clone(), coupling_score: jaccard, shared_commits: *shared,
-            });
-            file_co_changes.entry(file_b.clone()).or_default().push(CoChangeEntry {
-                path: file_a.clone(), coupling_score: jaccard, shared_commits: *shared,
-            });
+            if jaccard < MIN_JACCARD {
+                continue;
+            }
+            file_co_changes
+                .entry(file_a.clone())
+                .or_default()
+                .push(CoChangeEntry {
+                    path: file_b.clone(),
+                    coupling_score: jaccard,
+                    shared_commits: *shared,
+                });
+            file_co_changes
+                .entry(file_b.clone())
+                .or_default()
+                .push(CoChangeEntry {
+                    path: file_a.clone(),
+                    coupling_score: jaccard,
+                    shared_commits: *shared,
+                });
         }
         for entries in file_co_changes.values_mut() {
-            entries.sort_by(|a, b| b.coupling_score.partial_cmp(&a.coupling_score).unwrap_or(std::cmp::Ordering::Equal));
+            entries.sort_by(|a, b| {
+                b.coupling_score
+                    .partial_cmp(&a.coupling_score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
             entries.truncate(CO_CHANGE_CAP_PER_FILE);
         }
 
@@ -1267,40 +1280,72 @@ impl GitTemporalIndex {
                 message_head: truncate_message(&last.message, 72),
                 days_ago: last.days_ago,
             };
-            let contributors = file_authors.get(path).map(|authors| {
-                let total = authors.values().sum::<u32>() as f32;
-                let mut shares: Vec<ContributorShare> = authors.iter().map(|(author, count)| {
-                    ContributorShare {
-                        author: author.clone(),
-                        commit_count: *count,
-                        percentage: (*count as f32 / total) * 100.0,
-                    }
-                }).collect();
-                shares.sort_by(|a, b| b.percentage.partial_cmp(&a.percentage).unwrap_or(std::cmp::Ordering::Equal));
-                shares.truncate(CONTRIBUTOR_CAP);
-                shares
-            }).unwrap_or_default();
+            let contributors = file_authors
+                .get(path)
+                .map(|authors| {
+                    let total = authors.values().sum::<u32>() as f32;
+                    let mut shares: Vec<ContributorShare> = authors
+                        .iter()
+                        .map(|(author, count)| ContributorShare {
+                            author: author.clone(),
+                            commit_count: *count,
+                            percentage: (*count as f32 / total) * 100.0,
+                        })
+                        .collect();
+                    shares.sort_by(|a, b| {
+                        b.percentage
+                            .partial_cmp(&a.percentage)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                    shares.truncate(CONTRIBUTOR_CAP);
+                    shares
+                })
+                .unwrap_or_default();
             let co_changes = file_co_changes.remove(path).unwrap_or_default();
-            files.insert(path.clone(), GitFileHistory {
-                commit_count, churn_score, last_commit, contributors, co_changes,
-            });
+            files.insert(
+                path.clone(),
+                GitFileHistory {
+                    commit_count,
+                    churn_score,
+                    last_commit,
+                    contributors,
+                    co_changes,
+                },
+            );
         }
 
-        let mut hotspots: Vec<(String, f32)> = files.iter()
-            .map(|(p, h)| (p.clone(), h.churn_score)).collect();
+        let mut hotspots: Vec<(String, f32)> = files
+            .iter()
+            .map(|(p, h)| (p.clone(), h.churn_score))
+            .collect();
         hotspots.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         hotspots.truncate(HOTSPOT_CAP);
 
-        let mut most_coupled: Vec<(String, String, f32)> = pair_counts.iter().filter_map(|((a, b), shared)| {
-            if *shared < MIN_SHARED_COMMITS { return None; }
-            let ca = file_commit_indices.get(a).map(|v| v.len() as u32).unwrap_or(0);
-            let cb = file_commit_indices.get(b).map(|v| v.len() as u32).unwrap_or(0);
-            let union = ca + cb - shared;
-            if union == 0 { return None; }
-            let j = *shared as f32 / union as f32;
-            if j < MIN_JACCARD { return None; }
-            Some((a.clone(), b.clone(), j))
-        }).collect();
+        let mut most_coupled: Vec<(String, String, f32)> = pair_counts
+            .iter()
+            .filter_map(|((a, b), shared)| {
+                if *shared < MIN_SHARED_COMMITS {
+                    return None;
+                }
+                let ca = file_commit_indices
+                    .get(a)
+                    .map(|v| v.len() as u32)
+                    .unwrap_or(0);
+                let cb = file_commit_indices
+                    .get(b)
+                    .map(|v| v.len() as u32)
+                    .unwrap_or(0);
+                let union = ca + cb - shared;
+                if union == 0 {
+                    return None;
+                }
+                let j = *shared as f32 / union as f32;
+                if j < MIN_JACCARD {
+                    return None;
+                }
+                Some((a.clone(), b.clone(), j))
+            })
+            .collect();
         most_coupled.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
         most_coupled.truncate(COUPLED_PAIRS_CAP);
 

@@ -527,7 +527,10 @@ impl DaemonSessionClient {
             .project_root
             .as_deref()
             .context("cannot reconnect: no project root stored")?;
-        tracing::info!("attempting daemon reconnection for project {}", self.project_name);
+        tracing::info!(
+            "attempting daemon reconnection for project {}",
+            self.project_name
+        );
         let new_client =
             connect_or_spawn_session(project_root, "mcp-stdio", Some(std::process::id())).await?;
         Ok(new_client.with_project_root(project_root.to_path_buf()))

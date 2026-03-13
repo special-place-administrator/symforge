@@ -268,7 +268,10 @@ pub struct WatcherHandle {
 ///
 /// `debounce_ms` controls the debounce window (base 200ms, extended to 500ms during bursts).
 /// Uses `std::sync::mpsc` (not tokio) because notify's callback runs on its own OS thread.
-pub(crate) fn start_watcher(repo_root: &Path, debounce_ms: u64) -> Result<WatcherHandle, notify::Error> {
+pub(crate) fn start_watcher(
+    repo_root: &Path,
+    debounce_ms: u64,
+) -> Result<WatcherHandle, notify::Error> {
     let (tx, rx) = std::sync::mpsc::channel::<DebounceEventResult>();
 
     let mut debouncer = new_debouncer(
