@@ -2281,6 +2281,9 @@ impl TokenizorServer {
         }
         let old_sig = edit::extract_signature(&file.content, sym.byte_range);
         let new_sig = params.0.new_body.lines().next().unwrap_or("").to_string();
+        // Detect parent impl type for type-aware reference filtering.
+        // Methods inside `impl Foo` only warn about refs in files that also mention `Foo`.
+        let parent_type = edit::find_parent_impl_type(&file, &sym);
         edit::reindex_after_write(
             &self.index,
             &params.0.path,
@@ -2293,6 +2296,7 @@ impl TokenizorServer {
             &params.0.name,
             &old_sig,
             &new_sig,
+            parent_type.as_deref(),
         );
         let mut result = edit_format::format_replace(
             &params.0.path,

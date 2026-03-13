@@ -3,7 +3,7 @@ use std::path::Path;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::domain::index::{LanguageId, SymbolRecord};
+use crate::domain::index::{LanguageId, SymbolKind, SymbolRecord};
 use crate::live_index::SharedIndex;
 use crate::live_index::query::{
     SymbolSelectorMatch, render_symbol_selector, resolve_symbol_selector,
@@ -749,22 +749,117 @@ pub(crate) fn extract_signature(content: &[u8], byte_range: (u32, u32)) -> Strin
     String::from_utf8_lossy(&slice[..first_line_end]).to_string()
 }
 
+/// Find the parent impl block's type name for a symbol, if any.
+///
+/// Walks backward through the file's symbol list to find an `impl` block at a
+/// lower depth that encloses the target symbol's byte range. Extracts the
+/// concrete type name (e.g. `Foo` from `impl Foo` or `impl Trait for Foo`).
+pub(crate) fn find_parent_impl_type(file: &IndexedFile, sym: &SymbolRecord) -> Option<String> {
+    if sym.depth == 0 {
+        return None; // top-level symbol, not inside an impl block
+    }
+    // Walk the symbol list to find the enclosing impl block.
+    for s in &file.symbols {
+        if s.kind != SymbolKind::Impl {
+            continue;
+        }
+        // The impl block must enclose the target symbol.
+        if s.byte_range.0 <= sym.byte_range.0 && s.byte_range.1 >= sym.byte_range.1 {
+            return extract_impl_type_name(&s.name);
+        }
+    }
+    None
+}
+
+/// Extract the concrete type name from an impl block name.
+///
+/// Handles patterns like:
+/// - `impl Foo` -> `Foo`
+/// - `impl Trait for Foo` -> `Foo`
+/// - `impl<T> Foo<T>` -> `Foo`
+/// - `impl<T: Clone> Trait for Foo<T>` -> `Foo`
+fn extract_impl_type_name(impl_name: &str) -> Option<String> {
+    let name = impl_name.trim();
+    // Strip leading "impl" keyword if present (some parsers include it).
+    let rest = name.strip_prefix("impl").unwrap_or(name).trim_start();
+    // Strip generic parameters from the front: `<T: Clone> Trait for Foo<T>` -> `Trait for Foo<T>`
+    let rest = strip_leading_generics(rest);
+    // Check for "for" keyword: `Trait for Foo<T>` -> `Foo<T>`
+    let type_part = if let Some(pos) = rest.find(" for ") {
+        rest[pos + 5..].trim_start()
+    } else {
+        rest.trim_start()
+    };
+    // Strip trailing generics: `Foo<T>` -> `Foo`
+    let type_name = type_part.split('<').next().unwrap_or(type_part).trim();
+    if type_name.is_empty() {
+        None
+    } else {
+        Some(type_name.to_string())
+    }
+}
+
+/// Strip a leading `<...>` generic parameter list, handling nested angle brackets.
+fn strip_leading_generics(s: &str) -> &str {
+    let s = s.trim_start();
+    if !s.starts_with('<') {
+        return s;
+    }
+    let mut depth = 0i32;
+    for (i, ch) in s.char_indices() {
+        match ch {
+            '<' => depth += 1,
+            '>' => {
+                depth -= 1;
+                if depth == 0 {
+                    return s[i + 1..].trim_start();
+                }
+            }
+            _ => {}
+        }
+    }
+    s // malformed generics, return as-is
+}
+
 /// Detect references that may be stale after a symbol edit.
 /// Compares old vs new signature (first line). Returns (path, line, enclosing_name) triples.
+///
+/// When `parent_type` is provided (i.e. the symbol is a method inside an `impl` block),
+/// only warns about references in files that also mention the parent type — this avoids
+/// false positives like warning about `Path::display()` when `Widget::display()` changed.
 pub(crate) fn detect_stale_references(
     index: &SharedIndex,
     path: &str,
     name: &str,
     old_signature: &str,
     new_signature: &str,
+    parent_type: Option<&str>,
 ) -> Vec<(String, u32, Option<String>)> {
     if old_signature == new_signature {
         return Vec::new();
     }
     let guard = index.read().expect("lock poisoned");
     let refs = guard.find_references_for_name(name, None, false);
+
+    // When we know the parent type, collect the set of files that reference it.
+    // Only those files could plausibly call `ParentType::method_name()`.
+    let type_files: Option<std::collections::HashSet<&str>> = parent_type.map(|tn| {
+        guard
+            .find_references_for_name(tn, None, false)
+            .into_iter()
+            .map(|(fp, _)| fp)
+            .collect()
+    });
+
     refs.into_iter()
         .filter(|(ref_path, _)| *ref_path != path)
+        .filter(|(ref_path, _)| {
+            // If we have a parent type filter, only keep refs in files that also mention it.
+            match &type_files {
+                Some(tf) => tf.contains(ref_path),
+                None => true,
+            }
+        })
         .map(|(ref_path, rr)| {
             let enclosing = rr.enclosing_symbol_index.and_then(|idx| {
                 guard
@@ -1257,5 +1352,197 @@ mod tests {
         let content = b"fn foo() {}";
         let sig = extract_signature(content, (0, 11));
         assert_eq!(sig, "fn foo() {}");
+    }
+
+    // -- extract_impl_type_name --
+
+    #[test]
+    fn test_extract_impl_type_name_simple() {
+        assert_eq!(extract_impl_type_name("impl Foo"), Some("Foo".to_string()));
+    }
+
+    #[test]
+    fn test_extract_impl_type_name_trait_for() {
+        assert_eq!(
+            extract_impl_type_name("impl Display for Foo"),
+            Some("Foo".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_impl_type_name_generic() {
+        assert_eq!(
+            extract_impl_type_name("impl<T> Foo<T>"),
+            Some("Foo".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_impl_type_name_generic_trait_for() {
+        assert_eq!(
+            extract_impl_type_name("impl<T: Clone> Trait for Foo<T>"),
+            Some("Foo".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_impl_type_name_no_impl_prefix() {
+        // Some parsers may strip the "impl" keyword from the name.
+        assert_eq!(extract_impl_type_name("Foo"), Some("Foo".to_string()));
+    }
+
+    // -- find_parent_impl_type --
+
+    #[test]
+    fn test_find_parent_impl_type_for_method() {
+        let file = make_test_indexed_file(vec![
+            SymbolRecord {
+                name: "impl Widget".to_string(),
+                kind: SymbolKind::Impl,
+                depth: 0,
+                sort_order: 0,
+                byte_range: (0, 100),
+                line_range: (0, 10),
+            },
+            SymbolRecord {
+                name: "display".to_string(),
+                kind: SymbolKind::Method,
+                depth: 1,
+                sort_order: 1,
+                byte_range: (20, 80),
+                line_range: (2, 8),
+            },
+        ]);
+        let method = &file.symbols[1];
+        assert_eq!(
+            find_parent_impl_type(&file, method),
+            Some("Widget".to_string())
+        );
+    }
+
+    #[test]
+    fn test_find_parent_impl_type_standalone_fn() {
+        let file = make_test_indexed_file(vec![make_test_symbol(
+            "standalone",
+            SymbolKind::Function,
+            (0, 50),
+            1,
+        )]);
+        let func = &file.symbols[0];
+        assert_eq!(find_parent_impl_type(&file, func), None);
+    }
+
+    // -- detect_stale_references with parent_type filtering --
+
+    fn make_ref_file(refs: Vec<crate::domain::index::ReferenceRecord>) -> IndexedFile {
+        IndexedFile {
+            relative_path: String::new(),
+            language: LanguageId::Rust,
+            classification: crate::domain::index::FileClassification::for_code_path("test.rs"),
+            content: Vec::new(),
+            symbols: Vec::new(),
+            parse_status: crate::live_index::store::ParseStatus::Parsed,
+            byte_len: 0,
+            content_hash: String::new(),
+            references: refs,
+            alias_map: std::collections::HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn test_detect_stale_refs_method_filters_by_parent_type() {
+        use crate::domain::index::ReferenceKind;
+        let handle = crate::live_index::LiveIndex::empty();
+
+        // File A: has Widget type ref + display call -> should be warned
+        handle.update_file(
+            "src/a.rs".to_string(),
+            make_ref_file(vec![
+                crate::domain::index::ReferenceRecord {
+                    name: "display".to_string(),
+                    qualified_name: None,
+                    kind: ReferenceKind::Call,
+                    byte_range: (32, 39),
+                    line_range: (1, 1),
+                    enclosing_symbol_index: None,
+                },
+                crate::domain::index::ReferenceRecord {
+                    name: "Widget".to_string(),
+                    qualified_name: None,
+                    kind: ReferenceKind::TypeUsage,
+                    byte_range: (12, 18),
+                    line_range: (0, 0),
+                    enclosing_symbol_index: None,
+                },
+            ]),
+        );
+
+        // File B: has display call but NO Widget ref -> should NOT be warned
+        handle.update_file(
+            "src/b.rs".to_string(),
+            make_ref_file(vec![crate::domain::index::ReferenceRecord {
+                name: "display".to_string(),
+                qualified_name: None,
+                kind: ReferenceKind::Call,
+                byte_range: (19, 26),
+                line_range: (0, 0),
+                enclosing_symbol_index: None,
+            }]),
+        );
+
+        // With parent_type = Some("Widget"), only file A should be warned
+        let refs = detect_stale_references(
+            &handle,
+            "src/widget.rs",
+            "display",
+            "fn display(&self) {",
+            "fn display(&self, verbose: bool) {",
+            Some("Widget"),
+        );
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].0, "src/a.rs");
+    }
+
+    #[test]
+    fn test_detect_stale_refs_standalone_fn_warns_all() {
+        use crate::domain::index::ReferenceKind;
+        let handle = crate::live_index::LiveIndex::empty();
+
+        // File A: has display call
+        handle.update_file(
+            "src/a.rs".to_string(),
+            make_ref_file(vec![crate::domain::index::ReferenceRecord {
+                name: "display".to_string(),
+                qualified_name: None,
+                kind: ReferenceKind::Call,
+                byte_range: (12, 19),
+                line_range: (0, 0),
+                enclosing_symbol_index: None,
+            }]),
+        );
+
+        // File B: also has display call
+        handle.update_file(
+            "src/b.rs".to_string(),
+            make_ref_file(vec![crate::domain::index::ReferenceRecord {
+                name: "display".to_string(),
+                qualified_name: None,
+                kind: ReferenceKind::Call,
+                byte_range: (15, 22),
+                line_range: (0, 0),
+                enclosing_symbol_index: None,
+            }]),
+        );
+
+        // With parent_type = None (standalone fn), both files should be warned
+        let refs = detect_stale_references(
+            &handle,
+            "src/lib.rs",
+            "display",
+            "fn display() {",
+            "fn display(verbose: bool) {",
+            None,
+        );
+        assert_eq!(refs.len(), 2);
     }
 }
