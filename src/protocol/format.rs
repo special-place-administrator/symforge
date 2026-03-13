@@ -34,7 +34,7 @@ use crate::live_index::{
     FileOutlineView, FindDependentsView, FindImplementationsView, FindReferencesView, HealthStats,
     IndexedFile, LiveIndex, PublishedIndexState, RepoOutlineFileView, RepoOutlineView,
     ResolvePathView, SearchFilesTier, SearchFilesView, SymbolDetailView, TypeDependencyView,
-    WhatChangedTimestampView, search,
+    WhatChangedTimestampView, search, InspectMatchView,
 };
 
 /// Format the file outline for a given path.
@@ -800,10 +800,11 @@ pub fn resolve_path_result_view(view: &ResolvePathView) -> String {
     }
 }
 
-pub fn search_files_result(index: &LiveIndex, query: &str, limit: usize) -> String {
-    let view = index.capture_search_files_view(query, limit);
+pub fn search_files(index: &LiveIndex, query: &str, limit: usize) -> String {
+    let view = index.capture_search_files_view(query, limit, None);
     search_files_result_view(&view)
 }
+
 
 pub fn search_files_result_view(view: &SearchFilesView) -> String {
     match view {
@@ -1646,6 +1647,41 @@ fn format_trace_git_activity(git: &crate::live_index::GitActivityView) -> String
         }
     }
     lines.join("\n")
+}
+
+/// Format results of `inspect_match`.
+pub fn inspect_match_result_view(view: &InspectMatchView) -> String {
+    match view {
+        InspectMatchView::FileNotFound { path } => not_found_file(path),
+        InspectMatchView::Found(found) => {
+            let mut output = String::new();
+            
+            // 1. Excerpt
+            output.push_str(&found.excerpt);
+            output.push('\n');
+
+            // 2. Enclosing symbol
+            if let Some(enclosing) = &found.enclosing {
+                output.push_str(&format_enclosing(enclosing));
+            } else {
+                output.push_str("\n(No enclosing symbol)");
+            }
+
+            // 3. Siblings
+            if !found.siblings.is_empty() {
+                output.push_str(&format_siblings(&found.siblings));
+            }
+
+            output
+        }
+    }
+}
+
+fn format_enclosing(enclosing: &crate::live_index::EnclosingSymbolView) -> String {
+    format!(
+        "\nEnclosing symbol: {} {} (lines {}-{})",
+        enclosing.kind_label, enclosing.name, enclosing.line_range.0, enclosing.line_range.1
+    )
 }
 
 fn format_context_bundle_section(title: &str, section: &ContextBundleSectionView) -> String {

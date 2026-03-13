@@ -12,7 +12,7 @@ pub use query::{
     ImplementationEntryView, ReferenceContextLineView, ReferenceFileView, ReferenceHitView,
     RepoOutlineFileView, RepoOutlineView, ResolvePathView, SearchFilesHit, SearchFilesTier,
     SearchFilesView, SiblingSymbolView, SymbolDetailView, TraceSymbolView, TypeDependencyView,
-    WhatChangedTimestampView,
+    WhatChangedTimestampView, InspectMatchView, InspectMatchFoundView, EnclosingSymbolView,
 };
 pub use store::{
     CircuitBreakerState, IndexLoadSource, IndexState, IndexedFile, LiveIndex, ParseStatus,

@@ -137,6 +137,8 @@ pub struct SearchFilesInput {
     pub query: String,
     /// Optional maximum number of matches to return (default 20, capped at 50).
     pub limit: Option<u32>,
+    /// Optional current file path to boost local results.
+    pub current_file: Option<String>,
 }
 
 /// Input for `resolve_path`.
@@ -305,6 +307,17 @@ pub struct TraceSymbolInput {
     /// Optional list of output sections to include. When omitted, all sections are included.
     /// Valid values: "dependents", "siblings", "implementations", "git".
     pub sections: Option<Vec<String>>,
+}
+
+/// Input for `inspect_match`.
+#[derive(Deserialize, Serialize, JsonSchema)]
+pub struct InspectMatchInput {
+    /// Relative path to the file.
+    pub path: String,
+    /// 1-based line number to inspect.
+    pub line: u32,
+    /// Number of context lines to show around the match (default 3).
+    pub context: Option<u32>,
 }
 
 enum WhatChangedMode {
@@ -1067,6 +1080,26 @@ impl TokenizorServer {
         format::trace_symbol_result_view(&trace_view, &params.0.name)
     }
 
+    /// Inspect a specific match line with context, enclosing symbol, and siblings.
+    #[tool(description = "Inspect a specific match line with context, enclosing symbol, and siblings.")]
+    pub(crate) async fn inspect_match(&self, params: Parameters<InspectMatchInput>) -> String {
+        if let Some(result) = self.proxy_tool_call("inspect_match", &params.0).await {
+            return result;
+        }
+
+        let view = {
+            let guard = self.index.read().expect("lock poisoned");
+            loading_guard!(guard);
+            guard.capture_inspect_match_view(
+                &params.0.path,
+                params.0.line,
+                params.0.context,
+            )
+        };
+
+        format::inspect_match_result_view(&view)
+    }
+
     /// Search indexed file paths using bounded ranked code-lane discovery.
     #[tool(description = "Search indexed file paths using bounded ranked code-lane discovery.")]
     pub(crate) async fn search_files(&self, params: Parameters<SearchFilesInput>) -> String {
@@ -1076,7 +1109,11 @@ impl TokenizorServer {
         let view = {
             let guard = self.index.read().expect("lock poisoned");
             loading_guard!(guard);
-            guard.capture_search_files_view(&params.0.query, params.0.limit.unwrap_or(20) as usize)
+            guard.capture_search_files_view(
+                &params.0.query,
+                params.0.limit.unwrap_or(20) as usize,
+                params.0.current_file.as_deref(),
+            )
         };
         format::search_files_result_view(&view)
     }
@@ -2822,6 +2859,7 @@ mod tests {
             .search_files(Parameters(super::SearchFilesInput {
                 query: "protocol/tools.rs".to_string(),
                 limit: Some(20),
+                current_file: None,
             }))
             .await;
         assert!(result.contains("2 matching files"), "got: {result}");
@@ -2840,11 +2878,12 @@ mod tests {
         let server = make_server(make_live_index_ready(vec![]));
         let result = server
             .search_files(Parameters(super::SearchFilesInput {
-                query: "README.md".to_string(),
+                query: "src/service.rs".to_string(),
                 limit: None,
+                current_file: None,
             }))
             .await;
-        assert_eq!(result, "No indexed source files matching 'README.md'");
+        assert_eq!(result, "No indexed source files matching 'src/service.rs'");
     }
 
     #[tokio::test]
@@ -3622,8 +3661,8 @@ mod tests {
         // Sanity check: we should have a reasonable number of tools.
         // Update this lower bound when removing tools; it prevents accidental regressions.
         assert!(
-            tool_count >= 22,
-            "server should expose at least 22 tools; found {tool_count}"
+            tool_count >= 23,
+            "server should expose at least 23 tools; found {tool_count}"
         );
     }
 
@@ -3648,6 +3687,32 @@ mod tests {
 
         assert!(result.contains("fn process"), "got: {result}");
         assert!(result.contains("Callers (0)"), "got: {result}");
+    }
+
+    #[tokio::test]
+    async fn test_inspect_match_delegates_to_formatter() {
+        let target = make_file(
+            "src/lib.rs",
+            b"fn process() {\n    let x = 1;\n}\n",
+            vec![make_symbol("process", SymbolKind::Function, 1, 3)],
+        );
+        let server = make_server(make_live_index_ready(vec![target]));
+
+        let result = server
+            .inspect_match(Parameters(super::InspectMatchInput {
+                path: "src/lib.rs".to_string(),
+                line: 2,
+                context: None,
+            }))
+            .await;
+
+        // Verify excerpt
+        assert!(result.contains("2:     let x = 1;"), "got: {result}");
+        // Verify enclosing symbol
+        assert!(
+            result.contains("Enclosing symbol: fn process (lines 1-3)"),
+            "got: {result}"
+        );
     }
 
     #[tokio::test]

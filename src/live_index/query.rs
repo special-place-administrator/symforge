@@ -501,6 +501,28 @@ fn path_has_component(path: &str, component: &str) -> bool {
         .any(|part| part.eq_ignore_ascii_case(component))
 }
 
+fn shared_directory_prefix_len(path_a: &str, path_b: &str) -> usize {
+    let parts_a: Vec<&str> = path_a.split('/').collect();
+    let parts_b: Vec<&str> = path_b.split('/').collect();
+
+    // Skip the basename of the current file if it's a file path
+    let dirs_a = if parts_a.len() > 1 {
+        &parts_a[..parts_a.len() - 1]
+    } else {
+        &parts_a[..]
+    };
+
+    let mut shared = 0;
+    for (a, b) in dirs_a.iter().zip(parts_b.iter()) {
+        if a.eq_ignore_ascii_case(b) {
+            shared += 1;
+        } else {
+            break;
+        }
+    }
+    shared
+}
+
 /// Summary health statistics for the LiveIndex.
 #[derive(Debug, Clone)]
 pub struct HealthStats {
@@ -797,6 +819,31 @@ pub enum TraceSymbolView {
     Found(TraceSymbolFoundView),
 }
 
+/// A focused symbol summary for `inspect_match`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnclosingSymbolView {
+    pub name: String,
+    pub kind_label: String,
+    pub line_range: (u32, u32),
+}
+
+/// Found result for `inspect_match`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InspectMatchFoundView {
+    pub path: String,
+    pub line: u32,
+    pub excerpt: String,
+    pub enclosing: Option<EnclosingSymbolView>,
+    pub siblings: Vec<SiblingSymbolView>,
+}
+
+/// Owned result view for `inspect_match`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum InspectMatchView {
+    FileNotFound { path: String },
+    Found(InspectMatchFoundView),
+}
+
 /// Owned repo outline view captured under a short read lock.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoOutlineView {
@@ -990,7 +1037,12 @@ impl LiveIndex {
     }
 
     /// Search for indexed files matching a path query with bounded tiered output.
-    pub fn capture_search_files_view(&self, query: &str, limit: usize) -> SearchFilesView {
+    pub fn capture_search_files_view(
+        &self,
+        query: &str,
+        limit: usize,
+        current_file: Option<&str>,
+    ) -> SearchFilesView {
         let limit = limit.clamp(1, 50);
         let normalized_query = normalize_path_query(query);
         if normalized_query.is_empty() {
@@ -1040,6 +1092,12 @@ impl LiveIndex {
             );
         }
 
+        let shared_len = |path: &str| -> usize {
+            current_file
+                .map(|cur| shared_directory_prefix_len(cur, path))
+                .unwrap_or(0)
+        };
+
         strong_hits.sort_by(|left, right| {
             let left_lower = left.to_ascii_lowercase();
             let right_lower = right.to_ascii_lowercase();
@@ -1047,9 +1105,11 @@ impl LiveIndex {
             let right_exact = right_lower == normalized_query_lower;
             let left_suffix = has_path_context && left_lower.ends_with(&normalized_query_lower);
             let right_suffix = has_path_context && right_lower.ends_with(&normalized_query_lower);
+
             right_exact
                 .cmp(&left_exact)
                 .then(right_suffix.cmp(&left_suffix))
+                .then(shared_len(right).cmp(&shared_len(left)))
                 .then(left.len().cmp(&right.len()))
                 .then(left.cmp(right))
         });
@@ -1060,8 +1120,12 @@ impl LiveIndex {
             .into_iter()
             .filter(|path| !strong_set.contains(path.as_str()))
             .collect();
-        basename_only_hits
-            .sort_by(|left, right| left.len().cmp(&right.len()).then(left.cmp(right)));
+        basename_only_hits.sort_by(|left, right| {
+            shared_len(right)
+                .cmp(&shared_len(left))
+                .then(left.len().cmp(&right.len()))
+                .then(left.cmp(right))
+        });
         basename_only_hits.dedup();
 
         let strong_or_basename_set: HashSet<&str> = strong_hits
@@ -1079,7 +1143,12 @@ impl LiveIndex {
             })
             .map(|path| path.to_string())
             .collect();
-        loose_hits.sort_by(|left, right| left.len().cmp(&right.len()).then(left.cmp(right)));
+        loose_hits.sort_by(|left, right| {
+            shared_len(right)
+                .cmp(&shared_len(left))
+                .then(left.len().cmp(&right.len()))
+                .then(left.cmp(right))
+        });
         loose_hits.dedup();
 
         let total_matches = strong_hits.len() + basename_only_hits.len() + loose_hits.len();
@@ -1582,6 +1651,75 @@ impl LiveIndex {
             siblings,
             implementations,
             git_activity: None, // Filled in by the tool method which has access to git_temporal.
+        })
+    }
+
+    /// Capture a focused inspection view around a specific line.
+    pub fn capture_inspect_match_view(
+        &self,
+        path: &str,
+        line: u32,
+        context_lines: Option<u32>,
+    ) -> InspectMatchView {
+        let Some(file) = self.get_file(path) else {
+            return InspectMatchView::FileNotFound {
+                path: path.to_string(),
+            };
+        };
+
+        // 1. Render excerpt (simple around-line logic).
+        let content = String::from_utf8_lossy(&file.content);
+        let lines: Vec<&str> = content.lines().collect();
+        let anchor = line.max(1) as usize;
+        let context = context_lines.unwrap_or(3) as usize;
+        let start = anchor.saturating_sub(context).max(1);
+        let end = anchor.saturating_add(context).min(lines.len());
+
+        let excerpt = if start > end || start > lines.len() {
+            String::new()
+        } else {
+            (start..=end)
+                .map(|ln| format!("{ln}: {}", lines[ln - 1]))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        // 2. Find enclosing symbol (deepest symbol containing the line).
+        // `line` input is 1-based, symbol ranges are 0-based inclusive.
+        let target_line_0 = line.saturating_sub(1);
+        let enclosing_symbol = file
+            .symbols
+            .iter()
+            .filter(|s| {
+                s.line_range.0 <= target_line_0 && s.line_range.1 >= target_line_0
+            })
+            .max_by_key(|s| s.depth);
+
+        let enclosing = enclosing_symbol.map(|s| EnclosingSymbolView {
+            name: s.name.clone(),
+            kind_label: s.kind.to_string(),
+            line_range: s.line_range,
+        });
+
+        // 3. Find siblings (same depth as enclosing, or depth 0).
+        let target_depth = enclosing_symbol.map(|s| s.depth).unwrap_or(0);
+        let siblings = file
+            .symbols
+            .iter()
+            .filter(|s| s.depth == target_depth)
+            .map(|s| SiblingSymbolView {
+                name: s.name.clone(),
+                kind_label: s.kind.to_string(),
+                line_range: s.line_range,
+            })
+            .collect();
+
+        InspectMatchView::Found(InspectMatchFoundView {
+            path: file.relative_path.clone(),
+            line,
+            excerpt,
+            enclosing,
+            siblings,
         })
     }
 
@@ -2553,7 +2691,7 @@ mod tests {
             false,
         );
 
-        let view = index.capture_search_files_view("protocol/tools.rs", 2);
+        let view = index.capture_search_files_view("protocol/tools.rs", 2, None);
 
         assert_eq!(
             view,
@@ -2591,7 +2729,7 @@ mod tests {
             false,
         );
 
-        let view = index.capture_search_files_view("live_index", 20);
+        let view = index.capture_search_files_view("live_index", 20, None);
 
         assert_eq!(
             view,
@@ -2611,6 +2749,39 @@ mod tests {
                 ],
             }
         );
+    }
+
+    #[test]
+    fn test_capture_search_files_view_boosts_local_results() {
+        let index = make_index(
+            vec![
+                (
+                    "src/client/utils.rs",
+                    make_indexed_file("src/client/utils.rs", vec![], ParseStatus::Parsed),
+                ),
+                (
+                    "src/server/utils.rs",
+                    make_indexed_file("src/server/utils.rs", vec![], ParseStatus::Parsed),
+                ),
+            ],
+            false,
+        );
+
+        // When in server context, server utils should rank first.
+        let view_server = index.capture_search_files_view("utils.rs", 10, Some("src/server/main.rs"));
+        if let SearchFilesView::Found { hits, .. } = view_server {
+            assert_eq!(hits[0].path, "src/server/utils.rs");
+        } else {
+            panic!("expected found view");
+        }
+
+        // When in client context, client utils should rank first.
+        let view_client = index.capture_search_files_view("utils.rs", 10, Some("src/client/main.rs"));
+        if let SearchFilesView::Found { hits, .. } = view_client {
+            assert_eq!(hits[0].path, "src/client/utils.rs");
+        } else {
+            panic!("expected found view");
+        }
     }
 
     #[test]
