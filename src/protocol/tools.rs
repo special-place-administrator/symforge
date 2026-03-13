@@ -133,6 +133,8 @@ pub struct SearchTextInput {
     /// Group matches: "file" (default), "symbol" (one entry per enclosing symbol),
     /// or "usage" (exclude imports and comments).
     pub group_by: Option<String>,
+    /// When true, for each match include a compact list of callers of the enclosing symbol.
+    pub follow_refs: Option<bool>,
 }
 
 /// Input for `search_files`.
@@ -526,6 +528,61 @@ fn search_text_options_from_input(
         case_sensitive: input.case_sensitive,
         whole_word: input.whole_word.unwrap_or(false),
     })
+}
+
+fn enrich_with_callers(index: &crate::live_index::LiveIndex, result: &mut search::TextSearchResult) {
+    use std::collections::HashSet;
+
+    for file_matches in &mut result.files {
+        // Collect unique enclosing symbol names from this file's matches
+        let mut symbol_names: HashSet<String> = HashSet::new();
+        for m in &file_matches.matches {
+            if let Some(ref enc) = m.enclosing_symbol {
+                symbol_names.insert(enc.name.clone());
+            }
+        }
+
+        if symbol_names.is_empty() {
+            continue;
+        }
+
+        let mut callers: Vec<search::CallerEntry> = Vec::new();
+        let mut seen: HashSet<(String, String)> = HashSet::new(); // (file, symbol) dedup
+
+        for sym_name in &symbol_names {
+            let refs = index.find_references_for_name(sym_name, None, false);
+            for (ref_file, ref_record) in refs {
+                // Skip self-references (same file)
+                if ref_file == file_matches.path {
+                    continue;
+                }
+                // Get enclosing symbol of the reference
+                let enclosing_name = ref_record.enclosing_symbol_index
+                    .and_then(|idx| {
+                        index.get_file(ref_file)
+                            .and_then(|f| f.symbols.get(idx as usize))
+                            .map(|s| s.name.clone())
+                    })
+                    .unwrap_or_else(|| "(top-level)".to_string());
+
+                let key = (ref_file.to_string(), enclosing_name.clone());
+                if seen.insert(key) {
+                    callers.push(search::CallerEntry {
+                        file: ref_file.to_string(),
+                        symbol: enclosing_name,
+                        line: ref_record.line_range.0 + 1, // 0-based to 1-based
+                    });
+                }
+            }
+        }
+
+        // Cap at 10 callers to avoid noise
+        callers.truncate(10);
+
+        if !callers.is_empty() {
+            file_matches.callers = Some(callers);
+        }
+    }
 }
 
 fn file_content_options_from_input(
@@ -1016,13 +1073,20 @@ impl TokenizorServer {
         let result = {
             let guard = self.index.read().expect("lock poisoned");
             loading_guard!(guard);
-            search::search_text_with_options(
+            let mut r = search::search_text_with_options(
                 &guard,
                 params.0.query.as_deref(),
                 params.0.terms.as_deref(),
                 params.0.regex.unwrap_or(false),
                 &options,
-            )
+            );
+            // Enrich with callers if follow_refs is set
+            if params.0.follow_refs.unwrap_or(false) {
+                if let Ok(ref mut text_result) = r {
+                    enrich_with_callers(&guard, text_result);
+                }
+            }
+            r
         };
         format::search_text_result_view(result, params.0.group_by.as_deref())
     }
@@ -2568,6 +2632,7 @@ mod tests {
                 case_sensitive: None,
                 whole_word: None,
                 group_by: None,
+            follow_refs: None,
             }))
             .await;
         assert!(
@@ -2601,6 +2666,7 @@ mod tests {
                 case_sensitive: None,
                 whole_word: None,
                 group_by: None,
+            follow_refs: None,
             }))
             .await;
         assert!(
@@ -2640,6 +2706,7 @@ mod tests {
                 case_sensitive: None,
                 whole_word: None,
                 group_by: None,
+            follow_refs: None,
             }))
             .await;
 
@@ -2688,6 +2755,7 @@ mod tests {
                 case_sensitive: None,
                 whole_word: None,
                 group_by: None,
+            follow_refs: None,
             }))
             .await;
 
@@ -2736,6 +2804,7 @@ mod tests {
                 case_sensitive: None,
                 whole_word: None,
                 group_by: None,
+            follow_refs: None,
             }))
             .await;
 
@@ -2776,6 +2845,7 @@ mod tests {
                 case_sensitive: None,
                 whole_word: None,
                 group_by: None,
+            follow_refs: None,
             }))
             .await;
 
@@ -2819,6 +2889,7 @@ mod tests {
                 case_sensitive: None,
                 whole_word: None,
                 group_by: None,
+            follow_refs: None,
             }))
             .await;
 
@@ -2853,6 +2924,7 @@ mod tests {
                 case_sensitive: Some(true),
                 whole_word: Some(true),
                 group_by: None,
+            follow_refs: None,
             }))
             .await;
 
@@ -2899,6 +2971,7 @@ mod tests {
                 case_sensitive: None,
                 whole_word: Some(true),
                 group_by: None,
+            follow_refs: None,
             }))
             .await;
 
@@ -4144,6 +4217,7 @@ mod tests {
             include_tests: None, glob: None, exclude_glob: None,
             context: None, case_sensitive: None, whole_word: None,
             group_by: None,
+            follow_refs: None,
         })).await;
         assert!(result.contains("handle_request"),
             "should show enclosing symbol name, got: {result}");
@@ -4164,6 +4238,7 @@ mod tests {
             include_tests: None, glob: None, exclude_glob: None,
             context: None, case_sensitive: None, whole_word: None,
             group_by: Some("symbol".to_string()),
+            follow_refs: None,
         })).await;
         // With group_by: "symbol", should show symbol name and match count
         assert!(result.contains("connect"), "should show symbol name: {result}");
@@ -4184,6 +4259,7 @@ mod tests {
             include_tests: None, glob: None, exclude_glob: None,
             context: None, case_sensitive: None, whole_word: None,
             group_by: Some("usage".to_string()),
+            follow_refs: None,
         })).await;
         // Should exclude the "use" import line
         assert!(!result.contains("use crate"), "should filter out imports: {result}");
@@ -4207,5 +4283,36 @@ mod tests {
             result.contains("out of bounds"),
             "line 0 should be out of bounds (1-based), got: {result}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_search_text_follow_refs_includes_callers() {
+        // Build an index with cross-references
+        let sym_a = make_symbol("connect", SymbolKind::Function, 0, 1);
+        let file_a_content = b"fn connect() {\n    db_open()\n}\n";
+        let (key_a, file_a) = make_file("src/db.rs", file_a_content, vec![sym_a]);
+
+        let sym_b = make_symbol("handler", SymbolKind::Function, 0, 1);
+        let file_b_content = b"fn handler() {\n    connect()\n}\n";
+        let (key_b, file_b) = make_file_with_refs(
+            "src/api.rs", file_b_content, vec![sym_b],
+            vec![make_ref("connect", None, ReferenceKind::Call, 1, Some(0))],
+        );
+
+        let server = make_server(make_live_index_ready(vec![(key_a, file_a), (key_b, file_b)]));
+        let result = server.search_text(Parameters(super::SearchTextInput {
+            query: Some("db_open".to_string()),
+            terms: None, regex: None, path_prefix: None, language: None,
+            limit: None, max_per_file: None, include_generated: None,
+            include_tests: None, glob: None, exclude_glob: None,
+            context: None, case_sensitive: None, whole_word: None,
+            group_by: None,
+            follow_refs: Some(true),
+        })).await;
+        // Should show that connect() is called by handler() in src/api.rs
+        assert!(result.contains("handler") || result.contains("api.rs"),
+            "should show callers of enclosing symbol, got: {result}");
+        assert!(result.contains("Called by"),
+            "should have Called by section, got: {result}");
     }
 }

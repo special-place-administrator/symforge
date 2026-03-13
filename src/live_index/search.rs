@@ -475,10 +475,18 @@ pub enum TextDisplayLine {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallerEntry {
+    pub file: String,
+    pub symbol: String,
+    pub line: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextFileMatches {
     pub path: String,
     pub matches: Vec<TextLineMatch>,
     pub rendered_lines: Option<Vec<TextDisplayLine>>,
+    pub callers: Option<Vec<CallerEntry>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -953,6 +961,7 @@ where
                 path: path.clone(),
                 matches,
                 rendered_lines,
+                callers: None,
             });
         }
     }
