@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.12.0](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.11.4...v0.12.0) (2026-03-13)
+
+
+### Features
+
+* add explore tool for concept-based codebase exploration ([e7a2364](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/e7a23642730253f6e4df005eecf135460db7e6cf))
+* add Gemini CLI support (init, MCP registration, auto-allow) ([b2429b6](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/b2429b62b4e2032521ffbb2f2d1cb8eea0615883))
+* auto-allow all Tokenizor tools during init (no more permission prompts) ([948f360](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/948f3605da9279ae67d76f330b737009a526abf2))
+* search_files changed_with parameter — find co-changing files via git temporal coupling ([95b5901](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/95b5901524cce5073d318c151d8c02c88201e621))
+* search_text follow_refs — inline callers of enclosing symbol ([ae64a9a](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/ae64a9a12284953e7ece3e8e0da39389e533e398))
+* search_text group_by parameter — deduplicate by symbol or filter imports ([8fcf8a7](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/8fcf8a7fc36685ee8688b02be08461f08971be97))
+* symbol-aware context in search_text — show enclosing symbol for each match ([73ee432](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/73ee43249263c5338236c24d00b7c645da9e4d4a))
+
+
+### Bug Fixes
+
+* gate Windows-specific path tests with #[cfg(windows)] ([6d9f0b9](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/6d9f0b9a727a215bf499bd0329c0d107823f6a5c))
+* split-brain after index_folder, empty search_symbols guard, inspect_match bounds check ([00cf4be](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/00cf4be964f1314fa7930d68e31dac2327dced27))
+
 ## [0.11.4](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.11.3...v0.11.4) (2026-03-13)
 
 
