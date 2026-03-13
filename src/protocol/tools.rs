@@ -300,6 +300,10 @@ pub struct WhatChangedInput {
     pub path_prefix: Option<String>,
     /// Optional canonical language name such as `Rust`, `TypeScript`, `C#`, or `C++`.
     pub language: Option<String>,
+    /// When true, exclude non-source files (docs, configs, images, lock files).
+    /// Only files with a recognized programming language extension are included.
+    #[serde(default, deserialize_with = "lenient_bool")]
+    pub code_only: Option<bool>,
 }
 
 /// Input for `get_file_content`.
@@ -699,6 +703,7 @@ fn filter_paths_by_prefix_and_language(
     paths: Vec<String>,
     path_prefix: Option<&str>,
     language: Option<&str>,
+    code_only: bool,
 ) -> Result<Vec<String>, String> {
     let lang_filter = parse_language_filter(language)?;
     let prefix = path_prefix
@@ -723,6 +728,12 @@ fn filter_paths_by_prefix_and_language(
             if let Some(ref lang) = lang_filter {
                 let ext = path.rsplit('.').next().unwrap_or("");
                 if crate::domain::index::LanguageId::from_extension(ext).as_ref() != Some(lang) {
+                    return false;
+                }
+            }
+            if code_only && lang_filter.is_none() {
+                let ext = path.rsplit('.').next().unwrap_or("");
+                if crate::domain::index::LanguageId::from_extension(ext).is_none() {
                     return false;
                 }
             }
@@ -1234,7 +1245,10 @@ impl TokenizorServer {
 
                 let state = sidecar_state_for_server(self);
                 match repo_map_text(&state) {
-                    Ok(result) => result,
+                    Ok(result) => {
+                        let hint = "\nTip: search_symbols (find by name) | explore (conceptual questions) | get_file_context (file overview) | diff_symbols (code review)";
+                        format!("{result}{hint}")
+                    }
                     Err(StatusCode::NOT_FOUND) => "Repository map unavailable.".to_string(),
                     Err(StatusCode::INTERNAL_SERVER_ERROR) => {
                         "Repository map failed: internal error.".to_string()
@@ -1817,9 +1831,10 @@ impl TokenizorServer {
 
     /// List changed files: uncommitted=true for working tree, git_ref for ref comparison, since for
     /// timestamp filter. Use to see what files changed.
+    /// Set code_only=true to exclude non-source files (docs, configs, lock files).
     /// NOT for symbol-level diffs (use diff_symbols).
     #[tool(
-        description = "List changed files: uncommitted=true for working tree, git_ref for ref comparison, since for timestamp filter. Filter with path_prefix and/or language. NOT for symbol-level diffs (use diff_symbols)."
+        description = "List changed files: uncommitted=true for working tree, git_ref for ref comparison, since for timestamp filter. Filter with path_prefix and/or language. Set code_only=true to exclude non-source files (docs, configs, lock files). NOT for symbol-level diffs (use diff_symbols)."
     )]
     pub(crate) async fn what_changed(&self, params: Parameters<WhatChangedInput>) -> String {
         if let Some(result) = self.proxy_tool_call("what_changed", &params.0).await {
@@ -1859,6 +1874,7 @@ impl TokenizorServer {
                             paths,
                             params.0.path_prefix.as_deref(),
                             params.0.language.as_deref(),
+                            params.0.code_only.unwrap_or(false),
                         ) {
                             Ok(filtered) => format::what_changed_paths_result(
                                 &filtered,
@@ -1886,6 +1902,7 @@ impl TokenizorServer {
                             paths,
                             params.0.path_prefix.as_deref(),
                             params.0.language.as_deref(),
+                            params.0.code_only.unwrap_or(false),
                         ) {
                             Ok(filtered) => format::what_changed_paths_result(
                                 &filtered,
@@ -1934,9 +1951,9 @@ impl TokenizorServer {
     /// find trait/interface implementors bidirectionally — set direction='trait'/'type'/'auto'.
     /// Use when you need 'who calls this?' or 'who implements this?'
     /// NOT for file-level dependencies (use find_dependents).
-    /// NOT for full refactoring context (use trace_symbol).
+    /// NOT for full refactoring context (use get_symbol_context with sections=[...]).
     #[tool(
-        description = "Find all references or implementations for a symbol. Modes: (1) default/references: call sites, imports, type usages grouped by file — set compact=true for ~60-75% smaller output. (2) mode='implementations': find trait/interface implementors bidirectionally — set direction='trait'/'type'/'auto'. Use when you need 'who calls this?' or 'who implements this?' NOT for file-level dependencies (use find_dependents). NOT for full refactoring context (use trace_symbol)."
+        description = "Find all references or implementations for a symbol. Modes: (1) default/references: call sites, imports, type usages grouped by file — set compact=true for ~60-75% smaller output. (2) mode='implementations': find trait/interface implementors bidirectionally — set direction='trait'/'type'/'auto'. Use when you need 'who calls this?' or 'who implements this?' NOT for file-level dependencies (use find_dependents). NOT for full refactoring context (use get_symbol_context with sections=[...])."
     )]
     pub(crate) async fn find_references(&self, params: Parameters<FindReferencesInput>) -> String {
         let input = &params.0;
@@ -3516,6 +3533,7 @@ mod tests {
                 uncommitted: None,
                 path_prefix: None,
                 language: None,
+                code_only: None,
             }))
             .await;
 
@@ -4333,6 +4351,7 @@ mod tests {
                 uncommitted: None,
                 path_prefix: None,
                 language: None,
+                code_only: None,
             }))
             .await;
         assert!(
@@ -4370,6 +4389,7 @@ mod tests {
                 uncommitted: None,
                 path_prefix: None,
                 language: None,
+                code_only: None,
             }))
             .await;
         assert!(
@@ -4407,6 +4427,7 @@ mod tests {
                 uncommitted: None,
                 path_prefix: None,
                 language: None,
+                code_only: None,
             }))
             .await;
         assert!(
@@ -6231,5 +6252,19 @@ mod tests {
         assert!(a.contains("logging"), "a.rs: {a}");
         let b = std::fs::read_to_string(src_dir.join("b.rs")).unwrap();
         assert!(b.contains("logging"), "b.rs: {b}");
+    }
+
+    #[test]
+    fn test_filter_paths_code_only() {
+        let paths = vec![
+            "src/main.rs".to_string(),
+            "README.md".to_string(),
+            "Cargo.toml".to_string(),
+            "src/lib.rs".to_string(),
+            ".github/workflows/ci.yml".to_string(),
+            "package.json".to_string(),
+        ];
+        let result = super::filter_paths_by_prefix_and_language(paths, None, None, true).unwrap();
+        assert_eq!(result, vec!["src/main.rs", "src/lib.rs"]);
     }
 }

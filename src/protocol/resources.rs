@@ -156,6 +156,7 @@ impl TokenizorServer {
                     uncommitted: None,
                     path_prefix: None,
                     language: None,
+                    code_only: None,
                 }))
                 .await
             }
