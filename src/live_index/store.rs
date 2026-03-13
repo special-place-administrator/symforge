@@ -338,9 +338,7 @@ impl SharedIndexHandle {
             published_state: RwLock::new(published_state),
             published_repo_outline: RwLock::new(published_repo_outline),
             next_generation: AtomicU64::new(1),
-            git_temporal: RwLock::new(Arc::new(
-                super::git_temporal::GitTemporalIndex::pending(),
-            )),
+            git_temporal: RwLock::new(Arc::new(super::git_temporal::GitTemporalIndex::pending())),
         }
     }
 

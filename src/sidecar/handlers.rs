@@ -271,7 +271,7 @@ fn outline_text(
     // Build "Git activity" section from temporal intelligence.
     {
         use crate::live_index::git_temporal::{
-            churn_bar, churn_label, relative_time, GitTemporalState,
+            GitTemporalState, churn_bar, churn_label, relative_time,
         };
         let temporal = state.index.git_temporal();
         if temporal.state == GitTemporalState::Ready {
@@ -513,7 +513,10 @@ async fn handle_edit_impact(
             // File unreadable (locked, deleted, wrong path). Return the pre-edit
             // snapshot as "no change" instead of overwriting the index with an
             // empty parse — that would destroy all symbols for this file.
-            let text = format!("── Impact: {} ──\nFile not readable on disk; index preserved.", path);
+            let text = format!(
+                "── Impact: {} ──\nFile not readable on disk; index preserved.",
+                path
+            );
             return Ok(text);
         }
     };
@@ -1771,7 +1774,9 @@ mod tests {
 
         // Verify the index still has the original symbol.
         let guard = state.index.read().unwrap();
-        let indexed = guard.get_file("src/db.rs").expect("file must still be in index");
+        let indexed = guard
+            .get_file("src/db.rs")
+            .expect("file must still be in index");
         assert_eq!(
             indexed.symbols.len(),
             1,

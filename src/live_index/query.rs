@@ -1565,7 +1565,7 @@ impl LiveIndex {
 
         let found = match bundle {
             ContextBundleView::FileNotFound { path } => {
-                return TraceSymbolView::FileNotFound { path }
+                return TraceSymbolView::FileNotFound { path };
             }
             ContextBundleView::AmbiguousSymbol {
                 path,
@@ -1576,7 +1576,7 @@ impl LiveIndex {
                     path,
                     name,
                     candidate_lines,
-                }
+                };
             }
             ContextBundleView::SymbolNotFound {
                 relative_path,
@@ -1587,7 +1587,7 @@ impl LiveIndex {
                     relative_path,
                     symbol_names,
                     name,
-                }
+                };
             }
             ContextBundleView::Found(view) => view,
         };
@@ -1690,9 +1690,7 @@ impl LiveIndex {
         let enclosing_symbol = file
             .symbols
             .iter()
-            .filter(|s| {
-                s.line_range.0 <= target_line_0 && s.line_range.1 >= target_line_0
-            })
+            .filter(|s| s.line_range.0 <= target_line_0 && s.line_range.1 >= target_line_0)
             .max_by_key(|s| s.depth);
 
         let enclosing = enclosing_symbol.map(|s| EnclosingSymbolView {
@@ -2768,7 +2766,8 @@ mod tests {
         );
 
         // When in server context, server utils should rank first.
-        let view_server = index.capture_search_files_view("utils.rs", 10, Some("src/server/main.rs"));
+        let view_server =
+            index.capture_search_files_view("utils.rs", 10, Some("src/server/main.rs"));
         if let SearchFilesView::Found { hits, .. } = view_server {
             assert_eq!(hits[0].path, "src/server/utils.rs");
         } else {
@@ -2776,7 +2775,8 @@ mod tests {
         }
 
         // When in client context, client utils should rank first.
-        let view_client = index.capture_search_files_view("utils.rs", 10, Some("src/client/main.rs"));
+        let view_client =
+            index.capture_search_files_view("utils.rs", 10, Some("src/client/main.rs"));
         if let SearchFilesView::Found { hits, .. } = view_client {
             assert_eq!(hits[0].path, "src/client/utils.rs");
         } else {
