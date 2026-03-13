@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -122,6 +122,62 @@ fn resolve_module_path(file_path: &str, language: &LanguageId) -> Option<String>
     }
 }
 
+/// Check if an import reference in a file is a `pub use` (re-export).
+///
+/// Looks at the source content just before the import's byte range to find a `pub` keyword.
+fn is_pub_use_import(file: &IndexedFile, reference: &ReferenceRecord) -> bool {
+    if reference.kind != ReferenceKind::Import {
+        return false;
+    }
+    // Look back from the import start to find `pub use` or `pub(crate) use`, etc.
+    let start = reference.byte_range.0 as usize;
+    // Grab up to 30 bytes before the reference start (enough for `pub(crate) use `)
+    let lookback_start = start.saturating_sub(30);
+    if lookback_start >= file.content.len() || start > file.content.len() {
+        return false;
+    }
+    let prefix = &file.content[lookback_start..start];
+    let prefix_str = std::str::from_utf8(prefix).unwrap_or("");
+    // Check if the line containing this import starts with `pub`
+    let line_start = prefix_str.rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let line_prefix = prefix_str[line_start..].trim_start();
+    line_prefix.starts_with("pub ") || line_prefix.starts_with("pub(") || line_prefix == "pub"
+}
+
+/// Find files that re-export symbols from `target_module_path` via `pub use`.
+///
+/// Returns the file paths of re-exporter files.
+fn find_reexporters<'a>(
+    files: &'a std::collections::HashMap<String, Arc<IndexedFile>>,
+    target_path: &str,
+    target_module_path: Option<&str>,
+    target_language: &LanguageId,
+    target_stem: &str,
+) -> Vec<&'a str> {
+    if *target_language != LanguageId::Rust {
+        return vec![];
+    }
+
+    let mut reexporters = Vec::new();
+    for (file_path, file) in files {
+        if file_path.as_str() == target_path {
+            continue;
+        }
+        if file.language != *target_language {
+            continue;
+        }
+        for reference in &file.references {
+            if matches_target_import(target_language, reference, target_stem, target_module_path)
+                && is_pub_use_import(file, reference)
+            {
+                reexporters.push(file_path.as_str());
+                break;
+            }
+        }
+    }
+    reexporters
+}
+
 fn declared_scope(file: &IndexedFile) -> Option<String> {
     let content = String::from_utf8_lossy(&file.content);
     match file.language {
@@ -199,6 +255,10 @@ fn matches_target_stem(text: &str, stem: &str) -> bool {
         || text.ends_with(&format!(".{stem}"))
         || text.contains(&format!("/{stem}/"))
         || text.contains(&format!("::{stem}::"))
+        // Relative imports: `index::Thing` matches stem "index"
+        || text.starts_with(&format!("{stem}::"))
+        || text.starts_with(&format!("{stem}/"))
+        || text.starts_with(&format!("{stem}."))
 }
 
 fn matches_target_module(language: &LanguageId, text: &str, module_path: Option<&str>) -> bool {
@@ -2098,11 +2158,119 @@ impl LiveIndex {
             );
         }
 
+        // --- Re-export chain resolution (Rust only, max 2 hops) ---
+        //
+        // If file X is re-exported via `pub use` in file Y, then files that
+        // import from Y are also dependents of X.  We use a BFS with a depth
+        // limit to avoid infinite loops and keep the search bounded.
+        if target_language == LanguageId::Rust {
+            let already_found: HashSet<&str> = results.iter().map(|(path, _)| *path).collect();
+
+            let mut visited: HashSet<&str> = HashSet::new();
+            visited.insert(target_path);
+
+            // Seed: find files that pub-use-re-export from target
+            let mut queue: VecDeque<(&str, u8)> = VecDeque::new();
+            let reexporters = find_reexporters(
+                &self.files,
+                target_path,
+                module_path.as_deref(),
+                &target_language,
+                stem,
+            );
+            for re_path in reexporters {
+                if visited.insert(re_path) {
+                    queue.push_back((re_path, 1));
+                }
+            }
+
+            while let Some((reexporter_path, depth)) = queue.pop_front() {
+                let Some(re_file) = self.files.get(reexporter_path) else {
+                    continue;
+                };
+
+                let re_stem = std::path::Path::new(reexporter_path)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(reexporter_path);
+                let re_module_path = resolve_module_path(reexporter_path, &re_file.language);
+
+                // Find files that import from the re-exporter
+                for (file_path, file) in &self.files {
+                    if file_path.as_str() == target_path
+                        || file_path.as_str() == reexporter_path
+                        || already_found.contains(file_path.as_str())
+                    {
+                        continue;
+                    }
+
+                    let transitive_imports: Vec<&ReferenceRecord> = file
+                        .references
+                        .iter()
+                        .filter(|reference| {
+                            matches_target_import(
+                                &target_language,
+                                reference,
+                                re_stem,
+                                re_module_path.as_deref(),
+                            )
+                        })
+                        .collect();
+
+                    if !transitive_imports.is_empty() {
+                        // Prefer symbol-level usage refs when target symbol names match
+                        if !target_symbol_names.is_empty() {
+                            let symbol_refs: Vec<&ReferenceRecord> = file
+                                .references
+                                .iter()
+                                .filter(|reference| {
+                                    reference.kind != ReferenceKind::Import
+                                        && target_symbol_names.contains(reference.name.as_str())
+                                })
+                                .collect();
+                            if !symbol_refs.is_empty() {
+                                results.extend(
+                                    symbol_refs.into_iter().map(|r| (file_path.as_str(), r)),
+                                );
+                                continue;
+                            }
+                        }
+
+                        results.extend(
+                            transitive_imports
+                                .into_iter()
+                                .map(|r| (file_path.as_str(), r)),
+                        );
+                    }
+                }
+
+                // Follow the chain one more hop if the re-exporter is itself
+                // re-exported by another file (depth limit: 2).
+                if depth < 2 {
+                    let next_reexporters = find_reexporters(
+                        &self.files,
+                        reexporter_path,
+                        re_module_path.as_deref(),
+                        &target_language,
+                        re_stem,
+                    );
+                    for next_path in next_reexporters {
+                        if visited.insert(next_path) {
+                            queue.push_back((next_path, depth + 1));
+                        }
+                    }
+                }
+            }
+        }
+
         results.sort_by(|a, b| {
             a.0.cmp(b.0)
                 .then(a.1.line_range.0.cmp(&b.1.line_range.0))
                 .then(a.1.byte_range.0.cmp(&b.1.byte_range.0))
         });
+
+        // Deduplicate (same file + same byte range = same reference)
+        results.dedup_by(|a, b| a.0 == b.0 && a.1.byte_range == b.1.byte_range);
 
         results
     }
@@ -4201,6 +4369,245 @@ public class PacketsController {
         assert_eq!(deps[0].0, "src/app.ts");
         assert_eq!(deps[0].1.kind, ReferenceKind::TypeUsage);
         assert_eq!(deps[0].1.name, "Service");
+    }
+
+    #[test]
+    fn test_find_dependents_follows_pub_use_reexport_chain() {
+        // src/domain/index.rs defines ReferenceKind
+        // src/domain/mod.rs has `pub use index::ReferenceKind;`
+        // src/tools.rs has `use crate::domain::ReferenceKind;`
+        //
+        // find_dependents("src/domain/index.rs") should find src/tools.rs
+        // via the re-export chain: index.rs -> mod.rs -> tools.rs
+
+        let target = make_file_with_refs_and_content(
+            "src/domain/index.rs",
+            LanguageId::Rust,
+            "pub enum ReferenceKind { Call, Import }",
+            vec![],
+            vec![SymbolRecord {
+                name: "ReferenceKind".to_string(),
+                kind: SymbolKind::Enum,
+                depth: 0,
+                sort_order: 0,
+                byte_range: (0, 38),
+                line_range: (0, 0),
+            }],
+        );
+
+        // mod.rs content: "pub use index::ReferenceKind;\n"
+        // The import ref starts at byte 8 ("index::ReferenceKind")
+        let mod_content = "pub use index::ReferenceKind;\n";
+        let reexporter = make_file_with_refs_and_content(
+            "src/domain/mod.rs",
+            LanguageId::Rust,
+            mod_content,
+            vec![make_ref(
+                "ReferenceKind",
+                Some("index::ReferenceKind"),
+                ReferenceKind::Import,
+                None,
+                8, // byte offset where "index::ReferenceKind" starts
+            )],
+            vec![],
+        );
+
+        // tools.rs imports via crate::domain::ReferenceKind
+        let consumer = make_file_with_refs_and_content(
+            "src/tools.rs",
+            LanguageId::Rust,
+            "use crate::domain::ReferenceKind;\nfn check(r: ReferenceKind) {}",
+            vec![
+                make_ref(
+                    "ReferenceKind",
+                    Some("crate::domain::ReferenceKind"),
+                    ReferenceKind::Import,
+                    None,
+                    0,
+                ),
+                make_ref(
+                    "ReferenceKind",
+                    None,
+                    ReferenceKind::TypeUsage,
+                    Some(0),
+                    100,
+                ),
+            ],
+            vec![make_symbol("check")],
+        );
+
+        let index = make_index(
+            vec![
+                ("src/domain/index.rs", target),
+                ("src/domain/mod.rs", reexporter),
+                ("src/tools.rs", consumer),
+            ],
+            false,
+        );
+
+        let deps = index.find_dependents_for_file("src/domain/index.rs");
+        // mod.rs is a direct dependent (it imports from index.rs)
+        // tools.rs is a transitive dependent (it imports from mod.rs which re-exports from index.rs)
+        let dep_files: Vec<&str> = deps.iter().map(|(p, _)| *p).collect();
+        assert!(
+            dep_files.contains(&"src/domain/mod.rs"),
+            "mod.rs should be a direct dependent, got: {dep_files:?}"
+        );
+        assert!(
+            dep_files.contains(&"src/tools.rs"),
+            "tools.rs should be found via pub use re-export chain, got: {dep_files:?}"
+        );
+    }
+
+    #[test]
+    fn test_find_dependents_lib_rs_reexport_finds_transitive() {
+        // src/lib.rs has `pub use error::AppError;`
+        // src/error.rs defines AppError
+        // src/main.rs has `use crate::AppError;`
+        //
+        // find_dependents("src/error.rs") should find main.rs via the
+        // lib.rs re-export chain.
+
+        let target = make_file_with_refs_and_content(
+            "src/error.rs",
+            LanguageId::Rust,
+            "pub struct AppError { msg: String }",
+            vec![],
+            vec![SymbolRecord {
+                name: "AppError".to_string(),
+                kind: SymbolKind::Struct,
+                depth: 0,
+                sort_order: 0,
+                byte_range: (0, 35),
+                line_range: (0, 0),
+            }],
+        );
+
+        // lib.rs re-exports from error module
+        let lib_content = "pub mod error;\npub use error::AppError;\n";
+        let lib_file = make_file_with_refs_and_content(
+            "src/lib.rs",
+            LanguageId::Rust,
+            lib_content,
+            vec![make_ref(
+                "AppError",
+                Some("error::AppError"),
+                ReferenceKind::Import,
+                None,
+                24, // byte offset of "error::AppError" in the content
+            )],
+            vec![],
+        );
+
+        // main.rs imports AppError from crate root (lib.rs)
+        let consumer = make_file_with_refs_and_content(
+            "src/main.rs",
+            LanguageId::Rust,
+            "use crate::AppError;\nfn main() { let _e = AppError { msg: String::new() }; }",
+            vec![
+                make_ref(
+                    "AppError",
+                    Some("crate::AppError"),
+                    ReferenceKind::Import,
+                    None,
+                    0,
+                ),
+                make_ref("AppError", None, ReferenceKind::TypeUsage, Some(0), 100),
+            ],
+            vec![make_symbol("main")],
+        );
+
+        let index = make_index(
+            vec![
+                ("src/error.rs", target),
+                ("src/lib.rs", lib_file),
+                ("src/main.rs", consumer),
+            ],
+            false,
+        );
+
+        let deps = index.find_dependents_for_file("src/error.rs");
+        let dep_files: Vec<&str> = deps.iter().map(|(p, _)| *p).collect();
+        assert!(
+            dep_files.contains(&"src/lib.rs"),
+            "lib.rs should be a direct dependent (it imports from error.rs), got: {dep_files:?}"
+        );
+        assert!(
+            dep_files.contains(&"src/main.rs"),
+            "main.rs should be found via lib.rs pub use re-export, got: {dep_files:?}"
+        );
+    }
+
+    #[test]
+    fn test_find_dependents_non_pub_use_does_not_create_reexport_chain() {
+        // Ensure that a normal `use` (not `pub use`) does NOT trigger
+        // re-export chain resolution.
+
+        let target = make_file_with_refs_and_content(
+            "src/domain/index.rs",
+            LanguageId::Rust,
+            "pub struct Record {}",
+            vec![],
+            vec![SymbolRecord {
+                name: "Record".to_string(),
+                kind: SymbolKind::Struct,
+                depth: 0,
+                sort_order: 0,
+                byte_range: (0, 20),
+                line_range: (0, 0),
+            }],
+        );
+
+        // mod.rs has private `use index::Record;` (not pub)
+        let mod_content = "use index::Record;\nfn internal() {}";
+        let private_importer = make_file_with_refs_and_content(
+            "src/domain/mod.rs",
+            LanguageId::Rust,
+            mod_content,
+            vec![make_ref(
+                "Record",
+                Some("index::Record"),
+                ReferenceKind::Import,
+                None,
+                4, // byte offset of "index::Record" in "use index::Record;\n"
+            )],
+            vec![make_symbol("internal")],
+        );
+
+        // tools.rs imports from crate::domain but only mod.rs is the module root
+        let consumer = make_file_with_refs_and_content(
+            "src/tools.rs",
+            LanguageId::Rust,
+            "use crate::domain::Record;\n",
+            vec![make_ref(
+                "Record",
+                Some("crate::domain::Record"),
+                ReferenceKind::Import,
+                None,
+                0,
+            )],
+            vec![],
+        );
+
+        let index = make_index(
+            vec![
+                ("src/domain/index.rs", target),
+                ("src/domain/mod.rs", private_importer),
+                ("src/tools.rs", consumer),
+            ],
+            false,
+        );
+
+        let deps = index.find_dependents_for_file("src/domain/index.rs");
+        let dep_files: Vec<&str> = deps.iter().map(|(p, _)| *p).collect();
+        assert!(
+            dep_files.contains(&"src/domain/mod.rs"),
+            "mod.rs is a direct dependent, got: {dep_files:?}"
+        );
+        assert!(
+            !dep_files.contains(&"src/tools.rs"),
+            "tools.rs should NOT be found when mod.rs uses private `use` (not pub use), got: {dep_files:?}"
+        );
     }
 
     #[test]
