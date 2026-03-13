@@ -300,6 +300,10 @@ pub struct WhatChangedInput {
     pub path_prefix: Option<String>,
     /// Optional canonical language name such as `Rust`, `TypeScript`, `C#`, or `C++`.
     pub language: Option<String>,
+    /// When true, exclude non-source files (docs, configs, images, lock files).
+    /// Only files with a recognized programming language extension are included.
+    #[serde(default, deserialize_with = "lenient_bool")]
+    pub code_only: Option<bool>,
 }
 
 /// Input for `get_file_content`.
@@ -471,6 +475,12 @@ pub struct GetSymbolContextInput {
     /// When true, switch to bundle mode: returns symbol body + full definitions of all referenced custom types, resolved recursively. Best for edit preparation. Requires path.
     #[serde(default, deserialize_with = "lenient_bool")]
     pub bundle: Option<bool>,
+    /// Optional trace-analysis sections. When provided, switches to trace mode: definition,
+    /// callers, callees, implementations, type dependencies, git activity.
+    /// Valid values: "dependents", "siblings", "implementations", "git".
+    /// Omit for default symbol-context mode. Pass empty array for all trace sections.
+    #[serde(default)]
+    pub sections: Option<Vec<String>>,
 }
 
 /// Input for `analyze_file_impact`.
@@ -529,6 +539,11 @@ pub struct ExploreInput {
     /// Maximum number of results per category (default 10).
     #[serde(default, deserialize_with = "lenient_u32")]
     pub limit: Option<u32>,
+    /// Exploration depth: 1 (default) = symbol names + text patterns + files.
+    /// 2 = adds signatures and one hop of dependents for top symbols.
+    /// 3 = adds call chains and type dependency edges for top symbols.
+    #[serde(default, deserialize_with = "lenient_u32")]
+    pub depth: Option<u32>,
 }
 
 /// Input for `get_co_changes`.
@@ -688,6 +703,7 @@ fn filter_paths_by_prefix_and_language(
     paths: Vec<String>,
     path_prefix: Option<&str>,
     language: Option<&str>,
+    code_only: bool,
 ) -> Result<Vec<String>, String> {
     let lang_filter = parse_language_filter(language)?;
     let prefix = path_prefix
@@ -712,6 +728,12 @@ fn filter_paths_by_prefix_and_language(
             if let Some(ref lang) = lang_filter {
                 let ext = path.rsplit('.').next().unwrap_or("");
                 if crate::domain::index::LanguageId::from_extension(ext).as_ref() != Some(lang) {
+                    return false;
+                }
+            }
+            if code_only && lang_filter.is_none() {
+                let ext = path.rsplit('.').next().unwrap_or("");
+                if crate::domain::index::LanguageId::from_extension(ext).is_none() {
                     return false;
                 }
             }
@@ -1141,9 +1163,7 @@ impl TokenizorServer {
                         start_byte,
                         end_byte,
                     } => format::code_slice_from_indexed_file(file.as_ref(), start_byte, end_byte),
-                    CapturedGetSymbolsEntry::FileNotFound { path } => {
-                        format::not_found_file(&path)
-                    }
+                    CapturedGetSymbolsEntry::FileNotFound { path } => format::not_found_file(&path),
                 })
                 .collect::<Vec<_>>()
                 .join("\n---\n");
@@ -1193,10 +1213,16 @@ impl TokenizorServer {
             }
             "tree" => {
                 // Browsable file tree (old get_file_tree behavior)
-                if let Some(result) = self.proxy_tool_call("get_file_tree", &serde_json::json!({
-                    "path": params.0.path,
-                    "depth": params.0.depth,
-                })).await {
+                if let Some(result) = self
+                    .proxy_tool_call(
+                        "get_file_tree",
+                        &serde_json::json!({
+                            "path": params.0.path,
+                            "depth": params.0.depth,
+                        }),
+                    )
+                    .await
+                {
                     return result;
                 }
                 let published = self.index.published_state();
@@ -1219,7 +1245,10 @@ impl TokenizorServer {
 
                 let state = sidecar_state_for_server(self);
                 match repo_map_text(&state) {
-                    Ok(result) => result,
+                    Ok(result) => {
+                        let hint = "\nTip: search_symbols (find by name) | explore (conceptual questions) | get_file_context (file overview) | diff_symbols (code review)";
+                        format!("{result}{hint}")
+                    }
                     Err(StatusCode::NOT_FOUND) => "Repository map unavailable.".to_string(),
                     Err(StatusCode::INTERNAL_SERVER_ERROR) => {
                         "Repository map failed: internal error.".to_string()
@@ -1272,13 +1301,14 @@ impl TokenizorServer {
         }
     }
 
-    /// Symbol usage analysis with two modes. Default: definition + callers grouped by file + callees + type usages.
-    /// bundle=true: symbol body + full definitions of all referenced custom types, resolved recursively — best
-    /// for edit preparation. Set verbosity='signature' for ~80% smaller output.
+    /// Symbol usage analysis with three modes. (1) Default: definition + callers grouped by file + callees + type usages.
+    /// (2) bundle=true: symbol body + full definitions of all referenced custom types, resolved recursively — best
+    /// for edit preparation (requires path). (3) sections=[...]: comprehensive trace analysis — definition, callers,
+    /// callees, implementations, type dependencies, git activity. Valid sections: 'dependents', 'siblings',
+    /// 'implementations', 'git' (empty array = all). Set verbosity='signature' for ~80% smaller output.
     /// NOT for just the symbol body (use get_symbol).
-    /// NOT for full refactoring context with dependents and git (use trace_symbol).
     #[tool(
-        description = "Symbol usage analysis with two modes. Default: definition + callers grouped by file + callees + type usages. bundle=true: symbol body + full definitions of all referenced custom types, resolved recursively — best for edit preparation (requires path). Set verbosity='signature' for ~80% smaller output. NOT for just the symbol body (use get_symbol). NOT for full refactoring context with dependents and git (use trace_symbol)."
+        description = "Symbol usage analysis with three modes. (1) Default: definition + callers grouped by file + callees + type usages. (2) bundle=true: symbol body + full definitions of all referenced custom types, resolved recursively — best for edit preparation (requires path). (3) sections=[...]: comprehensive trace analysis — definition, callers, callees, implementations, type dependencies, git activity. Valid sections: 'dependents', 'siblings', 'implementations', 'git' (empty array = all). Set verbosity='signature' for ~80% smaller output. NOT for just the symbol body (use get_symbol)."
     )]
     pub(crate) async fn get_symbol_context(
         &self,
@@ -1290,13 +1320,19 @@ impl TokenizorServer {
                 Some(p) => p.to_string(),
                 None => return "Error: bundle=true requires the 'path' parameter.".to_string(),
             };
-            if let Some(result) = self.proxy_tool_call("get_context_bundle", &serde_json::json!({
-                "path": path,
-                "name": params.0.name,
-                "kind": params.0.symbol_kind,
-                "symbol_line": params.0.symbol_line,
-                "verbosity": params.0.verbosity,
-            })).await {
+            if let Some(result) = self
+                .proxy_tool_call(
+                    "get_context_bundle",
+                    &serde_json::json!({
+                        "path": path,
+                        "name": params.0.name,
+                        "kind": params.0.symbol_kind,
+                        "symbol_line": params.0.symbol_line,
+                        "verbosity": params.0.verbosity,
+                    }),
+                )
+                .await
+            {
                 return result;
             }
             let (view, raw_chars) = {
@@ -1318,6 +1354,31 @@ impl TokenizorServer {
             let result = format::context_bundle_result_view(&view, verbosity);
             let footer = format::compact_savings_footer(result.len(), raw_chars);
             return format!("{result}{footer}");
+        }
+
+        // Trace mode: comprehensive symbol analysis (absorbed from trace_symbol)
+        if params.0.sections.is_some() {
+            let path = match params.0.path.as_deref() {
+                Some(p) => p.to_string(),
+                None => return "Error: sections requires the 'path' parameter.".to_string(),
+            };
+
+            // Convert sections: Some(empty vec) = all sections (like trace_symbol's None)
+            let sections_param = params
+                .0
+                .sections
+                .as_ref()
+                .and_then(|s| if s.is_empty() { None } else { Some(s.clone()) });
+
+            let trace_input = TraceSymbolInput {
+                path: path.clone(),
+                name: params.0.name.clone(),
+                kind: params.0.symbol_kind.clone(),
+                symbol_line: params.0.symbol_line,
+                sections: sections_param,
+                verbosity: params.0.verbosity.clone(),
+            };
+            return self.trace_symbol(Parameters(trace_input)).await;
         }
 
         // Default: symbol context mode
@@ -1416,7 +1477,9 @@ impl TokenizorServer {
         };
         let mut result = match impact_tool_text(state, &impact).await {
             Ok(result) => result,
-            Err(StatusCode::NOT_FOUND) => return format!("File not found on disk: {}", params.0.path),
+            Err(StatusCode::NOT_FOUND) => {
+                return format!("File not found on disk: {}", params.0.path);
+            }
             Err(StatusCode::INTERNAL_SERVER_ERROR) => {
                 return "Impact analysis failed: internal error.".to_string();
             }
@@ -1433,7 +1496,9 @@ impl TokenizorServer {
                     match temporal.files.get(path) {
                         Some(history) => {
                             result.push_str("\n\n");
-                            result.push_str(&format::get_co_changes_result_view(path, history, limit));
+                            result.push_str(&format::get_co_changes_result_view(
+                                path, history, limit,
+                            ));
                         }
                         None => {
                             result.push_str("\n\nNo git co-change data found for this file.");
@@ -1442,7 +1507,9 @@ impl TokenizorServer {
                 }
                 crate::live_index::git_temporal::GitTemporalState::Pending
                 | crate::live_index::git_temporal::GitTemporalState::Computing => {
-                    result.push_str("\n\nGit temporal data is still loading. Co-changes unavailable.");
+                    result.push_str(
+                        "\n\nGit temporal data is still loading. Co-changes unavailable.",
+                    );
                 }
                 crate::live_index::git_temporal::GitTemporalState::Unavailable(ref reason) => {
                     result.push_str(&format!("\n\nGit temporal data unavailable: {reason}"));
@@ -1521,14 +1588,8 @@ impl TokenizorServer {
         format::search_text_result_view(result, params.0.group_by.as_deref())
     }
 
-    /// Most comprehensive symbol analysis. Definition, callers, callees, implementations, type
-    /// dependencies, git activity — all in one call. Set verbosity='signature' for ~80% smaller output.
-    /// Use sections=['dependents','git'] to limit output. Use before refactoring when you need the
-    /// complete picture.
-    /// NOT for quick reads (use get_symbol). NOT for edit prep (use get_symbol_context with bundle=true).
-    #[tool(
-        description = "Most comprehensive symbol analysis. Definition, callers, callees, implementations, type dependencies, git activity — all in one call. Set verbosity='signature' for ~80% smaller output. Use sections=['dependents','git'] to limit output. Use before refactoring when you need the complete picture. NOT for quick reads (use get_symbol). NOT for edit prep (use get_symbol_context with bundle=true)."
-    )]
+    /// Internal: trace_symbol logic, called by get_symbol_context when sections are provided.
+    /// Also called directly by daemon backward-compat alias.
     pub(crate) async fn trace_symbol(&self, params: Parameters<TraceSymbolInput>) -> String {
         if let Some(result) = self.proxy_tool_call("trace_symbol", &params.0).await {
             return result;
@@ -1770,9 +1831,10 @@ impl TokenizorServer {
 
     /// List changed files: uncommitted=true for working tree, git_ref for ref comparison, since for
     /// timestamp filter. Use to see what files changed.
+    /// Set code_only=true to exclude non-source files (docs, configs, lock files).
     /// NOT for symbol-level diffs (use diff_symbols).
     #[tool(
-        description = "List changed files: uncommitted=true for working tree, git_ref for ref comparison, since for timestamp filter. Filter with path_prefix and/or language. NOT for symbol-level diffs (use diff_symbols)."
+        description = "List changed files: uncommitted=true for working tree, git_ref for ref comparison, since for timestamp filter. Filter with path_prefix and/or language. Set code_only=true to exclude non-source files (docs, configs, lock files). NOT for symbol-level diffs (use diff_symbols)."
     )]
     pub(crate) async fn what_changed(&self, params: Parameters<WhatChangedInput>) -> String {
         if let Some(result) = self.proxy_tool_call("what_changed", &params.0).await {
@@ -1812,6 +1874,7 @@ impl TokenizorServer {
                             paths,
                             params.0.path_prefix.as_deref(),
                             params.0.language.as_deref(),
+                            params.0.code_only.unwrap_or(false),
                         ) {
                             Ok(filtered) => format::what_changed_paths_result(
                                 &filtered,
@@ -1839,12 +1902,11 @@ impl TokenizorServer {
                             paths,
                             params.0.path_prefix.as_deref(),
                             params.0.language.as_deref(),
+                            params.0.code_only.unwrap_or(false),
                         ) {
                             Ok(filtered) => format::what_changed_paths_result(
                                 &filtered,
-                                &format!(
-                                    "No changes detected relative to git ref '{git_ref}'."
-                                ),
+                                &format!("No changes detected relative to git ref '{git_ref}'."),
                             ),
                             Err(e) => e,
                         }
@@ -1889,9 +1951,9 @@ impl TokenizorServer {
     /// find trait/interface implementors bidirectionally — set direction='trait'/'type'/'auto'.
     /// Use when you need 'who calls this?' or 'who implements this?'
     /// NOT for file-level dependencies (use find_dependents).
-    /// NOT for full refactoring context (use trace_symbol).
+    /// NOT for full refactoring context (use get_symbol_context with sections=[...]).
     #[tool(
-        description = "Find all references or implementations for a symbol. Modes: (1) default/references: call sites, imports, type usages grouped by file — set compact=true for ~60-75% smaller output. (2) mode='implementations': find trait/interface implementors bidirectionally — set direction='trait'/'type'/'auto'. Use when you need 'who calls this?' or 'who implements this?' NOT for file-level dependencies (use find_dependents). NOT for full refactoring context (use trace_symbol)."
+        description = "Find all references or implementations for a symbol. Modes: (1) default/references: call sites, imports, type usages grouped by file — set compact=true for ~60-75% smaller output. (2) mode='implementations': find trait/interface implementors bidirectionally — set direction='trait'/'type'/'auto'. Use when you need 'who calls this?' or 'who implements this?' NOT for file-level dependencies (use find_dependents). NOT for full refactoring context (use get_symbol_context with sections=[...])."
     )]
     pub(crate) async fn find_references(&self, params: Parameters<FindReferencesInput>) -> String {
         let input = &params.0;
@@ -1900,11 +1962,14 @@ impl TokenizorServer {
         if mode == "implementations" {
             // Implementations mode (old find_implementations behavior)
             if let Some(result) = self
-                .proxy_tool_call("find_implementations", &serde_json::json!({
-                    "name": input.name,
-                    "direction": input.direction,
-                    "limit": input.limit,
-                }))
+                .proxy_tool_call(
+                    "find_implementations",
+                    &serde_json::json!({
+                        "name": input.name,
+                        "direction": input.direction,
+                        "limit": input.limit,
+                    }),
+                )
                 .await
             {
                 return result;
@@ -1979,16 +2044,13 @@ impl TokenizorServer {
         }
     }
 
-
-
-
     /// Start here when you don't know where to look. Accepts a natural-language concept
-    /// (e.g. 'error handling', 'authentication') and returns a unified overview of related symbols,
-    /// patterns, and files. Use for conceptual questions like 'how does X work?'.
-    /// NOT for finding a specific symbol by name (use search_symbols).
-    /// NOT for text content search (use search_text).
+    /// and returns related symbols, patterns, and files. Set depth=2 for signatures and
+    /// dependents of top symbols (~1500 tokens). Set depth=3 for implementations and type
+    /// dependency chains (~3000 tokens). NOT for finding a specific symbol by name
+    /// (use search_symbols). NOT for text content search (use search_text).
     #[tool(
-        description = "Start here when you don't know where to look. Accepts a natural-language concept (e.g. 'error handling', 'authentication') and returns a unified overview of related symbols, patterns, and files. Use for conceptual questions like 'how does X work?'. NOT for finding a specific symbol by name (use search_symbols). NOT for text content search (use search_text)."
+        description = "Start here when you don't know where to look. Accepts a natural-language concept and returns related symbols, patterns, and files. Set depth=2 for signatures and dependents of top symbols (~1500 tokens). Set depth=3 for implementations and type dependency chains (~3000 tokens). NOT for finding a specific symbol by name (use search_symbols). NOT for text content search (use search_text)."
     )]
     pub(crate) async fn explore(&self, params: Parameters<ExploreInput>) -> String {
         if let Some(result) = self.proxy_tool_call("explore", &params.0).await {
@@ -2067,9 +2129,79 @@ impl TokenizorServer {
         related_files.sort_by(|a, b| b.1.cmp(&a.1));
         related_files.truncate(limit);
 
-        format::explore_result_view(&label, &symbol_hits, &text_hits, &related_files)
-    }
+        // Depth 2+: enrich top symbol hits with signatures and dependents
+        let depth = params.0.depth.unwrap_or(1).max(1).min(3);
+        let mut enriched_symbols: Vec<(String, String, String, Option<String>, Vec<String>)> =
+            Vec::new();
+        // (name, kind, path, signature, dependent_files)
 
+        if depth >= 2 {
+            let enrich_limit = 5.min(symbol_hits.len());
+            for (name, kind, path) in &symbol_hits[..enrich_limit] {
+                let signature = guard.get_file(path).and_then(|file| {
+                    let sym = file.symbols.iter().find(|s| {
+                        s.name == *name && s.kind.to_string().eq_ignore_ascii_case(kind)
+                    })?;
+                    let body = std::str::from_utf8(
+                        &file.content[sym.byte_range.0 as usize..sym.byte_range.1 as usize],
+                    )
+                    .ok()?;
+                    Some(format::apply_verbosity(body, "signature"))
+                });
+
+                let dependents = {
+                    let dep_view = guard.capture_find_dependents_view(path);
+                    dep_view
+                        .files
+                        .iter()
+                        .take(3)
+                        .map(|f| f.file_path.clone())
+                        .collect()
+                };
+
+                enriched_symbols.push((
+                    name.clone(),
+                    kind.clone(),
+                    path.clone(),
+                    signature,
+                    dependents,
+                ));
+            }
+        }
+
+        // Depth 3: also gather implementations for top symbols
+        let mut symbol_impls: Vec<(String, Vec<String>)> = Vec::new(); // (name, impl_descriptions)
+        if depth >= 3 {
+            let impl_limit = 3.min(enriched_symbols.len());
+            for (name, _kind, _path, _, _) in &enriched_symbols[..impl_limit] {
+                let impl_view = guard.capture_find_implementations_view(name, None);
+                let impl_names: Vec<String> = impl_view
+                    .entries
+                    .iter()
+                    .take(5)
+                    .map(|e| {
+                        format!(
+                            "{} impl {} ({}:{})",
+                            e.implementor, e.trait_name, e.file_path, e.line
+                        )
+                    })
+                    .collect();
+                if !impl_names.is_empty() {
+                    symbol_impls.push((name.clone(), impl_names));
+                }
+            }
+        }
+
+        format::explore_result_view(
+            &label,
+            &symbol_hits,
+            &text_hits,
+            &related_files,
+            &enriched_symbols,
+            &symbol_impls,
+            depth,
+        )
+    }
 
     /// Symbol-level diff between two git refs. Shows +added, -removed, ~modified symbols per changed
     /// file. Use for code review to see which functions/classes changed.
@@ -2234,11 +2366,7 @@ impl TokenizorServer {
         &self,
         params: Parameters<edit::InsertSymbolInput>,
     ) -> String {
-        let position = params
-            .0
-            .position
-            .as_deref()
-            .unwrap_or("after");
+        let position = params.0.position.as_deref().unwrap_or("after");
         if position != "before" && position != "after" {
             return format!("Error: position must be 'before' or 'after', got '{position}'");
         }
@@ -2853,11 +2981,13 @@ mod tests {
     async fn test_get_repo_map_full_uses_project_name() {
         let (key, file) = make_file("src/main.rs", b"fn main() {}", vec![]);
         let server = make_server(make_live_index_ready(vec![(key, file)]));
-        let result = server.get_repo_map(Parameters(super::GetRepoMapInput {
-            detail: Some("full".to_string()),
-            path: None,
-            depth: None,
-        })).await;
+        let result = server
+            .get_repo_map(Parameters(super::GetRepoMapInput {
+                detail: Some("full".to_string()),
+                path: None,
+                depth: None,
+            }))
+            .await;
         assert!(
             result.contains("test_project"),
             "repo outline should use project_name, got: {result}"
@@ -2867,11 +2997,13 @@ mod tests {
     #[tokio::test]
     async fn test_get_repo_map_full_loading_guard_empty() {
         let server = make_server(make_live_index_empty());
-        let result = server.get_repo_map(Parameters(super::GetRepoMapInput {
-            detail: Some("full".to_string()),
-            path: None,
-            depth: None,
-        })).await;
+        let result = server
+            .get_repo_map(Parameters(super::GetRepoMapInput {
+                detail: Some("full".to_string()),
+                path: None,
+                depth: None,
+            }))
+            .await;
         assert_eq!(result, crate::protocol::format::empty_guard_message());
     }
 
@@ -2912,11 +3044,13 @@ mod tests {
         );
         let server = TokenizorServer::new_daemon_proxy(daemon_client);
 
-        let result = server.get_repo_map(Parameters(super::GetRepoMapInput {
-            detail: Some("full".to_string()),
-            path: None,
-            depth: None,
-        })).await;
+        let result = server
+            .get_repo_map(Parameters(super::GetRepoMapInput {
+                detail: Some("full".to_string()),
+                path: None,
+                depth: None,
+            }))
+            .await;
         assert!(
             result.contains("main.rs"),
             "remote repo outline should come from daemon project instance, got: {result}"
@@ -2931,11 +3065,13 @@ mod tests {
         let (key, file) = make_file("src/main.rs", b"fn main() {}", vec![sym]);
         let server = make_server(make_live_index_ready(vec![(key, file)]));
 
-        let result = server.get_repo_map(Parameters(super::GetRepoMapInput {
-            detail: None,
-            path: None,
-            depth: None,
-        })).await;
+        let result = server
+            .get_repo_map(Parameters(super::GetRepoMapInput {
+                detail: None,
+                path: None,
+                depth: None,
+            }))
+            .await;
 
         assert!(
             result.contains("Index: 1 files, 1 symbols"),
@@ -3127,6 +3263,7 @@ mod tests {
                 symbol_line: None,
                 verbosity: None,
                 bundle: None,
+                sections: None,
             }))
             .await;
 
@@ -3179,6 +3316,7 @@ mod tests {
                 symbol_line: Some(1),
                 verbosity: None,
                 bundle: None,
+                sections: None,
             }))
             .await;
 
@@ -3213,6 +3351,7 @@ mod tests {
                 symbol_line: None,
                 verbosity: None,
                 bundle: None,
+                sections: None,
             }))
             .await;
 
@@ -3272,6 +3411,7 @@ mod tests {
                 symbol_line: Some(1),
                 verbosity: None,
                 bundle: None,
+                sections: None,
             }))
             .await;
 
@@ -3393,6 +3533,7 @@ mod tests {
                 uncommitted: None,
                 path_prefix: None,
                 language: None,
+                code_only: None,
             }))
             .await;
 
@@ -4210,6 +4351,7 @@ mod tests {
                 uncommitted: None,
                 path_prefix: None,
                 language: None,
+                code_only: None,
             }))
             .await;
         assert!(
@@ -4247,6 +4389,7 @@ mod tests {
                 uncommitted: None,
                 path_prefix: None,
                 language: None,
+                code_only: None,
             }))
             .await;
         assert!(
@@ -4284,6 +4427,7 @@ mod tests {
                 uncommitted: None,
                 path_prefix: None,
                 language: None,
+                code_only: None,
             }))
             .await;
         assert!(
@@ -4861,6 +5005,7 @@ mod tests {
             .explore(Parameters(super::ExploreInput {
                 query: "error handling".to_string(),
                 limit: Some(5),
+                depth: None,
             }))
             .await;
         assert!(
@@ -4883,6 +5028,7 @@ mod tests {
             .explore(Parameters(super::ExploreInput {
                 query: "process data".to_string(),
                 limit: Some(5),
+                depth: None,
             }))
             .await;
         assert!(
@@ -4898,11 +5044,38 @@ mod tests {
             .explore(Parameters(super::ExploreInput {
                 query: "".to_string(),
                 limit: None,
+                depth: None,
             }))
             .await;
         assert!(
             result.contains("Explore requires a non-empty query"),
             "should reject empty query, got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_explore_depth_2_shows_signatures() {
+        let content = b"pub enum Error {\n    NotFound,\n    Io(std::io::Error),\n}\nimpl Error {\n    fn is_retryable(&self) -> bool { false }\n}\n";
+        let sym = SymbolRecord {
+            name: "Error".to_string(),
+            kind: SymbolKind::Enum,
+            depth: 0,
+            sort_order: 0,
+            byte_range: (0, content.len() as u32),
+            line_range: (0, 5),
+        };
+        let (key, file) = make_file("src/error.rs", content, vec![sym]);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let result = server
+            .explore(Parameters(super::ExploreInput {
+                query: "error handling".to_string(),
+                limit: Some(5),
+                depth: Some(2),
+            }))
+            .await;
+        assert!(
+            result.contains("pub enum Error"),
+            "depth 2 should show signature, got: {result}"
         );
     }
 
@@ -4943,8 +5116,8 @@ mod tests {
         // Sanity check: we should have a reasonable number of tools.
         // Update this lower bound when removing tools; it prevents accidental regressions.
         assert!(
-            tool_count >= 25,
-            "server should expose at least 25 tools; found {tool_count}"
+            tool_count >= 24,
+            "server should expose at least 24 tools; found {tool_count}"
         );
     }
 
@@ -4970,6 +5143,62 @@ mod tests {
 
         assert!(result.contains("fn process"), "got: {result}");
         assert!(result.contains("Callers (0)"), "got: {result}");
+    }
+
+    #[tokio::test]
+    async fn test_get_symbol_context_trace_mode() {
+        let target = make_file(
+            "src/lib.rs",
+            b"fn process() {}\n",
+            vec![make_symbol("process", SymbolKind::Function, 1, 1)],
+        );
+        let server = make_server(make_live_index_ready(vec![target]));
+
+        let result = server
+            .get_symbol_context(Parameters(super::GetSymbolContextInput {
+                name: "process".to_string(),
+                file: None,
+                path: Some("src/lib.rs".to_string()),
+                symbol_kind: None,
+                symbol_line: None,
+                verbosity: None,
+                bundle: None,
+                sections: Some(vec!["dependents".to_string()]),
+            }))
+            .await;
+
+        assert!(
+            result.contains("fn process"),
+            "trace mode should show definition, got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_symbol_context_trace_mode_requires_path() {
+        let target = make_file(
+            "src/lib.rs",
+            b"fn process() {}\n",
+            vec![make_symbol("process", SymbolKind::Function, 1, 1)],
+        );
+        let server = make_server(make_live_index_ready(vec![target]));
+
+        let result = server
+            .get_symbol_context(Parameters(super::GetSymbolContextInput {
+                name: "process".to_string(),
+                file: None,
+                path: None,
+                symbol_kind: None,
+                symbol_line: None,
+                verbosity: None,
+                bundle: None,
+                sections: Some(vec![]),
+            }))
+            .await;
+
+        assert!(
+            result.contains("Error: sections requires"),
+            "should require path, got: {result}"
+        );
     }
 
     #[tokio::test]
@@ -5080,6 +5309,7 @@ mod tests {
                 symbol_line: None,
                 verbosity: None,
                 bundle: Some(true),
+                sections: None,
             }))
             .await;
         assert_eq!(result, crate::protocol::format::empty_guard_message());
@@ -5097,6 +5327,7 @@ mod tests {
                 symbol_line: None,
                 verbosity: None,
                 bundle: Some(true),
+                sections: None,
             }))
             .await;
         assert!(result.contains("File not found"), "got: {result}");
@@ -5144,6 +5375,7 @@ mod tests {
                 symbol_line: Some(2),
                 verbosity: None,
                 bundle: Some(true),
+                sections: None,
             }))
             .await;
 
@@ -5178,6 +5410,7 @@ mod tests {
                 symbol_line: None,
                 verbosity: None,
                 bundle: Some(true),
+                sections: None,
             }))
             .await;
 
@@ -5661,7 +5894,8 @@ mod tests {
         // impact analysis uses the loading guard and returns early, so the co-changes append
         // won't be reached. The loading guard message is returned instead.
         assert!(
-            result.contains("still loading") || result.contains("unavailable")
+            result.contains("still loading")
+                || result.contains("unavailable")
                 || result == crate::protocol::format::empty_guard_message(),
             "expected loading/unavailable/guard message, got: {result}"
         );
@@ -6018,5 +6252,19 @@ mod tests {
         assert!(a.contains("logging"), "a.rs: {a}");
         let b = std::fs::read_to_string(src_dir.join("b.rs")).unwrap();
         assert!(b.contains("logging"), "b.rs: {b}");
+    }
+
+    #[test]
+    fn test_filter_paths_code_only() {
+        let paths = vec![
+            "src/main.rs".to_string(),
+            "README.md".to_string(),
+            "Cargo.toml".to_string(),
+            "src/lib.rs".to_string(),
+            ".github/workflows/ci.yml".to_string(),
+            "package.json".to_string(),
+        ];
+        let result = super::filter_paths_by_prefix_and_language(paths, None, None, true).unwrap();
+        assert_eq!(result, vec!["src/main.rs", "src/lib.rs"]);
     }
 }

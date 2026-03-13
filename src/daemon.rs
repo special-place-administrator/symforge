@@ -1244,9 +1244,23 @@ async fn execute_tool_call(
         "search_text" => Ok(server
             .search_text(Parameters(decode_params::<SearchTextInput>(params)?))
             .await),
-        "trace_symbol" => Ok(server
-            .trace_symbol(Parameters(decode_params::<TraceSymbolInput>(params)?))
-            .await),
+        "trace_symbol" => {
+            let tp: TraceSymbolInput = decode_params(params)?;
+            // Convert: trace_symbol's None sections = "all" = empty vec in get_symbol_context
+            let sections = tp.sections.unwrap_or_default();
+            Ok(server
+                .get_symbol_context(Parameters(GetSymbolContextInput {
+                    name: tp.name,
+                    file: None,
+                    path: Some(tp.path),
+                    symbol_kind: tp.kind,
+                    symbol_line: tp.symbol_line,
+                    verbosity: tp.verbosity,
+                    bundle: None,
+                    sections: Some(sections),
+                }))
+                .await)
+        }
         "inspect_match" => Ok(server
             .inspect_match(Parameters(decode_params::<InspectMatchInput>(params)?))
             .await),
@@ -1302,6 +1316,7 @@ async fn execute_tool_call(
                 symbol_line: bundle_input.symbol_line,
                 verbosity: bundle_input.verbosity,
                 bundle: Some(true),
+                sections: None,
             };
             Ok(server.get_symbol_context(Parameters(merged)).await)
         }

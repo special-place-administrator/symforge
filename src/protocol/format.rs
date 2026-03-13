@@ -62,7 +62,11 @@ fn render_file_outline(relative_path: &str, symbols: &[crate::domain::SymbolReco
         let kind_str = sym.kind.to_string();
         lines.push(format!(
             "{}{:<12} {:<30} {}-{}",
-            indent, kind_str, sym.name, sym.line_range.0 + 1, sym.line_range.1 + 1
+            indent,
+            kind_str,
+            sym.name,
+            sym.line_range.0 + 1,
+            sym.line_range.1 + 1
         ));
     }
 
@@ -150,7 +154,11 @@ fn render_symbol_detail(
             let byte_count = end.saturating_sub(start);
             format!(
                 "{}\n[{}, lines {}-{}, {} bytes]",
-                body, s.kind, s.line_range.0 + 1, s.line_range.1 + 1, byte_count
+                body,
+                s.kind,
+                s.line_range.0 + 1,
+                s.line_range.1 + 1,
+                byte_count
             )
         }
     }
@@ -4479,14 +4487,52 @@ pub fn explore_result_view(
     symbol_hits: &[(String, String, String)], // (name, kind, path)
     text_hits: &[(String, String, usize)],    // (path, line, line_number)
     related_files: &[(String, usize)],        // (path, count)
+    enriched_symbols: &[(String, String, String, Option<String>, Vec<String>)],
+    symbol_impls: &[(String, Vec<String>)],
+    depth: u32,
 ) -> String {
     let mut lines = vec![format!("── Exploring: {label} ──")];
     lines.push(String::new());
 
-    if !symbol_hits.is_empty() {
+    if depth >= 2 && !enriched_symbols.is_empty() {
+        // Depth 2+: show enriched symbols with signatures
+        lines.push(format!("Symbols ({} found):", symbol_hits.len()));
+        for (name, kind, path, signature, dependents) in enriched_symbols {
+            if let Some(sig) = signature {
+                // Show first line of signature only to keep it compact
+                let first_line = sig.lines().next().unwrap_or(sig);
+                lines.push(format!("  {first_line}  [{kind}, {path}]"));
+            } else {
+                lines.push(format!("  {kind} {name}  {path}"));
+            }
+            if !dependents.is_empty() {
+                lines.push(format!("    <- used by: {}", dependents.join(", ")));
+            }
+        }
+        // Show remaining non-enriched symbols in compact form
+        if symbol_hits.len() > enriched_symbols.len() {
+            for (name, kind, path) in &symbol_hits[enriched_symbols.len()..] {
+                lines.push(format!("  {kind} {name}  {path}"));
+            }
+        }
+        lines.push(String::new());
+    } else if !symbol_hits.is_empty() {
+        // Depth 1: original compact format
         lines.push(format!("Symbols ({} found):", symbol_hits.len()));
         for (name, kind, path) in symbol_hits {
             lines.push(format!("  {kind} {name}  {path}"));
+        }
+        lines.push(String::new());
+    }
+
+    // Depth 3: implementations
+    if depth >= 3 && !symbol_impls.is_empty() {
+        lines.push("Implementations:".to_string());
+        for (name, impls) in symbol_impls {
+            lines.push(format!("  {name}:"));
+            for imp in impls {
+                lines.push(format!("    -> {imp}"));
+            }
         }
         lines.push(String::new());
     }
