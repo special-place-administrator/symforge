@@ -287,6 +287,10 @@ pub struct WhatChangedInput {
     /// When true, report uncommitted git changes. Defaults to true when no other mode is specified and a repo root exists.
     #[serde(default, deserialize_with = "lenient_bool")]
     pub uncommitted: Option<bool>,
+    /// Optional relative path prefix scope, for example `src/` or `src/protocol`.
+    pub path_prefix: Option<String>,
+    /// Optional canonical language name such as `Rust`, `TypeScript`, `C#`, or `C++`.
+    pub language: Option<String>,
 }
 
 /// Input for `get_file_content`.
@@ -510,6 +514,8 @@ pub struct DiffSymbolsInput {
     pub target: Option<String>,
     /// Optional path filter — only show diffs for files matching this prefix.
     pub path_prefix: Option<String>,
+    /// Optional canonical language name such as `Rust`, `TypeScript`, `C#`, or `C++`.
+    pub language: Option<String>,
 }
 
 enum WhatChangedMode {
@@ -640,6 +646,42 @@ fn parse_language_filter(input: Option<&str>) -> Result<Option<LanguageId>, Stri
     parsed.map(Some).ok_or_else(|| {
         "Unsupported language filter. Use one of: Rust, Python, JavaScript, TypeScript, Go, Java, C, C++, C#, Ruby, PHP, Swift, Kotlin, Dart, Perl, Elixir.".to_string()
     })
+}
+
+fn filter_paths_by_prefix_and_language(
+    paths: Vec<String>,
+    path_prefix: Option<&str>,
+    language: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let lang_filter = parse_language_filter(language)?;
+    let prefix = path_prefix
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(|p| {
+            p.replace('\\', "/")
+                .trim_start_matches("./")
+                .trim_start_matches('/')
+                .trim_end_matches('/')
+                .to_string()
+        });
+
+    Ok(paths
+        .into_iter()
+        .filter(|path| {
+            if let Some(ref pfx) = prefix {
+                if !path.starts_with(pfx.as_str()) {
+                    return false;
+                }
+            }
+            if let Some(ref lang) = lang_filter {
+                let ext = path.rsplit('.').next().unwrap_or("");
+                if crate::domain::index::LanguageId::from_extension(ext).as_ref() != Some(lang) {
+                    return false;
+                }
+            }
+            true
+        })
+        .collect())
 }
 
 fn normalize_path_prefix(input: Option<&str>) -> search::PathScope {
@@ -1488,31 +1530,38 @@ impl TokenizorServer {
         // Handle changed_with (git temporal coupling)
         if let Some(ref target_path) = params.0.changed_with {
             let temporal = self.index.git_temporal();
-            if temporal.state == crate::live_index::git_temporal::GitTemporalState::Ready {
-                if let Some(history) = temporal.files.get(target_path.as_str()) {
-                    let hits: Vec<SearchFilesHit> = history
-                        .co_changes
-                        .iter()
-                        .map(|entry| SearchFilesHit {
-                            tier: SearchFilesTier::CoChange,
-                            path: entry.path.clone(),
-                            coupling_score: Some(entry.coupling_score),
-                            shared_commits: Some(entry.shared_commits),
-                        })
-                        .collect();
-                    let total = hits.len();
-                    return format::search_files_result_view(&SearchFilesView::Found {
-                        query: format!("co-changes with {target_path}"),
-                        total_matches: total,
-                        overflow_count: 0,
-                        hits,
-                    });
+            match temporal.state {
+                crate::live_index::git_temporal::GitTemporalState::Ready => {}
+                crate::live_index::git_temporal::GitTemporalState::Unavailable(ref reason) => {
+                    return format!("Git temporal data unavailable: {reason}");
                 }
-                return format!(
-                    "No git history found for '{target_path}'. Check the file path is correct."
-                );
+                _ => {
+                    return "Git temporal data is still loading. Try again in a few seconds."
+                        .to_string();
+                }
             }
-            return "Git temporal data is not yet available. It loads asynchronously after the first index.".to_string();
+            if let Some(history) = temporal.files.get(target_path.as_str()) {
+                let hits: Vec<SearchFilesHit> = history
+                    .co_changes
+                    .iter()
+                    .map(|entry| SearchFilesHit {
+                        tier: SearchFilesTier::CoChange,
+                        path: entry.path.clone(),
+                        coupling_score: Some(entry.coupling_score),
+                        shared_commits: Some(entry.shared_commits),
+                    })
+                    .collect();
+                let total = hits.len();
+                return format::search_files_result_view(&SearchFilesView::Found {
+                    query: format!("co-changes with {target_path}"),
+                    total_matches: total,
+                    overflow_count: 0,
+                    hits,
+                });
+            }
+            return format!(
+                "No git history found for '{target_path}'. Check the file path is correct."
+            );
         }
 
         if params.0.query.is_empty() {
@@ -1631,7 +1680,7 @@ impl TokenizorServer {
     /// timestamp filter. Use to see what files changed.
     /// NOT for symbol-level diffs (use diff_symbols).
     #[tool(
-        description = "List changed files: uncommitted=true for working tree, git_ref for ref comparison, since for timestamp filter. Use to see what files changed. NOT for symbol-level diffs (use diff_symbols)."
+        description = "List changed files: uncommitted=true for working tree, git_ref for ref comparison, since for timestamp filter. Filter with path_prefix and/or language. NOT for symbol-level diffs (use diff_symbols)."
     )]
     pub(crate) async fn what_changed(&self, params: Parameters<WhatChangedInput>) -> String {
         if let Some(result) = self.proxy_tool_call("what_changed", &params.0).await {
@@ -1665,10 +1714,20 @@ impl TokenizorServer {
                     repo_root,
                     &["status", "--porcelain", "--untracked-files=all"],
                 ) {
-                    Ok(output) => format::what_changed_paths_result(
-                        &parse_git_status_paths(&output),
-                        "No uncommitted changes detected.",
-                    ),
+                    Ok(output) => {
+                        let paths = parse_git_status_paths(&output);
+                        match filter_paths_by_prefix_and_language(
+                            paths,
+                            params.0.path_prefix.as_deref(),
+                            params.0.language.as_deref(),
+                        ) {
+                            Ok(filtered) => format::what_changed_paths_result(
+                                &filtered,
+                                "No uncommitted changes detected.",
+                            ),
+                            Err(e) => e,
+                        }
+                    }
                     Err(error) => format!("Git change detection failed: {error}"),
                 }
             }
@@ -1682,10 +1741,22 @@ impl TokenizorServer {
                         .to_string();
                 };
                 match run_git(repo_root, &["diff", "--name-only", &git_ref, "--"]) {
-                    Ok(output) => format::what_changed_paths_result(
-                        &parse_git_name_only_paths(&output),
-                        &format!("No changes detected relative to git ref '{git_ref}'."),
-                    ),
+                    Ok(output) => {
+                        let paths = parse_git_name_only_paths(&output);
+                        match filter_paths_by_prefix_and_language(
+                            paths,
+                            params.0.path_prefix.as_deref(),
+                            params.0.language.as_deref(),
+                        ) {
+                            Ok(filtered) => format::what_changed_paths_result(
+                                &filtered,
+                                &format!(
+                                    "No changes detected relative to git ref '{git_ref}'."
+                                ),
+                            ),
+                            Err(e) => e,
+                        }
+                    }
                     Err(error) => format!("Git change detection failed: {error}"),
                 }
             }
@@ -1935,6 +2006,9 @@ impl TokenizorServer {
                         if text_hits.len() >= limit {
                             break;
                         }
+                        if format::is_noise_line(&m.line) {
+                            continue;
+                        }
                         text_hits.push((file.path.clone(), m.line.clone(), m.line_number));
                     }
                 }
@@ -2028,16 +2102,28 @@ impl TokenizorServer {
 
         let changed_files_owned = parse_git_name_only_paths(&diff_output);
 
-        // Apply path_prefix filter
+        // Apply path_prefix + language filter
+        let lang_filter = match parse_language_filter(params.0.language.as_deref()) {
+            Ok(f) => f,
+            Err(e) => return e,
+        };
         let changed_files: Vec<&str> = changed_files_owned
             .iter()
             .map(|s| s.as_str())
             .filter(|p| {
-                params
-                    .0
-                    .path_prefix
-                    .as_ref()
-                    .map_or(true, |prefix| p.starts_with(prefix.as_str()))
+                if let Some(ref prefix) = params.0.path_prefix {
+                    if !p.starts_with(prefix.as_str()) {
+                        return false;
+                    }
+                }
+                if let Some(ref lang) = lang_filter {
+                    let ext = p.rsplit('.').next().unwrap_or("");
+                    if crate::domain::index::LanguageId::from_extension(ext).as_ref() != Some(lang)
+                    {
+                        return false;
+                    }
+                }
+                true
             })
             .collect();
 
@@ -3310,6 +3396,8 @@ mod tests {
                 since: None,
                 git_ref: None,
                 uncommitted: None,
+                path_prefix: None,
+                language: None,
             }))
             .await;
 
@@ -4108,6 +4196,8 @@ mod tests {
                 since: Some(0),
                 git_ref: None,
                 uncommitted: None,
+                path_prefix: None,
+                language: None,
             }))
             .await;
         assert!(
@@ -4143,6 +4233,8 @@ mod tests {
                 since: None,
                 git_ref: None,
                 uncommitted: None,
+                path_prefix: None,
+                language: None,
             }))
             .await;
         assert!(
@@ -4178,6 +4270,8 @@ mod tests {
                 since: None,
                 git_ref: Some("HEAD".to_string()),
                 uncommitted: None,
+                path_prefix: None,
+                language: None,
             }))
             .await;
         assert!(
@@ -4871,7 +4965,7 @@ mod tests {
         let target = make_file(
             "src/lib.rs",
             b"fn process() {\n    let x = 1;\n}\n",
-            vec![make_symbol("process", SymbolKind::Function, 1, 3)],
+            vec![make_symbol("process", SymbolKind::Function, 0, 2)],
         );
         let server = make_server(make_live_index_ready(vec![target]));
 
@@ -4885,7 +4979,7 @@ mod tests {
 
         // Verify excerpt
         assert!(result.contains("2:     let x = 1;"), "got: {result}");
-        // Verify enclosing symbol
+        // Verify enclosing symbol (line_range is 0-based internally, displayed as 1-based)
         assert!(
             result.contains("Enclosing symbol: fn process (lines 1-3)"),
             "got: {result}"

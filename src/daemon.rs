@@ -18,12 +18,17 @@ use tokio::net::TcpListener;
 
 use crate::live_index::{self, SharedIndex};
 use crate::protocol::TokenizorServer;
+use crate::protocol::edit::{
+    BatchEditInput, BatchInsertInput, BatchRenameInput, DeleteSymbolInput, EditWithinSymbolInput,
+    InsertSymbolInput, ReplaceSymbolBodyInput,
+};
 use crate::protocol::tools::{
     AnalyzeFileImpactInput, DiffSymbolsInput, ExploreInput, FindDependentsInput,
-    FindReferencesInput, GetCoChangesInput, GetContextBundleInput, GetFileContentInput,
-    GetFileContextInput, GetFileOutlineInput, GetFileTreeInput, GetSymbolContextInput,
-    GetSymbolInput, GetSymbolsInput, IndexFolderInput, ResolvePathInput, SearchFilesInput,
-    SearchSymbolsInput, SearchTextInput, WhatChangedInput,
+    FindImplementationsInput, FindReferencesInput, GetCoChangesInput, GetContextBundleInput,
+    GetFileContentInput, GetFileContextInput, GetFileOutlineInput, GetFileTreeInput,
+    GetSymbolContextInput, GetSymbolInput, GetSymbolsInput, IndexFolderInput, InspectMatchInput,
+    ResolvePathInput, SearchFilesInput, SearchSymbolsInput, SearchTextInput, TraceSymbolInput,
+    WhatChangedInput,
 };
 use crate::sidecar::{SidecarState, SymbolSnapshot, TokenStats};
 use crate::watcher::{self, WatcherInfo};
@@ -1214,6 +1219,12 @@ async fn execute_tool_call(
         "search_text" => Ok(server
             .search_text(Parameters(decode_params::<SearchTextInput>(params)?))
             .await),
+        "trace_symbol" => Ok(server
+            .trace_symbol(Parameters(decode_params::<TraceSymbolInput>(params)?))
+            .await),
+        "inspect_match" => Ok(server
+            .inspect_match(Parameters(decode_params::<InspectMatchInput>(params)?))
+            .await),
         "search_files" => Ok(server
             .search_files(Parameters(decode_params::<SearchFilesInput>(params)?))
             .await),
@@ -1250,6 +1261,33 @@ async fn execute_tool_call(
             .await),
         "diff_symbols" => Ok(server
             .diff_symbols(Parameters(decode_params::<DiffSymbolsInput>(params)?))
+            .await),
+        "find_implementations" => Ok(server
+            .find_implementations(Parameters(decode_params::<FindImplementationsInput>(params)?))
+            .await),
+        "replace_symbol_body" => Ok(server
+            .replace_symbol_body(Parameters(decode_params::<ReplaceSymbolBodyInput>(params)?))
+            .await),
+        "insert_before_symbol" => Ok(server
+            .insert_before_symbol(Parameters(decode_params::<InsertSymbolInput>(params)?))
+            .await),
+        "insert_after_symbol" => Ok(server
+            .insert_after_symbol(Parameters(decode_params::<InsertSymbolInput>(params)?))
+            .await),
+        "delete_symbol" => Ok(server
+            .delete_symbol(Parameters(decode_params::<DeleteSymbolInput>(params)?))
+            .await),
+        "edit_within_symbol" => Ok(server
+            .edit_within_symbol(Parameters(decode_params::<EditWithinSymbolInput>(params)?))
+            .await),
+        "batch_edit" => Ok(server
+            .batch_edit(Parameters(decode_params::<BatchEditInput>(params)?))
+            .await),
+        "batch_rename" => Ok(server
+            .batch_rename(Parameters(decode_params::<BatchRenameInput>(params)?))
+            .await),
+        "batch_insert" => Ok(server
+            .batch_insert(Parameters(decode_params::<BatchInsertInput>(params)?))
             .await),
         other => anyhow::bail!("unknown tool '{other}'"),
     }

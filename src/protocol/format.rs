@@ -62,7 +62,7 @@ fn render_file_outline(relative_path: &str, symbols: &[crate::domain::SymbolReco
         let kind_str = sym.kind.to_string();
         lines.push(format!(
             "{}{:<12} {:<30} {}-{}",
-            indent, kind_str, sym.name, sym.line_range.0, sym.line_range.1
+            indent, kind_str, sym.name, sym.line_range.0 + 1, sym.line_range.1 + 1
         ));
     }
 
@@ -150,7 +150,7 @@ fn render_symbol_detail(
             let byte_count = end.saturating_sub(start);
             format!(
                 "{}\n[{}, lines {}-{}, {} bytes]",
-                body, s.kind, s.line_range.0, s.line_range.1, byte_count
+                body, s.kind, s.line_range.0 + 1, s.line_range.1 + 1, byte_count
             )
         }
     }
@@ -266,6 +266,25 @@ pub fn search_text_result_with_options(
     search_text_result_view(result, None)
 }
 
+/// Returns true if the line looks like an import statement or a non-doc comment.
+pub fn is_noise_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.starts_with("///") || trimmed.starts_with("//!") || trimmed.starts_with("/**") {
+        return false;
+    }
+    trimmed.starts_with("use ")
+        || trimmed.starts_with("import ")
+        || trimmed.starts_with("from ")
+        || trimmed.starts_with("require(")
+        || trimmed.starts_with("#include")
+        || trimmed.starts_with("//")
+        || trimmed.starts_with('#')
+        || trimmed.starts_with("/*")
+        || trimmed.starts_with('*')
+        || trimmed.starts_with("--")
+        || line.contains("require(")
+}
+
 pub fn search_text_result_view(
     result: Result<search::TextSearchResult, search::TextSearchError>,
     group_by: Option<&str>,
@@ -368,22 +387,9 @@ pub fn search_text_result_view(
                     }
                 }
                 Some("usage") | Some("purpose") => {
-                    // Filter out lines that look like imports or comments
                     let mut last_symbol: Option<String> = None;
                     for line_match in &file.matches {
-                        let trimmed = line_match.line.trim();
-                        let is_import_or_comment = trimmed.starts_with("use ")
-                            || trimmed.starts_with("import ")
-                            || trimmed.starts_with("from ")
-                            || trimmed.starts_with("require(")
-                            || trimmed.starts_with("#include")
-                            || trimmed.starts_with("//")
-                            || trimmed.starts_with('#')
-                            || trimmed.starts_with("/*")
-                            || trimmed.starts_with('*')
-                            || trimmed.starts_with("--")
-                            || line_match.line.contains("require(");
-                        if is_import_or_comment {
+                        if is_noise_line(&line_match.line) {
                             continue;
                         }
                         if let Some(ref enc) = line_match.enclosing_symbol {
@@ -1842,8 +1848,8 @@ fn render_context_bundle_found(view: &ContextBundleFoundView, verbosity: &str) -
         body,
         view.kind_label,
         view.file_path,
-        view.line_range.0,
-        view.line_range.1,
+        view.line_range.0 + 1,
+        view.line_range.1 + 1,
         view.byte_count
     );
     output.push_str(&format_context_bundle_section("Callers", &view.callers));
@@ -2232,8 +2238,8 @@ fn format_type_dependencies(deps: &[TypeDependencyView]) -> String {
             dep.name,
             dep.kind_label,
             dep.file_path,
-            dep.line_range.0,
-            dep.line_range.1,
+            dep.line_range.0 + 1,
+            dep.line_range.1 + 1,
             depth_marker,
             dep.body
         ));
@@ -2482,13 +2488,13 @@ mod tests {
         let (key, file) = make_file(
             "src/main.rs",
             b"fn main() {}",
-            vec![make_symbol("main", SymbolKind::Function, 0, 1, 5)],
+            vec![make_symbol("main", SymbolKind::Function, 0, 0, 4)],
         );
         let index = make_index(vec![(key, file)]);
         let result = file_outline(&index, "src/main.rs");
         assert!(result.contains("fn"), "should contain fn kind");
         assert!(result.contains("main"), "should contain symbol name");
-        assert!(result.contains("1-5"), "should contain line range");
+        assert!(result.contains("1-5"), "should contain 1-based line range");
     }
 
     #[test]
@@ -2549,14 +2555,14 @@ mod tests {
     #[test]
     fn test_symbol_detail_returns_body_and_footer() {
         let content = b"fn hello() { println!(\"hi\"); }";
-        let sym = make_symbol_with_bytes("hello", SymbolKind::Function, 0, 1, 1, 0, 30);
+        let sym = make_symbol_with_bytes("hello", SymbolKind::Function, 0, 0, 0, 0, 30);
         let (key, file) = make_file("src/lib.rs", content, vec![sym]);
         let index = make_index(vec![(key, file)]);
         let result = symbol_detail(&index, "src/lib.rs", "hello", None);
         assert!(result.contains("fn hello"), "should contain body");
         assert!(
             result.contains("[fn, lines 1-1, 30 bytes]"),
-            "should contain footer"
+            "should contain footer (0-based line_range 0-0 displayed as 1-based 1-1)"
         );
     }
 
@@ -2580,13 +2586,13 @@ mod tests {
     #[test]
     fn test_symbol_detail_kind_filter_matches() {
         let symbols = vec![
-            make_symbol("foo", SymbolKind::Function, 0, 1, 1),
-            make_symbol("foo", SymbolKind::Struct, 0, 5, 10),
+            make_symbol("foo", SymbolKind::Function, 0, 0, 0),
+            make_symbol("foo", SymbolKind::Struct, 0, 4, 9),
         ];
         let content = b"fn foo() {} struct foo {}";
         let (key, file) = make_file("src/lib.rs", content, symbols);
         let index = make_index(vec![(key, file)]);
-        // Filter for struct kind
+        // Filter for struct kind (0-based 4-9 displays as 1-based 5-10)
         let result = symbol_detail(&index, "src/lib.rs", "foo", Some("struct"));
         assert!(
             result.contains("[struct, lines 5-10"),
@@ -4407,8 +4413,8 @@ mod tests {
             "header missing, got: {result}"
         );
         assert!(
-            result.contains("── UserConfig [struct, src/config.rs:0-2] ──"),
-            "UserConfig entry missing, got: {result}"
+            result.contains("── UserConfig [struct, src/config.rs:1-3] ──"),
+            "UserConfig entry missing (0-based 0-2 displayed as 1-based 1-3), got: {result}"
         );
         assert!(
             result.contains("pub struct UserConfig"),

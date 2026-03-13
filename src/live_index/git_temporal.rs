@@ -35,13 +35,18 @@ pub fn spawn_git_temporal_computation(index: SharedIndex, repo_root: PathBuf) {
     if tokio::runtime::Handle::try_current().is_err() {
         return;
     }
-    tokio::spawn(async move {
-        // Mark as computing so readers see the state transition.
+
+    // If data is already Ready, keep serving it while we recompute in the background.
+    let was_ready = index.git_temporal().state == GitTemporalState::Ready;
+
+    if !was_ready {
         index.update_git_temporal(GitTemporalIndex {
             state: GitTemporalState::Computing,
             ..GitTemporalIndex::pending()
         });
+    }
 
+    tokio::spawn(async move {
         // Run the computation on a blocking thread (it calls `git` via Command).
         let result =
             tokio::task::spawn_blocking(move || GitTemporalIndex::compute(&repo_root)).await;
@@ -58,9 +63,11 @@ pub fn spawn_git_temporal_computation(index: SharedIndex, repo_root: PathBuf) {
             }
             Err(error) => {
                 tracing::warn!("git temporal computation panicked: {error}");
-                index.update_git_temporal(GitTemporalIndex::unavailable(format!(
-                    "computation panicked: {error}"
-                )));
+                if !was_ready {
+                    index.update_git_temporal(GitTemporalIndex::unavailable(format!(
+                        "computation panicked: {error}"
+                    )));
+                }
             }
         }
     });

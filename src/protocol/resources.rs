@@ -140,6 +140,8 @@ impl TokenizorServer {
                     since: None,
                     git_ref: None,
                     uncommitted: None,
+                    path_prefix: None,
+                    language: None,
                 }))
                 .await
             }
