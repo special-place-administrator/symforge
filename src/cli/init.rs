@@ -413,7 +413,9 @@ fn merge_tokenizor_codex_server(config: &mut DocumentMut, binary_path: &str) {
     let mut allow_array = Array::new();
     for tool_name in TOKENIZOR_TOOL_NAMES {
         // Codex uses plain tool names without mcp__ prefix
-        let short_name = tool_name.strip_prefix("mcp__tokenizor__").unwrap_or(tool_name);
+        let short_name = tool_name
+            .strip_prefix("mcp__tokenizor__")
+            .unwrap_or(tool_name);
         allow_array.push(short_name);
     }
     tokenizor["allowed_tools"] = value(allow_array);
@@ -848,11 +850,21 @@ mod tests {
     fn test_merge_adds_allowed_tools() {
         let mut settings = json!({});
         merge_tokenizor_hooks(&mut settings, "/usr/bin/tokenizor-mcp");
-        let allowed = settings["allowedTools"].as_array().expect("allowedTools should be array");
-        assert!(allowed.iter().any(|v| v.as_str() == Some("mcp__tokenizor__search_symbols")),
-            "should include search_symbols, got: {allowed:?}");
-        assert!(allowed.iter().any(|v| v.as_str() == Some("mcp__tokenizor__get_symbol")),
-            "should include get_symbol");
+        let allowed = settings["allowedTools"]
+            .as_array()
+            .expect("allowedTools should be array");
+        assert!(
+            allowed
+                .iter()
+                .any(|v| v.as_str() == Some("mcp__tokenizor__search_symbols")),
+            "should include search_symbols, got: {allowed:?}"
+        );
+        assert!(
+            allowed
+                .iter()
+                .any(|v| v.as_str() == Some("mcp__tokenizor__get_symbol")),
+            "should include get_symbol"
+        );
         let first_len = allowed.len();
         // Should not duplicate on re-run
         merge_tokenizor_hooks(&mut settings, "/usr/bin/tokenizor-mcp");
@@ -866,7 +878,10 @@ mod tests {
         let config_path = dir.path().join("config.toml");
         register_codex_mcp_server(&config_path, "/usr/bin/tokenizor-mcp").unwrap();
         let content = std::fs::read_to_string(&config_path).unwrap();
-        assert!(content.contains("search_symbols"), "should contain tool names: {content}");
+        assert!(
+            content.contains("search_symbols"),
+            "should contain tool names: {content}"
+        );
     }
 
     #[test]
@@ -886,9 +901,13 @@ mod tests {
         register_gemini_mcp_server(&settings_path, "/usr/bin/tokenizor-mcp").unwrap();
         let content = std::fs::read_to_string(&settings_path).unwrap();
         let config: Value = serde_json::from_str(&content).unwrap();
-        let allowed = config["allowedTools"].as_array().expect("allowedTools must be array");
+        let allowed = config["allowedTools"]
+            .as_array()
+            .expect("allowedTools must be array");
         assert!(
-            allowed.iter().any(|v| v.as_str() == Some("mcp__tokenizor__search_symbols")),
+            allowed
+                .iter()
+                .any(|v| v.as_str() == Some("mcp__tokenizor__search_symbols")),
             "should include search_symbols in allowedTools"
         );
     }
@@ -901,12 +920,17 @@ mod tests {
         register_gemini_mcp_server(&settings_path, "/usr/bin/tokenizor-mcp").unwrap();
         let content = std::fs::read_to_string(&settings_path).unwrap();
         let config: Value = serde_json::from_str(&content).unwrap();
-        let allowed = config["allowedTools"].as_array().expect("allowedTools must be array");
+        let allowed = config["allowedTools"]
+            .as_array()
+            .expect("allowedTools must be array");
         // Count occurrences of a specific tool to verify no duplicates
         let count = allowed
             .iter()
             .filter(|v| v.as_str() == Some("mcp__tokenizor__search_symbols"))
             .count();
-        assert_eq!(count, 1, "allowedTools should not have duplicate entries after idempotent run");
+        assert_eq!(
+            count, 1,
+            "allowedTools should not have duplicate entries after idempotent run"
+        );
     }
 }

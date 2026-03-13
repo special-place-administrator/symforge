@@ -937,8 +937,13 @@ where
                 matches.push(TextLineMatch {
                     line_number: line_idx + 1,
                     line: line.to_string(),
-                    enclosing_symbol: file.symbols.iter()
-                        .filter(|s| s.line_range.0 <= (line_idx as u32) && s.line_range.1 >= (line_idx as u32))
+                    enclosing_symbol: file
+                        .symbols
+                        .iter()
+                        .filter(|s| {
+                            s.line_range.0 <= (line_idx as u32)
+                                && s.line_range.1 >= (line_idx as u32)
+                        })
                         .max_by_key(|s| s.depth)
                         .map(|s| EnclosingMatchSymbol {
                             name: s.name.clone(),
