@@ -6,289 +6,266 @@
 
 ```
 tokenizor_agentic_mcp/
-├── src/
-│   ├── main.rs                      # Entry point dispatcher (MCP server, daemon, init, hooks)
-│   ├── lib.rs                       # Library public exports (modules)
-│   ├── cli/                         # Command-line interface and hook handlers
-│   │   ├── mod.rs                   # clap parser, subcommand definitions
-│   │   ├── init.rs                  # tokenizor init — Claude/Codex/Gemini setup
-│   │   └── hook.rs                  # Hook handlers (read, edit, write, grep, session-start, prompt-submit)
-│   ├── daemon.rs                    # Daemon state, session management, HTTP project routing
-│   ├── discovery/                   # Project-aware file finding
-│   │   └── mod.rs                   # find_project_root(), discover_files()
-│   ├── domain/                      # Core data models
-│   │   └── index.rs                 # LanguageId, SymbolKind, ReferenceKind, FileClassification
-│   ├── error.rs                     # anyhow::Result<T>, custom error types
-│   ├── git.rs                       # git2 utilities (blame, commit walking)
-│   ├── hash.rs                      # Content hashing (MD5-based)
-│   ├── live_index/                  # In-memory symbol index
-│   │   ├── mod.rs                   # Public exports (store, query, format views)
-│   │   ├── store.rs                 # LiveIndex, IndexState, IndexedFile, ParseStatus, circuit breaker
-│   │   ├── query.rs                 # Query functions (symbol lookup, references, dependents) + view types
-│   │   ├── search.rs                # Full-text search (trigram accelerator)
-│   │   ├── trigram.rs               # 3-byte substring indexing for search
-│   │   ├── persist.rs               # Snapshot serialization/deserialization to .tokenizor/index.bin
-│   │   ├── git_temporal.rs          # Background git history computation (async)
-│   ├── observability.rs             # tracing initialization and configuration
-│   ├── parsing/                     # Tree-sitter based source parsing
-│   │   ├── mod.rs                   # process_file(), FileProcessingResult pipeline
-│   │   ├── xref.rs                  # Cross-reference extraction (references, imports, type deps)
-│   │   └── languages/               # Per-language symbol extraction (14 languages)
-│   │       ├── rust.rs              # Rust: functions, structs, enums, traits, modules, impls
-│   │       ├── python.rs            # Python: functions, classes, decorators
-│   │       ├── javascript.rs        # JavaScript/JSX: functions, classes, arrow functions
-│   │       ├── typescript.rs        # TypeScript: functions, classes, interfaces, types
-│   │       ├── go.rs                # Go: functions, types, interfaces
-│   │       ├── java.rs              # Java: classes, interfaces, methods
-│   │       ├── c.rs                 # C: functions, structs, typedefs
-│   │       ├── cpp.rs               # C++: classes, functions, templates
-│   │       ├── csharp.rs            # C#: classes, methods, interfaces
-│   │       ├── ruby.rs              # Ruby: methods, classes, modules
-│   │       ├── php.rs               # PHP: functions, classes, interfaces
-│   │       ├── swift.rs             # Swift: functions, classes, structs, enums
-│   │       ├── kotlin.rs            # Kotlin: functions, classes, objects
-│   │       ├── dart.rs              # Dart: functions, classes
-│   │       ├── perl.rs              # Perl: subroutines
-│   │       ├── elixir.rs            # Elixir: functions, modules, macros
-│   │       └── mod.rs               # Language registry and dispatch
-│   ├── protocol/                    # MCP server and tool/prompt handlers
-│   │   ├── mod.rs                   # TokenizorServer (rmcp handler), new(), daemon_proxy mode
-│   │   ├── tools.rs                 # 24 tool handlers (get_*, search_*, find_*, analyze_*, etc) + input structs
-│   │   ├── format.rs                # Output formatters (plain text views for each tool)
-│   │   ├── edit.rs                  # Edit operations (symbol replace, batch edit, insert, delete)
-│   │   ├── edit_format.rs           # Diff formatting for edit operations
-│   │   ├── explore.rs               # File/directory exploration helpers
-│   │   ├── resources.rs             # MCP resource handlers (symbol, file, reference URIs)
-│   │   ├── prompts.rs               # MCP prompt handlers (context injection templates)
-│   ├── sidecar/                     # HTTP proxy for token hooks
-│   │   ├── mod.rs                   # SidecarHandle, TokenStats atomic counters, StatsSnapshot
-│   │   ├── server.rs                # Axum HTTP server setup and graceful shutdown
-│   │   ├── router.rs                # HTTP route definitions (/query, /stats, /health)
-│   │   ├── handlers.rs              # HTTP endpoint handlers (forward calls to protocol tools)
-│   │   └── port_file.rs             # Port/PID file I/O for client discovery
-│   ├── watcher/                     # Filesystem change detection
-│   │   └── mod.rs                   # File watcher (notify+debouncer), adaptive debounce, parse+update loop
-│   ├── Cargo.toml                   # Dependencies (rmcp, tokio, tree-sitter, axum, etc)
-├── .planning/codebase/              # GSD mapping documents (this directory)
-│   ├── ARCHITECTURE.md              # This document — pattern, layers, data flow
-│   └── STRUCTURE.md                 # Directory layout and file purposes
-├── tests/                           # Integration and unit tests
-│   ├── test_*.rs                    # Test files for major modules
-├── Cargo.lock                       # Pinned dependency versions
-├── Cargo.toml                       # Package metadata and dependencies
-├── README.md                        # Project overview
-├── CHANGELOG.md                     # Release history
-├── CLAUDE.md                        # Project-specific Claude instructions
-└── .tokenizor/                      # Runtime directory (created during indexing)
-    └── index.bin                    # Serialized snapshot (postcard format)
+├── src/                           # Rust source code (36,099 LOC)
+│   ├── main.rs                    # Entry point: CLI dispatch, MCP/daemon/hook routing
+│   ├── lib.rs                     # Public module exports
+│   ├── cli/                       # Command-line interface
+│   │   ├── mod.rs                 # Clap CLI definition
+│   │   ├── init.rs                # Tool initialization command
+│   │   └── hook.rs                # Hook subcommand handlers
+│   ├── discovery/                 # File discovery and project root detection
+│   │   └── mod.rs                 # discover_files(), find_project_root()
+│   ├── domain/                    # Core data types
+│   │   ├── mod.rs                 # Re-exports
+│   │   └── index.rs               # LanguageId, SymbolKind, SymbolRecord, ReferenceRecord, FileClassification
+│   ├── parsing/                   # Tree-sitter based parsing
+│   │   ├── mod.rs                 # process_file(), entry point for parsing pipeline
+│   │   ├── xref.rs                # Cross-reference extraction
+│   │   └── languages/             # Language-specific parsers (15 languages)
+│   │       ├── mod.rs             # Language dispatcher
+│   │       ├── rust.rs            # Rust grammar plugin
+│   │       ├── python.rs          # Python grammar plugin
+│   │       ├── javascript.rs      # JavaScript grammar plugin
+│   │       ├── typescript.rs      # TypeScript grammar plugin
+│   │       ├── go.rs              # Go grammar plugin
+│   │       ├── java.rs            # Java grammar plugin
+│   │       ├── c.rs, cpp.rs       # C/C++ grammar plugins
+│   │       ├── csharp.rs          # C# grammar plugin
+│   │       ├── ruby.rs, php.rs, swift.rs, perl.rs, kotlin.rs, dart.rs, elixir.rs
+│   ├── live_index/                # In-memory symbol index
+│   │   ├── mod.rs                 # Public re-exports
+│   │   ├── store.rs               # LiveIndex, IndexedFile, ParseStatus, CircuitBreakerState, SharedIndex
+│   │   ├── query.rs               # Query functions and view types (RepoOutlineView, SymbolDetailView, etc.)
+│   │   ├── search.rs              # Trigram-based search (SearchIndex)
+│   │   ├── persist.rs             # Serialization (postcard binary) and snapshot loading
+│   │   ├── git_temporal.rs        # Git change frequency computation (Phase 5)
+│   │   └── trigram.rs             # Trigram index implementation
+│   ├── protocol/                  # MCP protocol implementation
+│   │   ├── mod.rs                 # TokenizorServer, MCP server initialization
+│   │   ├── tools.rs               # 24 tool handlers: get_symbol, search_symbols, analyze_file_impact, etc.
+│   │   ├── format.rs              # Plain-text formatters for query results
+│   │   ├── edit.rs                # Symbolic edit operations (InsertSymbol, DeleteSymbol, etc.)
+│   │   ├── edit_format.rs         # Edit result formatting
+│   │   ├── explore.rs             # Explore tool helpers
+│   │   ├── resources.rs           # MCP resource handlers (tokenizor:// URIs)
+│   │   └── prompts.rs             # Prompt definitions
+│   ├── sidecar/                   # HTTP companion server for hook handlers
+│   │   ├── mod.rs                 # SidecarHandle, TokenStats, SidecarState
+│   │   ├── server.rs              # Axum server startup (spawn_sidecar)
+│   │   ├── handlers.rs            # HTTP handlers: read, edit, write, grep, stats
+│   │   ├── router.rs              # Axum route definitions
+│   │   └── port_file.rs           # Port/PID file management
+│   ├── daemon.rs                  # Shared daemon for project-level indexing
+│   │   └── DaemonState, DaemonSessionClient, HTTP endpoints (/api/projects/open, /api/tool/*)
+│   ├── watcher/                   # File system monitoring
+│   │   └── mod.rs                 # run_watcher(), file change detection and re-parsing
+│   ├── git.rs                     # Git utilities (placeholder for git2 operations)
+│   ├── hash.rs                    # Content hashing (digest_hex for .tokenizor snapshots)
+│   ├── error.rs                   # Error types
+│   └── observability.rs           # Logging initialization (tracing)
+├── npm/                           # NPM package wrapper for Rust binary
+│   ├── package.json               # Node.js package definition
+│   ├── index.js                   # Binary location wrapper
+│   └── preinstall.js              # Build hook (cargo build)
+├── Cargo.toml                     # Rust project manifest, dependencies, features
+├── Cargo.lock                     # Locked dependency versions
+├── .tokenizor/                    # Runtime index directory (generated)
+│   ├── index.bin                  # Persisted snapshot (postcard format)
+│   ├── sidecar.port               # Ephemeral sidecar port
+│   ├── daemon.port                # Daemon HTTP port
+│   ├── daemon.pid                 # Daemon process ID
+│   └── daemon.starting            # Lock file during daemon startup
+├── .github/                       # GitHub workflows
+│   └── workflows/                 # CI/CD pipeline (rustfmt, test, build, npm publish)
+├── docs/                          # Documentation and analysis
+├── .claude/                       # Claude Code metadata
+├── scripts/                       # Utility scripts
+├── target/                        # Cargo build artifacts (generated)
+└── [project-root-files]
+    ├── Cargo.toml
+    ├── Cargo.lock
+    ├── CLAUDE.md                  # Project directives for Claude
+    ├── CHANGELOG.md               # Release history
+    ├── README.md                  # Project overview
+    ├── LICENSE                    # MIT license
+    └── .gitignore                 # Git exclusions
 ```
 
 ## Directory Purposes
 
-**src/:**
-- Purpose: All source code — library and binary
-- Contains: Rust modules organized by responsibility
-- Key files: `main.rs` (entry), `lib.rs` (exports)
+**`src/`:**
+- Purpose: All Rust source code for the MCP server
+- Contains: Main entry point, library modules, protocol implementation, indexing logic
+- Key files: `main.rs`, `lib.rs`
 
-**src/cli/:**
-- Purpose: Command-line interface implementation
-- Contains: Argument parsing, hook script handlers, init flow
-- Key files: `mod.rs` (clap parser), `hook.rs` (PostToolUse handlers)
+**`src/cli/`:**
+- Purpose: Command-line interface and subcommands
+- Contains: Clap CLI definition, init logic, hook handlers
+- Key files: `mod.rs` (Cli struct)
 
-**src/daemon.rs:**
-- Purpose: Persistent daemon for cross-session project state
-- Contains: Session/project lifecycle, HTTP server, state structures
-- Key files: `daemon.rs` (all-in-one, ~500 lines)
+**`src/discovery/`:**
+- Purpose: File system discovery and project root detection
+- Contains: Gitignore-respecting file walker, safe project root finder
+- Key files: `mod.rs` (discover_files, find_project_root functions)
 
-**src/discovery/:**
-- Purpose: Project root and file discovery
-- Contains: `.gitignore`-respecting walk, language detection
-- Key files: `mod.rs` (DiscoveredFile, discover_files())
+**`src/domain/`:**
+- Purpose: Core data types shared across all layers
+- Contains: LanguageId, SymbolKind, SymbolRecord, ReferenceRecord, FileClassification
+- Key files: `index.rs` (domain type definitions)
 
-**src/domain/:**
-- Purpose: Core data models (shared across all layers)
-- Contains: LanguageId, SymbolKind, ReferenceKind, FileClassification
-- Key files: `index.rs` (all domain types)
+**`src/parsing/`:**
+- Purpose: Tree-sitter based parsing for symbol extraction
+- Contains: Language-specific parser modules (15+ languages), cross-reference extraction
+- Key files: `mod.rs` (process_file entry point), `languages/mod.rs` (dispatcher), `xref.rs` (reference extraction)
 
-**src/live_index/:**
-- Purpose: In-memory symbol index and queries
-- Contains: Store, query, search, persistence, git temporal analysis
-- Key files:
-  - `store.rs`: LiveIndex, IndexState, circuit breaker
-  - `query.rs`: All query functions + view types (80+ type definitions)
-  - `search.rs`: Full-text search with trigram acceleration
-  - `persist.rs`: Snapshot serialization with mtime verification
-  - `git_temporal.rs`: Async git history computation
+**`src/parsing/languages/`:**
+- Purpose: Language-specific tree-sitter implementations
+- Contains: One module per supported language (rust.rs, python.rs, typescript.rs, etc.)
+- Pattern: Each module exposes `extract_symbols(tree, text)` and handles language-specific syntax
 
-**src/parsing/:**
-- Purpose: Tree-sitter parsing and cross-reference extraction
-- Contains: Per-language extractors, xref analysis
-- Key files:
-  - `mod.rs`: process_file() entry point (panic-safe wrapper)
-  - `xref.rs`: Reference extraction and import resolution
-  - `languages/`: 14 language-specific extractors
+**`src/live_index/`:**
+- Purpose: In-memory symbol database and query APIs
+- Contains: LiveIndex store, search indices, persistence, query formatters
+- Key files: `store.rs` (LiveIndex, IndexedFile), `query.rs` (query functions), `search.rs` (trigram search)
 
-**src/protocol/:**
-- Purpose: MCP protocol handlers and formatters
-- Contains: 24 tools, prompt handlers, resource handlers
-- Key files:
-  - `tools.rs`: Tool input structs + handlers (largest file, ~1500 lines)
-  - `format.rs`: Plain-text output formatters
-  - `edit.rs`: Symbol mutation operations
-  - `mod.rs`: TokenizorServer (rmcp handler)
+**`src/protocol/`:**
+- Purpose: MCP protocol implementation and tool definitions
+- Contains: 24 tool handlers, prompt definitions, resource handlers, response formatters
+- Key files: `tools.rs` (tool handlers), `format.rs` (text output formatting), `edit.rs` (symbolic edits)
 
-**src/sidecar/:**
-- Purpose: HTTP proxy for token hook integration
-- Contains: Axum HTTP server, token stats, port management
-- Key files:
-  - `server.rs`: HTTP server lifecycle
-  - `handlers.rs`: Route handlers
-  - `mod.rs`: TokenStats definition
+**`src/sidecar/`:**
+- Purpose: HTTP companion server for hook handlers and token statistics
+- Contains: Axum HTTP endpoints, token stats tracking, port file management
+- Key files: `server.rs` (Axum setup), `handlers.rs` (HTTP handler logic)
 
-**src/watcher/:**
-- Purpose: Filesystem change detection and incremental index
-- Contains: notify+debouncer integration, event batching
-- Key files: `mod.rs` (all-in-one, ~350 lines)
+**`.tokenizor/`:**
+- Purpose: Runtime state directory (created on first run)
+- Contains: Serialized index snapshots, port files for daemon/sidecar discovery
+- Generated: Yes, auto-created at startup
+- Committed: No (in .gitignore)
 
 ## Key File Locations
 
 **Entry Points:**
-- `src/main.rs`: Dispatcher for MCP server, daemon, init, hooks
+- `src/main.rs` — Main process entry, CLI dispatch, MCP/daemon startup
+- `src/sidecar/server.rs:spawn_sidecar()` — HTTP server entry
+- `src/watcher/mod.rs:run_watcher()` — File watcher loop
+- `src/live_index/git_temporal.rs:spawn_git_temporal_computation()` — Background git analysis
 
 **Configuration:**
-- `Cargo.toml`: Dependencies and build config
-- `.env.example`: Environment variable template
-- `CLAUDE.md`: Project-specific instructions for Claude Code
+- `Cargo.toml` — Rust dependencies, features (v1 feature gate), package metadata
+- `.env.example` — Environment variable template (TOKENIZOR_AUTO_INDEX, TOKENIZOR_CB_THRESHOLD, etc.)
+- `.github/workflows/` — CI/CD pipeline definitions
 
 **Core Logic:**
-- `src/live_index/store.rs`: LiveIndex container and circuit breaker
-- `src/live_index/query.rs`: All query functions (100+ functions)
-- `src/protocol/tools.rs`: MCP tool implementations
-- `src/parsing/mod.rs`: Symbol extraction pipeline
+- `src/live_index/store.rs` — Main symbol storage and mutation logic
+- `src/live_index/query.rs` — All query functions (get_file, get_symbol, find_references, etc.)
+- `src/protocol/tools.rs` — MCP tool handler implementations (24 tools)
+- `src/sidecar/handlers.rs` — Hook response builders (read, edit, write, grep)
 
 **Testing:**
-- `tests/`: Integration tests (check git repo for test files)
-- Unit tests: Inline in modules (use `#[cfg(test)]` blocks)
+- Inline `#[cfg(test)] mod tests` blocks in most modules
+- No separate `tests/` directory; tests live alongside code
+- Key test locations:
+  - `src/live_index/store.rs` tests circuit breaker
+  - `src/discovery/mod.rs` tests file discovery, path normalization
+  - `src/main.rs` tests startup index logging
+  - `src/parsing/mod.rs` tests for each language
 
 ## Naming Conventions
 
 **Files:**
-- `mod.rs`: Module barrel file (contains `pub mod` declarations and re-exports)
-- `*.rs`: Lowercase snake_case for module files
-- No prefixes; organize by responsibility
-
-**Directories:**
-- Lowercase snake_case (e.g., `live_index`, `src/cli`)
-- Group by architectural layer or domain
+- Module files: `lowercase_with_underscores.rs` (e.g., `parse_file.rs`, `get_symbol.rs`)
+- Submodule directories: `lowercase_with_underscores/` containing `mod.rs`
+- Special: `mod.rs` is the module entry point (pub use, re-exports)
 
 **Functions:**
-- Lowercase snake_case: `find_symbol()`, `process_file()`, `query_references()`
-- Tool handlers: `get_symbol()`, `search_symbols()` (mirrors MCP tool names)
-- Format functions: `format_symbol()`, `format_references()` (prefix + plural where applicable)
-
-**Types:**
-- PascalCase: `LiveIndex`, `SymbolRecord`, `TokenizorServer`
-- Enum variants: PascalCase: `ParseStatus::Parsed`, `FileClassification::Test`
-- Input structs for tools: Suffixed `Input` (e.g., `GetSymbolInput`, `SearchSymbolsInput`)
-- Output view types: Suffixed `View` (e.g., `SymbolDetailView`, `SearchFilesView`)
+- Public: `snake_case` (e.g., `discover_files()`, `get_file_outline()`)
+- Internal: `snake_case` prefixed with `_` or in `impl` blocks (e.g., `_handle_write()`)
+- Async: no special prefix, convention is `async fn name()` (e.g., `run_watcher()`)
 
 **Variables:**
-- Lowercase snake_case: `indexed_file`, `symbol_count`, `file_path`
-- Constants: UPPERCASE_SNAKE_CASE: `BURST_THRESHOLD`, `BASE_MS`
-- Lifetimes: Lowercase single letter: `'a`, `'de`
+- Local: `snake_case` (e.g., `file_count`, `symbol_index`)
+- Statics/constants: `UPPER_SNAKE_CASE` (e.g., `DEFAULT_THRESHOLD`, `DAEMON_DIR_NAME`)
+- Boolean prefixes: `is_`, `should_`, `has_` (e.g., `is_test`, `should_abort`)
 
-**Modules (in lib.rs):**
-- Public modules exported as `pub mod name;`
-- Private implementation details marked `pub(crate) mod name;`
+**Types:**
+- Structs: `PascalCase` (e.g., `LiveIndex`, `IndexedFile`, `SymbolRecord`)
+- Enums: `PascalCase` variants (e.g., `ParseStatus::Parsed`, `SymbolKind::Function`)
+- Type aliases: `PascalCase` (e.g., `SharedIndex`, `SharedDaemonState`)
+- Generics: Single uppercase letter or descriptive (e.g., `T`, `S` for Serialize)
+
+**Modules:**
+- Submodules: `lowercase_with_underscores` (e.g., `live_index`, `sidecar`, `parsing`)
+- Re-exports: `pub use` statements in `mod.rs`
 
 ## Where to Add New Code
 
 **New Tool:**
-- Implementation: `src/protocol/tools.rs` — add `#[tool]` handler method + input struct
-- Formatter: `src/protocol/format.rs` — add `format_*()` function
-- Export: `src/protocol/mod.rs` — tool auto-registered via `#[tool_router]` macro
-- Hook: If exposing via HTTP sidecar, add route in `src/sidecar/handlers.rs`
+1. Define input struct in `src/protocol/tools.rs` (with `#[derive(Deserialize, JsonSchema)]`)
+2. Add `#[tool]` handler method in `TokenizorServer` or submodule
+3. Add to tool router in `src/protocol/mod.rs` if macro-generated
+4. Add output formatter to `src/protocol/format.rs`
+5. Register in `src/cli/init.rs` in `TOKENIZOR_TOOL_NAMES`
+6. Add tests in `src/protocol/tools.rs` alongside handler
 
-**New Language Support:**
-- Parser: Add `src/parsing/languages/newlang.rs` with symbol extraction
-- Registration: Import in `src/parsing/languages/mod.rs` and add to language dispatch
-- Domain: If new symbol kinds needed, extend `src/domain/index.rs`
-- Tests: Add parsing tests in the language module
+**New Language Parser:**
+1. Create `src/parsing/languages/newlang.rs`
+2. Implement `extract_symbols(tree: &Tree, text: &str) -> Vec<SymbolRecord>`
+3. Add `LanguageId::NewLang` variant to `src/domain/index.rs`
+4. Add file extension mapping in `LanguageId::from_extension()`
+5. Add dispatcher entry in `src/parsing/languages/mod.rs:parse_source()`
+6. Add tree-sitter crate dependency to `Cargo.toml`
+7. Test with sample files
 
-**New Query Type:**
-- Query function: `src/live_index/query.rs` — implement function that operates on `IndexState`
-- View type: `src/live_index/query.rs` — define output `*View` type (serde-enabled for HTTP)
-- Tool handler: `src/protocol/tools.rs` — add tool that calls query function
-- Formatter: `src/protocol/format.rs` — format view as plain text
+**New Query Function:**
+1. Implement function in `src/live_index/query.rs`
+2. Return a view type (or define new struct ending in `View`)
+3. Use `index.read_lock()` to acquire read access
+4. Format result via `format::` functions
+5. Add corresponding tool in `protocol/tools.rs`
 
-**Utility Functions:**
-- Shared helpers: `src/live_index/search.rs` or `src/parsing/xref.rs` (by responsibility)
-- Domain logic: `src/domain/index.rs`
-- Module-specific utils: Keep in the module (don't create utils directories)
+**New HTTP Hook Handler:**
+1. Add handler function to `src/sidecar/handlers.rs` (signature: `async fn handle_hook(State<SidecarState>, Json<Input>) -> String`)
+2. Add route to router in `src/sidecar/router.rs` (e.g., `Router::new().route("/myhook", post(handler))`)
+3. Record token savings via `state.token_stats.record_*()`
+4. Return plain text response via formatting functions
 
-**Tests:**
-- Unit tests: Inline in module using `#[cfg(test)]` blocks
-- Integration tests: In `tests/` directory (checked into git)
-- Fixtures/test data: Use `tempfile` crate for temporary directories; no committed test data
+**Bug Fix or Refactor:**
+1. Locate relevant module (e.g., `src/live_index/store.rs` for index logic)
+2. Add test in the module's `#[cfg(test)]` block
+3. Fix the implementation
+4. Run `cargo test --all-targets` to verify
+5. Run `cargo fmt` and `cargo clippy` before committing
 
 ## Special Directories
 
 **`.tokenizor/`:**
-- Purpose: Runtime directory for index snapshots
-- Generated: Yes (created on shutdown or manual indexing)
-- Committed: No (in `.gitignore`)
-- Contents: `index.bin` (postcard-encoded LiveIndex snapshot)
+- Purpose: Runtime state directory for index snapshots, port files, lock files
+- Generated: Yes, created at `src/live_index/persist.rs` on first startup
+- Committed: No (added to .gitignore)
+- Cleanup: Safe to delete; index will be recomputed on next startup
 
-**.tmp/:**
-- Purpose: Temporary test artifacts (execution tests, etc.)
-- Generated: Yes
-- Committed: No
-- Contents: Test repos, generated test outputs
+**`target/`:**
+- Purpose: Cargo build artifacts (debug/release binaries, deps)
+- Generated: Yes, by `cargo build`
+- Committed: No (in .gitignore)
+- Cleanup: `cargo clean` removes
 
-**docs/:**
-- Purpose: Design documents, research notes
+**`.github/workflows/`:**
+- Purpose: CI/CD pipeline definitions
+- Committed: Yes, part of repository
+- Key workflows: `rust.yml` (test + build + publish)
+
+**`npm/`:**
+- Purpose: Node.js wrapper package for binary distribution
+- Committed: Yes, checked into repo
+- Key files: `package.json` (package definition), `index.js` (binary locator), `preinstall.js` (build hook)
+
+**`docs/`:**
+- Purpose: User documentation, design specs, implementation guides
 - Committed: Yes
-- Examples: Design specs, architecture docs
-
-**`.claude/`:**
-- Purpose: GSD (get-shit-done) automation workflows
-- Committed: Yes
-- Contents: Agent definitions, skill references, command manifests
-
-## Dependency Organization
-
-All dependencies in `Cargo.toml`:
-
-**Core Protocol & Async:**
-- `rmcp`: MCP server framework (stdio + HTTP transports)
-- `tokio`: Async runtime (multi-threaded with signals)
-- `axum`: HTTP server framework
-
-**Parsing:**
-- `tree-sitter`: Parser framework
-- 14 `tree-sitter-*` language grammars
-
-**Indexing & Search:**
-- `rayon`: Parallel parsing via worksteal
-- `postcard`: Binary serialization (snapshots)
-- `regex`: Pattern matching for xref extraction
-- `ignore`: `.gitignore`-respecting file walker
-- `notify`, `notify-debouncer-full`: Filesystem watching
-
-**Git Operations:**
-- `git2`: Repository analysis (blame, commits, history)
-
-**CLI & Config:**
-- `clap`: Argument parsing
-- `serde`: Serialization framework
-- `serde_json`: JSON handling (only for sidecar HTTP)
-- `toml_edit`: TOML config reading
-
-**Utilities:**
-- `dirs`: Standard directory paths
-- `tracing`: Structured logging
-- `anyhow`, `thiserror`: Error handling
-- `schemars`: JSON schema generation (for MCP tool schemas)
+- Key patterns: Markdown documents in chronological structure
 
 ---
 

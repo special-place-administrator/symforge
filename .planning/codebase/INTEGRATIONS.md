@@ -5,181 +5,148 @@
 ## APIs & External Services
 
 **Model Context Protocol (MCP):**
-- MCP Server - Exposes 24 tools and resource templates to Claude and other MCP clients
-  - SDK/Client: `rmcp` (1.1.0)
-  - Transport: stdio (primary), HTTP daemon proxy (secondary)
-  - Protocol: JSON-RPC 2.0
-  - Files: `src/protocol/` (24 tools, resource handlers, input structs)
+- **Service:** Anthropic Claude Code integration via MCP protocol
+- **What it's used for:** Expose 24 MCP tools for symbol-aware code navigation and editing to Claude
+- **Implementation:** `src/protocol/` implements MCP tool handlers (24 tools exposed via `tools/list`)
+- **Transport:** Stdio transport for local communication with Claude; HTTP daemon proxy for remote sessions
 
-**HTTP Services:**
-- Internal sidecar HTTP server (localhost only)
-  - Framework: `axum` (0.8)
-  - Endpoints: `/health`, `/outline`, `/impact`, `/symbol-context`, `/repo-map`, `/prompt-context`, `/stats`
-  - Binding: Configurable via `TOKENIZOR_SIDECAR_BIND` env var (default: `127.0.0.1`)
-  - Port: Auto-assigned, stored in `.tokenizor/daemon.port` and `tokenizor-sidecar.port` files
-  - Authentication: None (localhost only)
+**HTTP Sidecar:**
+- **Service:** Local HTTP API for hook integration
+- **What it's used for:** Allows Claude editor hooks to query index without MCP overhead (token savings)
+- **SDK/Client:** Axum 0.8 HTTP server on ephemeral port
+- **Endpoints:**
+  - `GET /health` - Index health and file/symbol counts
+  - `GET /outline` - File outline with token budget
+  - `GET /impact` - File impact analysis for modified files
+  - `GET /symbol-context` - Symbol context and consumers
+  - `GET /prompt-context` - Smart context assembly from natural language
+  - `POST /stats` - Token savings metrics from hook fires
 
-**Daemon Control Plane:**
-- Shared daemon process (optional, daemon mode)
-  - Purpose: Multi-session project index management
-  - Client: `reqwest` (0.12) HTTP client
-  - Communication: HTTP POST/GET to daemon at `127.0.0.1:port`
-  - Features: Session pooling, heartbeat monitoring, project isolation
-  - Files: `src/daemon.rs`, daemon HTTP endpoints at root path
+**HTTP Daemon:**
+- **Service:** Long-lived background daemon for session pooling
+- **What it's used for:** Shared index across multiple MCP clients (multi-client support)
+- **SDK/Client:** reqwest 0.12 HTTP client (DaemonSessionClient)
+- **Endpoints:**
+  - `POST /projects/open` - Open/create project session
+  - `GET /sessions/{id}/health` - Session health
+  - `POST /sessions/{id}/tools/{tool}` - Route tool calls to session's index
+  - `POST /sessions/{id}/close` - Close session and cleanup
 
 ## Data Storage
 
-**Local File System Storage:**
-- Index persistence: `.tokenizor/index.bin` (binary postcard format)
-  - Content: Serialized `IndexSnapshot` with all symbols, references, and metadata
-  - Update: On clean shutdown, background verification on load
-  - Format: postcard (compact binary) for fast round-trips
-  - Atomicity: Writes to temp file, then atomic rename to prevent corruption
-  - Files: `src/live_index/persist.rs`
+**Databases:**
+- **Not used** - No traditional database; in-memory index only
 
-- Content-Addressable Storage (CAS):
-  - Root directory: Configurable via `TOKENIZOR_BLOB_ROOT` (default: `.tokenizor`)
-  - Purpose: Caches file content at specific git refs for temporal analysis
-  - File location: `.tokenizor/blobs/` (relative to project root)
+**File Storage:**
+- **Local filesystem only** - Files read from disk; no cloud storage
+- **Index snapshots:** `.tokenizor/index.bin` (postcard binary format) for snapshot persistence on shutdown
+- **Working directory:** Must have read access to project root and write access to `.tokenizor/` subdirectory
 
-**Git Repository (No External DB):**
-- Local git repository access via libgit2
-  - No external database required
-  - All git history read from `.git/` directory
-  - In-process via `git2` crate (no child processes)
-  - Supports: git log with stats, file history, uncommitted changes, branch diffs
-  - Files: `src/git.rs`
-
-**In-Memory Index:**
-- `LiveIndex` (in `src/live_index/store.rs`) - primary working set
-  - Holds all parsed symbols, references, file metadata
-  - Shared via `Arc<RwLock<LiveIndex>>` for thread-safe access
-  - Optional: persisted to `.tokenizor/index.bin` on shutdown
-
-**Optional SpacetimeDB Backend:**
-- SpacetimeDB control plane (if `TOKENIZOR_CONTROL_PLANE_BACKEND=spacetimedb`)
-  - Connection: `TOKENIZOR_SPACETIMEDB_ENDPOINT` (default: `http://127.0.0.1:3007`)
-  - Database: `TOKENIZOR_SPACETIMEDB_DATABASE` (default: `tokenizor`)
-  - Schema version: `TOKENIZOR_SPACETIMEDB_SCHEMA_VERSION` (default: `2`)
-  - CLI tool: `TOKENIZOR_SPACETIMEDB_CLI` (default: `spacetimedb` binary)
-  - Purpose: Durable control plane for daemon sessions (optional; not required for basic operation)
+**Caching:**
+- **In-process index:** Shared `Arc<RwLock<LiveIndex>>` across all tools and connections
+- **File watching:** `notify` crate watches filesystem for changes; updates live index in real-time
+- **Symbol cache:** `Arc<RwLock<HashMap<String, Vec<SymbolSnapshot>>>>` in daemon for symbol deduplication across sessions
+- **Snapshot persistence:** Binary index saved to `.tokenizor/index.bin` on clean shutdown; reloaded on next startup
 
 ## Authentication & Identity
 
 **Auth Provider:**
-- None - Tokenizor is a local development tool
-- MCP clients authenticate using their own mechanisms (Claude Code, Codex, etc.)
-- HTTP sidecar: localhost-only, no authentication required
-- Daemon: Project sessions use auto-generated session IDs and project IDs
-
-**File Access:**
-- Direct filesystem read/write to project files
-- Respects `.gitignore` for file discovery (via `ignore` crate)
-- Reads git history from `.git/` directory
+- **None** - No external authentication
+- **Implementation:** Implicit trust; tokenizor runs in user's local environment
+- **Session IDs:** UUID-v4 generated per session for daemon session tracking
+- **Project IDs:** Generated from project root path hash for multi-project grouping
 
 ## Monitoring & Observability
 
-**Logging:**
-- Framework: `tracing` (0.1) facade with `tracing-subscriber` (0.3) output
-- Configuration: `RUST_LOG` environment variable controls log level
-- Initialization: `observability::init_tracing()` in `src/main.rs`
-- Log output: stderr (JSON or pretty-printed based on environment)
-- Includes: Index load status, file watcher events, git temporal computation, daemon session lifecycle
-
 **Error Tracking:**
-- None (no external error aggregation service)
-- Errors logged via `tracing` and returned to MCP clients in tool responses
-- Circuit breaker mechanism in index loading (`src/live_index/store.rs`)
+- **None** - No external error tracking
+- **Implementation:** Errors logged to stderr via `tracing` crate with structured fields
 
-**Health Checks:**
-- HTTP endpoint: `/health` (sidecar)
-- MCP tool: `tokenizor_health` (checks index readiness, file watcher, git temporal state)
-- Daemon heartbeat: 15-second intervals between session and daemon
+**Logs:**
+- **Approach:** Structured logging to stderr using `tracing` and `tracing-subscriber`
+- **Configuration:** `RUST_LOG` environment variable controls verbosity (default: `info`)
+- **Output format:** Plain text (ANSI disabled for compatibility with pipes/logs)
+- **Captured fields:** File paths, symbol counts, parse errors, watch events, git operations
 
-**Performance Metrics:**
-- Token usage tracking in sidecar: `TokenStats` in `src/sidecar/mod.rs`
-- Index statistics: file count, symbol count, parsed count, failure count
-- Timing: Index load duration, git temporal computation duration
-- Accessible via `/stats` sidecar endpoint
+## Git Integration
 
-## CI/CD & Deployment
-
-**Hosting:**
-- GitHub Actions (CI/CD automation)
-- Binary release platform: GitHub Releases
-- Package registry: npm (Node.js registry) for wrapper package
-
-**CI Pipeline:**
-- Platform: GitHub Actions
-- Triggers: Push to main, PR to main, manual workflow_dispatch
-- Build matrix: Windows (x86_64), Linux (x86_64), macOS (arm64 + x86_64)
-- Commands: `cargo test`, `cargo fmt --check`, `cargo build --release`
-- Release automation: `release-please` bot creates release PRs, auto-merges, publishes
-
-**Deployment Process:**
-- Release tags: Created by `release-please` (semantic versioning)
-- Binary artifacts: Built via GitHub Actions matrix
-- npm publishing: Automatic via GitHub Actions after tag creation
-- Postinstall hook: `npm/scripts/install.js` downloads platform-specific binary
-
-## Environment Configuration
-
-**Required Environment Variables:**
-- `RUST_LOG` (optional) - Tracing log level (default: info)
-- `TOKENIZOR_CONTROL_PLANE_BACKEND` (optional) - Backend mode (default: `local_registry`)
-
-**Optional Control Plane Variables (if using SpacetimeDB):**
-- `TOKENIZOR_SPACETIMEDB_ENDPOINT`
-- `TOKENIZOR_SPACETIMEDB_DATABASE`
-- `TOKENIZOR_SPACETIMEDB_MODULE_PATH`
-- `TOKENIZOR_SPACETIMEDB_SCHEMA_VERSION`
-- `TOKENIZOR_SPACETIMEDB_CLI`
-
-**Optional Runtime Variables:**
-- `TOKENIZOR_BLOB_ROOT` - CAS root directory
-- `TOKENIZOR_AUTO_INDEX` - Enable auto-indexing on startup (default: true)
-- `TOKENIZOR_SIDECAR_BIND` - HTTP sidecar bind address (default: 127.0.0.1)
-- `TOKENIZOR_REQUIRE_READY_CONTROL_PLANE` - Require readiness before serving (default: true)
-
-**Secrets Location:**
-- `.env` file (not committed; see `.env.example` for template)
-- Environment variables at runtime (set by MCP client or shell)
+**Git Operations:**
+- **Library:** libgit2 via `git2` crate (vendored)
+- **What it's used for:**
+  - Uncommitted changes detection (`git status` replacement)
+  - Diff between refs (3-dot semantics for branch comparisons)
+  - Git log extraction for temporal analysis (Phase 5: doc comment range tracking)
+  - Merge-base calculation for diff semantics
+- **No shell execution** - All operations in-process via libgit2; zero child processes
+- **Features used:** `vendored-libgit2` to bundle libgit2 (no external git binary needed for API)
 
 ## Webhooks & Callbacks
 
-**Incoming Webhooks:**
-- None - Tokenizor is a pull-only service
+**Incoming:**
+- **None** - Tokenizor is driven by tool calls from Claude (MCP) or hook calls from Claude editor
 
-**Outgoing Webhooks:**
-- None - No outbound event notifications
-- MCP clients receive results via normal RPC responses
+**Outgoing:**
+- **None** - Does not call external webhooks or fire events
 
-**Internal Callbacks:**
-- File watcher events: Filesystem changes trigger index updates
-  - Framework: `notify` (8)
-  - Debouncer: `notify-debouncer-full` (0.7)
-  - Handler: `src/watcher/` processes changes and updates live index
+## File Watching & Hot Reload
 
-- Background git temporal computation: Asynchronous symbol enrichment
-  - Spawned: At startup and on index reload
-  - Handler: `src/live_index/git_temporal.rs::spawn_git_temporal_computation`
-  - Updates: File churn scores, ownership, co-change coupling
+**File Watching:**
+- **Library:** `notify 8` + `notify-debouncer-full 0.7`
+- **What it's used for:** Detect file changes in project directory and update live index in real-time
+- **Behavior:**
+  - Watches project root recursively
+  - Respects `.gitignore` via `ignore` crate
+  - Debounces rapid changes (bundled by `notify-debouncer-full`)
+  - Updates `LiveIndex` on create/modify/delete events
+  - Purges symbols and references when files are deleted
+  - Works on Windows, macOS, Linux via OS-specific backends (inotify, FSEvents, ReadDirectoryChangesW)
 
-- Daemon heartbeat: 15-second keep-alive from session to daemon
-  - Handler: `src/main.rs` line 110-116 in `run_remote_mcp_server_async`
+## No External APIs
 
-## Platform Integration Points
+The codebase **does not integrate with:**
+- No cloud platforms (AWS, GCP, Azure)
+- No API services (Stripe, Auth0, SendGrid, etc.)
+- No LLM APIs (OpenAI, Anthropic, etc.) - only used by Claude Code client
+- No databases or ORMs
+- No package registries (npm, crates.io)
+- No CI/CD systems
+- No monitoring services (Datadog, New Relic, Sentry)
+- No message queues or event buses
 
-**GitHub:**
-- Repository: `special-place-administrator/tokenizor_agentic_mcp`
-- CI: GitHub Actions (`.github/workflows/`)
-- Release automation: `release-please` bot
-- Tokens: `RELEASE_PLEASE_TOKEN` (for auto-merge), `GITHUB_TOKEN` (for CI/CD)
+## Environment Configuration
 
-**Development Tools (Local):**
-- Git: `.git/` directory (read via libgit2)
-- npm: For package publishing
-- Rust toolchain: For compilation
+**Required env vars:**
+- None - All env vars are optional with sensible defaults
+
+**Optional env vars (for runtime tuning):**
+- `TOKENIZOR_AUTO_INDEX=false` - Disable auto-indexing on startup (start with empty index)
+- `TOKENIZOR_DAEMON_BIND=0.0.0.0` - Change daemon HTTP bind address
+- `TOKENIZOR_SIDECAR_BIND=0.0.0.0` - Change sidecar HTTP bind address
+- `TOKENIZOR_HOME=/custom/path` - Override daemon home directory (default: `~/.tokenizor/`)
+- `RUST_LOG=debug` - Change logging level (default: `info`)
+
+**Secrets location:**
+- **No secrets needed** - Tokenizor is a local service with no external authentication
+- No `.env` files required
+- No API keys, tokens, or credentials used
+
+## Session Management
+
+**Daemon Sessions:**
+- **Type:** HTTP-based session pooling for multi-client scenarios
+- **Lifecycle:**
+  1. Client calls `POST /projects/open` with project root and client name
+  2. Daemon creates `ProjectInstance` if new, or reuses existing
+  3. Daemon allocates new `SessionRecord` with UUID session ID
+  4. Client receives `DaemonSessionClient` with base URL, project ID, session ID
+  5. Subsequent tool calls route through daemon's HTTP proxy
+  6. Client calls `POST /sessions/{id}/close` to end session
+  7. Daemon cleans up session record (project persists for other sessions)
+
+**MCP Server Modes:**
+1. **Local mode** (default): In-process index, stdio MCP transport
+2. **Daemon-backed mode:** Stdio MCP transport proxied through daemon HTTP client
+3. **Sidecar mode:** Embedded Axum HTTP server for hook integration (runs alongside MCP server)
 
 ---
 

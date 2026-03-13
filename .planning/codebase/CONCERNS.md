@@ -2,202 +2,125 @@
 
 **Analysis Date:** 2026-03-14
 
-## Tech Debt
+## Lock Poisoning
 
-**V1 Feature Gate — Legacy Test Compatibility:**
-- Issue: `Cargo.toml` maintains a `v1` feature gate for backward compatibility with `retrieval_conformance.rs` tests, which depend on old domain types not present in v2
-- Files: `Cargo.toml` (line 49-51), `tests/retrieval_conformance.rs`
-- Impact: Code includes dead/unused feature gate that adds maintenance burden. Tests will need rewriting for v2 response format in Phase 2
-- Fix approach: Complete Phase 2 milestone (Intelligence) which rewrites retrieval_conformance tests. Then remove the `v1` feature gate and code paths that depend on it
+**RwLock and Mutex unwrap calls throughout codebase:**
+- Issue: Multiple `.expect("lock poisoned")` calls in `src/live_index/store.rs` (lines 378, 385, 391, 397, 403, 409, 418, 424, 429) and `src/protocol/mod.rs` (lines 108, 112) will panic if a lock holder panics while holding the lock
+- Files: `src/live_index/store.rs`, `src/protocol/mod.rs`
+- Impact: Any panic in a lock-guarded section will cause the entire server to crash on the next attempted lock acquisition. This is a severe availability risk in production.
+- Fix approach: Implement poisoned-lock recovery handlers that gracefully degrade to a degraded state rather than panicking. Consider using custom lock wrappers that reset poison state on recovery. For non-critical locks, consider using `unwrap_or_else()` with state reset logic instead of immediate panic.
 
-**RwLock Poison Handling — Silent Failures:**
-- Issue: All `RwLock` access throughout the codebase uses `.lock().unwrap()` or `.read().unwrap()` patterns (`src/live_index/store.rs`, `src/daemon.rs`). Poisoned locks will panic instead of gracefully degrading
-- Files: `src/live_index/store.rs` (line 5, 349, 357), `src/daemon.rs` (widespread use), `src/sidecar/handlers.rs` (lock interactions)
-- Impact: Single-threaded panic in any RwLock holder brings down the entire MCP server. In long-running daemon scenarios, this is a production reliability issue
-- Fix approach: Wrap all `.unwrap()` calls with explicit poison handling that logs and returns error state. Consider using `parking_lot::RwLock` which doesn't poison on panic, or implement custom recovery logic that treats poisoned locks as stale state
+## Git Temporal Computation Unbounded Memory
 
-**Loose Parsing Error Strategy — Silent Data Loss:**
-- Issue: File parse failures record only a summary message in `ParseStatus::Failed` but discard the actual parse result tree. References may be extracted from a partially-corrupt AST
-- Files: `src/live_index/store.rs` (line 66-75), `src/domain/index.rs` (FileOutcome enum), `src/parsing/mod.rs`
-- Impact: In files with syntax errors, extracted references may include false positives or miss real references. Tools like `find_references` could return misleading results
-- Fix approach: Retain the partial AST even on failure, store syntax error details alongside symbols, and explicitly mark references extracted from error states. Consider adding a confidence score to ReferenceRecord
+**Git history processing on blocking thread:**
+- Issue: `src/live_index/git_temporal.rs` loads commits with bounds (MAX_COMMITS=500, WINDOW_DAYS=90) but then builds HashMaps for every file touched (lines 314-348). For large repositories with many files, the intermediate data structures (`file_commit_indices`, `file_authors`, `file_raw_churn`, `file_last_commit_idx`) accumulate memory linearly with file count × commit count.
+- Files: `src/live_index/git_temporal.rs`, lines 314-348 (Phase 1 aggregation)
+- Impact: On very large monorepos (10k+ files), computing git temporal metrics could consume significant memory (potentially hundreds of MB) during the background computation window. This doesn't block the server but reduces available system memory.
+- Fix approach: Implement streaming aggregation with periodic spill-to-disk if total file count exceeds a threshold (e.g., 5000 files). Alternatively, cap the analysis to the most-modified N files (e.g., top 1000 by churn).
 
-## Known Bugs
+## Snapshot Deserialization Trust
 
-**Definition-Site Reference Filtering — Byte Range Collision:**
-- Symptoms: References whose byte range exactly matches a symbol's byte range are filtered out as "definition sites", but in languages with complex syntax (decorators, annotations, visibility modifiers), this filter may over-aggressively exclude valid references
-- Files: `src/live_index/store.rs` (line 91-106, "Pitfall 1" comment)
-- Trigger: Parse a Python class with decorators or Java class with annotations. The decorator/annotation location may have the same byte_range as the symbol definition
-- Workaround: Manually inspect the bytewise symbol ranges if results seem incomplete
-- Fix: Refine the filter to check not just byte_range equality but also context (line number, enclosing node type) to distinguish true definitions from decorated definitions
+**Postcard binary snapshot loaded without validation:**
+- Issue: `src/live_index/persist.rs` deserializes binary snapshots directly without version check or integrity verification (only version number is checked, lines 21). Malformed or corrupted `.tokenizor/index.bin` files can cause panics or incorrect parse states.
+- Files: `src/live_index/persist.rs`, lines 94-150 (restore logic)
+- Impact: A corrupted or hand-edited snapshot file will cause the index to panic on deserialization, blocking startup. No graceful degradation to empty state.
+- Fix approach: Wrap `postcard::from_bytes()` in a try-catch that validates snapshot structure (at least 100 bytes, correct version). On error, log and fall back to empty index. Add checksums to snapshot format in the next version.
 
-**Git Temporal Computation Timing — No Deadline:**
-- Symptoms: `spawn_git_temporal_computation` spawns an async background task that may run indefinitely on large repos with deep history. No timeout. If git2 library hangs, the task hangs forever
-- Files: `src/live_index/git_temporal.rs` (line 32-73, `spawn_git_temporal_computation`)
-- Trigger: Clone a large monorepo (>1M commits). Run `git log` analysis
-- Workaround: Set `git2` to read-only shallow clones or limit commits server-side
-- Fix: Add a timeout (`tokio::time::timeout`) around the spawn_blocking call. Default 30 seconds. Make configurable via env var
+## File Watcher Burst Detection Edge Cases
 
-**Missing Synchronization in Symbol Search — Race on Published State:**
-- Symptoms: `PublishedIndexState` is updated independently from the live index. Between write lock release and published_state update, queries may see inconsistent state (new files indexed but old symbol counts)
-- Files: `src/live_index/store.rs` (PublishedIndexState management), `src/daemon.rs` (session state updates)
-- Trigger: Multiple edits in quick succession while queries are in flight
-- Workaround: Single-threaded workloads or coordinated client-side throttling
-- Fix: Wrap the entire "update live index → recompute published_state → swap" in a single write lock scope
+**Burst tracker reset timing:**
+- Issue: `src/watcher/mod.rs` lines 87-119: The burst tracker uses `QUIET_SECS=5` to reset the window, but if events are spaced exactly at the boundary (4.99s apart), the tracker can extend the debounce window indefinitely by never reaching the quiet threshold, causing unnecessary delays in index updates.
+- Files: `src/watcher/mod.rs`, lines 108-118 (effective_debounce_ms)
+- Impact: Edge case where rapid events separated by just under 5 seconds cause the debounce to perpetually stay at 500ms even during natural lulls, potentially delaying file updates by up to 500ms unnecessarily.
+- Fix approach: Track absolute time of debounce window start instead of relying on elapsed time between events. Reset unconditionally after 30s of any window, not just quiet periods.
 
-## Security Considerations
+## Cross-Reference Extraction Language Coverage
 
-**File Path Traversal — No Normalization on User Input:**
-- Risk: Tool handlers like `get_file_content`, `search_symbols` accept user-supplied file paths. Paths like `../../etc/passwd` are not explicitly normalized
-- Files: `src/protocol/tools.rs` (handlers that take `path` parameter), `src/live_index/query.rs` (path resolution)
-- Current mitigation: Index is scoped to repo root, so `../../` would only escape within the repo boundary. Filesystem operations use `std::fs` which rejects absolute paths. But there's no explicit path canonicalization
-- Recommendations:
-  1. Add `Path::canonicalize()` on all user-supplied paths before use
-  2. Verify that canonical path starts with repo root, reject if not
-  3. Document this assumption in tool descriptions
+**Missing language implementations:**
+- Issue: `src/parsing/xref.rs` implements cross-reference extraction (xref queries) for only 5 languages: Rust, Python, JavaScript, TypeScript, and Go. Other supported languages (C, C++, C#, Java, Ruby, PHP, Swift, Perl, Kotlin, Dart, Elixir) fall back to no-op extraction, returning empty reference lists.
+- Files: `src/parsing/xref.rs`, lines 13-85 (query definitions)
+- Impact: Tools like `find_dependents` and co-change analysis will not work for projects in unsupported languages. Users will see empty results without clear indication that xref is unavailable.
+- Fix approach: Add xref queries for high-value languages (Java, C++, C# at minimum). For unsupported languages, surface a clear message in query results: "Cross-references not available for [Language]". Consider marking language support in tool output.
 
-**HTTP Sidecar — No Authentication:**
-- Risk: The sidecar (`src/sidecar/server.rs`) binds to `127.0.0.1` and serves HTTP endpoints like `/outline`, `/symbol-context`. Any local process can query
-- Files: `src/sidecar/server.rs` (line ~100, server bind), `src/sidecar/handlers.rs` (endpoint handlers)
-- Current mitigation: Binds to localhost only, port dynamically allocated and written to `.tokenizor/daemon.port`. No public internet exposure
-- Recommendations: Consider adding HMAC-based request signing if the sidecar is ever used in multi-tenant environments. Document that sidecar is local-only
+## Term Search Regex Validation
 
-**Git Credentials Exposure — libgit2 May Read SSH Keys:**
-- Risk: The git2 crate uses libgit2 which may attempt to load SSH keys from `~/.ssh` when accessing git repositories. No way to prevent this
-- Files: `src/git.rs` (GitRepo implementation), `Cargo.toml` (git2 dependency with vendored-libgit2)
-- Current mitigation: SSH/HTTPS features disabled in git2 to remove OpenSSL dependency (see v0.20.1 fix), so git operations are read-only to local refs
-- Recommendations: If SSH key access becomes needed, carefully audit git2 credential handling and consider running in a sandboxed environment
+**No validation on user-provided regex patterns:**
+- Issue: `src/protocol/tools.rs` search_text handler accepts `regex` parameter (line 746-768) but does not pre-validate the regex pattern before passing to `search_text_result_with_options()`. Invalid regex (e.g., `"(?P<incomplete"`) will cause tree-sitter regex compilation to fail, returning an error string to the user instead of structured error.
+- Files: `src/protocol/tools.rs`, lines 746-768
+- Impact: User receives unhelpful error message. Malicious input cannot cause code execution but makes the tool appear fragile.
+- Fix approach: Validate regex with `regex::Regex::new()` before passing to search. Return structured error with the regex error message highlighted.
 
-## Performance Bottlenecks
+## Concurrent File Modification Race
 
-**In-Memory Symbol Storage — Unbounded Memory Growth:**
-- Problem: All file content bytes are stored in `IndexedFile::content` (Vec<u8>). For large repositories (50K+ files), this can cause multi-gigabyte memory usage
-- Files: `src/live_index/store.rs` (line 36-37, IndexedFile struct), `docs/ROADMAP-v2.md` (line 527 acknowledges this)
-- Cause: Design trade-off for zero-copy, zero-disk-I/O retrieval. Every byte of every indexed file stays in RAM
-- Improvement path:
-  1. Short-term: Add `max_file_size` filter (skip files >10MB) and soft memory budget with per-file eviction (keep symbols, drop content for untouched files)
-  2. Medium-term: Implement file-level eviction policy (LRU) for content bytes while keeping symbol indices
-  3. Long-term: Move to tiered storage (hot/cold files) or SpacetimeDB backend
+**File content cache without file-watch debounce coordination:**
+- Issue: `src/live_index/store.rs` and `src/protocol/edit.rs` work with file content that is cached in memory. If a file is modified externally (e.g., by another process) while the watcher is debouncing events (up to 500ms), the in-memory content can become stale. Edits computed against this stale content will apply to the wrong byte ranges.
+- Files: `src/protocol/edit.rs` (lines 44-53, reindex_after_write), `src/watcher/mod.rs` (debounce logic)
+- Impact: Race condition where external file modifications that occur during the debounce window cause edits to apply at wrong positions. Very rare in practice but possible in CI/shared-editor scenarios.
+- Fix approach: Before applying any edit, re-read the file from disk and verify content_hash matches the cached version. If mismatch, return error asking user to retry after sync. Consider reducing debounce window for edit operations.
 
-**Cross-Reference Query — No Index on Reference Kind:**
-- Problem: `find_references` and `find_dependents` iterate through all references in all files. For large repos, this is O(all_references)
-- Files: `src/live_index/query.rs` (line ~500+, find_references implementation), `src/live_index/store.rs` (reverse_index HashMaps)
-- Cause: No secondary index by ReferenceKind or symbol name to narrow result set
-- Improvement path: Add a `references_by_kind` index (ReferenceKind → HashMap of name → ReferenceLocations) to skip scanning irrelevant references
+## ParseStatus Not Propagated in Errors
 
-**Git Temporal Computation — Blocks on I/O:**
-- Problem: `git_temporal.rs` spawns a background task using `spawn_blocking`, which runs on a separate thread pool. For very large histories, this can starve other blocking tasks
-- Files: `src/live_index/git_temporal.rs` (line 48-51)
-- Cause: No priority or queueing system for long-running background tasks
-- Improvement path: Add task queue with priority levels, or make git temporal computation incremental (compute top N hotspots first, backfill rest asynchronously)
+**Partial parse warnings lost in some workflows:**
+- Issue: Files with `ParseStatus::PartialParse` are indexed successfully with symbols extracted, but tools don't consistently surface the parse warning. `search_symbols` results include parse status but `symbol_context` results don't, leading to inconsistent user experience.
+- Files: `src/protocol/tools.rs` (symbol_context handler, line ~2100-2200 estimated), `src/protocol/format.rs`
+- Impact: Users may not realize they're working with incomplete symbol data for files with syntax errors.
+- Fix approach: Ensure all symbol-returning tools include parse_status in output. Add a "⚠️ This file has parsing warnings" banner to context output.
 
-## Fragile Areas
+## Tight Loop in Trigram Index
 
-**Symbol Selector Matching — Line-Based Ambiguity:**
-- Files: `src/live_index/query.rs` (resolve_symbol_selector), `src/protocol/edit.rs` (resolve_or_error)
-- Why fragile: Resolves symbols by name + optional kind + optional line. Line numbers are 0-indexed internally but 1-indexed in user-facing output. Off-by-one errors are common
-- Safe modification: Always test with multi-line symbol definitions (classes, functions with decorators) and verify line number consistency through the entire stack (user input → internal representation → output). Add integration tests that specifically exercise line boundary conditions
-- Test coverage: `tests/sidecar_integration.rs` covers basic cases but lacks edge case scenarios (nested symbols, decorator lines, inline comments)
+**Trigram generation unbounded for large files:**
+- Issue: `src/live_index/trigram.rs` generates all 3-character substrings from file content without any length limit. For very large files (e.g., 10MB minified bundle), this creates millions of trigram entries, consuming O(file_size) memory and slowing down trigram-based queries.
+- Files: `src/live_index/trigram.rs`, entire module
+- Impact: Indexing very large files (>1MB) becomes noticeably slower. No functional correctness issue but performance degrades.
+- Fix approach: Skip trigram indexing for files over a threshold (e.g., 500KB). Mark such files as "not text search enabled" and fall back to full-file scan for those.
 
-**Edit Operations — Byte Range Calculations:**
-- Files: `src/protocol/edit.rs` (apply_splice, line 17-25), indentation detection (line 91-100)
-- Why fragile: All edits work at the byte level. Multi-byte UTF-8 characters, CR/LF line endings, and tabs can cause misalignment between user-facing line:column and internal byte ranges
-- Safe modification: Before modifying any edit operation, add fuzz testing with mixed line endings and non-ASCII characters. Test on Windows (CRLF) and Unix (LF)
-- Test coverage: Basic ASCII testing in `tests/sidecar_integration.rs` but no UTF-8, CRLF, or mixed-encoding tests
+## Daemon Degradation State Persistence
 
-**Reference Extraction — Language-Specific Patterns:**
-- Files: `src/parsing/xref.rs` (tree-sitter query extraction), `src/parsing/languages/*.rs` (per-language patterns)
-- Why fragile: Each language has custom tree-sitter query patterns. Changes to a single language's extractor can silently break reference detection
-- Safe modification: After any change to xref extraction, run `tests/xref_integration.rs` on real codebases. Manually spot-check a few key symbols to ensure references are found
-- Test coverage: Integration tests exist but only test basic cases. No regression tests for known false negatives (e.g., dynamic imports, reflection-based calls)
+**Once-degraded daemon never attempts reconnection:**
+- Issue: `src/protocol/mod.rs` lines 138-139: Once `daemon_degraded` flag is set to `true` after reconnect failure, all subsequent tool calls bypass the daemon entirely and fall back to local execution. The flag is never reset during the session.
+- Files: `src/protocol/mod.rs`, lines 138-139, 174-175, 195-196
+- Impact: If daemon has a transient failure and recovers, the local client will never know and will continue using potentially stale local index. Only a full process restart will re-enable daemon access.
+- Fix approach: Implement exponential backoff reconnect attempts every N minutes (e.g., 5 min with jitter). Reset the `daemon_degraded` flag on successful reconnect attempt, not just on initial failure.
 
-**Watcher Event Handling — Platform-Specific Timing:**
-- Files: `src/watcher/mod.rs` (event processing loop), `src/live_index/mod.rs` (watcher integration)
-- Why fragile: File watcher relies on OS filesystem events which have different guarantees across Windows/macOS/Linux. Events can be coalesced, delayed, or missed under heavy I/O load
-- Safe modification: Test on multiple platforms. Add delays/retries for file stat checks if event-based update fails
-- Test coverage: `tests/watcher_integration.rs` tests basic scenarios but doesn't cover high-concurrency writes or network filesystems
+## Index Reload During Active Queries
 
-## Scaling Limits
+**No guard preventing queries during reload:**
+- Issue: `SharedIndexHandle::reload()` acquires a write lock to rebuild the entire index. If a query tool acquires a read lock during this brief window, it could see a partially-built state, or the reload could block waiting for reader completion, causing tool latency spikes.
+- Files: `src/live_index/store.rs`, line 353 (write method)
+- Impact: Rare race condition: reload-triggered queries may see old index state or experience 100-500ms latency spikes during reload. No data corruption but user-visible jank.
+- Fix approach: Implement a "publishing" pattern where reload builds into a shadow index, then atomically swaps `live` to point to the new data. This allows readers to continue using the old index during rebuild.
 
-**Memory Usage — Current Limit ~50MB Source:**
-- Current capacity: Comfortably indexes ~10,000 files (~50MB source code)
-- Limit: At ~100,000 files (~500MB source), memory usage becomes problematic. OOM likely at 1,000,000+ files
-- Scaling path:
-  1. Add file-level eviction: keep symbols, drop content bytes for files not accessed in last hour
-  2. Implement lazy-loading: load file content on first access, not at startup
-  3. Consider SpacetimeDB backend for very large repos (deferred to Phase 5+)
+## Test Coverage of Error Paths
 
-**Query Latency — Not Measured Under Load:**
-- Current assumption: All queries <1ms from in-memory index (per ROADMAP-v2.md line 50)
-- Scaling issue: This hasn't been benchmarked with 100K+ symbols or 50K+ files. Lock contention under heavy concurrent queries could push this higher
-- Scaling path: Add latency instrumentation. Profile under simulated load (1000+ concurrent requests). If needed, switch to lock-free data structures or shard the index
+**Limited error handling tests:**
+- Issue: Codebase has strong test coverage for happy paths but minimal coverage of error scenarios. For example, no tests for parse failures, missing file handling, lock poisoning recovery, or git temporal computation failures.
+- Files: `tests/` directory (all test files)
+- Impact: Bugs in error handling paths go undetected and surface in production. Error messages may be unhelpful or incorrect.
+- Fix approach: Add error scenario tests for each major module: parsing failures, file-not-found, corrupted snapshots, git command failures, and lock poisoning.
 
-**Git History Analysis — No Bounds on Commits:**
-- Current limit: `MAX_COMMITS = 500`, `WINDOW_DAYS = 90` (src/live_index/git_temporal.rs line 77-78)
-- Issue: These are hard-coded constants. For very active repos (>500 commits/month), the window is too short to capture meaningful patterns
-- Scaling path: Make these configurable via env vars. Consider adaptive windowing based on commit frequency
+## Unbounded Result Sets in Search
 
-## Dependencies at Risk
+**No pagination or result limiting in some search paths:**
+- Issue: `search_text` tool has `result_limit` parameter capped at 100, but the actual matching logic in `src/live_index/search.rs` may still process thousands of candidate files before applying the limit. For very broad patterns (e.g., `.` or `[a-z]`), this could cause query latency to spike to multiple seconds.
+- Files: `src/live_index/search.rs`, lines 1000-1200 (matching logic)
+- Impact: Pathological regex patterns can cause tool timeout or 10+ second response latency, blocking the user.
+- Fix approach: Add a hard cutoff in the search loop: if matches exceed result_limit × 10, stop scanning further files and return early with a "truncated due to too many matches" message.
 
-**tree-sitter Grammar Versions — Pinned, May Fall Behind:**
-- Risk: All tree-sitter language grammars are pinned to specific versions (`tree-sitter-rust = "0.24"`, etc. in Cargo.toml). If upstream fixes a critical bug, we won't see it
-- Impact: Symbol extraction or cross-references could be incorrect for newly-written code if grammar lags
-- Migration plan: Monitor grammar repositories monthly. Update quarterly or on critical bug fixes. Add regression tests when updating
+## Dependency Version Pinning
 
-**git2 Vendored Libgit2 — Build Complexity:**
-- Risk: `git2` with `vendored-libgit2` feature compiles a C library from source. This adds build time and introduces platform-specific compilation issues
-- Impact: CI/CD becomes slower. Windows MSVC builds are particularly fragile
-- Migration plan: Monitor git2 releases. If vendored libgit2 causes too many issues, consider replacing with `gitoxide` (pure Rust) or simple `std::process::Command` calls to system git
+**Loose version constraints on critical deps:**
+- Issue: Cargo.toml specifies versions like `tokio = "1.48"`, `axum = "0.8"`, `rayon = "1.10"` without patch pinning. Semver-minor version bumps could introduce breaking changes or behavioral shifts.
+- Files: `Cargo.toml`, lines 6-46
+- Impact: Very low risk (semver should prevent breakage) but CI/binary reproducibility could vary across builds. No security known risk but drift is possible.
+- Fix approach: Use `cargo update --aggressive` in CI to validate all patches work. Consider pinning to full versions (e.g., `1.48.0`) in production releases.
 
-## Missing Critical Features
+## Performance Bottleneck: Reverse Index Rebuilds
 
-**No Symbol Type Information — References Are String-Based:**
-- Problem: Cross-references match by symbol name only. Can't distinguish between a function `foo()` and a variable `foo`. This causes false positive matches
-- Blocks: Precise impact analysis, type-aware refactoring, accurate dependency graphs
-- Implementation: Would require integrating a language server (rust-analyzer, pyright) or implementing type inference. Large effort
-
-**No Incremental Git Temporal Updates — Recomputes on Every Reload:**
-- Problem: `git_temporal.rs` recomputes the entire temporal index on every index reload, even if only 1 file changed
-- Blocks: Fast reload times for large repos with deep history
-- Implementation: Cache temporal data per-file, only recompute files in the changeset
-
-**No Pruning of Transient References — Symbol Aliasing Creates Duplicate Results:**
-- Problem: In Rust, `use foo::bar; bar();` creates a reference to `bar` that also implicitly references `foo`. Both show up in `find_references` results
-- Blocks: Clean reference lists, ability to remove unused imports
-- Implementation: Add re-export tracking and prune transitive reference chains
-
-## Test Coverage Gaps
-
-**Integration Tests — Limited Real-World Scenarios:**
-- What's not tested:
-  - Large repos (>10K files)
-  - Files with syntax errors during watcher updates
-  - Concurrent edits while queries are in flight
-  - Git histories with >1000 commits
-  - Mixed line endings (CRLF on Windows)
-  - Symlinks and unusual filesystem layouts
-- Files: `tests/` directory (7 integration tests, ~7K lines total)
-- Risk: High-probability bugs in real-world usage scenarios
-- Priority: High — Add at least one "large repo" benchmark test. Add concurrent edit + query test. Add CRLF/UTF-8 edge case tests
-
-**Unit Tests on Private Functions — Format/Query Logic Untested:**
-- What's not tested:
-  - `src/protocol/format.rs` functions (100+ formatter functions)
-  - `src/live_index/search.rs` trigram and relevance logic
-  - Error paths (what happens when lock is poisoned, file is deleted mid-query)
-- Files: `src/protocol/format.rs` (4,835 lines, no visible unit tests), `src/live_index/search.rs` (1,764 lines, only inline test data)
-- Risk: Format changes break tool output contracts silently
-- Priority: Medium — Add doctests to formatter functions. Add parametric tests for search scoring
-
-**End-to-End MCP Protocol Tests — Only Tool Inputs Tested:**
-- What's not tested:
-  - Full MCP request/response cycle (JSON serialization, tool schema validation)
-  - MCP error responses (tools returning errors)
-  - Prompt resource generation
-  - Resource URI resolution
-- Files: `tests/sidecar_integration.rs` tests HTTP endpoints, but no tests for MCP protocol layer (`src/protocol/mod.rs`)
-- Risk: Tools may work in HTTP sidecar but fail when called via MCP protocol
-- Priority: High — Add tests that call tools via rmcp library, verify schema compliance
+**Full reverse index rebuilt on every file mutation:**
+- Issue: Every time a file is updated, added, or removed, the entire reverse index (HashMap<String, Vec<ReferenceLocation>>) is rebuilt from scratch in `src/live_index/store.rs` (lines ~390-410). For large indices (10k+ files), this O(N) operation runs synchronously.
+- Files: `src/live_index/store.rs`, lines 391, 397, 403
+- Impact: File edits via `index_folder` tool (which triggers `update_file`) cause 50-200ms latency on large repos during the rebuild. Accumulates if multiple files are edited in sequence.
+- Fix approach: Implement incremental reverse index updates: instead of rebuilding, only remove old reference entries for the changed file and insert new ones. This reduces O(N) to O(file_references).
 
 ---
 
