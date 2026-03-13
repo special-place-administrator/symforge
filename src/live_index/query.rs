@@ -840,7 +840,14 @@ pub struct InspectMatchFoundView {
 /// Owned result view for `inspect_match`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum InspectMatchView {
-    FileNotFound { path: String },
+    FileNotFound {
+        path: String,
+    },
+    LineOutOfBounds {
+        path: String,
+        line: u32,
+        total_lines: usize,
+    },
     Found(InspectMatchFoundView),
 }
 
@@ -1670,7 +1677,16 @@ impl LiveIndex {
         // 1. Render excerpt (simple around-line logic).
         let content = String::from_utf8_lossy(&file.content);
         let lines: Vec<&str> = content.lines().collect();
-        let anchor = line.max(1) as usize;
+
+        if line as usize > lines.len() || line == 0 {
+            return InspectMatchView::LineOutOfBounds {
+                path: file.relative_path.clone(),
+                line,
+                total_lines: lines.len(),
+            };
+        }
+
+        let anchor = line as usize;
         let context = context_lines.unwrap_or(3) as usize;
         let start = anchor.saturating_sub(context).max(1);
         let end = anchor.saturating_add(context).min(lines.len());

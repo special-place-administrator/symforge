@@ -1662,6 +1662,13 @@ fn format_trace_git_activity(git: &crate::live_index::GitActivityView) -> String
 pub fn inspect_match_result_view(view: &InspectMatchView) -> String {
     match view {
         InspectMatchView::FileNotFound { path } => not_found_file(path),
+        InspectMatchView::LineOutOfBounds {
+            path,
+            line,
+            total_lines,
+        } => {
+            format!("Line {line} is out of bounds for {path} (file has {total_lines} lines).")
+        }
         InspectMatchView::Found(found) => {
             let mut output = String::new();
 

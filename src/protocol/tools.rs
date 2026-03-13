@@ -973,6 +973,9 @@ impl TokenizorServer {
     /// Search for symbols by name substring across all indexed files.
     #[tool(description = "Search for symbols by name substring across all indexed files.")]
     pub(crate) async fn search_symbols(&self, params: Parameters<SearchSymbolsInput>) -> String {
+        if params.0.query.trim().is_empty() {
+            return "search_symbols requires a non-empty query. Provide a symbol name or substring to search for.".to_string();
+        }
         if let Some(result) = self.proxy_tool_call("search_symbols", &params.0).await {
             return result;
         }
@@ -1175,6 +1178,14 @@ impl TokenizorServer {
     )]
     pub(crate) async fn index_folder(&self, params: Parameters<IndexFolderInput>) -> String {
         if let Some(result) = self.proxy_tool_call("index_folder", &params.0).await {
+            // The daemon has rebound the session to the new project. Update our
+            // local repo_root so that local-fallback tools (what_changed,
+            // analyze_file_impact) and ensure_local_index use the correct root
+            // if the daemon connection degrades later.
+            if result.starts_with("Indexed ") {
+                let new_root = PathBuf::from(&params.0.path);
+                self.set_repo_root(Some(new_root));
+            }
             return result;
         }
         let root = PathBuf::from(&params.0.path);
@@ -4004,5 +4015,68 @@ mod tests {
             }))
             .await;
         assert!(result.contains("No dependents found"), "got: {result}");
+    }
+
+    #[tokio::test]
+    async fn test_search_symbols_rejects_empty_query() {
+        let sym = make_symbol("Foo", SymbolKind::Class, 1, 3);
+        let (key, file) = make_file("src/lib.rs", b"struct Foo {}", vec![sym]);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+
+        for query in ["", "   ", "\t"] {
+            let result = server
+                .search_symbols(Parameters(super::SearchSymbolsInput {
+                    query: query.to_string(),
+                    kind: None,
+                    path_prefix: None,
+                    language: None,
+                    limit: None,
+                    include_generated: None,
+                    include_tests: None,
+                }))
+                .await;
+            assert!(
+                result.contains("non-empty query"),
+                "empty query '{query}' should be rejected, got: {result}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_inspect_match_out_of_bounds_line() {
+        let sym = make_symbol("foo", SymbolKind::Function, 0, 0);
+        let (key, file) = make_file("src/lib.rs", b"fn foo() {}\n", vec![sym]);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+
+        let result = server
+            .inspect_match(Parameters(super::InspectMatchInput {
+                path: "src/lib.rs".to_string(),
+                line: 999999,
+                context: None,
+            }))
+            .await;
+        assert!(
+            result.contains("out of bounds"),
+            "should report out of bounds, got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_inspect_match_line_zero_is_out_of_bounds() {
+        let sym = make_symbol("foo", SymbolKind::Function, 0, 0);
+        let (key, file) = make_file("src/lib.rs", b"fn foo() {}\n", vec![sym]);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+
+        let result = server
+            .inspect_match(Parameters(super::InspectMatchInput {
+                path: "src/lib.rs".to_string(),
+                line: 0,
+                context: None,
+            }))
+            .await;
+        assert!(
+            result.contains("out of bounds"),
+            "line 0 should be out of bounds (1-based), got: {result}"
+        );
     }
 }
