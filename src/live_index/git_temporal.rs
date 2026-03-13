@@ -2,11 +2,11 @@
 //!
 //! Computes per-file churn scores (exponential-decay weighted), ownership
 //! distribution, co-change coupling (Jaccard coefficient), and repo-wide
-//! hotspot summaries from a single bounded `git log` invocation.
+//! hotspot summaries using libgit2 via [`crate::git::GitRepo`].
 //!
 //! Design principles:
-//! - Single git process: one `git log --numstat --format=...` call yields
-//!   commits, authors, timestamps, and per-file touchpoints in one pass.
+//! - In-process git access: uses libgit2 (via git2 crate) — no child
+//!   processes, no console windows, faster execution.
 //! - Bounded: max 500 commits OR 90 days, whichever is smaller.
 //! - Exponential decay: half-life of 14 days so recent activity dominates.
 //! - Rank-normalized churn: percentile position across all tracked files
@@ -19,7 +19,6 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{Duration, Instant, SystemTime};
 
 use super::store::SharedIndex;
@@ -47,7 +46,7 @@ pub fn spawn_git_temporal_computation(index: SharedIndex, repo_root: PathBuf) {
     }
 
     tokio::spawn(async move {
-        // Run the computation on a blocking thread (it calls `git` via Command).
+        // Run the computation on a blocking thread (it uses libgit2 which does I/O).
         let result =
             tokio::task::spawn_blocking(move || GitTemporalIndex::compute(&repo_root)).await;
 
@@ -95,8 +94,6 @@ const CONTRIBUTOR_CAP: usize = 5;
 /// Commits touching more files than this are excluded from co-change
 /// analysis (likely merges, formatting runs, bulk renames).
 const MEGA_COMMIT_THRESHOLD: usize = 50;
-/// Delimiter injected into `--format` to split commits in the log output.
-const COMMIT_DELIMITER: &str = "TOKENIZOR_GIT_TEMPORAL_DELIM";
 
 // ── Public data types ───────────────────────────────────────────────────
 
@@ -283,23 +280,16 @@ impl GitTemporalIndex {
 
     /// Compute the full temporal index from git history.
     ///
-    /// Runs a single `git log` invocation, parses the output, and builds
-    /// per-file metrics, co-change relationships, and repo-wide stats.
-    /// Designed to run on a blocking thread (calls `Command::new("git")`).
+    /// Uses libgit2 via [`crate::git::GitRepo`] to walk the commit log
+    /// and build per-file metrics, co-change relationships, and repo-wide
+    /// stats. Designed to run on a blocking thread.
     pub fn compute(repo_root: &Path) -> Self {
         let start = Instant::now();
 
-        let raw_log = match run_git_log(repo_root) {
-            Ok(log) => log,
+        let commits = match load_commits(repo_root) {
+            Ok(c) => c,
             Err(reason) => return Self::unavailable(reason),
         };
-
-        let now_unix = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or(Duration::ZERO)
-            .as_secs();
-
-        let commits = parse_git_log(&raw_log, now_unix);
         if commits.is_empty() {
             return Self {
                 files: HashMap::new(),
@@ -558,46 +548,58 @@ impl GitTemporalIndex {
     }
 }
 
-// ── Git log execution ───────────────────────────────────────────────────
+// ── Git log via libgit2 ─────────────────────────────────────────────────
 
-fn run_git_log(repo_root: &Path) -> Result<String, String> {
-    let format_arg = format!(
-        "--format={}%nH:%h%nU:%at%nD:%aI%nA:%aN%nM:%s",
-        COMMIT_DELIMITER
-    );
-    let max_count_arg = format!("--max-count={MAX_COMMITS}");
-    let since_arg = format!("--since={WINDOW_DAYS} days ago");
+/// Load commits from git history using libgit2 (no child processes).
+fn load_commits(repo_root: &Path) -> Result<Vec<ParsedCommit>, String> {
+    use crate::git::GitRepo;
 
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo_root)
-        .args([
-            "log",
-            &format_arg,
-            "--numstat",
-            &max_count_arg,
-            &since_arg,
-            "--",
-        ])
-        .output()
-        .map_err(|error| format!("failed to start git: {error}"))?;
+    let repo = GitRepo::open(repo_root)?;
+    let entries = repo.log_with_stats(MAX_COMMITS as usize, WINDOW_DAYS)?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let message = if stderr.is_empty() {
-            format!("git exited with status {}", output.status)
-        } else {
-            stderr.to_string()
-        };
-        // "not a git repository" is not an error — just means git data is unavailable.
-        return Err(message);
-    }
+    let now = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as f64;
 
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    Ok(entries
+        .into_iter()
+        .map(|e| {
+            let days_ago = (now - e.unix_timestamp as f64) / 86400.0;
+            ParsedCommit {
+                hash: e.hash,
+                timestamp: e.timestamp,
+                author: e.author,
+                message: e.message,
+                days_ago: days_ago.max(0.0),
+                files: e.files,
+            }
+        })
+        .collect())
 }
 
-// ── Git log parsing ─────────────────────────────────────────────────────
+/// Truncate a message to `max_len` characters, appending "..." if truncated.
+fn truncate_message(msg: &str, max_len: usize) -> String {
+    if msg.len() <= max_len {
+        msg.to_string()
+    } else {
+        let truncated: String = msg.chars().take(max_len.saturating_sub(3)).collect();
+        format!("{truncated}...")
+    }
+}
 
+// ── Tests ───────────────────────────────────────────────────────────────
+
+// ── Test-only parsing infrastructure ────────────────────────────────────
+//
+// These were the original CLI-based parsing functions. They are retained
+// solely to support the existing unit tests that feed synthetic `git log`
+// strings into `compute_from_log`. Compiled only in test builds.
+
+#[cfg(test)]
+const COMMIT_DELIMITER: &str = "TOKENIZOR_GIT_TEMPORAL_DELIM";
+
+#[cfg(test)]
 fn parse_git_log(raw: &str, now_unix: u64) -> Vec<ParsedCommit> {
     let mut commits: Vec<ParsedCommit> = Vec::new();
     let mut current: Option<ParsedCommitBuilder> = None;
@@ -605,9 +607,7 @@ fn parse_git_log(raw: &str, now_unix: u64) -> Vec<ParsedCommit> {
     for line in raw.lines() {
         let line = line.trim_end();
 
-        // Delimiter marks start of a new commit.
         if line == COMMIT_DELIMITER {
-            // Finalize the previous commit, if any.
             if let Some(builder) = current.take() {
                 if let Some(commit) = builder.build() {
                     commits.push(commit);
@@ -621,7 +621,6 @@ fn parse_git_log(raw: &str, now_unix: u64) -> Vec<ParsedCommit> {
             continue;
         };
 
-        // Parse prefixed metadata lines.
         if let Some(rest) = line.strip_prefix("H:") {
             builder.hash = rest.to_string();
         } else if let Some(rest) = line.strip_prefix("U:") {
@@ -636,15 +635,12 @@ fn parse_git_log(raw: &str, now_unix: u64) -> Vec<ParsedCommit> {
         } else if let Some(rest) = line.strip_prefix("M:") {
             builder.message = rest.to_string();
         } else if !line.is_empty() {
-            // Try to parse as numstat: `added\tremoved\tpath`
             if let Some(path) = parse_numstat_line(line) {
                 builder.files.push(normalize_git_path(&path));
             }
         }
-        // Blank lines are silently skipped.
     }
 
-    // Finalize the last commit.
     if let Some(builder) = current.take() {
         if let Some(commit) = builder.build() {
             commits.push(commit);
@@ -654,24 +650,19 @@ fn parse_git_log(raw: &str, now_unix: u64) -> Vec<ParsedCommit> {
     commits
 }
 
-/// Parse a numstat line: `123\t456\tpath/to/file` or `-\t-\tbinary_file`.
-/// Returns the file path, or `None` for binary files or malformed lines.
+#[cfg(test)]
 fn parse_numstat_line(line: &str) -> Option<String> {
     let mut parts = line.splitn(3, '\t');
     let added = parts.next()?;
     let _removed = parts.next()?;
     let path = parts.next()?;
 
-    // Binary files show as `-\t-\tpath` — skip them.
     if added == "-" {
         return None;
     }
-
-    // Validate that added is numeric (guards against non-numstat lines).
     if !added.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-
     if path.is_empty() {
         return None;
     }
@@ -679,12 +670,12 @@ fn parse_numstat_line(line: &str) -> Option<String> {
     Some(path.to_string())
 }
 
-/// Normalize git paths to forward slashes (matching LiveIndex key convention).
+#[cfg(test)]
 fn normalize_git_path(path: &str) -> String {
     path.replace('\\', "/")
 }
 
-/// Builder for accumulating parsed commit data across lines.
+#[cfg(test)]
 #[derive(Debug, Default)]
 struct ParsedCommitBuilder {
     hash: String,
@@ -696,13 +687,13 @@ struct ParsedCommitBuilder {
     files: Vec<String>,
 }
 
+#[cfg(test)]
 impl ParsedCommitBuilder {
     fn new() -> Self {
         Self::default()
     }
 
     fn build(self) -> Option<ParsedCommit> {
-        // Require at minimum a hash and at least one file touched.
         if self.hash.is_empty() || self.files.is_empty() {
             return None;
         }
@@ -716,18 +707,6 @@ impl ParsedCommitBuilder {
         })
     }
 }
-
-/// Truncate a message to `max_len` characters, appending "..." if truncated.
-fn truncate_message(msg: &str, max_len: usize) -> String {
-    if msg.len() <= max_len {
-        msg.to_string()
-    } else {
-        let truncated: String = msg.chars().take(max_len.saturating_sub(3)).collect();
-        format!("{truncated}...")
-    }
-}
-
-// ── Tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
