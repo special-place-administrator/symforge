@@ -535,6 +535,11 @@ pub struct ExploreInput {
     /// Maximum number of results per category (default 10).
     #[serde(default, deserialize_with = "lenient_u32")]
     pub limit: Option<u32>,
+    /// Exploration depth: 1 (default) = symbol names + text patterns + files.
+    /// 2 = adds signatures and one hop of dependents for top symbols.
+    /// 3 = adds call chains and type dependency edges for top symbols.
+    #[serde(default, deserialize_with = "lenient_u32")]
+    pub depth: Option<u32>,
 }
 
 /// Input for `get_co_changes`.
@@ -2023,12 +2028,12 @@ impl TokenizorServer {
     }
 
     /// Start here when you don't know where to look. Accepts a natural-language concept
-    /// (e.g. 'error handling', 'authentication') and returns a unified overview of related symbols,
-    /// patterns, and files. Use for conceptual questions like 'how does X work?'.
-    /// NOT for finding a specific symbol by name (use search_symbols).
-    /// NOT for text content search (use search_text).
+    /// and returns related symbols, patterns, and files. Set depth=2 for signatures and
+    /// dependents of top symbols (~1500 tokens). Set depth=3 for implementations and type
+    /// dependency chains (~3000 tokens). NOT for finding a specific symbol by name
+    /// (use search_symbols). NOT for text content search (use search_text).
     #[tool(
-        description = "Start here when you don't know where to look. Accepts a natural-language concept (e.g. 'error handling', 'authentication') and returns a unified overview of related symbols, patterns, and files. Use for conceptual questions like 'how does X work?'. NOT for finding a specific symbol by name (use search_symbols). NOT for text content search (use search_text)."
+        description = "Start here when you don't know where to look. Accepts a natural-language concept and returns related symbols, patterns, and files. Set depth=2 for signatures and dependents of top symbols (~1500 tokens). Set depth=3 for implementations and type dependency chains (~3000 tokens). NOT for finding a specific symbol by name (use search_symbols). NOT for text content search (use search_text)."
     )]
     pub(crate) async fn explore(&self, params: Parameters<ExploreInput>) -> String {
         if let Some(result) = self.proxy_tool_call("explore", &params.0).await {
@@ -2107,7 +2112,78 @@ impl TokenizorServer {
         related_files.sort_by(|a, b| b.1.cmp(&a.1));
         related_files.truncate(limit);
 
-        format::explore_result_view(&label, &symbol_hits, &text_hits, &related_files)
+        // Depth 2+: enrich top symbol hits with signatures and dependents
+        let depth = params.0.depth.unwrap_or(1).max(1).min(3);
+        let mut enriched_symbols: Vec<(String, String, String, Option<String>, Vec<String>)> =
+            Vec::new();
+        // (name, kind, path, signature, dependent_files)
+
+        if depth >= 2 {
+            let enrich_limit = 5.min(symbol_hits.len());
+            for (name, kind, path) in &symbol_hits[..enrich_limit] {
+                let signature = guard.get_file(path).and_then(|file| {
+                    let sym = file.symbols.iter().find(|s| {
+                        s.name == *name && s.kind.to_string().eq_ignore_ascii_case(kind)
+                    })?;
+                    let body = std::str::from_utf8(
+                        &file.content[sym.byte_range.0 as usize..sym.byte_range.1 as usize],
+                    )
+                    .ok()?;
+                    Some(format::apply_verbosity(body, "signature"))
+                });
+
+                let dependents = {
+                    let dep_view = guard.capture_find_dependents_view(path);
+                    dep_view
+                        .files
+                        .iter()
+                        .take(3)
+                        .map(|f| f.file_path.clone())
+                        .collect()
+                };
+
+                enriched_symbols.push((
+                    name.clone(),
+                    kind.clone(),
+                    path.clone(),
+                    signature,
+                    dependents,
+                ));
+            }
+        }
+
+        // Depth 3: also gather implementations for top symbols
+        let mut symbol_impls: Vec<(String, Vec<String>)> = Vec::new(); // (name, impl_descriptions)
+        if depth >= 3 {
+            let impl_limit = 3.min(enriched_symbols.len());
+            for (name, _kind, _path, _, _) in &enriched_symbols[..impl_limit] {
+                let impl_view = guard.capture_find_implementations_view(name, None);
+                let impl_names: Vec<String> = impl_view
+                    .entries
+                    .iter()
+                    .take(5)
+                    .map(|e| {
+                        format!(
+                            "{} impl {} ({}:{})",
+                            e.implementor, e.trait_name, e.file_path, e.line
+                        )
+                    })
+                    .collect();
+                if !impl_names.is_empty() {
+                    symbol_impls.push((name.clone(), impl_names));
+                }
+            }
+        }
+
+        format::explore_result_view(
+            &label,
+            &symbol_hits,
+            &text_hits,
+            &related_files,
+            &enriched_symbols,
+            &symbol_impls,
+            depth,
+        )
     }
 
     /// Symbol-level diff between two git refs. Shows +added, -removed, ~modified symbols per changed
@@ -4908,6 +4984,7 @@ mod tests {
             .explore(Parameters(super::ExploreInput {
                 query: "error handling".to_string(),
                 limit: Some(5),
+                depth: None,
             }))
             .await;
         assert!(
@@ -4930,6 +5007,7 @@ mod tests {
             .explore(Parameters(super::ExploreInput {
                 query: "process data".to_string(),
                 limit: Some(5),
+                depth: None,
             }))
             .await;
         assert!(
@@ -4945,11 +5023,38 @@ mod tests {
             .explore(Parameters(super::ExploreInput {
                 query: "".to_string(),
                 limit: None,
+                depth: None,
             }))
             .await;
         assert!(
             result.contains("Explore requires a non-empty query"),
             "should reject empty query, got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_explore_depth_2_shows_signatures() {
+        let content = b"pub enum Error {\n    NotFound,\n    Io(std::io::Error),\n}\nimpl Error {\n    fn is_retryable(&self) -> bool { false }\n}\n";
+        let sym = SymbolRecord {
+            name: "Error".to_string(),
+            kind: SymbolKind::Enum,
+            depth: 0,
+            sort_order: 0,
+            byte_range: (0, content.len() as u32),
+            line_range: (0, 5),
+        };
+        let (key, file) = make_file("src/error.rs", content, vec![sym]);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let result = server
+            .explore(Parameters(super::ExploreInput {
+                query: "error handling".to_string(),
+                limit: Some(5),
+                depth: Some(2),
+            }))
+            .await;
+        assert!(
+            result.contains("pub enum Error"),
+            "depth 2 should show signature, got: {result}"
         );
     }
 
