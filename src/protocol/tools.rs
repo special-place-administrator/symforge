@@ -140,12 +140,18 @@ pub struct GetFileOutlineInput {
 /// Input for `get_symbol`.
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct GetSymbolInput {
-    /// Relative path to the file.
+    /// Relative path to the file (required for single lookup; ignored when `targets` is provided).
+    #[serde(default)]
     pub path: String,
-    /// Symbol name to look up.
+    /// Symbol name to look up (required for single lookup; ignored when `targets` is provided).
+    #[serde(default)]
     pub name: String,
     /// Optional kind filter: "fn", "struct", "enum", "impl", etc.
     pub kind: Option<String>,
+    /// Optional batch mode: provide multiple targets to retrieve 2+ symbols or code slices in one call.
+    /// Each target is a file path + symbol name or byte range. When provided, path/name/kind above are ignored.
+    #[serde(default)]
+    pub targets: Option<Vec<SymbolTarget>>,
 }
 
 /// A single target in a `get_symbols` batch request.
@@ -249,8 +255,8 @@ pub struct SearchTextInput {
 /// Input for `search_files`.
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct SearchFilesInput {
-    /// Filename, folder name, or partial path. Optional when `changed_with` is provided.
-    #[serde(default)]
+    /// Filename, folder name, or partial path. Required for search and resolve modes. Optional when `changed_with` is provided.
+    #[serde(default, alias = "hint")]
     pub query: String,
     /// Optional maximum number of matches to return (default 20, capped at 50).
     #[serde(default, deserialize_with = "lenient_u32")]
@@ -259,6 +265,9 @@ pub struct SearchFilesInput {
     pub current_file: Option<String>,
     /// Find files that frequently co-change with this file (uses git temporal coupling data).
     pub changed_with: Option<String>,
+    /// Set to true for exact path resolution mode: resolves an ambiguous filename or partial path to one exact project path.
+    #[serde(default, deserialize_with = "lenient_bool")]
+    pub resolve: Option<bool>,
 }
 
 /// Input for `resolve_path`.
@@ -1041,45 +1050,79 @@ fn loading_guard_message_from_published(
 
 #[tool_router(vis = "pub(crate)")]
 impl TokenizorServer {
-    /// Symbol outline for a single file — every function, class, enum, trait with line ranges.
-    /// Use to see what symbols exist before reading specific ones with get_symbol.
-    /// NOT for understanding a file's role/dependencies (use get_file_context).
-    /// NOT for reading symbol bodies (use get_symbol).
-    #[tool(
-        description = "Symbol outline for a single file — every function, class, enum, trait with line ranges. Use to see what symbols exist before reading specific ones with get_symbol. NOT for understanding a file's role/dependencies (use get_file_context). NOT for reading symbol bodies (use get_symbol)."
-    )]
-    pub(crate) async fn get_file_outline(&self, params: Parameters<GetFileOutlineInput>) -> String {
-        if let Some(result) = self.proxy_tool_call("get_file_outline", &params.0).await {
-            return result;
-        }
-        let file = {
-            let guard = self.index.read().expect("lock poisoned");
-            loading_guard!(guard);
-            guard.capture_shared_file(&params.0.path)
-        };
-        match file {
-            Some(file) => {
-                let raw_chars = file.content.len();
-                let result = format::file_outline_from_indexed_file(file.as_ref());
-                let footer = format::compact_savings_footer(result.len(), raw_chars);
-                format!("{result}{footer}")
-            }
-            None => format::not_found_file(&params.0.path),
-        }
-    }
-
-    /// Look up a single symbol by exact file path and name — returns its full source code.
-    /// Use when you know exactly which symbol you need to read.
+    /// Look up symbol(s) by file path and name. Single mode: provide path + name for one symbol.
+    /// Batch mode: provide targets[] array for multiple symbols or code slices in one call.
     /// NOT for finding symbols by name (use search_symbols first).
     /// NOT for understanding who calls it (use find_references or get_symbol_context).
     /// NOT for edit preparation (use get_context_bundle).
     #[tool(
-        description = "Look up a single symbol by exact file path and name — returns its full source code. Use when you know exactly which symbol you need to read. NOT for finding symbols by name (use search_symbols first). NOT for understanding who calls it (use find_references or get_symbol_context). NOT for edit preparation (use get_context_bundle)."
+        description = "Look up symbol(s) by file path and name. Single mode: provide path + name. Batch mode: provide targets[] array for 2+ symbols or code slices in one call (each target is file path + symbol name or byte range). NOT for finding symbols by name (use search_symbols first). NOT for understanding callers (use find_references or get_symbol_context). NOT for edit preparation (use get_context_bundle)."
     )]
     pub(crate) async fn get_symbol(&self, params: Parameters<GetSymbolInput>) -> String {
         if let Some(result) = self.proxy_tool_call("get_symbol", &params.0).await {
             return result;
         }
+
+        // Batch mode: targets[] provided
+        if let Some(ref targets) = params.0.targets {
+            if targets.is_empty() {
+                return "Error: targets array is empty.".to_string();
+            }
+            let captured = {
+                let guard = self.index.read().expect("lock poisoned");
+                loading_guard!(guard);
+
+                targets
+                    .iter()
+                    .map(|target| match target.name.as_deref() {
+                        Some(name) => match guard.capture_shared_file(&target.path) {
+                            Some(file) => CapturedGetSymbolsEntry::SymbolLookup {
+                                file,
+                                name: name.to_string(),
+                                kind: target.kind.clone(),
+                            },
+                            None => CapturedGetSymbolsEntry::FileNotFound {
+                                path: target.path.clone(),
+                            },
+                        },
+                        None => match guard.capture_shared_file(&target.path) {
+                            None => CapturedGetSymbolsEntry::FileNotFound {
+                                path: target.path.clone(),
+                            },
+                            Some(file) => CapturedGetSymbolsEntry::CodeSlice {
+                                file,
+                                start_byte: target.start_byte.unwrap_or(0) as usize,
+                                end_byte: target.end_byte.map(|e| e as usize),
+                            },
+                        },
+                    })
+                    .collect::<Vec<_>>()
+            };
+
+            return captured
+                .into_iter()
+                .map(|entry| match entry {
+                    CapturedGetSymbolsEntry::SymbolLookup { file, name, kind } => {
+                        format::symbol_detail_from_indexed_file(
+                            file.as_ref(),
+                            &name,
+                            kind.as_deref(),
+                        )
+                    }
+                    CapturedGetSymbolsEntry::CodeSlice {
+                        file,
+                        start_byte,
+                        end_byte,
+                    } => format::code_slice_from_indexed_file(file.as_ref(), start_byte, end_byte),
+                    CapturedGetSymbolsEntry::FileNotFound { path } => {
+                        format::not_found_file(&path)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n---\n");
+        }
+
+        // Single mode: path + name
         let file = {
             let guard = self.index.read().expect("lock poisoned");
             loading_guard!(guard);
@@ -1095,71 +1138,11 @@ impl TokenizorServer {
         }
     }
 
-    /// Batch lookup: retrieve multiple symbols or code slices in one call. Use when you need 2+
-    /// symbol bodies — avoids multiple get_symbol round-trips. Each target is a file path + symbol
-    /// name or byte range.
-    #[tool(
-        description = "Batch lookup: retrieve multiple symbols or code slices in one call. Use when you need 2+ symbol bodies — avoids multiple get_symbol round-trips. Each target is a file path + symbol name or byte range."
-    )]
-    pub(crate) async fn get_symbols(&self, params: Parameters<GetSymbolsInput>) -> String {
-        if let Some(result) = self.proxy_tool_call("get_symbols", &params.0).await {
-            return result;
-        }
-        let captured = {
-            let guard = self.index.read().expect("lock poisoned");
-            loading_guard!(guard);
-
-            params
-                .0
-                .targets
-                .iter()
-                .map(|target| match target.name.as_deref() {
-                    Some(name) => match guard.capture_shared_file(&target.path) {
-                        Some(file) => CapturedGetSymbolsEntry::SymbolLookup {
-                            file,
-                            name: name.to_string(),
-                            kind: target.kind.clone(),
-                        },
-                        None => CapturedGetSymbolsEntry::FileNotFound {
-                            path: target.path.clone(),
-                        },
-                    },
-                    None => match guard.capture_shared_file(&target.path) {
-                        None => CapturedGetSymbolsEntry::FileNotFound {
-                            path: target.path.clone(),
-                        },
-                        Some(file) => CapturedGetSymbolsEntry::CodeSlice {
-                            file,
-                            start_byte: target.start_byte.unwrap_or(0) as usize,
-                            end_byte: target.end_byte.map(|e| e as usize),
-                        },
-                    },
-                })
-                .collect::<Vec<_>>()
-        };
-
-        captured
-            .into_iter()
-            .map(|entry| match entry {
-                CapturedGetSymbolsEntry::SymbolLookup { file, name, kind } => {
-                    format::symbol_detail_from_indexed_file(file.as_ref(), &name, kind.as_deref())
-                }
-                CapturedGetSymbolsEntry::CodeSlice {
-                    file,
-                    start_byte,
-                    end_byte,
-                } => format::code_slice_from_indexed_file(file.as_ref(), start_byte, end_byte),
-                CapturedGetSymbolsEntry::FileNotFound { path } => format::not_found_file(&path),
-            })
-            .collect::<Vec<_>>()
-            .join("\n---\n")
-    }
-
     /// Full symbol outline of the entire project — every file with every symbol, kind, and line range.
     /// Warning: large output. Only use when you genuinely need the complete project symbol map.
-    /// For a compact overview use get_repo_map. For one file use get_file_outline.
+    /// For a compact overview use get_repo_map. For one file use get_file_context with sections=['outline'].
     #[tool(
-        description = "Full symbol outline of the entire project — every file with every symbol, kind, and line range. Warning: large output. Only use when you genuinely need the complete project symbol map. For a compact overview use get_repo_map. For one file use get_file_outline."
+        description = "Full symbol outline of the entire project — every file with every symbol, kind, and line range. Warning: large output. Only use when you genuinely need the complete project symbol map. For a compact overview use get_repo_map. For one file use get_file_context with sections=['outline']."
     )]
     pub(crate) async fn get_repo_outline(&self) -> String {
         if let Some(result) = self
@@ -1202,11 +1185,12 @@ impl TokenizorServer {
     }
 
     /// Rich file summary: symbol outline, imports, consumers, references, and git activity.
+    /// Use sections=['outline'] for a compact symbol outline only (replaces the old get_file_outline tool).
     /// Use sections=['outline','imports'] to limit output. Best tool for understanding a file before editing.
     /// Much smaller than reading the raw file.
     /// NOT for reading actual source code (use get_file_content or get_symbol).
     #[tool(
-        description = "Rich file summary: symbol outline, imports, consumers, references, and git activity. Use sections=['outline','imports'] to limit output. Best tool for understanding a file before editing. Much smaller than reading the raw file. NOT for reading actual source code (use get_file_content or get_symbol)."
+        description = "Rich file summary: symbol outline, imports, consumers, references, and git activity. Use sections=['outline'] for symbol-only outline (names, kinds, line ranges). Use sections=['outline','imports'] to limit output. Best tool for understanding a file before editing. Much smaller than reading the raw file. NOT for reading actual source code (use get_file_content or get_symbol)."
     )]
     pub(crate) async fn get_file_context(&self, params: Parameters<GetFileContextInput>) -> String {
         if let Some(result) = self.proxy_tool_call("get_file_context", &params.0).await {
@@ -1517,14 +1501,27 @@ impl TokenizorServer {
     }
 
     /// Find files by path, filename, or folder — ranked by relevance. With changed_with=path,
-    /// finds co-changing files via git temporal coupling. Use when looking for a file by name or path.
+    /// finds co-changing files via git temporal coupling. Set resolve=true for exact path resolution.
     /// NOT for file content search (use search_text). NOT for symbol names (use search_symbols).
     #[tool(
-        description = "Find files by path, filename, or folder — ranked by relevance. With changed_with=path, finds co-changing files via git temporal coupling. Use when looking for a file by name or path. NOT for file content search (use search_text). NOT for symbol names (use search_symbols)."
+        description = "Find files by path, filename, or folder — ranked by relevance. Modes: (1) default: fuzzy search ranked by relevance, (2) changed_with=path: co-changing files via git temporal coupling, (3) resolve=true: resolve an ambiguous filename or partial path to one exact project path. NOT for file content search (use search_text). NOT for symbol names (use search_symbols)."
     )]
     pub(crate) async fn search_files(&self, params: Parameters<SearchFilesInput>) -> String {
         if let Some(result) = self.proxy_tool_call("search_files", &params.0).await {
             return result;
+        }
+
+        // Resolve mode: exact path resolution
+        if params.0.resolve.unwrap_or(false) {
+            if params.0.query.is_empty() {
+                return "search_files with resolve=true requires a non-empty `query`.".to_string();
+            }
+            let view = {
+                let guard = self.index.read().expect("lock poisoned");
+                loading_guard!(guard);
+                guard.capture_resolve_path_view(&params.0.query)
+            };
+            return format::resolve_path_result_view(&view);
         }
 
         // Handle changed_with (git temporal coupling)
@@ -1578,24 +1575,6 @@ impl TokenizorServer {
             )
         };
         format::search_files_result_view(&view)
-    }
-
-    /// Resolve an ambiguous filename or partial path to one exact project path. Returns best match
-    /// or ranked candidates. Use when you have a partial or ambiguous filename and need the exact path.
-    /// NOT for browsing files (use search_files).
-    #[tool(
-        description = "Resolve an ambiguous filename or partial path to one exact project path. Returns best match or ranked candidates. Use when you have a partial or ambiguous filename and need the exact path. NOT for browsing files (use search_files)."
-    )]
-    pub(crate) async fn resolve_path(&self, params: Parameters<ResolvePathInput>) -> String {
-        if let Some(result) = self.proxy_tool_call("resolve_path", &params.0).await {
-            return result;
-        }
-        let view = {
-            let guard = self.index.read().expect("lock poisoned");
-            loading_guard!(guard);
-            guard.capture_resolve_path_view(&params.0.hint)
-        };
-        format::resolve_path_result_view(&view)
     }
 
     /// Diagnostic: index status, file/symbol counts, load time, watcher state, token savings,
@@ -1765,10 +1744,10 @@ impl TokenizorServer {
 
     /// Read raw file content. Modes: full file, line range, around_line/around_match/around_symbol,
     /// or chunked paging. Only use when you need actual source text that other tools don't provide.
-    /// For structured understanding use get_file_outline or get_file_context. For a single function
+    /// For structured understanding use get_file_context. For a single function
     /// body use get_symbol.
     #[tool(
-        description = "Read raw file content. Modes: full file, line range, around_line/around_match/around_symbol, or chunked paging. Only use when you need actual source text that other tools don't provide. For structured understanding use get_file_outline or get_file_context. For a single function body use get_symbol."
+        description = "Read raw file content. Modes: full file, line range, around_line/around_match/around_symbol, or chunked paging. Only use when you need actual source text that other tools don't provide. For structured understanding use get_file_context. For a single function body use get_symbol."
     )]
     pub(crate) async fn get_file_content(&self, params: Parameters<GetFileContentInput>) -> String {
         if let Some(result) = self.proxy_tool_call("get_file_content", &params.0).await {
@@ -2219,20 +2198,25 @@ impl TokenizorServer {
         result
     }
 
-    /// Insert code before a named symbol. Content is auto-indented to match the target symbol's
-    /// indentation level — provide unindented code.
+    /// Insert code before or after a named symbol. Content is auto-indented to match the target
+    /// symbol's indentation level — provide unindented code.
     /// NOT for replacing existing code (use replace_symbol_body or edit_within_symbol).
     #[tool(
-        description = "Insert code before a named symbol. Content is auto-indented to match the target symbol's indentation level — provide unindented code. Use symbol_line to disambiguate overloaded names. NOT for replacing existing code (use replace_symbol_body or edit_within_symbol)."
+        description = "Insert code before or after a named symbol. Set position='before' or 'after' (default 'after'). Content is auto-indented to match the target symbol's indentation level — provide unindented code. Use symbol_line to disambiguate overloaded names. NOT for replacing existing code (use replace_symbol_body or edit_within_symbol)."
     )]
-    pub(crate) async fn insert_before_symbol(
+    pub(crate) async fn insert_symbol(
         &self,
         params: Parameters<edit::InsertSymbolInput>,
     ) -> String {
-        if let Some(result) = self
-            .proxy_tool_call("insert_before_symbol", &params.0)
-            .await
-        {
+        let position = params
+            .0
+            .position
+            .as_deref()
+            .unwrap_or("after");
+        if position != "before" && position != "after" {
+            return format!("Error: position must be 'before' or 'after', got '{position}'");
+        }
+        if let Some(result) = self.proxy_tool_call("insert_symbol", &params.0).await {
             return result;
         }
         let repo_root = match self.capture_repo_root() {
@@ -2257,7 +2241,11 @@ impl TokenizorServer {
             Ok(s) => s,
             Err(e) => return e,
         };
-        let new_content = edit::build_insert_before(&file.content, &sym, &params.0.content);
+        let new_content = if position == "before" {
+            edit::build_insert_before(&file.content, &sym, &params.0.content)
+        } else {
+            edit::build_insert_after(&file.content, &sym, &params.0.content)
+        };
         let abs_path = repo_root.join(&params.0.path);
         if let Err(e) = edit::atomic_write_file(&abs_path, &new_content) {
             return format!("Error writing {}: {e}", params.0.path);
@@ -2271,61 +2259,7 @@ impl TokenizorServer {
         edit_format::format_insert(
             &params.0.path,
             &params.0.name,
-            "before",
-            params.0.content.len(),
-        )
-    }
-
-    /// Insert code after a named symbol. Content is auto-indented to match the target symbol's
-    /// indentation level — provide unindented code.
-    /// NOT for replacing existing code (use replace_symbol_body or edit_within_symbol).
-    #[tool(
-        description = "Insert code after a named symbol. Content is auto-indented to match the target symbol's indentation level — provide unindented code. Use symbol_line to disambiguate overloaded names. NOT for replacing existing code (use replace_symbol_body or edit_within_symbol)."
-    )]
-    pub(crate) async fn insert_after_symbol(
-        &self,
-        params: Parameters<edit::InsertSymbolInput>,
-    ) -> String {
-        if let Some(result) = self.proxy_tool_call("insert_after_symbol", &params.0).await {
-            return result;
-        }
-        let repo_root = match self.capture_repo_root() {
-            Some(root) => root,
-            None => return "Error: no repository root configured.".to_string(),
-        };
-        let file = {
-            let guard = self.index.read().expect("lock poisoned");
-            loading_guard!(guard);
-            guard.capture_shared_file(&params.0.path)
-        };
-        let file = match file {
-            Some(f) => f,
-            None => return format::not_found_file(&params.0.path),
-        };
-        let (_, sym) = match edit::resolve_or_error(
-            &file,
-            &params.0.name,
-            params.0.kind.as_deref(),
-            params.0.symbol_line,
-        ) {
-            Ok(s) => s,
-            Err(e) => return e,
-        };
-        let new_content = edit::build_insert_after(&file.content, &sym, &params.0.content);
-        let abs_path = repo_root.join(&params.0.path);
-        if let Err(e) = edit::atomic_write_file(&abs_path, &new_content) {
-            return format!("Error writing {}: {e}", params.0.path);
-        }
-        edit::reindex_after_write(
-            &self.index,
-            &params.0.path,
-            new_content,
-            file.language.clone(),
-        );
-        edit_format::format_insert(
-            &params.0.path,
-            &params.0.name,
-            "after",
+            position,
             params.0.content.len(),
         )
     }
@@ -2476,7 +2410,7 @@ impl TokenizorServer {
 
     /// Apply multiple symbol-addressed edits atomically.
     #[tool(
-        description = "Apply multiple symbol-addressed edits atomically across files. Each edit specifies a file, symbol, and operation (replace/insert_before/insert_after/delete/edit_within). All symbols are validated before any writes — if any resolution fails, no files are modified. Edits within the same file must target non-overlapping symbols. NOT for single-symbol edits (use replace_symbol_body, insert_before_symbol, etc.)."
+        description = "Apply multiple symbol-addressed edits atomically across files. Each edit specifies a file, symbol, and operation (replace/insert_before/insert_after/delete/edit_within). All symbols are validated before any writes — if any resolution fails, no files are modified. Edits within the same file must target non-overlapping symbols. NOT for single-symbol edits (use replace_symbol_body, insert_symbol, etc.)."
     )]
     pub(crate) async fn batch_edit(&self, params: Parameters<edit::BatchEditInput>) -> String {
         if let Some(result) = self.proxy_tool_call("batch_edit", &params.0).await {
@@ -2529,7 +2463,7 @@ impl TokenizorServer {
 
     /// Insert the same code at multiple symbol locations across files.
     #[tool(
-        description = "Insert the same code before or after multiple symbols across the project. Useful for adding logging, instrumentation, or boilerplate to many locations at once. Code is auto-indented to match each target symbol. NOT for inserting at a single location (use insert_before_symbol or insert_after_symbol)."
+        description = "Insert the same code before or after multiple symbols across the project. Useful for adding logging, instrumentation, or boilerplate to many locations at once. Code is auto-indented to match each target symbol. NOT for inserting at a single location (use insert_symbol)."
     )]
     pub(crate) async fn batch_insert(&self, params: Parameters<edit::BatchInsertInput>) -> String {
         if let Some(result) = self.proxy_tool_call("batch_insert", &params.0).await {
@@ -2805,8 +2739,11 @@ mod tests {
         let server = make_server(make_live_index_empty());
         // Any non-health tool should return the empty guard message
         let result = server
-            .get_file_outline(Parameters(super::GetFileOutlineInput {
+            .get_symbol(Parameters(super::GetSymbolInput {
                 path: "anything.rs".to_string(),
+                name: "anything".to_string(),
+                kind: None,
+                targets: None,
             }))
             .await;
         assert_eq!(
@@ -2820,8 +2757,11 @@ mod tests {
     async fn test_loading_guard_circuit_breaker_returns_degraded_message() {
         let server = make_server(make_live_index_tripped());
         let result = server
-            .get_file_outline(Parameters(super::GetFileOutlineInput {
+            .get_symbol(Parameters(super::GetSymbolInput {
                 path: "anything.rs".to_string(),
+                name: "anything".to_string(),
+                kind: None,
+                targets: None,
             }))
             .await;
         assert!(
@@ -2848,13 +2788,15 @@ mod tests {
     // ── Tool handler tests ────────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn test_get_file_outline_delegates_to_formatter() {
+    async fn test_get_file_context_outline_only_contains_path_and_symbol() {
         let sym = make_symbol("main", SymbolKind::Function, 1, 5);
         let (key, file) = make_file("src/main.rs", b"fn main() {}", vec![sym]);
         let server = make_server(make_live_index_ready(vec![(key, file)]));
         let result = server
-            .get_file_outline(Parameters(super::GetFileOutlineInput {
+            .get_file_context(Parameters(super::GetFileContextInput {
                 path: "src/main.rs".to_string(),
+                max_tokens: None,
+                sections: Some(vec!["outline".to_string()]),
             }))
             .await;
         assert!(result.contains("src/main.rs"), "should contain path");
@@ -2871,6 +2813,7 @@ mod tests {
                 path: "src/lib.rs".to_string(),
                 name: "foo".to_string(),
                 kind: None,
+                targets: None,
             }))
             .await;
         // Should return source body or not-found message — not a guard message
@@ -3353,8 +3296,10 @@ mod tests {
         );
 
         let outline = server
-            .get_file_outline(Parameters(super::GetFileOutlineInput {
+            .get_file_context(Parameters(super::GetFileContextInput {
                 path: "scratch/impact_case.rs".to_string(),
+                max_tokens: None,
+                sections: Some(vec!["outline".to_string()]),
             }))
             .await;
 
@@ -4045,6 +3990,7 @@ mod tests {
                 limit: Some(20),
                 current_file: None,
                 changed_with: None,
+                resolve: None,
             }))
             .await;
         assert!(result.contains("2 matching files"), "got: {result}");
@@ -4067,6 +4013,7 @@ mod tests {
                 limit: None,
                 current_file: None,
                 changed_with: None,
+                resolve: None,
             }))
             .await;
         assert_eq!(result, "No indexed source files matching 'src/service.rs'");
@@ -4083,6 +4030,7 @@ mod tests {
                 limit: None,
                 current_file: None,
                 changed_with: Some("src/daemon.rs".to_string()),
+                resolve: None,
             }))
             .await;
         // Without git temporal data, should return informative message (not an error/panic)
@@ -4094,26 +4042,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_resolve_path_returns_exact_match() {
+    async fn test_search_files_resolve_returns_exact_match() {
         let (key, file) = make_file("src/protocol/tools.rs", b"fn tool() {}", vec![]);
         let server = make_server(make_live_index_ready(vec![(key, file)]));
         let result = server
-            .resolve_path(Parameters(super::ResolvePathInput {
-                hint: "src/protocol/tools.rs".to_string(),
+            .search_files(Parameters(super::SearchFilesInput {
+                query: "src/protocol/tools.rs".to_string(),
+                limit: None,
+                current_file: None,
+                changed_with: None,
+                resolve: Some(true),
             }))
             .await;
         assert_eq!(result, "src/protocol/tools.rs");
     }
 
     #[tokio::test]
-    async fn test_resolve_path_returns_ambiguous_matches() {
+    async fn test_search_files_resolve_returns_ambiguous_matches() {
         let server = make_server(make_live_index_ready(vec![
             make_file("src/lib.rs", b"fn src_lib() {}", vec![]),
             make_file("tests/lib.rs", b"fn test_lib() {}", vec![]),
         ]));
         let result = server
-            .resolve_path(Parameters(super::ResolvePathInput {
-                hint: "lib.rs".to_string(),
+            .search_files(Parameters(super::SearchFilesInput {
+                query: "lib.rs".to_string(),
+                limit: None,
+                current_file: None,
+                changed_with: None,
+                resolve: Some(true),
             }))
             .await;
         assert!(
@@ -4135,19 +4091,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_symbols_batch_symbol_lookup() {
+    async fn test_get_symbol_batch_symbol_lookup() {
         let sym = make_symbol("bar", SymbolKind::Function, 1, 3);
         let (key, file) = make_file("src/lib.rs", b"fn bar() {}", vec![sym]);
         let server = make_server(make_live_index_ready(vec![(key, file)]));
         let result = server
-            .get_symbols(Parameters(super::GetSymbolsInput {
-                targets: vec![super::SymbolTarget {
+            .get_symbol(Parameters(super::GetSymbolInput {
+                path: String::new(),
+                name: String::new(),
+                kind: None,
+                targets: Some(vec![super::SymbolTarget {
                     path: "src/lib.rs".to_string(),
                     name: Some("bar".to_string()),
                     kind: None,
                     start_byte: None,
                     end_byte: None,
-                }],
+                }]),
             }))
             .await;
         assert!(
@@ -4161,19 +4120,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_symbols_batch_code_slice() {
+    async fn test_get_symbol_batch_code_slice() {
         let content = b"fn foo() { let x = 1; }";
         let (key, file) = make_file("src/lib.rs", content, vec![]);
         let server = make_server(make_live_index_ready(vec![(key, file)]));
         let result = server
-            .get_symbols(Parameters(super::GetSymbolsInput {
-                targets: vec![super::SymbolTarget {
+            .get_symbol(Parameters(super::GetSymbolInput {
+                path: String::new(),
+                name: String::new(),
+                kind: None,
+                targets: Some(vec![super::SymbolTarget {
                     path: "src/lib.rs".to_string(),
                     name: None,
                     kind: None,
                     start_byte: Some(0),
                     end_byte: Some(8),
-                }],
+                }]),
             }))
             .await;
         assert!(
@@ -4698,7 +4660,7 @@ mod tests {
             .await;
         assert_eq!(
             result,
-            "No symbol connect in src/lib.rs. Close matches: helper. Use get_file_outline for the full list (1 symbols)."
+            "No symbol connect in src/lib.rs. Close matches: helper. Use get_file_context with sections=['outline'] for the full list (1 symbols)."
         );
     }
 
@@ -4931,8 +4893,8 @@ mod tests {
         // Sanity check: we should have a reasonable number of tools.
         // Update this lower bound when removing tools; it prevents accidental regressions.
         assert!(
-            tool_count >= 34,
-            "server should expose at least 34 tools; found {tool_count}"
+            tool_count >= 25,
+            "server should expose at least 25 tools; found {tool_count}"
         );
     }
 
@@ -5720,7 +5682,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_insert_after_symbol_works() {
+    async fn test_insert_symbol_after_works() {
         let original = b"fn hello() {\n    println!(\"hello\");\n}\n";
         let (_dir, server, file_path) = setup_edit_test(original);
 
@@ -5730,8 +5692,9 @@ mod tests {
             kind: None,
             symbol_line: None,
             content: "fn world() {\n    println!(\"world\");\n}".to_string(),
+            position: None, // defaults to "after"
         };
-        let result = server.insert_after_symbol(Parameters(input)).await;
+        let result = server.insert_symbol(Parameters(input)).await;
         assert!(result.contains("inserted"), "result: {result}");
         assert!(result.contains("after"), "result: {result}");
 
@@ -5745,7 +5708,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_insert_before_symbol_works() {
+    async fn test_insert_symbol_before_works() {
         let original = b"fn world() {\n    println!(\"world\");\n}\n";
         let (_dir, server, file_path) = setup_edit_test(original);
 
@@ -5755,8 +5718,9 @@ mod tests {
             kind: None,
             symbol_line: None,
             content: "fn hello() {\n    println!(\"hello\");\n}".to_string(),
+            position: Some("before".to_string()),
         };
-        let result = server.insert_before_symbol(Parameters(input)).await;
+        let result = server.insert_symbol(Parameters(input)).await;
         assert!(result.contains("inserted"), "result: {result}");
         assert!(result.contains("before"), "result: {result}");
 

@@ -180,7 +180,7 @@ impl TokenizorServer {
                 .await
             }
             ResourceRequest::SymbolDetail { path, name, kind } => {
-                self.get_symbol(Parameters(GetSymbolInput { path, name, kind }))
+                self.get_symbol(Parameters(GetSymbolInput { path, name, kind, targets: None }))
                     .await
             }
             ResourceRequest::SymbolContext { name, file } => {

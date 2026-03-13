@@ -1376,7 +1376,7 @@ fn out_of_range_file_chunk(path: &str, chunk_index: u32, total_chunks: usize) ->
     format!("Chunk {chunk_index} out of range for {path} ({total_chunks} chunks)")
 }
 
-/// "No symbol {name} in {path}. Close matches: {top 5 fuzzy matches}. Use get_file_outline for the full list."
+/// "No symbol {name} in {path}. Close matches: {top 5 fuzzy matches}. Use get_file_context with sections=['outline'] for the full list."
 pub fn not_found_symbol(index: &LiveIndex, path: &str, name: &str) -> String {
     match index.capture_shared_file(path) {
         None => not_found_file(path),
@@ -1451,7 +1451,7 @@ fn not_found_symbol_names(relative_path: &str, symbol_names: &[String], name: &s
     } else {
         format!(
             "No symbol {name} in {relative_path}. Close matches: {}. \
-             Use get_file_outline for the full list ({} symbols).",
+             Use get_file_context with sections=['outline'] for the full list ({} symbols).",
             close_matches.join(", "),
             symbol_names.len()
         )

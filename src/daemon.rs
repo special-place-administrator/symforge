@@ -1193,15 +1193,30 @@ async fn execute_tool_call(
     );
 
     match tool_name {
-        "get_file_outline" => Ok(server
-            .get_file_outline(Parameters(decode_params::<GetFileOutlineInput>(params)?))
-            .await),
+        // Backward-compat alias: get_file_outline → get_file_context with sections=['outline']
+        "get_file_outline" => {
+            let outline_input = decode_params::<GetFileOutlineInput>(params)?;
+            let ctx_input = GetFileContextInput {
+                path: outline_input.path,
+                max_tokens: None,
+                sections: Some(vec!["outline".to_string()]),
+            };
+            Ok(server.get_file_context(Parameters(ctx_input)).await)
+        }
         "get_symbol" => Ok(server
             .get_symbol(Parameters(decode_params::<GetSymbolInput>(params)?))
             .await),
-        "get_symbols" => Ok(server
-            .get_symbols(Parameters(decode_params::<GetSymbolsInput>(params)?))
-            .await),
+        // Backward-compat alias: get_symbols → get_symbol with targets[]
+        "get_symbols" => {
+            let batch_input = decode_params::<GetSymbolsInput>(params)?;
+            let merged = GetSymbolInput {
+                path: String::new(),
+                name: String::new(),
+                kind: None,
+                targets: Some(batch_input.targets),
+            };
+            Ok(server.get_symbol(Parameters(merged)).await)
+        }
         "get_repo_outline" => Ok(server.get_repo_outline().await),
         "get_repo_map" => Ok(server.get_repo_map().await),
         "get_file_context" => Ok(server
@@ -1228,9 +1243,18 @@ async fn execute_tool_call(
         "search_files" => Ok(server
             .search_files(Parameters(decode_params::<SearchFilesInput>(params)?))
             .await),
-        "resolve_path" => Ok(server
-            .resolve_path(Parameters(decode_params::<ResolvePathInput>(params)?))
-            .await),
+        // Backward-compat alias: resolve_path → search_files with resolve=true
+        "resolve_path" => {
+            let rp = decode_params::<ResolvePathInput>(params)?;
+            let merged = SearchFilesInput {
+                query: rp.hint,
+                limit: None,
+                current_file: None,
+                changed_with: None,
+                resolve: Some(true),
+            };
+            Ok(server.search_files(Parameters(merged)).await)
+        }
         "health" => Ok(server.health().await),
         "index_folder" => Ok(server
             .index_folder(Parameters(decode_params::<IndexFolderInput>(params)?))
@@ -1268,12 +1292,20 @@ async fn execute_tool_call(
         "replace_symbol_body" => Ok(server
             .replace_symbol_body(Parameters(decode_params::<ReplaceSymbolBodyInput>(params)?))
             .await),
-        "insert_before_symbol" => Ok(server
-            .insert_before_symbol(Parameters(decode_params::<InsertSymbolInput>(params)?))
+        "insert_symbol" => Ok(server
+            .insert_symbol(Parameters(decode_params::<InsertSymbolInput>(params)?))
             .await),
-        "insert_after_symbol" => Ok(server
-            .insert_after_symbol(Parameters(decode_params::<InsertSymbolInput>(params)?))
-            .await),
+        // Backward-compat aliases for the merged insert_symbol tool
+        "insert_before_symbol" => {
+            let mut input = decode_params::<InsertSymbolInput>(params)?;
+            input.position = Some("before".to_string());
+            Ok(server.insert_symbol(Parameters(input)).await)
+        }
+        "insert_after_symbol" => {
+            let mut input = decode_params::<InsertSymbolInput>(params)?;
+            input.position = Some("after".to_string());
+            Ok(server.insert_symbol(Parameters(input)).await)
+        }
         "delete_symbol" => Ok(server
             .delete_symbol(Parameters(decode_params::<DeleteSymbolInput>(params)?))
             .await),
