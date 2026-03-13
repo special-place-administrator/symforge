@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.4](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.20.3...v0.20.4) (2026-03-13)
+
+
+### Bug Fixes
+
+* rem_euclid for timestamps, generic pub(...) visibility in diff_symbols ([f597c78](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/f597c78fabcec1ce18b4e20665516cd8fd772537))
+
 ## [0.20.3](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.20.2...v0.20.3) (2026-03-13)
 
 
