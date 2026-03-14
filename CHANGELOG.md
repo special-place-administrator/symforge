@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.21.1](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.21.0...v0.21.1) (2026-03-14)
+
+
+### Bug Fixes
+
+* auto-correct double-escaped regex patterns in search_text ([e98cd4d](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/e98cd4d6671e129b1bc775ec4dde28129931b22e))
+* explore multi-term scoring with enclosing symbol injection ([5f36dab](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/5f36dab73ac26247945d34f769e182e48e6bfbe6))
+* follow_refs shows same-file callers and empty-result signal ([b3acea1](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/b3acea139692468421ed85ef655ff958baad008d))
+* insert_before uses blank line separator when no doc comments ([2253f7d](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/2253f7da0c14cb4c6d858442af375e5d8552bebe))
+
 ## [0.21.0](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.20.6...v0.21.0) (2026-03-14)
 
 
