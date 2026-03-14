@@ -49,7 +49,9 @@ pub fn match_concept(query: &str) -> Option<(&'static ConceptPattern, Vec<String
 The returned `Vec<String>` contains query words that aren't part of the matched concept key. Example:
 - Query: "error handling in the watcher"
 - Concept match: "error handling"
-- Remainder: ["watcher"] (short words like "in", "the" filtered by `fallback_terms` logic)
+- Remainder: ["watcher"] (filtered through a stopword list — see below)
+
+**Stopword filtering for remainder terms:** The current `fallback_terms` only filters words < 2 chars. Remainder terms need stricter filtering to avoid noise from common English words. Add a stopword set: `{"a", "an", "the", "in", "on", "of", "for", "to", "and", "or", "is", "it", "my", "at", "by", "do", "no", "so", "up", "if"}`. Apply this filter when computing remainder terms (not in `fallback_terms` itself, to avoid breaking existing fallback behavior).
 
 In the `explore` handler, when a concept matches:
 1. Run concept's curated `symbol_queries` and `text_queries` into `match_counts` (existing behavior)
@@ -90,7 +92,7 @@ Add ~10 universal concepts covering the gaps identified by reviews:
 ("logging", ConceptPattern {
     label: "Logging / Observability",
     symbol_queries: &["log", "trace", "span", "metric", "telemetry"],
-    text_queries: &["tracing::", "log::", "eprintln!", "println!", "debug!"],
+    text_queries: &["tracing::", "log::", "debug!", "warn!", "info!"],
     kind_filters: &[],
 }),
 ("cli", ConceptPattern {
@@ -108,7 +110,7 @@ Add ~10 universal concepts covering the gaps identified by reviews:
 ("caching", ConceptPattern {
     label: "Caching",
     symbol_queries: &["cache", "lru", "memoize", "ttl", "expire"],
-    text_queries: &["HashMap", "BTreeMap", "OnceLock", "lazy_static"],
+    text_queries: &["LruCache", "cache.get(", "cached::", "moka::"],
     kind_filters: &[],
 }),
 ("permissions", ConceptPattern {
@@ -130,6 +132,12 @@ Also add aliases so both "file watching" and "watcher" match:
 ("watcher", /* same pattern as "file watching" */),
 ("parser", /* same pattern as "parsing" */),
 ```
+
+**Key matching precision:** Short concept keys like "cli" and "api" risk substring collisions ("public**cli**ent" matches "cli", "c**api**tal" matches "api"). Fix:
+1. Sort `CONCEPT_MAP` entries by key length descending so longer, more specific keys match first ("authentication" before "api", "command line" before "cli")
+2. Use word-boundary matching instead of `contains`: split the query into words and check if the concept key appears as a contiguous subsequence of words. "cli tools" matches "cli", but "publiclient" does not.
+
+**Call site updates for `match_concept` signature change:** 1 production call site (`tools.rs` explore handler) and 3 test call sites (`explore.rs` tests) need updating to destructure the new return type.
 
 ### 4. Files modified
 
