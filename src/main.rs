@@ -172,8 +172,20 @@ async fn run_local_mcp_server_async(
 
             shared
         } else {
-            // Fall back to full re-index (existing behavior).
-            live_index::LiveIndex::load(&root)?
+            // No snapshot — start with empty index and re-index in background
+            // so the MCP server can respond to initialize/tools/list immediately.
+            let shared = live_index::LiveIndex::empty();
+            let bg_index = shared.clone();
+            let bg_root = root.clone();
+            tokio::task::spawn_blocking(move || {
+                tracing::info!("cold-start indexing in background");
+                if let Err(e) = bg_index.reload(&bg_root) {
+                    tracing::error!(%e, "background cold-start indexing failed");
+                } else {
+                    tracing::info!("background cold-start indexing complete");
+                }
+            });
+            shared
         };
 
         let published = index.published_state();
