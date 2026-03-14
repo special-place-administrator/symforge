@@ -2120,7 +2120,7 @@ impl TokenizorServer {
         for tq in &text_queries {
             let options = search::TextSearchOptions {
                 total_limit: limit.min(50),
-                max_per_file: 2,
+                max_per_file: limit, // need enough matches per file for enclosing symbol extraction
                 ..search::TextSearchOptions::for_current_code_search()
             };
             let result = search::search_text_with_options(&guard, Some(tq), None, false, &options);
