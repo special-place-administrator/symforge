@@ -474,11 +474,9 @@ pub fn register_gemini_mcp_server(
     config["mcpServers"]["tokenizor"] = json!({
         "command": command_path,
         "args": [],
-        "timeout": 120
+        "timeout": 120000,
+        "trust": true
     });
-
-    // Auto-allow all tools
-    merge_allowed_tools(&mut config);
 
     let pretty = serde_json::to_string_pretty(&config)?;
     std::fs::write(gemini_settings_path, pretty)
@@ -896,20 +894,43 @@ mod tests {
     }
 
     #[test]
-    fn test_gemini_registration_includes_allowed_tools() {
+    fn test_gemini_registration_includes_trust() {
         let dir = tempfile::tempdir().unwrap();
         let settings_path = dir.path().join("settings.json");
         register_gemini_mcp_server(&settings_path, "/usr/bin/tokenizor-mcp").unwrap();
         let content = std::fs::read_to_string(&settings_path).unwrap();
         let config: Value = serde_json::from_str(&content).unwrap();
-        let allowed = config["allowedTools"]
-            .as_array()
-            .expect("allowedTools must be array");
+        assert_eq!(
+            config["mcpServers"]["tokenizor"]["trust"],
+            json!(true),
+            "tokenizor server must have trust: true"
+        );
+    }
+
+    #[test]
+    fn test_gemini_registration_timeout_in_milliseconds() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings_path = dir.path().join("settings.json");
+        register_gemini_mcp_server(&settings_path, "/usr/bin/tokenizor-mcp").unwrap();
+        let content = std::fs::read_to_string(&settings_path).unwrap();
+        let config: Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(
+            config["mcpServers"]["tokenizor"]["timeout"],
+            json!(120000),
+            "timeout must be in milliseconds (120000ms = 2 minutes)"
+        );
+    }
+
+    #[test]
+    fn test_gemini_registration_no_allowed_tools_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings_path = dir.path().join("settings.json");
+        register_gemini_mcp_server(&settings_path, "/usr/bin/tokenizor-mcp").unwrap();
+        let content = std::fs::read_to_string(&settings_path).unwrap();
+        let config: Value = serde_json::from_str(&content).unwrap();
         assert!(
-            allowed
-                .iter()
-                .any(|v| v.as_str() == Some("mcp__tokenizor__search_symbols")),
-            "should include search_symbols in allowedTools"
+            config.get("allowedTools").is_none(),
+            "Gemini config must not include allowedTools (Claude-only concept)"
         );
     }
 
@@ -918,20 +939,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let settings_path = dir.path().join("settings.json");
         register_gemini_mcp_server(&settings_path, "/usr/bin/tokenizor-mcp").unwrap();
+        let first = std::fs::read_to_string(&settings_path).unwrap();
         register_gemini_mcp_server(&settings_path, "/usr/bin/tokenizor-mcp").unwrap();
-        let content = std::fs::read_to_string(&settings_path).unwrap();
-        let config: Value = serde_json::from_str(&content).unwrap();
-        let allowed = config["allowedTools"]
-            .as_array()
-            .expect("allowedTools must be array");
-        // Count occurrences of a specific tool to verify no duplicates
-        let count = allowed
-            .iter()
-            .filter(|v| v.as_str() == Some("mcp__tokenizor__search_symbols"))
-            .count();
+        let second = std::fs::read_to_string(&settings_path).unwrap();
         assert_eq!(
-            count, 1,
-            "allowedTools should not have duplicate entries after idempotent run"
+            first, second,
+            "running registration twice must produce identical output"
         );
     }
 }

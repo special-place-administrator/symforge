@@ -217,7 +217,21 @@ Updates `~/.codex/config.toml`, `~/.codex/AGENTS.md`. Installs MCP server config
 
 ### Gemini CLI
 
-Updates `~/.gemini/settings.json`, `~/.gemini/GEMINI.md`. Installs MCP server registration and guidance block.
+Updates `~/.gemini/settings.json`, `~/.gemini/GEMINI.md`. Registers the MCP server as a stdio transport with `trust: true` (bypasses per-tool confirmation prompts) and a 120-second timeout. Writes a guidance block to `GEMINI.md` so Gemini knows to prefer Tokenizor tools for codebase navigation.
+
+**Manual setup** (if auto-init didn't run or you need to reconfigure):
+
+```bash
+tokenizor-mcp init --client gemini
+```
+
+**Verify inside Gemini CLI:**
+
+```
+/mcp
+```
+
+You should see `tokenizor — Ready` with 24 tools listed. If the server shows `DISCONNECTED`, check that the binary exists at `~/.tokenizor/bin/tokenizor-mcp` (or `tokenizor-mcp.exe` on Windows).
 
 ## Runtime Model
 

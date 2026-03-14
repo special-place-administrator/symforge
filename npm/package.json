@@ -1,7 +1,7 @@
 {
   "name": "tokenizor-mcp",
   "version": "0.23.1",
-  "description": "Tokenizor MCP — in-memory code intelligence for Claude Code and Codex",
+  "description": "Tokenizor MCP — in-memory code intelligence for Claude Code, Codex, and Gemini CLI",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -26,6 +26,7 @@
     "tree-sitter",
     "claude-code",
     "codex",
+    "gemini-cli",
     "hooks"
   ],
   "engines": {
