@@ -216,7 +216,7 @@ mod tests {
     }
 
     #[test]
-    fn test_discover_files_ignores_json_md_toml() {
+    fn test_discover_files_includes_config_files() {
         let tmp = TempDir::new().unwrap();
         create_file(tmp.path(), "config.json", "{}");
         create_file(tmp.path(), "README.md", "# readme");
@@ -224,8 +224,12 @@ mod tests {
         create_file(tmp.path(), "main.rs", "fn main() {}");
 
         let files = discover_files(tmp.path()).unwrap();
-        assert_eq!(files.len(), 1, "only .rs should be found");
-        assert_eq!(files[0].relative_path, "main.rs");
+        assert_eq!(files.len(), 4, "should discover .rs + .json + .md + .toml");
+        let paths: Vec<&str> = files.iter().map(|f| f.relative_path.as_str()).collect();
+        assert!(paths.contains(&"config.json"), "should find .json");
+        assert!(paths.contains(&"README.md"), "should find .md");
+        assert!(paths.contains(&"Cargo.toml"), "should find .toml");
+        assert!(paths.contains(&"main.rs"), "should find .rs");
     }
 
     #[test]
