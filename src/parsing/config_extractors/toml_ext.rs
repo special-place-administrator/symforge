@@ -1,5 +1,7 @@
+use super::{
+    ConfigExtractor, EditCapability, ExtractionOutcome, ExtractionResult, MAX_DEPTH, join_key_path,
+};
 use crate::domain::{SymbolKind, SymbolRecord};
-use super::{ConfigExtractor, EditCapability, ExtractionOutcome, ExtractionResult, join_key_path, MAX_DEPTH};
 
 pub struct TomlExtractor;
 
@@ -29,8 +31,18 @@ impl ConfigExtractor for TomlExtractor {
             Ok(doc) => {
                 let mut symbols = Vec::new();
                 let mut sort_order: u32 = 0;
-                walk_table(doc.as_table(), "", 0, content, &mut symbols, &mut sort_order);
-                ExtractionResult { symbols, outcome: ExtractionOutcome::Ok }
+                walk_table(
+                    doc.as_table(),
+                    "",
+                    0,
+                    content,
+                    &mut symbols,
+                    &mut sort_order,
+                );
+                ExtractionResult {
+                    symbols,
+                    outcome: ExtractionOutcome::Ok,
+                }
             }
             Err(_) => {
                 // Fall back to line-based scanning so we still extract useful keys.
@@ -45,14 +57,20 @@ impl ConfigExtractor for TomlExtractor {
                     let parse_err = content_str.parse::<toml_edit::DocumentMut>().unwrap_err();
                     let msg = parse_err.message();
                     // For truly broken TOML (not just duplicate-key edge cases), report failure
-                    if msg.contains("invalid") || msg.contains("expected") || msg.contains("unterminated") {
+                    if msg.contains("invalid")
+                        || msg.contains("expected")
+                        || msg.contains("unterminated")
+                    {
                         return ExtractionResult {
                             symbols: vec![],
                             outcome: ExtractionOutcome::Failed(msg.to_string()),
                         };
                     }
                 }
-                ExtractionResult { symbols, outcome: ExtractionOutcome::Ok }
+                ExtractionResult {
+                    symbols,
+                    outcome: ExtractionOutcome::Ok,
+                }
             }
         }
     }
@@ -157,7 +175,9 @@ fn line_scan(raw: &[u8]) -> Vec<SymbolRecord> {
 
     while i < len {
         let line_start = i;
-        let line_end = raw[i..].iter().position(|&b| b == b'\n')
+        let line_end = raw[i..]
+            .iter()
+            .position(|&b| b == b'\n')
             .map(|p| i + p + 1)
             .unwrap_or(len);
 
@@ -175,7 +195,13 @@ fn line_scan(raw: &[u8]) -> Vec<SymbolRecord> {
             if let Some(section) = extract_bracket_content(trimmed, true) {
                 current_section = section.clone();
                 depth_offset = section.matches('.').count() as u32;
-                symbols.push(make_symbol(&section, depth_offset, line_start, line_end, sort_order));
+                symbols.push(make_symbol(
+                    &section,
+                    depth_offset,
+                    line_start,
+                    line_end,
+                    sort_order,
+                ));
                 sort_order += 1;
             }
         } else if trimmed.starts_with(b"[") {
@@ -183,7 +209,13 @@ fn line_scan(raw: &[u8]) -> Vec<SymbolRecord> {
             if let Some(section) = extract_bracket_content(trimmed, false) {
                 current_section = section.clone();
                 depth_offset = section.matches('.').count() as u32;
-                symbols.push(make_symbol(&section, depth_offset, line_start, line_end, sort_order));
+                symbols.push(make_symbol(
+                    &section,
+                    depth_offset,
+                    line_start,
+                    line_end,
+                    sort_order,
+                ));
                 sort_order += 1;
             }
         } else if let Some(key) = extract_key_from_line(trimmed) {
@@ -215,10 +247,16 @@ fn extract_bracket_content(line: &[u8], double: bool) -> Option<String> {
         return None;
     }
     let inner_start = open.len();
-    let close_pos = line[inner_start..].windows(close.len()).position(|w| w == close)?;
+    let close_pos = line[inner_start..]
+        .windows(close.len())
+        .position(|w| w == close)?;
     let inner = &line[inner_start..inner_start + close_pos];
     let s = std::str::from_utf8(inner).ok()?.trim();
-    if s.is_empty() { None } else { Some(s.to_string()) }
+    if s.is_empty() {
+        None
+    } else {
+        Some(s.to_string())
+    }
 }
 
 /// Extract key name from `key = value` line. Returns bare key name.
@@ -227,15 +265,26 @@ fn extract_key_from_line(line: &[u8]) -> Option<String> {
     let mut in_string = false;
     let mut escape = false;
     for (i, &b) in line.iter().enumerate() {
-        if escape { escape = false; continue; }
-        if b == b'\\' && in_string { escape = true; continue; }
-        if b == b'"' { in_string = !in_string; continue; }
+        if escape {
+            escape = false;
+            continue;
+        }
+        if b == b'\\' && in_string {
+            escape = true;
+            continue;
+        }
+        if b == b'"' {
+            in_string = !in_string;
+            continue;
+        }
         if !in_string && b == b'=' {
             let key_bytes = trim_trailing_whitespace(&line[..i]);
             let key = std::str::from_utf8(key_bytes).ok()?.trim();
             // Strip surrounding quotes if any
             let key = key.trim_matches('"').trim_matches('\'');
-            if key.is_empty() { return None; }
+            if key.is_empty() {
+                return None;
+            }
             return Some(key.to_string());
         }
     }
@@ -243,7 +292,11 @@ fn extract_key_from_line(line: &[u8]) -> Option<String> {
 }
 
 fn trim_trailing_whitespace(s: &[u8]) -> &[u8] {
-    let end = s.iter().rposition(|&b| b != b' ' && b != b'\t').map(|p| p + 1).unwrap_or(0);
+    let end = s
+        .iter()
+        .rposition(|&b| b != b' ' && b != b'\t')
+        .map(|p| p + 1)
+        .unwrap_or(0);
     &s[..end]
 }
 
@@ -257,7 +310,9 @@ fn find_key_value_bytes(raw: &[u8], key: &str) -> (usize, usize) {
     let mut i = 0;
     while i < len {
         let line_start = i;
-        let line_end = raw[i..].iter().position(|&b| b == b'\n')
+        let line_end = raw[i..]
+            .iter()
+            .position(|&b| b == b'\n')
             .map(|p| i + p + 1)
             .unwrap_or(len);
         let line = &raw[line_start..line_end];
@@ -284,7 +339,9 @@ fn find_array_table_header_bytes(raw: &[u8], key_path: &str, index: usize) -> (u
     let mut count = 0;
     while i < len {
         let line_start = i;
-        let line_end = raw[i..].iter().position(|&b| b == b'\n')
+        let line_end = raw[i..]
+            .iter()
+            .position(|&b| b == b'\n')
             .map(|p| i + p + 1)
             .unwrap_or(len);
         let line = trim_leading_whitespace(&raw[line_start..line_end]);
@@ -305,7 +362,9 @@ fn find_header_pattern(raw: &[u8], pattern: &str) -> (usize, usize) {
     let mut i = 0;
     while i < len {
         let line_start = i;
-        let line_end = raw[i..].iter().position(|&b| b == b'\n')
+        let line_end = raw[i..]
+            .iter()
+            .position(|&b| b == b'\n')
             .map(|p| i + p + 1)
             .unwrap_or(len);
         let line = trim_leading_whitespace(&raw[line_start..line_end]);
@@ -318,18 +377,34 @@ fn find_header_pattern(raw: &[u8], pattern: &str) -> (usize, usize) {
 }
 
 fn trim_leading_whitespace(s: &[u8]) -> &[u8] {
-    let pos = s.iter().position(|&b| b != b' ' && b != b'\t').unwrap_or(s.len());
+    let pos = s
+        .iter()
+        .position(|&b| b != b' ' && b != b'\t')
+        .unwrap_or(s.len());
     &s[pos..]
 }
 
 fn line_starts_with_key(line: &[u8], key: &[u8]) -> bool {
-    if line.len() < key.len() { return false; }
-    if !line.starts_with(key) { return false; }
+    if line.len() < key.len() {
+        return false;
+    }
+    if !line.starts_with(key) {
+        return false;
+    }
     let after = &line[key.len()..];
-    after.first().map(|&b| b == b' ' || b == b'\t' || b == b'=').unwrap_or(false)
+    after
+        .first()
+        .map(|&b| b == b' ' || b == b'\t' || b == b'=')
+        .unwrap_or(false)
 }
 
-fn make_symbol(name: &str, depth: u32, byte_start: usize, byte_end: usize, sort_order: u32) -> SymbolRecord {
+fn make_symbol(
+    name: &str,
+    depth: u32,
+    byte_start: usize,
+    byte_end: usize,
+    sort_order: u32,
+) -> SymbolRecord {
     SymbolRecord {
         name: name.to_string(),
         kind: SymbolKind::Key,
@@ -349,7 +424,12 @@ mod tests {
     fn test_top_level_keys() {
         let content = b"name = \"test\"\nversion = \"1.0\"\n";
         let result = TomlExtractor.extract(content);
-        assert!(result.symbols.iter().any(|s| s.name == "name" && s.kind == SymbolKind::Key));
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.name == "name" && s.kind == SymbolKind::Key)
+        );
         assert!(result.symbols.iter().any(|s| s.name == "version"));
     }
 
@@ -357,25 +437,50 @@ mod tests {
     fn test_table_keys() {
         let content = b"[package]\nname = \"test\"\nversion = \"1.0\"\n";
         let result = TomlExtractor.extract(content);
-        assert!(result.symbols.iter().any(|s| s.name == "package"), "missing package");
-        assert!(result.symbols.iter().any(|s| s.name == "package.name"), "missing package.name");
-        assert!(result.symbols.iter().any(|s| s.name == "package.version"), "missing package.version");
+        assert!(
+            result.symbols.iter().any(|s| s.name == "package"),
+            "missing package"
+        );
+        assert!(
+            result.symbols.iter().any(|s| s.name == "package.name"),
+            "missing package.name"
+        );
+        assert!(
+            result.symbols.iter().any(|s| s.name == "package.version"),
+            "missing package.version"
+        );
     }
 
     #[test]
     fn test_nested_tables() {
-        let content = b"[dependencies]\nserde = \"1.0\"\n\n[dependencies.serde]\nfeatures = [\"derive\"]\n";
+        let content =
+            b"[dependencies]\nserde = \"1.0\"\n\n[dependencies.serde]\nfeatures = [\"derive\"]\n";
         let result = TomlExtractor.extract(content);
-        assert!(result.symbols.iter().any(|s| s.name == "dependencies.serde"),
-            "missing dependencies.serde; symbols={:?}", result.symbols.iter().map(|s| &s.name).collect::<Vec<_>>());
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.name == "dependencies.serde"),
+            "missing dependencies.serde; symbols={:?}",
+            result.symbols.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
     }
 
     #[test]
     fn test_inline_table() {
         let content = b"[package]\nmetadata = { key = \"value\" }\n";
         let result = TomlExtractor.extract(content);
-        assert!(result.symbols.iter().any(|s| s.name == "package.metadata"), "missing package.metadata");
-        assert!(result.symbols.iter().any(|s| s.name == "package.metadata.key"), "missing package.metadata.key");
+        assert!(
+            result.symbols.iter().any(|s| s.name == "package.metadata"),
+            "missing package.metadata"
+        );
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.name == "package.metadata.key"),
+            "missing package.metadata.key"
+        );
     }
 
     #[test]
@@ -392,6 +497,9 @@ mod tests {
 
     #[test]
     fn test_edit_capability() {
-        assert_eq!(TomlExtractor.edit_capability(), EditCapability::StructuralEditSafe);
+        assert_eq!(
+            TomlExtractor.edit_capability(),
+            EditCapability::StructuralEditSafe
+        );
     }
 }

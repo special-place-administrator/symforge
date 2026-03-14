@@ -1,5 +1,5 @@
-use crate::domain::{SymbolKind, SymbolRecord};
 use super::{ConfigExtractor, EditCapability, ExtractionOutcome, ExtractionResult};
+use crate::domain::{SymbolKind, SymbolRecord};
 
 pub struct EnvExtractor;
 
@@ -11,7 +11,7 @@ impl ConfigExtractor for EnvExtractor {
                 return ExtractionResult {
                     symbols: vec![],
                     outcome: ExtractionOutcome::Failed(format!("Invalid UTF-8: {e}")),
-                }
+                };
             }
         };
 
@@ -138,6 +138,9 @@ mod tests {
 
     #[test]
     fn test_edit_capability() {
-        assert!(matches!(extractor().edit_capability(), EditCapability::StructuralEditSafe));
+        assert!(matches!(
+            extractor().edit_capability(),
+            EditCapability::StructuralEditSafe
+        ));
     }
 }

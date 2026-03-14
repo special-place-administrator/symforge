@@ -685,8 +685,13 @@ fn filter_paths_by_prefix_and_language(
             }
             if code_only && lang_filter.is_none() {
                 let ext = path.rsplit('.').next().unwrap_or("");
-                if crate::domain::index::LanguageId::from_extension(ext).is_none() {
-                    return false;
+                match crate::domain::index::LanguageId::from_extension(ext) {
+                    None => return false,
+                    Some(lang) => {
+                        if crate::parsing::config_extractors::is_config_language(&lang) {
+                            return false;
+                        }
+                    }
                 }
             }
             true
@@ -2473,12 +2478,15 @@ impl TokenizorServer {
         required: crate::parsing::config_extractors::EditCapability,
         tool_name: &str,
     ) -> Option<String> {
-        use crate::parsing::config_extractors::{edit_capability_for, EditCapability};
+        use crate::parsing::config_extractors::{EditCapability, edit_capability_for};
         if let Some(cap) = edit_capability_for(language) {
             let allowed = match required {
                 EditCapability::IndexOnly => false,
                 EditCapability::TextEditSafe => {
-                    matches!(cap, EditCapability::TextEditSafe | EditCapability::StructuralEditSafe)
+                    matches!(
+                        cap,
+                        EditCapability::TextEditSafe | EditCapability::StructuralEditSafe
+                    )
                 }
                 EditCapability::StructuralEditSafe => {
                     matches!(cap, EditCapability::StructuralEditSafe)

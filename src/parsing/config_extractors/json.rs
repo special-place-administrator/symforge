@@ -1,8 +1,8 @@
-use crate::domain::{SymbolKind, SymbolRecord};
 use super::{
-    ConfigExtractor, EditCapability, ExtractionOutcome, ExtractionResult,
-    join_array_index, join_key_path, MAX_ARRAY_ITEMS, MAX_DEPTH,
+    ConfigExtractor, EditCapability, ExtractionOutcome, ExtractionResult, MAX_ARRAY_ITEMS,
+    MAX_DEPTH, join_array_index, join_key_path,
 };
+use crate::domain::{SymbolKind, SymbolRecord};
 
 pub struct JsonExtractor;
 
@@ -104,11 +104,13 @@ fn walk_object(
         let key_path = join_key_path(parent_path, key);
 
         // Find the byte range for this key-value pair in the raw content.
-        let (byte_start, byte_end) =
-            find_key_value_range(content, key, &mut search_from);
+        let (byte_start, byte_end) = find_key_value_range(content, key, &mut search_from);
 
         let start_line = byte_to_line(line_starts, byte_start as u32);
-        let end_line = byte_to_line(line_starts, byte_end.saturating_sub(1).max(byte_start) as u32);
+        let end_line = byte_to_line(
+            line_starts,
+            byte_end.saturating_sub(1).max(byte_start) as u32,
+        );
 
         symbols.push(SymbolRecord {
             name: key_path.clone(),
@@ -126,14 +128,24 @@ fn walk_object(
             match value {
                 serde_json::Value::Object(child_map) => {
                     walk_object(
-                        content, line_starts, child_map, &key_path, depth + 1,
-                        symbols, sort_order,
+                        content,
+                        line_starts,
+                        child_map,
+                        &key_path,
+                        depth + 1,
+                        symbols,
+                        sort_order,
                     );
                 }
                 serde_json::Value::Array(child_arr) => {
                     walk_array(
-                        content, line_starts, child_arr, &key_path, depth + 1,
-                        symbols, sort_order,
+                        content,
+                        line_starts,
+                        child_arr,
+                        &key_path,
+                        depth + 1,
+                        symbols,
+                        sort_order,
                     );
                 }
                 _ => {}
@@ -182,14 +194,24 @@ fn walk_array(
             match value {
                 serde_json::Value::Object(child_map) => {
                     walk_object(
-                        content, line_starts, child_map, &elem_path, depth + 1,
-                        symbols, sort_order,
+                        content,
+                        line_starts,
+                        child_map,
+                        &elem_path,
+                        depth + 1,
+                        symbols,
+                        sort_order,
                     );
                 }
                 serde_json::Value::Array(child_arr) => {
                     walk_array(
-                        content, line_starts, child_arr, &elem_path, depth + 1,
-                        symbols, sort_order,
+                        content,
+                        line_starts,
+                        child_arr,
+                        &elem_path,
+                        depth + 1,
+                        symbols,
+                        sort_order,
                     );
                 }
                 _ => {}
@@ -203,11 +225,7 @@ fn walk_array(
 ///
 /// The start is the opening `"` of the key. The end is determined by scanning
 /// past the value (tracking braces, brackets, and strings).
-fn find_key_value_range(
-    content: &[u8],
-    key: &str,
-    search_from: &mut usize,
-) -> (usize, usize) {
+fn find_key_value_range(content: &[u8], key: &str, search_from: &mut usize) -> (usize, usize) {
     // Build the needle: `"key"` (we search for the quoted key).
     let needle = format!("\"{}\"", key);
     let needle_bytes = needle.as_bytes();
@@ -248,9 +266,7 @@ fn find_substring(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || needle.len() > haystack.len() {
         return None;
     }
-    haystack
-        .windows(needle.len())
-        .position(|w| w == needle)
+    haystack.windows(needle.len()).position(|w| w == needle)
 }
 
 /// Skip ASCII whitespace bytes, returning the index of the first non-WS byte.
@@ -276,7 +292,10 @@ fn scan_value_end(content: &[u8], start: usize) -> usize {
             // Primitive: number, bool, null — ends at comma, `}`, `]`, or whitespace.
             let mut i = start;
             while i < content.len()
-                && !matches!(content[i], b',' | b'}' | b']' | b' ' | b'\t' | b'\r' | b'\n')
+                && !matches!(
+                    content[i],
+                    b',' | b'}' | b']' | b' ' | b'\t' | b'\r' | b'\n'
+                )
             {
                 i += 1;
             }
@@ -337,7 +356,12 @@ mod tests {
     fn test_top_level_keys() {
         let content = br#"{"name": "test", "version": "1.0"}"#;
         let result = JsonExtractor.extract(content);
-        assert!(result.symbols.iter().any(|s| s.name == "name" && s.kind == SymbolKind::Key));
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.name == "name" && s.kind == SymbolKind::Key)
+        );
         assert!(result.symbols.iter().any(|s| s.name == "version"));
     }
 
@@ -371,7 +395,11 @@ mod tests {
         let items: Vec<String> = (0..25).map(|i| format!("{i}")).collect();
         let content = format!(r#"{{"arr": [{}]}}"#, items.join(","));
         let result = JsonExtractor.extract(content.as_bytes());
-        let arr_items: Vec<_> = result.symbols.iter().filter(|s| s.name.starts_with("arr[")).collect();
+        let arr_items: Vec<_> = result
+            .symbols
+            .iter()
+            .filter(|s| s.name.starts_with("arr["))
+            .collect();
         assert_eq!(arr_items.len(), 20);
     }
 
@@ -407,13 +435,21 @@ mod tests {
         let content = b"{\n  \"name\": \"test\",\n  \"version\": \"1.0\"\n}";
         let result = JsonExtractor.extract(content);
         for sym in &result.symbols {
-            assert!(sym.byte_range.1 <= content.len() as u32,
-                "symbol {} byte_range end {} exceeds file length {}", sym.name, sym.byte_range.1, content.len());
+            assert!(
+                sym.byte_range.1 <= content.len() as u32,
+                "symbol {} byte_range end {} exceeds file length {}",
+                sym.name,
+                sym.byte_range.1,
+                content.len()
+            );
         }
     }
 
     #[test]
     fn test_edit_capability() {
-        assert_eq!(JsonExtractor.edit_capability(), EditCapability::TextEditSafe);
+        assert_eq!(
+            JsonExtractor.edit_capability(),
+            EditCapability::TextEditSafe
+        );
     }
 }

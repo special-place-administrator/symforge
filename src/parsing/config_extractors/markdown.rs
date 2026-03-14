@@ -1,5 +1,7 @@
+use super::{
+    ConfigExtractor, EditCapability, ExtractionOutcome, ExtractionResult, escape_key_segment,
+};
 use crate::domain::{SymbolKind, SymbolRecord};
-use super::{ConfigExtractor, EditCapability, ExtractionOutcome, ExtractionResult, escape_key_segment};
 use std::collections::HashMap;
 
 pub struct MarkdownExtractor;
@@ -12,12 +14,15 @@ impl ConfigExtractor for MarkdownExtractor {
                 return ExtractionResult {
                     symbols: vec![],
                     outcome: ExtractionOutcome::Failed("Invalid UTF-8".into()),
-                }
+                };
             }
         };
 
         if text.is_empty() {
-            return ExtractionResult { symbols: vec![], outcome: ExtractionOutcome::Ok };
+            return ExtractionResult {
+                symbols: vec![],
+                outcome: ExtractionOutcome::Ok,
+            };
         }
 
         // Collect (byte_offset, line_text) pairs, skipping YAML frontmatter.
@@ -44,7 +49,10 @@ impl ConfigExtractor for MarkdownExtractor {
                     i += 1;
                 }
                 if !closed {
-                    return ExtractionResult { symbols: vec![], outcome: ExtractionOutcome::Ok };
+                    return ExtractionResult {
+                        symbols: vec![],
+                        outcome: ExtractionOutcome::Ok,
+                    };
                 }
             }
 
@@ -84,7 +92,10 @@ impl ConfigExtractor for MarkdownExtractor {
         }
 
         if headers.is_empty() {
-            return ExtractionResult { symbols: vec![], outcome: ExtractionOutcome::Ok };
+            return ExtractionResult {
+                symbols: vec![],
+                outcome: ExtractionOutcome::Ok,
+            };
         }
 
         let total_bytes = content.len() as u32;
@@ -151,7 +162,10 @@ impl ConfigExtractor for MarkdownExtractor {
             });
         }
 
-        ExtractionResult { symbols, outcome: ExtractionOutcome::Ok }
+        ExtractionResult {
+            symbols,
+            outcome: ExtractionOutcome::Ok,
+        }
     }
 
     fn edit_capability(&self) -> EditCapability {
@@ -220,6 +234,9 @@ mod tests {
 
     #[test]
     fn test_edit_capability() {
-        assert_eq!(MarkdownExtractor.edit_capability(), EditCapability::TextEditSafe);
+        assert_eq!(
+            MarkdownExtractor.edit_capability(),
+            EditCapability::TextEditSafe
+        );
     }
 }

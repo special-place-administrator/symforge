@@ -66,10 +66,7 @@ pub fn run_hook(subcommand: Option<&HookSubcommand>) -> anyhow::Result<()> {
     if matches!(subcommand, Some(HookSubcommand::PreTool)) {
         let suggestion = pre_tool_suggestion(&input);
         if !suggestion.is_empty() {
-            println!(
-                "{}",
-                success_json("PreToolUse", &json_escape(&suggestion))
-            );
+            println!("{}", success_json("PreToolUse", &json_escape(&suggestion)));
         }
         return Ok(());
     }
@@ -215,10 +212,26 @@ fn is_non_source_path(path: &str) -> bool {
     // Config files now handled by Tokenizor (.md, .json, .toml, .yaml, .yml, .env)
     // are intentionally NOT in this list — PreToolUse hook should suggest Tokenizor for them.
     let non_source_exts = [
-        ".txt", ".xml", ".csv",
-        ".lock", ".gitignore", ".dockerignore", ".editorconfig",
-        ".prettierrc", ".eslintrc", ".ini", ".cfg", ".conf", ".html",
-        ".css", ".svg", ".png", ".jpg", ".jpeg", ".gif", ".ico",
+        ".txt",
+        ".xml",
+        ".csv",
+        ".lock",
+        ".gitignore",
+        ".dockerignore",
+        ".editorconfig",
+        ".prettierrc",
+        ".eslintrc",
+        ".ini",
+        ".cfg",
+        ".conf",
+        ".html",
+        ".css",
+        ".svg",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".ico",
     ];
     if non_source_exts.iter().any(|ext| p.ends_with(ext)) {
         return true;
@@ -226,8 +239,15 @@ fn is_non_source_path(path: &str) -> bool {
 
     // Non-source directories
     let non_source_dirs = [
-        "/docs/", "/doc/", "/.github/", "/.planning/", "/.claude/",
-        "/.gemini/", "/.codex/", "/node_modules/", "/.git/",
+        "/docs/",
+        "/doc/",
+        "/.github/",
+        "/.planning/",
+        "/.claude/",
+        "/.gemini/",
+        "/.codex/",
+        "/node_modules/",
+        "/.git/",
     ];
     if non_source_dirs.iter().any(|dir| p.contains(dir)) {
         return true;

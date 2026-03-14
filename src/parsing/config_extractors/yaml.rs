@@ -1,8 +1,8 @@
-use crate::domain::{SymbolKind, SymbolRecord};
 use super::{
-    ConfigExtractor, EditCapability, ExtractionOutcome, ExtractionResult,
-    join_array_index, join_key_path, MAX_ARRAY_ITEMS, MAX_DEPTH,
+    ConfigExtractor, EditCapability, ExtractionOutcome, ExtractionResult, MAX_ARRAY_ITEMS,
+    MAX_DEPTH, join_array_index, join_key_path,
 };
+use crate::domain::{SymbolKind, SymbolRecord};
 
 pub struct YamlExtractor;
 
@@ -107,11 +107,7 @@ fn value_as_key_str(v: &serde_yml::Value) -> Option<String> {
 /// match to appear at the start of a line (preceded only by spaces/tabs).
 /// The range extends from the key start to just before the next sibling key
 /// at the same or lesser indentation, or to end of content.
-fn find_yaml_key_range(
-    content: &[u8],
-    key: &str,
-    search_from: &mut usize,
-) -> (usize, usize) {
+fn find_yaml_key_range(content: &[u8], key: &str, search_from: &mut usize) -> (usize, usize) {
     let needle = format!("{}:", key);
     let needle_bytes = needle.as_bytes();
 
@@ -237,8 +233,7 @@ fn walk_mapping(
 
         let key_path = join_key_path(parent_path, &key_str);
 
-        let (byte_start, byte_end) =
-            find_yaml_key_range(content, &key_str, &mut search_from);
+        let (byte_start, byte_end) = find_yaml_key_range(content, &key_str, &mut search_from);
 
         let start_line = byte_to_line(line_starts, byte_start as u32);
         let end_line = byte_to_line(
@@ -261,14 +256,24 @@ fn walk_mapping(
             match v {
                 serde_yml::Value::Mapping(child_map) => {
                     walk_mapping(
-                        content, line_starts, child_map, &key_path, depth + 1,
-                        symbols, sort_order,
+                        content,
+                        line_starts,
+                        child_map,
+                        &key_path,
+                        depth + 1,
+                        symbols,
+                        sort_order,
                     );
                 }
                 serde_yml::Value::Sequence(child_seq) => {
                     walk_sequence(
-                        content, line_starts, child_seq, &key_path, depth + 1,
-                        symbols, sort_order,
+                        content,
+                        line_starts,
+                        child_seq,
+                        &key_path,
+                        depth + 1,
+                        symbols,
+                        sort_order,
                     );
                 }
                 _ => {}
@@ -316,14 +321,24 @@ fn walk_sequence(
             match v {
                 serde_yml::Value::Mapping(child_map) => {
                     walk_mapping(
-                        content, line_starts, child_map, &elem_path, depth + 1,
-                        symbols, sort_order,
+                        content,
+                        line_starts,
+                        child_map,
+                        &elem_path,
+                        depth + 1,
+                        symbols,
+                        sort_order,
                     );
                 }
                 serde_yml::Value::Sequence(child_seq) => {
                     walk_sequence(
-                        content, line_starts, child_seq, &elem_path, depth + 1,
-                        symbols, sort_order,
+                        content,
+                        line_starts,
+                        child_seq,
+                        &elem_path,
+                        depth + 1,
+                        symbols,
+                        sort_order,
                     );
                 }
                 _ => {}
@@ -340,7 +355,12 @@ mod tests {
     fn test_simple_mapping() {
         let content = b"name: test\nversion: 1.0\n";
         let result = YamlExtractor.extract(content);
-        assert!(result.symbols.iter().any(|s| s.name == "name" && s.kind == SymbolKind::Key));
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.name == "name" && s.kind == SymbolKind::Key)
+        );
         assert!(result.symbols.iter().any(|s| s.name == "version"));
     }
 
@@ -375,12 +395,16 @@ mod tests {
 
     #[test]
     fn test_edit_capability() {
-        assert_eq!(YamlExtractor.edit_capability(), EditCapability::TextEditSafe);
+        assert_eq!(
+            YamlExtractor.edit_capability(),
+            EditCapability::TextEditSafe
+        );
     }
 
     #[test]
     fn test_depth_limit() {
-        let content = b"a:\n  b:\n    c:\n      d:\n        e:\n          f:\n            g: deep\n";
+        let content =
+            b"a:\n  b:\n    c:\n      d:\n        e:\n          f:\n            g: deep\n";
         let result = YamlExtractor.extract(content);
         assert!(result.symbols.iter().any(|s| s.name == "a.b.c.d.e.f"));
         assert!(!result.symbols.iter().any(|s| s.name == "a.b.c.d.e.f.g"));
@@ -393,7 +417,11 @@ mod tests {
             content.push_str(&format!("  - {}\n", i));
         }
         let result = YamlExtractor.extract(content.as_bytes());
-        let arr_items: Vec<_> = result.symbols.iter().filter(|s| s.name.starts_with("arr[")).collect();
+        let arr_items: Vec<_> = result
+            .symbols
+            .iter()
+            .filter(|s| s.name.starts_with("arr["))
+            .collect();
         assert_eq!(arr_items.len(), 20);
     }
 
@@ -405,7 +433,9 @@ mod tests {
             assert!(
                 sym.byte_range.1 <= content.len() as u32,
                 "symbol {} byte_range end {} exceeds file length {}",
-                sym.name, sym.byte_range.1, content.len()
+                sym.name,
+                sym.byte_range.1,
+                content.len()
             );
         }
     }

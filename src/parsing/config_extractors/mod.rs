@@ -55,18 +55,22 @@ pub trait ConfigExtractor: Send + Sync {
 pub fn is_config_language(language: &LanguageId) -> bool {
     matches!(
         language,
-        LanguageId::Json | LanguageId::Toml | LanguageId::Yaml | LanguageId::Markdown | LanguageId::Env
+        LanguageId::Json
+            | LanguageId::Toml
+            | LanguageId::Yaml
+            | LanguageId::Markdown
+            | LanguageId::Env
     )
 }
 
-/// Returns a boxed extractor for the given language, or None if not yet implemented.
+/// Returns a boxed extractor for the given language, or None for non-config languages.
 pub fn extractor_for(language: &LanguageId) -> Option<Box<dyn ConfigExtractor>> {
     match language {
-        LanguageId::Json => None,
-        LanguageId::Toml => None,
-        LanguageId::Yaml => None,
-        LanguageId::Markdown => None,
-        LanguageId::Env => None,
+        LanguageId::Json => Some(Box::new(json::JsonExtractor)),
+        LanguageId::Toml => Some(Box::new(toml_ext::TomlExtractor)),
+        LanguageId::Yaml => Some(Box::new(yaml::YamlExtractor)),
+        LanguageId::Markdown => Some(Box::new(markdown::MarkdownExtractor)),
+        LanguageId::Env => Some(Box::new(env::EnvExtractor)),
         _ => None,
     }
 }
