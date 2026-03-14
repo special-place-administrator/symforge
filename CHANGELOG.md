@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.23.0](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.22.4...v0.23.0) (2026-03-14)
+
+
+### Features
+
+* get_file_content falls back to raw disk read for non-source files ([9bf8ba5](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/9bf8ba5cdc7811b1d24c340d78880a01510b8130))
+
+
+### Bug Fixes
+
+* find_references file count + get_repo_map full path filter ([89cc588](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/89cc5880c4c7ffb8ed2e09dd9c8bd9d7e573fa52))
+* UX improvements from third review ([648218f](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/648218fe4b70378133ec115dd93cd5a089b44bbc))
+
 ## [0.22.4](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.22.3...v0.22.4) (2026-03-14)
 
 
