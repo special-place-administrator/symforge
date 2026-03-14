@@ -114,6 +114,11 @@ fn parse_source(source: &str, language: &LanguageId) -> Result<ParseSourceOutput
         LanguageId::Kotlin => tree_sitter_kotlin_sg::LANGUAGE.into(),
         LanguageId::Dart => tree_sitter_dart::language(),
         LanguageId::Elixir => tree_sitter_elixir::LANGUAGE.into(),
+        LanguageId::Json
+        | LanguageId::Toml
+        | LanguageId::Yaml
+        | LanguageId::Markdown
+        | LanguageId::Env => unreachable!("config types are handled before parse_source"),
     };
 
     parser

@@ -21,6 +21,11 @@ pub enum LanguageId {
     Dart,
     Perl,
     Elixir,
+    Json,
+    Toml,
+    Yaml,
+    Markdown,
+    Env,
 }
 
 impl LanguageId {
@@ -42,6 +47,11 @@ impl LanguageId {
             "kt" | "kts" => Some(Self::Kotlin),
             "pl" | "pm" => Some(Self::Perl),
             "ex" | "exs" => Some(Self::Elixir),
+            "json" => Some(Self::Json),
+            "toml" => Some(Self::Toml),
+            "yaml" | "yml" => Some(Self::Yaml),
+            "md" => Some(Self::Markdown),
+            "env" => Some(Self::Env),
             _ => None,
         }
     }
@@ -64,6 +74,11 @@ impl LanguageId {
             Self::Dart => &["dart"],
             Self::Perl => &["pl", "pm"],
             Self::Elixir => &["ex", "exs"],
+            Self::Json => &["json"],
+            Self::Toml => &["toml"],
+            Self::Yaml => &["yaml", "yml"],
+            Self::Markdown => &["md"],
+            Self::Env => &["env"],
         }
     }
 
@@ -82,7 +97,12 @@ impl LanguageId {
             | Self::Kotlin
             | Self::Dart
             | Self::Perl
-            | Self::Elixir => SupportTier::Broader,
+            | Self::Elixir
+            | Self::Json
+            | Self::Toml
+            | Self::Yaml
+            | Self::Markdown
+            | Self::Env => SupportTier::Broader,
         }
     }
 }
@@ -106,6 +126,11 @@ impl fmt::Display for LanguageId {
             Self::Dart => "Dart",
             Self::Perl => "Perl",
             Self::Elixir => "Elixir",
+            Self::Json => "JSON",
+            Self::Toml => "TOML",
+            Self::Yaml => "YAML",
+            Self::Markdown => "Markdown",
+            Self::Env => "Env",
         };
         write!(f, "{name}")
     }
@@ -131,6 +156,8 @@ pub struct FileClassification {
     pub is_generated: bool,
     pub is_test: bool,
     pub is_vendor: bool,
+    #[serde(default)]
+    pub is_config: bool,
 }
 
 impl FileClassification {
@@ -181,11 +208,15 @@ impl FileClassification {
             || basename.ends_with(".designer.cs")
             || basename.ends_with(".min.js");
 
+        let ext = basename.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
+        let is_config = matches!(ext, "json" | "toml" | "yaml" | "yml" | "md" | "env");
+
         Self {
             class: FileClass::Code,
             is_generated,
             is_test,
             is_vendor,
+            is_config,
         }
     }
 
@@ -259,6 +290,8 @@ pub enum SymbolKind {
     Trait,
     Impl,
     Other,
+    Key,
+    Section,
 }
 
 impl fmt::Display for SymbolKind {
@@ -277,6 +310,8 @@ impl fmt::Display for SymbolKind {
             Self::Trait => "trait",
             Self::Impl => "impl",
             Self::Other => "other",
+            Self::Key => "key",
+            Self::Section => "section",
         };
         write!(f, "{prefix}")
     }

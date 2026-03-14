@@ -624,6 +624,11 @@ pub fn extract_references(
             let lang: Language = tree_sitter_perl::LANGUAGE.into();
             (perl_query(&lang), lang)
         }
+        LanguageId::Json
+        | LanguageId::Toml
+        | LanguageId::Yaml
+        | LanguageId::Markdown
+        | LanguageId::Env => unreachable!("config types are handled before extract_references"),
     };
 
     let _ = ts_language; // used only to initialize query once
