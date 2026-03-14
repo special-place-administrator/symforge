@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.21.0](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.20.6...v0.21.0) (2026-03-14)
+
+
+### Features
+
+* add doc_byte_range field to SymbolRecord ([5699030](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/569903096ad933cb1099afa0688de821aae9c6d2))
+* add DocCommentSpec and scan_doc_range algorithm ([61ab5bb](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/61ab5bb1ddda789f0e69a5f27181ab54a76d4e02))
+* add per-language DocCommentSpec and wire into push_symbol ([5a0fff2](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/5a0fff26d9020c5aefe02d4a319727ffc99121ff))
+* bump index snapshot version to 3 for doc_byte_range ([c002fcc](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/c002fccfe02f569a28b62615433d99ea7a3be1e0))
+* edit tools use doc_byte_range for splice boundaries ([cee3ff2](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/cee3ff29d43078448555b4479a4de399d9731b9e))
+* include doc comments in symbol body extraction ([679682b](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/679682b03d9a9548b8b67639c3257b6a5a63ff9c))
+
+
+### Bug Fixes
+
+* edit_within splice range + multi-line block comment detection ([4dd4ea8](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/4dd4ea84de658b5170d09d42c0200d3bd171ae2b))
+
 ## [0.20.6](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.20.5...v0.20.6) (2026-03-13)
 
 
