@@ -376,7 +376,7 @@ Expected: All escaping tests pass.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add src/parsing/config_extractors.rs src/parsing/mod.rs
+git add src/parsing/config_extractors/ src/parsing/mod.rs
 git commit -m "feat: add ConfigExtractor trait, EditCapability enum, key escaping"
 ```
 
@@ -403,11 +403,11 @@ mod tests {
     fn test_basic_key_value() {
         let content = b"DATABASE_URL=postgres://localhost/db\nPORT=3000\n";
         let extractor = EnvExtractor;
-        let symbols = extractor.extract(content);
-        assert_eq!(symbols.len(), 2);
-        assert_eq!(symbols[0].name, "DATABASE_URL");
-        assert_eq!(symbols[0].kind, SymbolKind::Variable);
-        assert_eq!(symbols[1].name, "PORT");
+        let result = extractor.extract(content);
+        assert_eq!(result.symbols.len(), 2);
+        assert_eq!(result.symbols[0].name, "DATABASE_URL");
+        assert_eq!(result.symbols[0].kind, SymbolKind::Variable);
+        assert_eq!(result.symbols[1].name, "PORT");
     }
 
     #[test]
@@ -421,30 +421,30 @@ mod tests {
     #[test]
     fn test_no_value_key() {
         let content = b"EMPTY_KEY=\n";
-        let symbols = EnvExtractor.extract(content);
-        assert_eq!(symbols.len(), 1);
-        assert_eq!(symbols[0].name, "EMPTY_KEY");
+        let result = EnvExtractor.extract(content);
+        assert_eq!(result.symbols.len(), 1);
+        assert_eq!(result.symbols[0].name, "EMPTY_KEY");
     }
 
     #[test]
     fn test_quoted_value() {
         let content = b"SECRET=\"hello world\"\n";
-        let symbols = EnvExtractor.extract(content);
-        assert_eq!(symbols.len(), 1);
-        assert_eq!(symbols[0].name, "SECRET");
+        let result = EnvExtractor.extract(content);
+        assert_eq!(result.symbols.len(), 1);
+        assert_eq!(result.symbols[0].name, "SECRET");
     }
 
     #[test]
     fn test_empty_file() {
-        let symbols = EnvExtractor.extract(b"");
-        assert!(symbols.is_empty());
+        let result = EnvExtractor.extract(b"");
+        assert!(result.symbols.is_empty());
     }
 
     #[test]
     fn test_byte_ranges_cover_full_line() {
         let content = b"A=1\nB=2\n";
-        let symbols = EnvExtractor.extract(content);
-        let a_range = symbols[0].byte_range;
+        let result = EnvExtractor.extract(content);
+        let a_range = result.symbols[0].byte_range;
         assert_eq!(&content[a_range.0 as usize..a_range.1 as usize], b"A=1");
     }
 
@@ -551,30 +551,30 @@ mod tests {
     #[test]
     fn test_single_header() {
         let content = b"# Title\nSome text\n";
-        let symbols = MarkdownExtractor.extract(content);
-        assert_eq!(symbols.len(), 1);
-        assert_eq!(symbols[0].name, "Title");
-        assert_eq!(symbols[0].kind, SymbolKind::Section);
-        assert_eq!(symbols[0].depth, 0);
+        let result = MarkdownExtractor.extract(content);
+        assert_eq!(result.symbols.len(), 1);
+        assert_eq!(result.symbols[0].name, "Title");
+        assert_eq!(result.symbols[0].kind, SymbolKind::Section);
+        assert_eq!(result.symbols[0].depth, 0);
     }
 
     #[test]
     fn test_nested_headers() {
         let content = b"# Top\n## Sub\n### Deep\n";
-        let symbols = MarkdownExtractor.extract(content);
-        assert_eq!(symbols.len(), 3);
-        assert_eq!(symbols[0].name, "Top");
-        assert_eq!(symbols[1].name, "Top.Sub");
-        assert_eq!(symbols[2].name, "Top.Sub.Deep");
+        let result = MarkdownExtractor.extract(content);
+        assert_eq!(result.symbols.len(), 3);
+        assert_eq!(result.symbols[0].name, "Top");
+        assert_eq!(result.symbols[1].name, "Top.Sub");
+        assert_eq!(result.symbols[2].name, "Top.Sub.Deep");
     }
 
     #[test]
     fn test_section_byte_range_spans_to_next_header() {
         let content = b"# A\nline1\nline2\n# B\nline3\n";
-        let symbols = MarkdownExtractor.extract(content);
-        assert_eq!(symbols.len(), 2);
+        let result = MarkdownExtractor.extract(content);
+        assert_eq!(result.symbols.len(), 2);
         // Section A spans from "# A" to just before "# B"
-        let a_text = &content[symbols[0].byte_range.0 as usize..symbols[0].byte_range.1 as usize];
+        let a_text = &content[result.symbols[0].byte_range.0 as usize..result.symbols[0].byte_range.1 as usize];
         assert!(a_text.starts_with(b"# A"));
         assert!(!a_text.contains(&b'B'));
     }
@@ -582,22 +582,22 @@ mod tests {
     #[test]
     fn test_duplicate_headers_disambiguated() {
         let content = b"## Install\ntext\n## Install\ntext\n";
-        let symbols = MarkdownExtractor.extract(content);
-        assert_eq!(symbols[0].name, "Install");
-        assert_eq!(symbols[1].name, "Install#2");
+        let result = MarkdownExtractor.extract(content);
+        assert_eq!(result.symbols[0].name, "Install");
+        assert_eq!(result.symbols[1].name, "Install#2");
     }
 
     #[test]
     fn test_frontmatter_skipped() {
         let content = b"---\ntitle: Hello\n---\n# Real Header\n";
-        let symbols = MarkdownExtractor.extract(content);
-        assert_eq!(symbols.len(), 1);
-        assert_eq!(symbols[0].name, "Real Header");
+        let result = MarkdownExtractor.extract(content);
+        assert_eq!(result.symbols.len(), 1);
+        assert_eq!(result.symbols[0].name, "Real Header");
     }
 
     #[test]
     fn test_empty_file() {
-        assert!(MarkdownExtractor.extract(b"").is_empty());
+        assert!(MarkdownExtractor.extract(b"").symbols.is_empty());
     }
 
     #[test]
@@ -650,70 +650,71 @@ mod tests {
     #[test]
     fn test_top_level_keys() {
         let content = br#"{"name": "test", "version": "1.0"}"#;
-        let symbols = JsonExtractor.extract(content);
-        assert!(symbols.iter().any(|s| s.name == "name" && s.kind == SymbolKind::Key));
-        assert!(symbols.iter().any(|s| s.name == "version"));
+        let result = JsonExtractor.extract(content);
+        assert!(result.symbols.iter().any(|s| s.name == "name" && s.kind == SymbolKind::Key));
+        assert!(result.symbols.iter().any(|s| s.name == "version"));
     }
 
     #[test]
     fn test_nested_keys() {
         let content = br#"{"scripts": {"test": "jest", "build": "tsc"}}"#;
-        let symbols = JsonExtractor.extract(content);
-        assert!(symbols.iter().any(|s| s.name == "scripts"));
-        assert!(symbols.iter().any(|s| s.name == "scripts.test"));
-        assert!(symbols.iter().any(|s| s.name == "scripts.build"));
+        let result = JsonExtractor.extract(content);
+        assert!(result.symbols.iter().any(|s| s.name == "scripts"));
+        assert!(result.symbols.iter().any(|s| s.name == "scripts.test"));
+        assert!(result.symbols.iter().any(|s| s.name == "scripts.build"));
     }
 
     #[test]
     fn test_array_indexing() {
         let content = br#"{"items": ["a", "b", "c"]}"#;
-        let symbols = JsonExtractor.extract(content);
-        assert!(symbols.iter().any(|s| s.name == "items[0]"));
-        assert!(symbols.iter().any(|s| s.name == "items[2]"));
+        let result = JsonExtractor.extract(content);
+        assert!(result.symbols.iter().any(|s| s.name == "items[0]"));
+        assert!(result.symbols.iter().any(|s| s.name == "items[2]"));
     }
 
     #[test]
     fn test_depth_limit() {
         // 7 levels deep — should stop at 6
         let content = br#"{"a":{"b":{"c":{"d":{"e":{"f":{"g":"deep"}}}}}}}"#;
-        let symbols = JsonExtractor.extract(content);
-        assert!(symbols.iter().any(|s| s.name == "a.b.c.d.e.f"));
-        assert!(!symbols.iter().any(|s| s.name == "a.b.c.d.e.f.g"));
+        let result = JsonExtractor.extract(content);
+        assert!(result.symbols.iter().any(|s| s.name == "a.b.c.d.e.f"));
+        assert!(!result.symbols.iter().any(|s| s.name == "a.b.c.d.e.f.g"));
     }
 
     #[test]
     fn test_array_cap() {
         let items: Vec<String> = (0..25).map(|i| format!("{i}")).collect();
         let content = format!(r#"{{"arr": [{}]}}"#, items.join(","));
-        let symbols = JsonExtractor.extract(content.as_bytes());
-        let arr_items: Vec<_> = symbols.iter().filter(|s| s.name.starts_with("arr[")).collect();
+        let result = JsonExtractor.extract(content.as_bytes());
+        let arr_items: Vec<_> = result.symbols.iter().filter(|s| s.name.starts_with("arr[")).collect();
         assert_eq!(arr_items.len(), 20); // capped at 20
     }
 
     #[test]
     fn test_literal_dot_key_escaped() {
         let content = br#"{"a.b": "value"}"#;
-        let symbols = JsonExtractor.extract(content);
-        assert!(symbols.iter().any(|s| s.name == "a~1b"));
+        let result = JsonExtractor.extract(content);
+        assert!(result.symbols.iter().any(|s| s.name == "a~1b"));
     }
 
     #[test]
     fn test_literal_bracket_key_escaped() {
         let content = br#"{"items[0]": "literal"}"#;
-        let symbols = JsonExtractor.extract(content);
-        assert!(symbols.iter().any(|s| s.name == "items~20~3"));
+        let result = JsonExtractor.extract(content);
+        assert!(result.symbols.iter().any(|s| s.name == "items~20~3"));
     }
 
     #[test]
     fn test_empty_object() {
-        let symbols = JsonExtractor.extract(b"{}");
-        assert!(symbols.is_empty());
+        let result = JsonExtractor.extract(b"{}");
+        assert!(result.symbols.is_empty());
     }
 
     #[test]
     fn test_malformed_json() {
-        let symbols = JsonExtractor.extract(b"{invalid json");
-        assert!(symbols.is_empty());
+        let result = JsonExtractor.extract(b"{invalid json");
+        assert!(result.symbols.is_empty());
+        assert!(matches!(result.outcome, ExtractionOutcome::Failed(_)));
     }
 
     #[test]
@@ -790,43 +791,43 @@ mod tests {
     #[test]
     fn test_top_level_keys() {
         let content = b"name = \"test\"\nversion = \"1.0\"\n";
-        let symbols = TomlExtractor.extract(content);
-        assert!(symbols.iter().any(|s| s.name == "name" && s.kind == SymbolKind::Key));
-        assert!(symbols.iter().any(|s| s.name == "version"));
+        let result = TomlExtractor.extract(content);
+        assert!(result.symbols.iter().any(|s| s.name == "name" && s.kind == SymbolKind::Key));
+        assert!(result.symbols.iter().any(|s| s.name == "version"));
     }
 
     #[test]
     fn test_table_keys() {
         let content = b"[package]\nname = \"test\"\nversion = \"1.0\"\n";
-        let symbols = TomlExtractor.extract(content);
-        assert!(symbols.iter().any(|s| s.name == "package"));
-        assert!(symbols.iter().any(|s| s.name == "package.name"));
-        assert!(symbols.iter().any(|s| s.name == "package.version"));
+        let result = TomlExtractor.extract(content);
+        assert!(result.symbols.iter().any(|s| s.name == "package"));
+        assert!(result.symbols.iter().any(|s| s.name == "package.name"));
+        assert!(result.symbols.iter().any(|s| s.name == "package.version"));
     }
 
     #[test]
     fn test_nested_tables() {
         let content = b"[dependencies]\nserde = \"1.0\"\n\n[dependencies.serde]\nfeatures = [\"derive\"]\n";
-        let symbols = TomlExtractor.extract(content);
-        assert!(symbols.iter().any(|s| s.name == "dependencies.serde"));
+        let result = TomlExtractor.extract(content);
+        assert!(result.symbols.iter().any(|s| s.name == "dependencies.serde"));
     }
 
     #[test]
     fn test_inline_table() {
         let content = b"[package]\nmetadata = { key = \"value\" }\n";
-        let symbols = TomlExtractor.extract(content);
-        assert!(symbols.iter().any(|s| s.name == "package.metadata"));
-        assert!(symbols.iter().any(|s| s.name == "package.metadata.key"));
+        let result = TomlExtractor.extract(content);
+        assert!(result.symbols.iter().any(|s| s.name == "package.metadata"));
+        assert!(result.symbols.iter().any(|s| s.name == "package.metadata.key"));
     }
 
     #[test]
     fn test_empty_file() {
-        assert!(TomlExtractor.extract(b"").is_empty());
+        assert!(TomlExtractor.extract(b"").symbols.is_empty());
     }
 
     #[test]
     fn test_malformed_toml() {
-        assert!(TomlExtractor.extract(b"[invalid\nno closing").is_empty());
+        assert!(TomlExtractor.extract(b"[invalid\nno closing").symbols.is_empty());
     }
 
     #[test]
@@ -888,36 +889,36 @@ mod tests {
     #[test]
     fn test_simple_mapping() {
         let content = b"name: test\nversion: 1.0\n";
-        let symbols = YamlExtractor.extract(content);
-        assert!(symbols.iter().any(|s| s.name == "name" && s.kind == SymbolKind::Key));
-        assert!(symbols.iter().any(|s| s.name == "version"));
+        let result = YamlExtractor.extract(content);
+        assert!(result.symbols.iter().any(|s| s.name == "name" && s.kind == SymbolKind::Key));
+        assert!(result.symbols.iter().any(|s| s.name == "version"));
     }
 
     #[test]
     fn test_nested_mapping() {
         let content = b"server:\n  host: localhost\n  port: 8080\n";
-        let symbols = YamlExtractor.extract(content);
-        assert!(symbols.iter().any(|s| s.name == "server"));
-        assert!(symbols.iter().any(|s| s.name == "server.host"));
-        assert!(symbols.iter().any(|s| s.name == "server.port"));
+        let result = YamlExtractor.extract(content);
+        assert!(result.symbols.iter().any(|s| s.name == "server"));
+        assert!(result.symbols.iter().any(|s| s.name == "server.host"));
+        assert!(result.symbols.iter().any(|s| s.name == "server.port"));
     }
 
     #[test]
     fn test_sequence() {
         let content = b"items:\n  - a\n  - b\n";
-        let symbols = YamlExtractor.extract(content);
-        assert!(symbols.iter().any(|s| s.name == "items[0]"));
-        assert!(symbols.iter().any(|s| s.name == "items[1]"));
+        let result = YamlExtractor.extract(content);
+        assert!(result.symbols.iter().any(|s| s.name == "items[0]"));
+        assert!(result.symbols.iter().any(|s| s.name == "items[1]"));
     }
 
     #[test]
     fn test_empty_file() {
-        assert!(YamlExtractor.extract(b"").is_empty());
+        assert!(YamlExtractor.extract(b"").symbols.is_empty());
     }
 
     #[test]
     fn test_malformed_yaml() {
-        assert!(YamlExtractor.extract(b":\n  :\n  - [invalid").is_empty());
+        assert!(YamlExtractor.extract(b":\n  :\n  - [invalid").symbols.is_empty());
     }
 
     #[test]
@@ -1168,7 +1169,8 @@ Create `tests/config_files.rs` with:
 2. **get_symbol on JSON key path**: Verify `get_symbol(path="test.json", name="scripts.build")` returns correct content.
 3. **get_file_context on TOML**: Verify structured outline returned.
 4. **Edit capability gating**: Verify `replace_symbol_body` on JSON returns warning, on TOML succeeds.
-5. **Duplicate Markdown headers regression**: File with two `## Installation` → `Installation` and `Installation#2`, both resolvable.
+5. **get_file_content around_symbol test**: `get_file_content(path="README.md", around_symbol="Installation")` returns the section content.
+6. **Duplicate Markdown headers regression**: File with two `## Installation` → `Installation` and `Installation#2`, both resolvable.
 6. **Literal-dot key regression**: JSON key `"a.b"` → symbol `a~1b`, round-trips through lookup.
 7. **Literal-bracket key regression**: JSON key `"items[0]"` → symbol `items~20~3`, distinct from array index.
 8. **File watcher picks up config changes**: Modify a `.toml` file after initial indexing, verify symbols update.
