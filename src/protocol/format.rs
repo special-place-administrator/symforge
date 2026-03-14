@@ -406,8 +406,10 @@ pub fn search_text_result_view(
                 }
                 Some("usage") | Some("purpose") => {
                     let mut last_symbol: Option<String> = None;
+                    let mut filtered_count = 0usize;
                     for line_match in &file.matches {
                         if is_noise_line(&line_match.line) {
+                            filtered_count += 1;
                             continue;
                         }
                         if let Some(ref enc) = line_match.enclosing_symbol {
@@ -430,6 +432,11 @@ pub fn search_text_result_view(
                             lines
                                 .push(format!("  {}: {}", line_match.line_number, line_match.line));
                         }
+                    }
+                    if filtered_count > 0 {
+                        lines.push(format!(
+                            "  ({filtered_count} import/comment match(es) excluded by usage filter)"
+                        ));
                     }
                 }
                 // None or Some("file") — default behavior
@@ -1525,6 +1532,13 @@ pub fn find_references_result_view(
     } else {
         vec![format!("{total} references in {total_files} files")]
     };
+    if view.total_refs > 100 && name.len() <= 4 {
+        lines.push(format!(
+            "Note: '{}' is a very common identifier — results may include unrelated symbols. \
+             Add path or symbol_kind to scope the search.",
+            name
+        ));
+    }
     lines.push(String::new()); // blank line
 
     let mut total_emitted = 0usize;
@@ -1598,6 +1612,13 @@ pub fn find_references_compact_view(
             view.total_refs, name, total_files
         )]
     };
+    if view.total_refs > 100 && name.len() <= 4 {
+        lines.push(format!(
+            "Note: '{}' is a very common identifier — results may include unrelated symbols. \
+             Add path or symbol_kind to scope the search.",
+            name
+        ));
+    }
 
     let mut total_emitted = 0usize;
     for file in view.files.iter().take(limits.max_files) {
@@ -4691,6 +4712,10 @@ pub fn explore_result_view(
     }
 
     // Depth 3: implementations + type dependencies
+    if depth >= 3 && symbol_impls.is_empty() && symbol_deps.is_empty() {
+        lines.push("No implementations or type dependencies found for top symbols.".to_string());
+        lines.push(String::new());
+    }
     if depth >= 3 && !symbol_impls.is_empty() {
         lines.push("Implementations:".to_string());
         for (name, impls) in symbol_impls {
