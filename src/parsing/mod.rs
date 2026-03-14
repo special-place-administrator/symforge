@@ -1,3 +1,4 @@
+pub mod config_extractors;
 pub mod languages;
 pub mod xref;
 
@@ -40,6 +41,35 @@ pub fn process_file_with_classification(
 ) -> FileProcessingResult {
     let byte_len = bytes.len() as u64;
     let content_hash = digest_hex(bytes);
+
+    // Config files use native parsers, not tree-sitter.
+    if config_extractors::is_config_language(&language) {
+        let result = config_extractors::extractor_for(&language).map(|e| e.extract(bytes));
+        let (symbols, outcome) = match result {
+            Some(r) => {
+                let outcome = match r.outcome {
+                    config_extractors::ExtractionOutcome::Ok => FileOutcome::Processed,
+                    config_extractors::ExtractionOutcome::Failed(err) => {
+                        FileOutcome::Failed { error: err }
+                    }
+                };
+                (r.symbols, outcome)
+            }
+            None => (vec![], FileOutcome::Processed),
+        };
+        return FileProcessingResult {
+            relative_path: relative_path.to_string(),
+            language,
+            classification,
+            outcome,
+            symbols,
+            byte_len,
+            content_hash,
+            references: vec![],
+            alias_map: HashMap::new(),
+        };
+    }
+
     let source = String::from_utf8_lossy(bytes);
 
     let parse_result = panic::catch_unwind(|| parse_source(&source, &language));
