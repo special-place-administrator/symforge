@@ -558,7 +558,6 @@ pub fn search_symbols_with_options(
 ) -> SymbolSearchResult {
     let query_lower = query.to_lowercase();
     let mut matches: Vec<ScoredSymbolMatch> = Vec::new();
-    let mut files_with_hits: HashSet<String> = HashSet::new();
 
     let mut paths: Vec<&String> = index.all_files().map(|(path, _)| path).collect();
     paths.sort();
@@ -599,7 +598,6 @@ pub fn search_symbols_with_options(
                 (SymbolMatchTier::Substring, pos)
             };
 
-            files_with_hits.insert(path.clone());
             matches.push(ScoredSymbolMatch {
                 tier,
                 tiebreak,
@@ -618,7 +616,7 @@ pub fn search_symbols_with_options(
             .then(a.name.cmp(&b.name))
     });
 
-    let hits = matches
+    let hits: Vec<SymbolSearchHit> = matches
         .into_iter()
         .take(options.result_limit.get())
         .map(|m| SymbolSearchHit {
@@ -630,10 +628,13 @@ pub fn search_symbols_with_options(
         })
         .collect();
 
-    SymbolSearchResult {
-        file_count: files_with_hits.len(),
-        hits,
-    }
+    let file_count = hits
+        .iter()
+        .map(|h| h.path.as_str())
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+
+    SymbolSearchResult { file_count, hits }
 }
 
 pub fn search_text(
