@@ -866,6 +866,10 @@ mod tests {
             LanguageId::Php => tree_sitter_php::LANGUAGE_PHP.into(),
             LanguageId::Swift => tree_sitter_swift::LANGUAGE.into(),
             LanguageId::Perl => tree_sitter_perl::LANGUAGE.into(),
+            LanguageId::Json | LanguageId::Toml | LanguageId::Yaml
+            | LanguageId::Markdown | LanguageId::Env => {
+                unreachable!("config languages don't use tree-sitter xref extraction")
+            }
         };
         parser.set_language(&ts_language).expect("set language");
         let tree = parser.parse(source, None).expect("parse");
