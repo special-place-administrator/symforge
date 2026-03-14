@@ -18,7 +18,7 @@ use crate::live_index::store::{
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const CURRENT_VERSION: u32 = 2;
+const CURRENT_VERSION: u32 = 3;
 const INDEX_FILENAME: &str = "index.bin";
 const TOKENIZOR_DIR: &str = ".tokenizor";
 
