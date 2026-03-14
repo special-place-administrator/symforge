@@ -131,7 +131,7 @@ pub(crate) fn build_insert_before(
     sym: &SymbolRecord,
     new_code: &str,
 ) -> Vec<u8> {
-    let sym_start = sym.byte_range.0 as usize;
+    let sym_start = sym.effective_start() as usize;
     let line_start = file_content[..sym_start]
         .iter()
         .rposition(|&b| b == b'\n')
@@ -173,7 +173,7 @@ pub(crate) fn build_insert_after(
 pub(crate) fn build_delete(file_content: &[u8], sym: &SymbolRecord) -> Vec<u8> {
     // Extend to start of line (include leading whitespace).
     let start = {
-        let s = sym.byte_range.0 as usize;
+        let s = sym.effective_start() as usize;
         file_content[..s]
             .iter()
             .rposition(|&b| b == b'\n')
@@ -229,7 +229,7 @@ pub(crate) fn build_edit_within(
     new_text: &str,
     replace_all: bool,
 ) -> Result<(Vec<u8>, usize), String> {
-    let sym_start = sym.byte_range.0 as usize;
+    let sym_start = sym.effective_start() as usize;
     let sym_end = sym.byte_range.1 as usize;
     let body = &file_content[sym_start..sym_end];
     let body_str =
@@ -256,7 +256,8 @@ pub(crate) fn build_edit_within(
         }
     };
 
-    let new_content = apply_splice(file_content, sym.byte_range, new_body.as_bytes());
+    let effective_range = (sym.effective_start(), sym.byte_range.1);
+    let new_content = apply_splice(file_content, effective_range, new_body.as_bytes());
     Ok((new_content, count))
 }
 
@@ -418,9 +419,13 @@ pub(crate) fn execute_batch_edit(
     for (path, indices) in &by_file {
         for i in 0..indices.len() {
             for j in (i + 1)..indices.len() {
-                let (a, b) = (
-                    resolved[indices[i]].sym.byte_range,
-                    resolved[indices[j]].sym.byte_range,
+                let a = (
+                    resolved[indices[i]].sym.effective_start(),
+                    resolved[indices[i]].sym.byte_range.1,
+                );
+                let b = (
+                    resolved[indices[j]].sym.effective_start(),
+                    resolved[indices[j]].sym.byte_range.1,
                 );
                 if a.0 < b.1 && b.0 < a.1 {
                     return Err(format!(
@@ -443,9 +448,8 @@ pub(crate) fn execute_batch_edit(
         indices.sort_by(|&a, &b| {
             resolved[b]
                 .sym
-                .byte_range
-                .0
-                .cmp(&resolved[a].sym.byte_range.0)
+                .effective_start()
+                .cmp(&resolved[a].sym.effective_start())
         });
     }
 
@@ -469,8 +473,8 @@ pub(crate) fn execute_batch_edit(
             match &edit.operation {
                 EditOperation::Replace { new_body } => {
                     let old_bytes = (r.sym.byte_range.1 - r.sym.byte_range.0) as usize;
-                    let sym_start = r.sym.byte_range.0 as usize;
-                    let line_start = content[..sym_start]
+                    let effective = r.sym.effective_start() as usize;
+                    let line_start = content[..effective]
                         .iter()
                         .rposition(|&b| b == b'\n')
                         .map(|p| p + 1)
@@ -1007,6 +1011,7 @@ mod tests {
             sort_order: 0,
             byte_range,
             line_range: (line_start, line_start + 2),
+            doc_byte_range: None,
         }
     }
 
@@ -1405,6 +1410,7 @@ mod tests {
                 sort_order: 0,
                 byte_range: (0, 100),
                 line_range: (0, 10),
+                doc_byte_range: None,
             },
             SymbolRecord {
                 name: "display".to_string(),
@@ -1413,6 +1419,7 @@ mod tests {
                 sort_order: 1,
                 byte_range: (20, 80),
                 line_range: (2, 8),
+                doc_byte_range: None,
             },
         ]);
         let method = &file.symbols[1];
@@ -1546,5 +1553,94 @@ mod tests {
             None,
         );
         assert_eq!(refs.len(), 2);
+    }
+
+    // -- doc-aware build_delete and build_insert_before --
+
+    #[test]
+    fn test_build_delete_includes_doc_comments() {
+        // "/// Doc line 1\n" = 15 bytes (0..15)
+        // "/// Doc line 2\n" = 15 bytes (15..30)
+        // "pub fn foo() {}\n" = 16 bytes (30..46)
+        // "\n"               =  1 byte  (46..47)
+        // "fn bar() {}\n"    = 12 bytes (47..59)
+        let content = b"/// Doc line 1\n/// Doc line 2\npub fn foo() {}\n\nfn bar() {}\n";
+        let sym = SymbolRecord {
+            name: "foo".to_string(),
+            kind: SymbolKind::Function,
+            depth: 0,
+            sort_order: 0,
+            byte_range: (30, 46),
+            line_range: (2, 2),
+            doc_byte_range: Some((0, 30)),
+        };
+        let result = build_delete(content, &sym);
+        let result_str = String::from_utf8(result).unwrap();
+        assert!(
+            !result_str.contains("/// Doc line 1"),
+            "doc comments should be deleted"
+        );
+        assert!(
+            !result_str.contains("pub fn foo"),
+            "function body should be deleted"
+        );
+        assert!(
+            result_str.contains("fn bar()"),
+            "other function should remain"
+        );
+    }
+
+    #[test]
+    fn test_build_insert_before_goes_above_doc_comments() {
+        // "/// Doc for foo\n" = 16 bytes (0..16)
+        // "pub fn foo() {}\n" = 16 bytes (16..32)
+        let content = b"/// Doc for foo\npub fn foo() {}\n";
+        let sym = SymbolRecord {
+            name: "foo".to_string(),
+            kind: SymbolKind::Function,
+            depth: 0,
+            sort_order: 0,
+            byte_range: (16, 32),
+            line_range: (1, 1),
+            doc_byte_range: Some((0, 16)),
+        };
+        let result = build_insert_before(content, &sym, "use std::io;");
+        let result_str = String::from_utf8(result).unwrap();
+        let use_pos = result_str
+            .find("use std::io;")
+            .expect("inserted content missing");
+        let doc_pos = result_str
+            .find("/// Doc for foo")
+            .expect("doc comment missing");
+        assert!(
+            use_pos < doc_pos,
+            "insert should go above doc comments (use_pos={use_pos}, doc_pos={doc_pos})"
+        );
+    }
+
+    #[test]
+    fn test_build_edit_within_no_doc_duplication() {
+        // "/// Doc comment\n" = 16 bytes (0..16)
+        // "pub fn foo() {}\n" = 16 bytes (16..32)
+        let content = b"/// Doc comment\npub fn foo() {}\n";
+        let sym = SymbolRecord {
+            name: "foo".to_string(),
+            kind: SymbolKind::Function,
+            depth: 0,
+            sort_order: 0,
+            byte_range: (16, 32),
+            line_range: (1, 1),
+            doc_byte_range: Some((0, 16)),
+        };
+        let (result, count) = build_edit_within(content, &sym, "foo", "bar", false).unwrap();
+        let result_str = String::from_utf8(result).unwrap();
+        assert_eq!(count, 1);
+        // Doc comment should appear exactly once, not duplicated
+        assert_eq!(
+            result_str.matches("/// Doc comment").count(),
+            1,
+            "doc comment should not be duplicated: {result_str}"
+        );
+        assert!(result_str.contains("pub fn bar()"), "edit should apply");
     }
 }

@@ -233,6 +233,15 @@ pub struct SymbolRecord {
     pub sort_order: u32,
     pub byte_range: (u32, u32),
     pub line_range: (u32, u32),
+    pub doc_byte_range: Option<(u32, u32)>,
+}
+
+impl SymbolRecord {
+    /// Returns the effective start byte, including doc comments if present.
+    pub fn effective_start(&self) -> u32 {
+        self.doc_byte_range
+            .map_or(self.byte_range.0, |(start, _)| start)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -525,6 +534,7 @@ mod tests {
                 sort_order: 0,
                 byte_range: (0, 100),
                 line_range: (0, 10),
+                doc_byte_range: None,
             },
             SymbolRecord {
                 name: "inner".to_string(),
@@ -533,6 +543,7 @@ mod tests {
                 sort_order: 1,
                 byte_range: (30, 60),
                 line_range: (3, 6),
+                doc_byte_range: None,
             },
         ];
         // Reference at line 4 is inside both — should return inner (index 1)
@@ -549,6 +560,7 @@ mod tests {
             sort_order: 0,
             byte_range: (50, 100),
             line_range: (5, 10),
+            doc_byte_range: None,
         }];
         // Reference at line 0 is not inside any symbol
         let idx = find_enclosing_symbol(&symbols, 0);

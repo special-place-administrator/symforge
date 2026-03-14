@@ -2298,8 +2298,8 @@ impl TokenizorServer {
         };
         let old_bytes = (sym.byte_range.1 - sym.byte_range.0) as usize;
         // Splice at line start and apply indentation — same approach as insert tools.
-        let sym_start = sym.byte_range.0 as usize;
-        let line_start = file.content[..sym_start]
+        let effective = sym.effective_start() as usize;
+        let line_start = file.content[..effective]
             .iter()
             .rposition(|&b| b == b'\n')
             .map(|p| p + 1)
@@ -2665,6 +2665,7 @@ mod tests {
             sort_order: 0,
             byte_range: (0, 10),
             line_range: (line_start, line_end),
+            doc_byte_range: None,
         }
     }
 
@@ -5053,6 +5054,7 @@ mod tests {
             sort_order: 0,
             byte_range: (0, content.len() as u32),
             line_range: (0, 5),
+            doc_byte_range: None,
         };
         let (key, file) = make_file("src/error.rs", content, vec![sym]);
         let server = make_server(make_live_index_ready(vec![(key, file)]));
