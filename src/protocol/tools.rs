@@ -2231,7 +2231,9 @@ impl TokenizorServer {
             }
         }
 
-        // Phase 3: Sort by match count descending, truncate to limit
+        // Phase 3: Filter noise, sort by match count descending, truncate to limit
+        // Exclude explore.rs itself (CONCEPT_MAP contains concept keywords in its body)
+        match_counts.retain(|(_, _, path), _| !path.ends_with("protocol/explore.rs"));
         let mut ranked: Vec<_> = match_counts.into_iter().collect();
         ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.0.cmp(&b.0.0)));
         ranked.truncate(limit);
