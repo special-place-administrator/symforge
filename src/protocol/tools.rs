@@ -1989,7 +1989,31 @@ impl TokenizorServer {
                 file.as_ref(),
                 options.content_context,
             ),
-            None => format::not_found_file(&params.0.path),
+            None => {
+                // Not in index — try raw disk read for non-source files
+                // (Cargo.toml, package.json, workflow YAMLs, etc.)
+                if let Some(root) = self.capture_repo_root() {
+                    let full_path = root.join(&params.0.path);
+                    if full_path.exists() && full_path.is_file() {
+                        match std::fs::read(&full_path) {
+                            Ok(content) => {
+                                return format::render_file_content_bytes(
+                                    &params.0.path,
+                                    &content,
+                                    options.content_context,
+                                );
+                            }
+                            Err(e) => {
+                                return format!(
+                                    "{} [error: could not read file: {e}]",
+                                    params.0.path
+                                );
+                            }
+                        }
+                    }
+                }
+                format::not_found_file(&params.0.path)
+            }
         }
     }
 

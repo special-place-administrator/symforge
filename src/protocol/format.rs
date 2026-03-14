@@ -1106,7 +1106,7 @@ pub fn file_content_view(
 
 const DEFAULT_AROUND_LINE_CONTEXT_LINES: u32 = 2;
 
-fn render_file_content_bytes(
+pub(crate) fn render_file_content_bytes(
     path: &str,
     content: &[u8],
     context: search::ContentContext,
