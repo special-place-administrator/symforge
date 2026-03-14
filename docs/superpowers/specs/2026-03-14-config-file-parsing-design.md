@@ -13,7 +13,7 @@ These files are everywhere in every project — `package.json`, `Cargo.toml`, `d
 
 ## Goal
 
-Make JSON, TOML, YAML, Markdown, and .env files first-class citizens in the LiveIndex by producing pseudo-symbols from their structure. All existing tools (search, navigation, edit) work on these files without modification.
+Make JSON, TOML, YAML, Markdown, and .env files first-class citizens in the LiveIndex by producing pseudo-symbols from their structure. All existing read/search/navigation tools work on these files without modification. Edit tools are gated by per-format capability levels to prevent broken-file outcomes.
 
 ## Domain Model Changes
 
@@ -47,21 +47,57 @@ Reuse existing `Variable` kind for `.env` entries.
 
 `FileClassification` is a struct with fields `class: FileClass`, `is_generated: bool`, `is_test: bool`, `is_vendor: bool`. `FileClass` is an enum with `Code`, `Text`, `Binary`. Add `is_config: bool` field to the struct to distinguish config files from source when needed. Config files get `FileClass::Text` with `is_config: true`.
 
-## Extractor Architecture
+## Edit Capability Levels
 
-### New file: src/parsing/config_extractors.rs
-
-Public dispatch function with five internal extractors:
+Each config file type declares its edit safety level. Edit tools check this before operating.
 
 ```rust
-pub fn extract_config_symbols(content: &[u8], language: LanguageId) -> Vec<SymbolRecord> {
+pub enum EditCapability {
+    IndexOnly,            // read/search/navigation only, no edits
+    TextEditSafe,         // edit_within_symbol (scoped find-replace) is safe
+    StructuralEditSafe,   // replace_symbol_body, delete_symbol are safe
+}
+```
+
+| Format | Capability | Rationale |
+|--------|-----------|-----------|
+| TOML | `StructuralEditSafe` | `toml_edit` spans are reliable |
+| .env | `StructuralEditSafe` | Full-line spans, no structural dependencies |
+| Markdown | `TextEditSafe` | Section boundaries are heuristic |
+| JSON | `TextEditSafe` | Byte ranges are accurate, but delete/replace may break comma/bracket syntax |
+| YAML | `TextEditSafe` | Line-based offsets are heuristic; indentation-sensitive edits are risky |
+
+Edit tools check the file's capability:
+- `edit_within_symbol` — requires `TextEditSafe` or higher
+- `replace_symbol_body`, `delete_symbol` — requires `StructuralEditSafe`
+- Below-threshold operations return a warning: "This file type does not support structural edits. Use edit_within_symbol or raw Edit instead."
+
+The capability is stored as a method on the `ConfigExtractor` trait (see below), not on individual symbols.
+
+## Extractor Architecture
+
+### ConfigExtractor trait (src/parsing/config_extractors.rs)
+
+Extensible trait for config file parsers. Future formats (INI, XML, .properties, .dockerignore) implement this trait without touching dispatch logic.
+
+```rust
+pub trait ConfigExtractor {
+    fn extract(&self, content: &[u8]) -> Vec<SymbolRecord>;
+    fn edit_capability(&self) -> EditCapability;
+}
+```
+
+Registry dispatches by `LanguageId`:
+
+```rust
+pub fn extractor_for(language: LanguageId) -> Option<Box<dyn ConfigExtractor>> {
     match language {
-        LanguageId::Json => extract_json(content),
-        LanguageId::Toml => extract_toml(content),
-        LanguageId::Yaml => extract_yaml(content),
-        LanguageId::Markdown => extract_markdown(content),
-        LanguageId::Env => extract_env(content),
-        _ => vec![],
+        LanguageId::Json => Some(Box::new(JsonExtractor)),
+        LanguageId::Toml => Some(Box::new(TomlExtractor)),
+        LanguageId::Yaml => Some(Box::new(YamlExtractor)),
+        LanguageId::Markdown => Some(Box::new(MarkdownExtractor)),
+        LanguageId::Env => Some(Box::new(EnvExtractor)),
+        _ => None,
     }
 }
 ```
@@ -82,25 +118,45 @@ In the public entry points `process_file` / `process_file_with_classification` (
 
 ### Symbol Naming Convention
 
-Dot-joined key paths for structured formats:
+Dot-joined key paths for structured formats. To avoid ambiguity when raw keys contain dots, brackets, or tildes, symbol names use a JSON-Pointer-style escape scheme:
+
+**Escape rules (applied to each individual key segment before joining):**
+- `~` → `~0`
+- `.` → `~1`
+- `[` → `~2`
+- `]` → `~3`
+
+**Examples:**
 
 ```
-# JSON/TOML/YAML:
-scripts.test          → kind: Key
+# JSON/TOML/YAML — normal keys:
+scripts.test          → kind: Key   (two segments: "scripts", "test")
 dependencies.serde    → kind: Key
-services.api.ports    → kind: Key
+services.api.ports    → kind: Key   (three segments)
 
-# Arrays:
-items[0]              → kind: Key
+# Raw key containing a literal dot:
+raw key "a.b"         → symbol name: a~1b     (one segment, escaped)
+nested under "x"      → symbol name: x.a~1b   (two segments, second escaped)
+
+# Arrays — structural index, not escaped:
+items[0]              → kind: Key   (array access, NOT a raw key)
 items[1]              → kind: Key
+
+# Raw key containing literal brackets:
+raw key "items[0]"    → symbol name: items~20~3 (one segment, escaped)
 
 # Markdown:
 Installation          → kind: Section
 Installation.Prerequisites → kind: Section (nested via header level)
+Installation#2        → kind: Section (duplicate header disambiguation)
 
 # .env:
 DATABASE_URL          → kind: Variable
 ```
+
+**Lookup**: `get_symbol(name="x.a~1b")` returns the value at key `"a.b"` nested under `"x"`. Unescaped names work for the common case (no special characters in keys). The escaping is transparent — users only need it when keys literally contain `.`, `[`, `]`, or `~`.
+
+**Markdown duplicate headers**: When multiple headers have the same text at the same level, append `#N` (1-indexed, starting from the second occurrence): `Installation`, `Installation#2`, `Installation#3`.
 
 ### Depth and Size Limits
 
@@ -114,21 +170,32 @@ DATABASE_URL          → kind: Variable
 
 ## Tool Impact
 
-**Zero tool code changes needed.** Tools are extension-agnostic at query time:
+### Read/Search/Navigation Tools — No Changes Needed
 
-- `search_symbols` — works with any `SymbolRecord`. Filter by `kind="key"` or `kind="section"`.
+Query tools are extension-agnostic and work with any `SymbolRecord`:
+
+- `search_symbols` — filter by `kind="key"` or `kind="section"`.
 - `get_symbol` / `get_symbol_context` — resolves by name + path. `get_symbol(path="Cargo.toml", name="dependencies.serde")` works.
 - `get_file_context` — produces outline from indexed symbols. TOML files show key hierarchy.
 - `search_text` — searches raw content with enclosing symbol context.
 - `get_file_content` — `around_symbol` resolves to byte range.
 
-### Edit Tools
+### Edit Tools — Capability-Gated
 
-Expected to work since they operate on byte ranges, not language-specific logic:
+Edit tools require a small change: check the file's `EditCapability` before operating.
 
-- `replace_symbol_body` — resolves symbol, splices bytes, rewrites file. LLM is responsible for valid replacement content (e.g. proper JSON syntax).
-- `edit_within_symbol` — scoped find-and-replace within byte range.
-- `delete_symbol` — removes byte range. **Known limitation**: deleting a JSON key may leave trailing commas, producing invalid JSON. The tool output should warn the user about this. Acceptable for v1; a future enhancement could add JSON-aware comma cleanup.
+- `edit_within_symbol` — allowed for `TextEditSafe` and above. Scoped find-and-replace within byte range. Works for all config formats.
+- `replace_symbol_body` — allowed for `StructuralEditSafe` only (TOML, .env). For other formats, returns a warning suggesting `edit_within_symbol` or raw Edit instead. LLM is responsible for valid replacement content.
+- `delete_symbol` — allowed for `StructuralEditSafe` only. **Known limitation for future JSON support**: deleting a JSON key may leave trailing commas. A future Phase 2 enhancement could add JSON-aware comma cleanup and upgrade JSON to `StructuralEditSafe`.
+
+### YAML Edit Behavior
+
+YAML edits are explicitly best-effort in v1. Line-based offset calculation works for simple key-value pairs but may produce incorrect ranges for:
+- Block/folded scalars
+- Anchors and aliases
+- Indentation-sensitive multi-line values
+
+Tools warn when operating on YAML heuristic ranges. For complex YAML structures, users should fall back to raw text edits.
 
 ### PreToolUse Hook Update
 
@@ -160,9 +227,20 @@ Per extractor:
 - Index temp directory with config files, verify `search_symbols` finds keys.
 - `get_symbol` on JSON key path returns correct content.
 - `get_file_context` on TOML file returns structured outline.
-- `replace_symbol_body` on YAML key writes correct file.
+- Simple YAML key replacement succeeds on representative cases (flat key-value pairs).
+- Tools warn when operating on YAML heuristic ranges for complex structures.
+- `replace_symbol_body` on TOML key (StructuralEditSafe) writes correct file.
+- `replace_symbol_body` on JSON key is rejected with capability warning.
 - File watcher picks up config file changes.
 - **Update existing test**: `test_discover_files_ignores_json_md_toml` in `src/discovery/mod.rs` explicitly asserts these files are NOT discovered. This test must be updated to expect discovery of config files.
+
+### Required regression tests
+
+These must be named explicitly and cannot be skipped:
+
+- **Duplicate Markdown headers disambiguate deterministically**: file with two `## Installation` headers produces `Installation` and `Installation#2`, both resolvable via `get_symbol`.
+- **Literal-dot keys round-trip correctly**: JSON key `"a.b"` produces symbol `a~1b`. `get_symbol(name="a~1b")` returns correct content. `edit_within_symbol(name="a~1b", ...)` scopes to the correct byte range.
+- **Literal-bracket keys round-trip correctly**: JSON key `"items[0]"` produces symbol `items~20~3`, distinct from structural array index `items[0]`.
 
 ### Edge cases
 
@@ -178,12 +256,23 @@ No concern. Config files are tiny compared to source code. A project with 50 con
 
 ## Acceptance Criteria
 
+### Read/Search/Navigation
 - [ ] `search_symbols(name="dependencies")` finds TOML/JSON dependency keys
 - [ ] `get_file_context(path="Cargo.toml")` returns structured outline of keys
 - [ ] `get_file_content(path="README.md", around_symbol="Installation")` works
 - [ ] `get_symbol(path="package.json", name="scripts.build")` returns the value
 - [ ] File watcher re-indexes config files on change
 - [ ] PreToolUse hook intercepts config files after this ships
-- [ ] All edit tools work on config file symbols (byte-range accuracy)
+
+### Edit Safety
+- [ ] `edit_within_symbol` works on all TextEditSafe+ formats (JSON, YAML, Markdown, TOML, .env)
+- [ ] `replace_symbol_body` works on StructuralEditSafe formats (TOML, .env)
+- [ ] `replace_symbol_body` on TextEditSafe-only formats (JSON, YAML, Markdown) returns capability warning
+- [ ] YAML edit tools warn when operating on heuristic ranges
+
+### Correctness
 - [ ] Malformed files fail-open with FileOutcome::Failed, zero symbols
 - [ ] Existing discovery test updated to expect config file discovery
+- [ ] Duplicate Markdown headers disambiguate deterministically (`Installation`, `Installation#2`)
+- [ ] Literal-dot keys escape correctly (`"a.b"` → `a~1b`) and round-trip through symbol lookup and edits
+- [ ] Literal-bracket keys escape correctly (`"items[0]"` → `items~20~3`), distinct from structural array index `items[0]`
