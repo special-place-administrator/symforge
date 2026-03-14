@@ -2092,7 +2092,7 @@ impl TokenizorServer {
         let concept = super::explore::match_concept(&params.0.query);
 
         let (label, symbol_queries, text_queries): (String, Vec<String>, Vec<String>) =
-            if let Some(c) = concept {
+            if let Some((_key, c)) = concept {
                 (
                     c.label.to_string(),
                     c.symbol_queries.iter().map(|s| s.to_string()).collect(),
@@ -5186,6 +5186,7 @@ mod tests {
         // BurstTracker contains "debounce" in its body; it won't match the symbol search for
         // "debounce" (name mismatch) but the text search will find the word and inject the
         // enclosing symbol into match_counts, so it should appear in results.
+        // Query uses "burst debounce" — no concept match — to exercise fallback multi-term scoring.
         let content = b"pub struct BurstTracker {\n    debounce: u32,\n    burst_count: u32,\n}\n";
         let burst_tracker = SymbolRecord {
             name: "BurstTracker".to_string(),
@@ -5200,7 +5201,7 @@ mod tests {
         let server = make_server(make_live_index_ready(vec![(key, file)]));
         let result = server
             .explore(Parameters(super::ExploreInput {
-                query: "watcher debounce".to_string(),
+                query: "burst debounce".to_string(),
                 limit: Some(10),
                 depth: None,
             }))
