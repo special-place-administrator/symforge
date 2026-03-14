@@ -128,6 +128,11 @@ pub fn extract_symbols(node: &Node, source: &str, language: &LanguageId) -> Vec<
         LanguageId::Dart => dart::extract_symbols(node, source),
         LanguageId::Perl => perl::extract_symbols(node, source),
         LanguageId::Elixir => elixir::extract_symbols(node, source),
+        LanguageId::Json
+        | LanguageId::Toml
+        | LanguageId::Yaml
+        | LanguageId::Markdown
+        | LanguageId::Env => unreachable!("config types are handled before parse_source"),
     }
 }
 

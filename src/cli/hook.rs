@@ -66,10 +66,7 @@ pub fn run_hook(subcommand: Option<&HookSubcommand>) -> anyhow::Result<()> {
     if matches!(subcommand, Some(HookSubcommand::PreTool)) {
         let suggestion = pre_tool_suggestion(&input);
         if !suggestion.is_empty() {
-            println!(
-                "{}",
-                success_json("PreToolUse", &json_escape(&suggestion))
-            );
+            println!("{}", success_json("PreToolUse", &json_escape(&suggestion)));
         }
         return Ok(());
     }
@@ -212,11 +209,29 @@ fn is_non_source_path(path: &str) -> bool {
     let p = path.replace('\\', "/").to_lowercase();
 
     // Non-source file extensions
+    // Config files now handled by Tokenizor (.md, .json, .toml, .yaml, .yml, .env)
+    // are intentionally NOT in this list — PreToolUse hook should suggest Tokenizor for them.
     let non_source_exts = [
-        ".md", ".txt", ".json", ".toml", ".yaml", ".yml", ".xml", ".csv",
-        ".lock", ".env", ".gitignore", ".dockerignore", ".editorconfig",
-        ".prettierrc", ".eslintrc", ".ini", ".cfg", ".conf", ".html",
-        ".css", ".svg", ".png", ".jpg", ".jpeg", ".gif", ".ico",
+        ".txt",
+        ".xml",
+        ".csv",
+        ".lock",
+        ".gitignore",
+        ".dockerignore",
+        ".editorconfig",
+        ".prettierrc",
+        ".eslintrc",
+        ".ini",
+        ".cfg",
+        ".conf",
+        ".html",
+        ".css",
+        ".svg",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".ico",
     ];
     if non_source_exts.iter().any(|ext| p.ends_with(ext)) {
         return true;
@@ -224,8 +239,15 @@ fn is_non_source_path(path: &str) -> bool {
 
     // Non-source directories
     let non_source_dirs = [
-        "/docs/", "/doc/", "/.github/", "/.planning/", "/.claude/",
-        "/.gemini/", "/.codex/", "/node_modules/", "/.git/",
+        "/docs/",
+        "/doc/",
+        "/.github/",
+        "/.planning/",
+        "/.claude/",
+        "/.gemini/",
+        "/.codex/",
+        "/node_modules/",
+        "/.git/",
     ];
     if non_source_dirs.iter().any(|dir| p.contains(dir)) {
         return true;
@@ -817,7 +839,8 @@ mod tests {
     }
 
     #[test]
-    fn test_pre_tool_suggestion_read_markdown_is_empty() {
+    fn test_pre_tool_suggestion_read_markdown_suggests_tokenizor() {
+        // Markdown is now handled by Tokenizor — should suggest
         let input = HookInput {
             tool_name: Some("Read".to_string()),
             tool_input: Some(HookToolInput {
@@ -827,7 +850,23 @@ mod tests {
             ..Default::default()
         };
         let s = pre_tool_suggestion(&input);
-        assert!(s.is_empty(), "should not suggest for .md files: {s}");
+        assert!(!s.is_empty(), "should suggest Tokenizor for .md files");
+        assert!(s.contains("get_file_context"));
+    }
+
+    #[test]
+    fn test_pre_tool_suggestion_read_csv_is_empty() {
+        // CSV is still non-source — should not suggest
+        let input = HookInput {
+            tool_name: Some("Read".to_string()),
+            tool_input: Some(HookToolInput {
+                file_path: Some("data/export.csv".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let s = pre_tool_suggestion(&input);
+        assert!(s.is_empty(), "should not suggest for .csv files: {s}");
     }
 
     #[test]
@@ -867,11 +906,22 @@ mod tests {
     }
 
     #[test]
-    fn test_is_non_source_path_detects_config_files() {
-        assert!(is_non_source_path("package.json"));
-        assert!(is_non_source_path("Cargo.toml"));
-        assert!(is_non_source_path("README.md"));
-        assert!(is_non_source_path(".env"));
+    fn test_is_non_source_path_allows_config_files() {
+        // Config files are now handled by Tokenizor — should NOT be skipped
+        assert!(!is_non_source_path("package.json"));
+        assert!(!is_non_source_path("Cargo.toml"));
+        assert!(!is_non_source_path("README.md"));
+        assert!(!is_non_source_path(".env"));
+        assert!(!is_non_source_path("config.yaml"));
+        assert!(!is_non_source_path("docker-compose.yml"));
+    }
+
+    #[test]
+    fn test_is_non_source_path_still_skips_non_config() {
+        assert!(is_non_source_path("data.csv"));
+        assert!(is_non_source_path("notes.txt"));
+        assert!(is_non_source_path("icon.png"));
+        assert!(is_non_source_path("Cargo.lock"));
     }
 
     #[test]

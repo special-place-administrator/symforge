@@ -435,13 +435,13 @@ async fn test_watcher_ignores_non_source_files() {
 
     let _watcher_info = spawn_watcher(&dir, &shared).await;
 
-    // Create a non-source file — should be ignored by the watcher
-    write_file(dir.path(), "README.md", "# My Project");
-    write_file(dir.path(), "config.json", r#"{"version": "1"}"#);
+    // Create truly non-source files — should be ignored by the watcher
+    write_file(dir.path(), "notes.txt", "some notes");
+    write_file(dir.path(), "data.csv", "a,b,c");
 
     wait_debounce().await;
 
-    // Verify file count unchanged (README.md and config.json not indexed)
+    // Verify file count unchanged (.txt and .csv not indexed)
     {
         let index = shared.read().unwrap();
         assert_eq!(
@@ -451,12 +451,12 @@ async fn test_watcher_ignores_non_source_files() {
             index.file_count()
         );
         assert!(
-            index.get_file("README.md").is_none(),
-            "README.md should NOT be in the index (unsupported extension)"
+            index.get_file("notes.txt").is_none(),
+            "notes.txt should NOT be in the index (unsupported extension)"
         );
         assert!(
-            index.get_file("config.json").is_none(),
-            "config.json should NOT be in the index (unsupported extension)"
+            index.get_file("data.csv").is_none(),
+            "data.csv should NOT be in the index (unsupported extension)"
         );
     }
 }

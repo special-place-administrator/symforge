@@ -667,7 +667,7 @@ mod tests {
     #[test]
     fn test_supported_language_md() {
         let path = Path::new("README.md");
-        assert_eq!(supported_language(path), None);
+        assert_eq!(supported_language(path), Some(LanguageId::Markdown));
     }
 
     #[test]
