@@ -526,14 +526,21 @@ async fn handle_edit_impact(
         Ok(b) => b,
         Err(_) => {
             // File not on disk — remove it from the index so stale data is purged.
+            let prev_symbol_count = {
+                let guard = state
+                    .index
+                    .read()
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                guard.get_file(path).map(|f| f.symbols.len()).unwrap_or(0)
+            };
             state.index.remove_file(path);
             // Also clear the symbol cache entry.
             if let Ok(mut cache) = state.symbol_cache.write() {
                 cache.remove(path);
             }
             let text = format!(
-                "── Impact: {} ──\nFile not found on disk; removed from index.",
-                path
+                "── Impact: {} ──\nStatus: not found on disk — removed from index\nPreviously had {} symbols.",
+                path, prev_symbol_count
             );
             return Ok(text);
         }
@@ -606,9 +613,12 @@ async fn handle_edit_impact(
     lines.push(format!("── Impact: {} ──", path));
 
     if added.is_empty() && changed.is_empty() && removed.is_empty() {
-        lines.push("No symbol changes detected.".to_string());
-        lines.push("Index already matches file on disk. If you just edited with Tokenizor's edit tools, the index was updated automatically — analyze_file_impact is for verifying external edits.".to_string());
+        lines.push(format!(
+            "Status: indexed and unchanged\nSymbols: {}\nTip: Use what_changed to see recent modifications.",
+            post_symbols.len()
+        ));
     } else {
+        lines.push("Status: changed on disk since last index".to_string());
         for sym in &added {
             lines.push(format!("  [Added]   {} {}", sym.kind, sym.name));
         }

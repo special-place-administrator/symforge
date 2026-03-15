@@ -3832,6 +3832,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_analyze_file_impact_unchanged_shows_status() {
+        // Use setup_edit_test so the index holds real parsed symbols (correct byte_ranges).
+        // Then call analyze_file_impact WITHOUT modifying the file — should report unchanged.
+        let source = b"pub fn alpha() {}\npub fn beta() {}\n";
+        let (dir, server, _file_path) = setup_edit_test(source);
+        let _ = dir; // keep temp dir alive
+
+        let result = server
+            .analyze_file_impact(Parameters(super::AnalyzeFileImpactInput {
+                path: "src/lib.rs".to_string(),
+                new_file: None,
+                include_co_changes: None,
+                co_changes_limit: None,
+            }))
+            .await;
+
+        assert!(
+            result.contains("indexed and unchanged"),
+            "unchanged file should report 'indexed and unchanged'; got: {result}"
+        );
+        assert!(
+            result.contains("Symbols: 2"),
+            "should show symbol count; got: {result}"
+        );
+        assert!(
+            result.contains("what_changed"),
+            "should suggest what_changed; got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_analyze_file_impact_deleted_file() {
+        let source = b"pub fn gone() {}\n";
+        let (dir, server, file_path) = setup_edit_test(source);
+        let _ = dir; // keep temp dir alive
+
+        // Delete the file from disk to simulate external deletion.
+        fs::remove_file(&file_path).expect("remove source");
+
+        let result = server
+            .analyze_file_impact(Parameters(super::AnalyzeFileImpactInput {
+                path: "src/lib.rs".to_string(),
+                new_file: None,
+                include_co_changes: None,
+                co_changes_limit: None,
+            }))
+            .await;
+
+        assert!(
+            result.contains("not found on disk"),
+            "deleted file should report 'not found on disk'; got: {result}"
+        );
+    }
+
+    #[tokio::test]
     async fn test_index_folder_rebinds_repo_root_for_local_impact_analysis() {
         let repo = TempDir::new().expect("temp repo");
         fs::create_dir_all(repo.path().join("scratch")).expect("scratch dir");
@@ -5874,12 +5929,7 @@ mod tests {
         // Build a file with 15 top-level functions (depth 0).
         let mut syms = Vec::new();
         for i in 0u32..15 {
-            syms.push(make_symbol(
-                &format!("fn_{i}"),
-                SymbolKind::Function,
-                i,
-                i,
-            ));
+            syms.push(make_symbol(&format!("fn_{i}"), SymbolKind::Function, i, i));
         }
         let content = (0u32..15)
             .map(|i| format!("fn fn_{i}() {{}}"))
@@ -5903,20 +5953,21 @@ mod tests {
             .lines()
             .filter(|l| l.starts_with("  ") && !l.starts_with("  ..."))
             .count();
-        assert!(sibling_rows <= 10, "expected ≤10 siblings, got {sibling_rows}; output:\n{result}");
-        assert!(result.contains("... and 5 more siblings"), "expected overflow hint; got:\n{result}");
+        assert!(
+            sibling_rows <= 10,
+            "expected ≤10 siblings, got {sibling_rows}; output:\n{result}"
+        );
+        assert!(
+            result.contains("... and 5 more siblings"),
+            "expected overflow hint; got:\n{result}"
+        );
     }
 
     #[tokio::test]
     async fn test_inspect_match_sibling_limit_5_shows_exactly_5() {
         let mut syms = Vec::new();
         for i in 0u32..12 {
-            syms.push(make_symbol(
-                &format!("fn_{i}"),
-                SymbolKind::Function,
-                i,
-                i,
-            ));
+            syms.push(make_symbol(&format!("fn_{i}"), SymbolKind::Function, i, i));
         }
         let content = (0u32..12)
             .map(|i| format!("fn fn_{i}() {{}}"))
@@ -5938,20 +5989,21 @@ mod tests {
             .lines()
             .filter(|l| l.starts_with("  ") && !l.starts_with("  ..."))
             .count();
-        assert_eq!(sibling_rows, 5, "expected exactly 5 siblings; output:\n{result}");
-        assert!(result.contains("... and 7 more siblings"), "expected overflow hint; got:\n{result}");
+        assert_eq!(
+            sibling_rows, 5,
+            "expected exactly 5 siblings; output:\n{result}"
+        );
+        assert!(
+            result.contains("... and 7 more siblings"),
+            "expected overflow hint; got:\n{result}"
+        );
     }
 
     #[tokio::test]
     async fn test_inspect_match_sibling_limit_0_hides_siblings() {
         let mut syms = Vec::new();
         for i in 0u32..5 {
-            syms.push(make_symbol(
-                &format!("fn_{i}"),
-                SymbolKind::Function,
-                i,
-                i,
-            ));
+            syms.push(make_symbol(&format!("fn_{i}"), SymbolKind::Function, i, i));
         }
         let content = (0u32..5)
             .map(|i| format!("fn fn_{i}() {{}}"))
@@ -5969,7 +6021,10 @@ mod tests {
             }))
             .await;
 
-        assert!(!result.contains("Nearby siblings:"), "siblings should be hidden; got:\n{result}");
+        assert!(
+            !result.contains("Nearby siblings:"),
+            "siblings should be hidden; got:\n{result}"
+        );
     }
 
     #[tokio::test]
