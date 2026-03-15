@@ -50,14 +50,18 @@ In `src/live_index/search.rs`, add above the existing `NoisePolicy` struct:
 
 ```rust
 /// Classification for files that should be de-prioritized in explore/repo_map.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Aligned with spec Contract 0C: Vendor | Generated | Ignored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NoiseClass {
     /// Normal source file.
+    #[default]
     None,
-    /// File matches a `.gitignore` pattern or lives in a vendor directory.
+    /// File matches a vendor directory pattern (node_modules, vendor/, third_party/).
     Vendor,
-    /// File is generated (e.g., lock files, build artifacts).
+    /// File is generated (lock files, minified assets, dist/).
     Generated,
+    /// File matches `.gitignore` but doesn't fit Vendor or Generated heuristics.
+    Ignored,
 }
 
 impl Default for NoiseClass {
@@ -74,11 +78,8 @@ impl NoisePolicy {
     /// Classify a file path as noise based on gitignore patterns and heuristics.
     pub fn classify_path(&self, path: &str, gitignore: Option<&ignore::gitignore::Gitignore>) -> NoiseClass {
         // Check gitignore first
-        if let Some(gi) = gitignore {
-            if gi.matched(path, false).is_ignore() {
-                return NoiseClass::Vendor;
-            }
-        }
+        // Heuristic classification runs first (more specific than gitignore)
+        // so vendor/generated patterns are caught before falling through to Ignored.
 
         // Heuristic classification for common vendor/generated patterns
         let lower = path.to_lowercase();
@@ -99,6 +100,13 @@ impl NoisePolicy {
             return NoiseClass::Generated;
         }
 
+        // Gitignore catch-all: file is ignored but doesn't match vendor/generated heuristics
+        if let Some(gi) = gitignore {
+            if gi.matched(path, false).is_ignore() {
+                return NoiseClass::Ignored;
+            }
+        }
+
         NoiseClass::None
     }
 
@@ -108,6 +116,7 @@ impl NoisePolicy {
             NoiseClass::None => false,
             NoiseClass::Vendor => !self.include_vendor,
             NoiseClass::Generated => !self.include_generated,
+            NoiseClass::Ignored => !self.include_vendor, // Ignored follows vendor policy
         }
     }
 }
@@ -592,21 +601,29 @@ fn execute_batch_edit_impl(
         // ... compute new content as before ...
 
         if dry_run {
-            // Preview: show what would change per edit (capped at 20 lines)
+            // Preview: show per-edit old→new snippet (capped at 20 lines per edit).
+            // The final implementation MUST show richer previews than this sketch:
+            // include old snippet, new snippet, file path, symbol name, operation type.
+            // Cap each preview at 20 lines with "... truncated (N lines total)" hint.
             for &ri in indices {
                 let r = &resolved[ri];
                 let edit = &edits[r.operation];
+                let op_label = match &edit.operation {
+                    EditOperation::Replace { .. } => "replace",
+                    EditOperation::InsertBefore { .. } => "insert before",
+                    EditOperation::InsertAfter { .. } => "insert after",
+                    EditOperation::Delete => "delete",
+                    EditOperation::EditWithin { .. } => "edit within",
+                };
+                // Build preview with old/new snippets, capped at 20 lines each
+                let old_snippet = truncate_preview(&content, &r.sym, 20);
+                let new_snippet = match &edit.operation {
+                    EditOperation::Replace { new_body } => truncate_lines(new_body, 20),
+                    _ => String::new(),
+                };
                 summaries.push(format!(
-                    "[DRY RUN] Would {} `{}` in {}",
-                    match &edit.operation {
-                        EditOperation::Replace { .. } => "replace",
-                        EditOperation::InsertBefore { .. } => "insert before",
-                        EditOperation::InsertAfter { .. } => "insert after",
-                        EditOperation::Delete => "delete",
-                        EditOperation::EditWithin { .. } => "edit within",
-                    },
-                    r.sym.name,
-                    path,
+                    "[DRY RUN] {} `{}` in {}\n  old: {}\n  new: {}",
+                    op_label, r.sym.name, path, old_snippet, new_snippet,
                 ));
             }
         } else {
@@ -721,7 +738,17 @@ let default_limit = if is_browse { 20 } else { 50 };
 result_limit: search::ResultLimit::new(input.limit.unwrap_or(default_limit).min(100) as usize),
 ```
 
-- [ ] **Step 5: Update downstream callers of `SearchSymbolsInput.query`**
+- [ ] **Step 5: Enforce browse-mode sort order**
+
+In `search_symbols_options_from_input` or the handler, when in browse mode (query omitted), sort results by file path then line number for stable, deterministic output:
+
+```rust
+if is_browse {
+    results.sort_by(|a, b| a.path.cmp(&b.path).then(a.line.cmp(&b.line)));
+}
+```
+
+- [ ] **Step 6: Update downstream callers of `SearchSymbolsInput.query`**
 
 Anywhere `input.query` is used as `&str`, change to `input.query.as_deref().unwrap_or("")`.
 
