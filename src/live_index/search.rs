@@ -205,7 +205,14 @@ impl ContentContext {
         symbol_line: Option<u32>,
         context_lines: Option<u32>,
     ) -> Self {
-        Self::around_symbol_with_max_lines(around_symbol, symbol_line, context_lines, None, false, false)
+        Self::around_symbol_with_max_lines(
+            around_symbol,
+            symbol_line,
+            context_lines,
+            None,
+            false,
+            false,
+        )
     }
 
     pub fn around_symbol_with_max_lines(
@@ -522,7 +529,12 @@ impl FileContentOptions {
     ) -> Self {
         Self {
             path_scope: PathScope::exact(path),
-            content_context: ContentContext::around_line(around_line, context_lines, show_line_numbers, header),
+            content_context: ContentContext::around_line(
+                around_line,
+                context_lines,
+                show_line_numbers,
+                header,
+            ),
         }
     }
 
@@ -535,7 +547,12 @@ impl FileContentOptions {
     ) -> Self {
         Self {
             path_scope: PathScope::exact(path),
-            content_context: ContentContext::around_match(around_match, context_lines, show_line_numbers, header),
+            content_context: ContentContext::around_match(
+                around_match,
+                context_lines,
+                show_line_numbers,
+                header,
+            ),
         }
     }
 
@@ -1838,8 +1855,13 @@ mod tests {
 
     #[test]
     fn test_explicit_path_read_around_line_options_are_exact() {
-        let options =
-            FileContentOptions::for_explicit_path_read_around_line("src/lib.rs", 3, Some(1), false, false);
+        let options = FileContentOptions::for_explicit_path_read_around_line(
+            "src/lib.rs",
+            3,
+            Some(1),
+            false,
+            false,
+        );
 
         assert_eq!(
             options.path_scope,

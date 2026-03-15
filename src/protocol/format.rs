@@ -3873,7 +3873,14 @@ mod tests {
 
         let result = file_content_from_indexed_file_with_context(
             index.capture_shared_file("src/main.rs").unwrap().as_ref(),
-            search::ContentContext::around_symbol_with_max_lines("connect", None, None, Some(3), false, false),
+            search::ContentContext::around_symbol_with_max_lines(
+                "connect",
+                None,
+                None,
+                Some(3),
+                false,
+                false,
+            ),
         );
 
         let result_lines: Vec<&str> = result.lines().collect();

@@ -180,6 +180,7 @@ impl TokenizorServer {
             } => {
                 self.get_file_content(Parameters(GetFileContentInput {
                     path,
+                    mode: None,
                     start_line,
                     end_line,
                     chunk_index: None,
