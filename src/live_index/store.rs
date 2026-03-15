@@ -747,7 +747,7 @@ impl LiveIndex {
         );
 
         // 4. Parse all admitted files in parallel via Rayon.
-        let parse_results: Vec<(String, IndexedFile)> = to_parse
+        let mut parse_results: Vec<(String, IndexedFile)> = to_parse
             .par_iter()
             .map(|(relative_path, language, classification, bytes)| {
                 let result = parsing::process_file_with_classification(
@@ -761,7 +761,10 @@ impl LiveIndex {
             })
             .collect();
 
-        // 5. Build HashMap sequentially, running circuit breaker checks.
+        // 5. Sort by path for deterministic circuit-breaker evaluation order.
+        parse_results.sort_by(|a, b| a.0.cmp(&b.0));
+
+        // 6. Build HashMap sequentially, running circuit breaker checks.
         let cb_state = CircuitBreakerState::from_env();
         let mut files: HashMap<String, Arc<IndexedFile>> =
             HashMap::with_capacity(parse_results.len());
@@ -2237,6 +2240,79 @@ mod tests {
         assert_eq!(
             incremental, full_rebuild,
             "incremental remove should match full rebuild"
+        );
+    }
+
+    // --- CR2: circuit-breaker determinism test ---
+
+    #[test]
+    fn test_circuit_breaker_deterministic_after_sort() {
+        // Simulate what the store does: collect parse results from par_iter (nondeterministic
+        // order), sort by path, then walk sequentially recording success/failure.
+        // We verify that two different orderings of the same results, after sorting,
+        // produce the same trip point.
+
+        // 10 entries: "a/f00.rs"–"a/f04.rs" succeed, "a/f05.rs"–"a/f09.rs" fail (50% failure).
+        // After sorting alphabetically the failures are always in positions 5-9.
+        // The circuit breaker threshold is 20%, min-file guard is 5.
+        // After processing f05 (6 total, 1 fail so far) rate=16% → no trip.
+        // After processing f06 (7 total, 2 fail) rate=28% → trips.
+
+        let mut results: Vec<(String, bool)> = vec![
+            ("a/f00.rs".to_string(), true),
+            ("a/f01.rs".to_string(), true),
+            ("a/f02.rs".to_string(), true),
+            ("a/f03.rs".to_string(), true),
+            ("a/f04.rs".to_string(), true),
+            ("a/f05.rs".to_string(), false),
+            ("a/f06.rs".to_string(), false),
+            ("a/f07.rs".to_string(), false),
+            ("a/f08.rs".to_string(), false),
+            ("a/f09.rs".to_string(), false),
+        ];
+
+        // Helper: run CB logic over a slice and return the path where it tripped.
+        let run_cb = |items: &[(String, bool)]| -> Option<String> {
+            let cb = CircuitBreakerState::new(0.20);
+            for (path, ok) in items {
+                if *ok {
+                    cb.record_success();
+                } else {
+                    cb.record_failure(path, "parse error");
+                }
+                if cb.should_abort() {
+                    return Some(path.clone());
+                }
+            }
+            None
+        };
+
+        // Sorted order → deterministic trip point.
+        results.sort_by(|a, b| a.0.cmp(&b.0));
+        let trip_sorted = run_cb(&results);
+
+        // Reversed order (simulates a different par_iter ordering).
+        results.reverse();
+        results.sort_by(|a, b| a.0.cmp(&b.0)); // sort again — same as before
+        let trip_sorted2 = run_cb(&results);
+
+        // Both sorted runs must trip at the same file.
+        assert_eq!(
+            trip_sorted, trip_sorted2,
+            "sorted runs must trip at the same path"
+        );
+        assert!(trip_sorted.is_some(), "circuit breaker should have tripped");
+
+        // Without sorting (reverse order): failures come first, CB trips earlier.
+        let mut reversed: Vec<(String, bool)> = results.clone();
+        reversed.reverse(); // failures first
+        let trip_unsorted = run_cb(&reversed);
+
+        // The unsorted trip path differs from the sorted one, proving sort matters.
+        // (Both will trip, but at different paths.)
+        assert_ne!(
+            trip_sorted, trip_unsorted,
+            "unsorted order should trip at a different (earlier) path, proving sort is needed"
         );
     }
 
