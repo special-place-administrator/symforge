@@ -400,6 +400,64 @@ pub fn find_enclosing_symbol(symbols: &[SymbolRecord], ref_line: u32) -> Option<
     best.map(|(_, idx)| idx)
 }
 
+/// Admission tier — whether a file is eligible for indexing/parsing at all.
+/// Separate from NoiseClass (which is about ranking/filtering signal).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AdmissionTier {
+    /// Tier 1: Fully indexed — parsed, symbols extracted, text searchable.
+    Normal,
+    /// Tier 2: Metadata only — path, size, classification stored. No parsing.
+    MetadataOnly,
+    /// Tier 3: Hard-skipped — counted in health, minimal registration.
+    HardSkip,
+}
+
+/// Reason a file was placed in Tier 2 or Tier 3.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkipReason {
+    SizeCeiling,
+    DenylistedExtension,
+    SizeThreshold,
+    BinaryContent,
+}
+
+impl std::fmt::Display for SkipReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SkipReason::SizeCeiling => write!(f, ">100MB"),
+            SkipReason::DenylistedExtension => write!(f, "artifact"),
+            SkipReason::SizeThreshold => write!(f, ">1MB"),
+            SkipReason::BinaryContent => write!(f, "binary"),
+        }
+    }
+}
+
+/// Structured result from the admission gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AdmissionDecision {
+    pub tier: AdmissionTier,
+    pub reason: Option<SkipReason>,
+}
+
+impl AdmissionDecision {
+    pub fn normal() -> Self {
+        Self {
+            tier: AdmissionTier::Normal,
+            reason: None,
+        }
+    }
+    pub fn skip(tier: AdmissionTier, reason: SkipReason) -> Self {
+        Self {
+            tier,
+            reason: Some(reason),
+        }
+    }
+}
+
+pub const HARD_SKIP_BYTES: u64 = 100 * 1024 * 1024;
+pub const METADATA_ONLY_BYTES: u64 = 1 * 1024 * 1024;
+pub const BINARY_SNIFF_BYTES: usize = 8192;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -615,5 +673,15 @@ mod tests {
         // Reference at line 0 is not inside any symbol
         let idx = find_enclosing_symbol(&symbols, 0);
         assert_eq!(idx, None, "should return None when not inside any symbol");
+    }
+
+    #[test]
+    fn test_admission_tier_variants() {
+        let t1 = AdmissionTier::Normal;
+        let t2 = AdmissionTier::MetadataOnly;
+        let t3 = AdmissionTier::HardSkip;
+        assert_ne!(t1, t2);
+        assert_ne!(t2, t3);
+        assert_ne!(t1, t3);
     }
 }
