@@ -49,6 +49,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 globset = "0.4"
 git2 = { version = "0.20", default-features = false, features = ["vendored-libgit2"] }
 tempfile = "3"
+libc = "0.2.183"
 
 [features]
 # v1 feature gate: keeps retrieval_conformance.rs compiling without v1 domain types.

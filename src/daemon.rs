@@ -1087,7 +1087,26 @@ pub async fn spawn_daemon(bind_host: &str) -> anyhow::Result<DaemonHandle> {
 pub async fn run_daemon_until_shutdown(bind_host: &str) -> anyhow::Result<()> {
     let handle = spawn_daemon(bind_host).await?;
     tracing::info!(port = handle.port, "shared daemon started");
-    tokio::signal::ctrl_c().await?;
+    // Wait for either SIGINT (Ctrl+C) or SIGTERM (kill, systemd, containers).
+    // Both trigger the same graceful shutdown path.
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm = signal(SignalKind::terminate())?;
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("received SIGINT, shutting down");
+            },
+            _ = sigterm.recv() => {
+                tracing::info!("received SIGTERM, shutting down");
+            },
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await?;
+        tracing::info!("received Ctrl+C, shutting down");
+    }
     let _ = handle.shutdown_tx.send(());
     Ok(())
 }
@@ -1606,27 +1625,41 @@ fn cleanup_daemon_files() {
 
 fn terminate_process(pid: u32) -> io::Result<()> {
     #[cfg(windows)]
-    let status = std::process::Command::new("taskkill")
-        .args(["/PID", &pid.to_string(), "/T", "/F"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?;
+    {
+        let status = std::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()?;
+        // Treat "process not found" (exit code 128) as success (idempotent)
+        if status.success() || status.code() == Some(128) {
+            Ok(())
+        } else {
+            Err(io::Error::other(format!("taskkill exited with status {status}")))
+        }
+    }
 
     #[cfg(not(windows))]
-    let status = std::process::Command::new("kill")
-        .args(["-TERM", &pid.to_string()])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        Err(io::Error::other(format!(
-            "process termination command exited with status {status}"
-        )))
+    {
+        let result = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+        if result == 0 {
+            // Signal sent — poll briefly for exit
+            for _ in 0..10 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                if unsafe { libc::kill(pid as i32, 0) } != 0 {
+                    return Ok(());
+                }
+            }
+            Ok(()) // Sent signal, process may still be shutting down
+        } else {
+            let errno = std::io::Error::last_os_error();
+            if errno.raw_os_error() == Some(libc::ESRCH) {
+                Ok(()) // Already dead — idempotent success
+            } else {
+                Err(errno)
+            }
+        }
     }
 }
 
