@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.31.0](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.30.8...v0.31.0) (2026-03-15)
+
+
+### Features
+
+* add LineEnding detection and normalization helpers (C1 prep) ([a82a727](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/a82a72763a9060650553c68da33a0e2d5bd8dc95))
+
+
+### Bug Fixes
+
+* add exe/dll/so/dylib/class to denylist (C2-lite) ([14d0459](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/14d04593df00b7cbc92643aeb5c7109026a045cb))
+* handle SIGTERM for daemon graceful shutdown (C5) ([3faef1f](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/3faef1f772ef679f137229cc7fc9d47891c132f6))
+* non-ASCII panic in doc scanning and deterministic circuit-breaker (CR1, CR2) ([1e52aaf](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/1e52aaf7468d425fac21371398a631a93d6c5bfe))
+* rewrite open_project_session with double-checked locking (C6) ([b04b0d0](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/b04b0d099fb035ca1bac9c76c49d542cae1d8102))
+* thread LineEnding through all edit helpers for CRLF preservation (C1) ([dda40b4](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/dda40b4c0c8a99259a93af4c9ff65bb696e9e337))
+* use unique temp files in atomic_write_file (C3) ([dddcb16](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/dddcb16eb85dc294354691e9fc470adbca5ce9bd))
+* validate splice overlap in batch_rename (C4) ([0c80b74](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/0c80b74903261a09837a7038998bf3d61898d274))
+
 ## [0.30.8](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.30.7...v0.30.8) (2026-03-15)
 
 
