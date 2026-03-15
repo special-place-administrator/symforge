@@ -1084,9 +1084,24 @@ async fn call_tool_handler(
         )
     })?;
 
+    // Tool handlers acquire std::sync::RwLock on the shared index, which
+    // blocks the OS thread. Running them directly on the async runtime starves
+    // tokio worker threads under concurrent load (10+ subagents).
+    //
+    // spawn_blocking moves execution to tokio's blocking thread pool (default
+    // 512 threads), keeping async worker threads free for I/O, MCP transport,
+    // and new request acceptance.
+    let tool_name_owned = tool_name.clone();
     state
         .governor
-        .execute(&tool_name, execute_tool_call(runtime, &tool_name, params))
+        .execute(&tool_name, async move {
+            let handle = tokio::runtime::Handle::current();
+            tokio::task::spawn_blocking(move || {
+                handle.block_on(execute_tool_call(runtime, &tool_name_owned, params))
+            })
+            .await
+            .map_err(|join_err| anyhow::anyhow!("tool task panicked: {join_err}"))?
+        })
         .await
         .map_err(|gov_err| bad_request(gov_err.into()))?
         .map_err(bad_request)

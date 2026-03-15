@@ -57,6 +57,11 @@ fn main() -> anyhow::Result<()> {
 fn run_daemon() -> anyhow::Result<()> {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
+        // Tool handlers acquire std::sync::RwLock on the index, which blocks
+        // the OS thread. With the default worker_threads (= num_cpus), 10+
+        // concurrent subagent calls can starve the runtime. Scale to 4x CPU
+        // cores (min 16, max 64) so blocked threads don't exhaust the pool.
+        .worker_threads(std::thread::available_parallelism().map_or(16, |n| (n.get() * 4).clamp(16, 64)))
         .build()?
         .block_on(async {
             observability::init_tracing()?;
