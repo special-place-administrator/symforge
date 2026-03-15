@@ -66,6 +66,19 @@ pub struct DaemonState {
     governor: crate::sidecar::governor::RequestGovernor,
 }
 
+/// Tracks whether a ProjectInstance has been fully activated (watcher + git temporal started).
+/// Prevents two racing opens from both activating the same project.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActivationState {
+    /// Freshly constructed, no background tasks started. Safe to discard.
+    Inactive,
+    /// Activation in progress (watcher + git temporal being started).
+    Activating,
+    /// Fully active with watcher and git temporal running.
+    Active,
+}
+
+
 struct ProjectInstance {
     project_id: String,
     canonical_root: PathBuf,
@@ -77,6 +90,7 @@ struct ProjectInstance {
     symbol_cache: Arc<RwLock<HashMap<String, Vec<SymbolSnapshot>>>>,
     session_ids: HashSet<String>,
     opened_at: SystemTime,
+    activation_state: ActivationState,
 }
 
 #[derive(Clone)]
@@ -195,11 +209,11 @@ impl DaemonState {
         {
             // Hold the write lock for the entire check-and-insert to prevent
             // TOCTOU: two concurrent callers for the same project_id must not
-            // both call ProjectInstance::load (which spawns watcher tasks and
-            // starts git-temporal analysis), leaving an orphaned task behind.
+            // both load and activate the same project, leaving orphaned tasks.
             let mut projects = self.projects.write().expect("lock poisoned");
             if !projects.contains_key(&project_id) {
-                let project = ProjectInstance::load(&canonical_root)?;
+                let mut project = ProjectInstance::load(&canonical_root)?;
+                project.activate();
                 projects.insert(project_id.clone(), project);
             }
         }
@@ -390,7 +404,8 @@ impl DaemonState {
 
             if needs_reassign {
                 if !projects.contains_key(&target_project_id) {
-                    let project = ProjectInstance::load(&target_root)?;
+                    let mut project = ProjectInstance::load(&target_root)?;
+                    project.activate();
                     projects.insert(target_project_id.clone(), project);
                 }
 
@@ -840,44 +855,61 @@ fn stable_path_identity(path: &str) -> String {
 
 impl ProjectInstance {
     fn load(canonical_root: &Path) -> anyhow::Result<Self> {
-        let project_name = canonical_root
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("project")
-            .to_string();
+            let project_name = canonical_root
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("project")
+                .to_string();
 
-        let index = live_index::LiveIndex::load(canonical_root).with_context(|| {
-            format!(
-                "failed to load project index for {}",
-                canonical_root.display()
-            )
-        })?;
-        let watcher_info = Arc::new(Mutex::new(WatcherInfo::default()));
-        let watcher_task = start_project_watcher(
-            canonical_root.to_path_buf(),
-            Arc::clone(&index),
-            Arc::clone(&watcher_info),
+            let index = live_index::LiveIndex::load(canonical_root).with_context(|| {
+                format!(
+                    "failed to load project index for {}",
+                    canonical_root.display()
+                )
+            })?;
+            let watcher_info = Arc::new(Mutex::new(WatcherInfo::default()));
+
+            Ok(Self {
+                project_id: project_key(canonical_root),
+                canonical_root: canonical_root.to_path_buf(),
+                project_name,
+                index,
+                watcher_info,
+                watcher_task: None,
+                token_stats: TokenStats::new(),
+                symbol_cache: Arc::new(RwLock::new(HashMap::new())),
+                session_ids: HashSet::new(),
+                opened_at: SystemTime::now(),
+                activation_state: ActivationState::Inactive,
+            })
+        }
+
+    /// Activate background tasks (watcher + git temporal) for this project.
+    /// Must only be called once, on an `Inactive` instance, after the caller
+    /// has committed the instance into the project map under write-lock.
+    fn activate(&mut self) {
+        assert_eq!(
+            self.activation_state,
+            ActivationState::Inactive,
+            "activate() called on a project that is not Inactive"
+        );
+        self.activation_state = ActivationState::Activating;
+
+        self.watcher_task = start_project_watcher(
+            self.canonical_root.clone(),
+            Arc::clone(&self.index),
+            Arc::clone(&self.watcher_info),
         );
 
         // Kick off background git temporal analysis (non-blocking).
         live_index::git_temporal::spawn_git_temporal_computation(
-            Arc::clone(&index),
-            canonical_root.to_path_buf(),
+            Arc::clone(&self.index),
+            self.canonical_root.clone(),
         );
 
-        Ok(Self {
-            project_id: project_key(canonical_root),
-            canonical_root: canonical_root.to_path_buf(),
-            project_name,
-            index,
-            watcher_info,
-            watcher_task,
-            token_stats: TokenStats::new(),
-            symbol_cache: Arc::new(RwLock::new(HashMap::new())),
-            session_ids: HashSet::new(),
-            opened_at: SystemTime::now(),
-        })
+        self.activation_state = ActivationState::Active;
     }
+
 
     fn reload(&mut self, canonical_root: &Path) -> anyhow::Result<(usize, usize)> {
         self.index.reload(canonical_root)?;
