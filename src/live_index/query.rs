@@ -609,6 +609,8 @@ pub struct HealthStats {
     pub last_event_at: Option<SystemTime>,
     /// Effective debounce window in milliseconds.
     pub debounce_window_ms: u64,
+    /// Sorted, deduplicated list of files with partial-parse status.
+    pub partial_parse_files: Vec<String>,
 }
 
 /// Owned entry used to render the repo outline after releasing the index lock.
@@ -617,6 +619,8 @@ pub struct RepoOutlineFileView {
     pub relative_path: String,
     pub language: LanguageId,
     pub symbol_count: usize,
+    /// Noise classification for suppressive filtering in explore/repo_map views.
+    pub noise_class: crate::live_index::search::NoiseClass,
 }
 
 /// Owned compatibility/test view for file outline rendering.
@@ -908,6 +912,8 @@ pub struct InspectMatchFoundView {
     pub excerpt: String,
     pub enclosing: Option<EnclosingSymbolView>,
     pub siblings: Vec<SiblingSymbolView>,
+    /// Number of siblings omitted due to the sibling_limit cap.
+    pub siblings_overflow: usize,
 }
 
 /// Owned result view for `inspect_match`.
@@ -1825,6 +1831,7 @@ impl LiveIndex {
         path: &str,
         line: u32,
         context_lines: Option<u32>,
+        sibling_limit: Option<u32>,
     ) -> InspectMatchView {
         let Some(file) = self.get_file(path) else {
             return InspectMatchView::FileNotFound {
@@ -1875,7 +1882,8 @@ impl LiveIndex {
 
         // 3. Find siblings (same depth as enclosing, or depth 0).
         let target_depth = enclosing_symbol.map(|s| s.depth).unwrap_or(0);
-        let siblings = file
+        let limit = sibling_limit.unwrap_or(10) as usize;
+        let mut siblings: Vec<SiblingSymbolView> = file
             .symbols
             .iter()
             .filter(|s| s.depth == target_depth)
@@ -1885,6 +1893,17 @@ impl LiveIndex {
                 line_range: (s.line_range.0 + 1, s.line_range.1 + 1),
             })
             .collect();
+        let siblings_overflow = if limit == 0 {
+            // sibling_limit=0 means suppress siblings entirely — no overflow hint either.
+            siblings.clear();
+            0
+        } else if siblings.len() > limit {
+            let overflow = siblings.len() - limit;
+            siblings.truncate(limit);
+            overflow
+        } else {
+            0
+        };
 
         InspectMatchView::Found(InspectMatchFoundView {
             path: file.relative_path.clone(),
@@ -1892,14 +1911,18 @@ impl LiveIndex {
             excerpt,
             enclosing,
             siblings,
+            siblings_overflow,
         })
     }
 
     /// Capture the data needed to render `repo_outline` without holding the read lock.
     pub fn capture_repo_outline_view(&self) -> RepoOutlineView {
+        use crate::live_index::search::NoisePolicy;
+        let gi_ref = self.gitignore.as_ref();
         let mut files: Vec<RepoOutlineFileView> = self
             .all_files()
             .map(|(relative_path, file)| RepoOutlineFileView {
+                noise_class: NoisePolicy::classify_path(relative_path, gi_ref),
                 relative_path: relative_path.clone(),
                 language: file.language.clone(),
                 symbol_count: file.symbols.len(),
@@ -1988,6 +2011,15 @@ impl LiveIndex {
             }
         }
 
+        let mut partial_parse_files: Vec<String> = self
+            .files
+            .iter()
+            .filter(|(_, f)| matches!(f.parse_status, ParseStatus::PartialParse { .. }))
+            .map(|(path, _)| path.clone())
+            .collect();
+        partial_parse_files.sort();
+        partial_parse_files.dedup();
+
         HealthStats {
             file_count: self.files.len(),
             symbol_count,
@@ -1999,6 +2031,7 @@ impl LiveIndex {
             events_processed: 0,
             last_event_at: None,
             debounce_window_ms: 200,
+            partial_parse_files,
         }
     }
 
@@ -2558,6 +2591,7 @@ mod tests {
             files_by_basename: std::collections::HashMap::new(),
             files_by_dir_component: std::collections::HashMap::new(),
             trigram_index,
+            gitignore: None,
         };
         // Rebuild the reverse index so xref query tests work.
         index.rebuild_reverse_index();
@@ -3576,6 +3610,7 @@ mod tests {
         assert_eq!(stats.parsed_count, 1);
         assert_eq!(stats.partial_parse_count, 1);
         assert_eq!(stats.failed_count, 1);
+        assert_eq!(stats.partial_parse_files, vec!["b.rs".to_string()]);
     }
 
     #[test]
@@ -3609,6 +3644,7 @@ mod tests {
             files_by_basename: std::collections::HashMap::new(),
             files_by_dir_component: std::collections::HashMap::new(),
             trigram_index: crate::live_index::trigram::TrigramIndex::new(),
+            gitignore: None,
         };
         assert!(!index.is_ready());
     }
@@ -3643,6 +3679,7 @@ mod tests {
             files_by_basename: std::collections::HashMap::new(),
             files_by_dir_component: std::collections::HashMap::new(),
             trigram_index: crate::live_index::trigram::TrigramIndex::new(),
+            gitignore: None,
         };
 
         match index.index_state() {

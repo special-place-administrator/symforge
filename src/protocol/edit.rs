@@ -126,8 +126,9 @@ pub(crate) fn apply_indentation(text: &str, indent: &[u8]) -> Vec<u8> {
 
 /// Build the bytes to insert before a symbol: indented content + separator + existing content.
 /// Splices at the start of the line (before existing indentation) so indentation isn't doubled.
-/// Uses `\n\n` when the target symbol has no doc comments (visual separation between definitions),
-/// and `\n` when doc comments are present (keeps doc comment tight against its symbol).
+/// Uses `\n\n` when the target symbol has no doc comments and no blank line already precedes
+/// the splice point (visual separation between definitions), and `\n` otherwise (avoids triple
+/// newlines when a blank line already exists, and keeps doc comments tight against their symbol).
 pub(crate) fn build_insert_before(
     file_content: &[u8],
     sym: &SymbolRecord,
@@ -142,10 +143,17 @@ pub(crate) fn build_insert_before(
     let indent = detect_indentation(file_content, sym.byte_range.0);
     let indented = apply_indentation(new_code, &indent);
     let mut insertion = indented;
-    let separator = if sym.doc_byte_range.is_some() {
-        b"\n" as &[u8]
+    let separator: &[u8] = if sym.doc_byte_range.is_some() {
+        b"\n"
     } else {
-        b"\n\n"
+        // Use single newline only when a blank line already precedes the symbol
+        // (avoids creating triple-newline sequences). At start-of-file (empty prefix),
+        // there's no existing blank line, so use double newline for visual separation.
+        let prefix = &file_content[..line_start as usize];
+        let already_has_blank = prefix.len() >= 2
+            && prefix[prefix.len() - 1] == b'\n'
+            && prefix[prefix.len() - 2] == b'\n';
+        if already_has_blank { b"\n" } else { b"\n\n" }
     };
     insertion.extend_from_slice(separator);
     apply_splice(file_content, (line_start, line_start), &insertion)
@@ -390,6 +398,10 @@ pub struct EditWithinSymbolInput {
 pub struct BatchEditInput {
     /// List of individual edits to apply atomically.
     pub edits: Vec<SingleEdit>,
+    /// When true, validate and plan all edits but skip disk writes and index mutation.
+    /// Returns per-edit preview lines prefixed with `[DRY RUN]`.
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -429,10 +441,12 @@ pub enum EditOperation {
 
 /// Apply multiple symbol-addressed edits atomically.
 /// Validates all symbols first, rejects overlapping ranges, then applies in reverse-offset order.
+/// When `dry_run` is true, all validation runs identically but disk writes and index mutation are skipped.
 pub(crate) fn execute_batch_edit(
     index: &SharedIndex,
     repo_root: &Path,
     edits: &[SingleEdit],
+    dry_run: bool,
 ) -> Result<Vec<String>, String> {
     struct ResolvedEdit {
         path: String,
@@ -442,16 +456,33 @@ pub(crate) fn execute_batch_edit(
     }
 
     // Phase 1: Resolve all symbols.
-    let mut resolved = Vec::with_capacity(edits.len());
+    let n = edits.len();
+    let targeted_paths: Vec<&str> = edits.iter().map(|e| e.path.as_str()).collect();
+    let rollback_footer = |paths: &[&str]| -> String {
+        let path_list = paths
+            .iter()
+            .map(|p| format!("  - {p}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!("\n\nROLLED BACK — {n} edit(s) attempted on:\n{path_list}\nNo files were modified.")
+    };
+
+    let mut resolved = Vec::with_capacity(n);
     {
         let guard = index.read().expect("lock poisoned");
         for (i, edit) in edits.iter().enumerate() {
-            let file = guard
-                .get_file(&edit.path)
-                .ok_or_else(|| format!("File not indexed: {}", edit.path))?;
+            let file = guard.get_file(&edit.path).ok_or_else(|| {
+                format!(
+                    "File not indexed: {}{}",
+                    edit.path,
+                    rollback_footer(&targeted_paths)
+                )
+            })?;
             let (_, sym) =
                 resolve_or_error(file, &edit.name, edit.kind.as_deref(), edit.symbol_line)
-                    .map_err(|e| format!("Edit {}: {e}", i + 1))?;
+                    .map_err(|e| {
+                        format!("Edit {}: {e}{}", i + 1, rollback_footer(&targeted_paths))
+                    })?;
             resolved.push(ResolvedEdit {
                 path: edit.path.clone(),
                 sym,
@@ -481,13 +512,14 @@ pub(crate) fn execute_batch_edit(
                 if a.0 < b.1 && b.0 < a.1 {
                     return Err(format!(
                         "Overlapping edits in {path}: `{}` ({}-{}) and `{}` ({}-{}). \
-                         Split into separate calls.",
+                         Split into separate calls.{}",
                         resolved[indices[i]].sym.name,
                         a.0,
                         a.1,
                         resolved[indices[j]].sym.name,
                         b.0,
                         b.1,
+                        rollback_footer(&targeted_paths),
                     ));
                 }
             }
@@ -586,10 +618,29 @@ pub(crate) fn execute_batch_edit(
             }
         }
 
-        let abs_path = repo_root.join(path);
-        atomic_write_file(&abs_path, &content)
-            .map_err(|e| format!("Write failed for {path}: {e}"))?;
-        reindex_after_write(index, path, content, language);
+        if dry_run {
+            // Prefix summaries for this file's edits with [DRY RUN] and skip all writes.
+            let file_edit_count = indices.len();
+            let start = summaries.len() - file_edit_count;
+            for s in &mut summaries[start..] {
+                *s = format!("[DRY RUN] Would {s}");
+            }
+        } else {
+            let abs_path = repo_root.join(path);
+            atomic_write_file(&abs_path, &content).map_err(|e| {
+                let written_note = if summaries.is_empty() {
+                    "No files were written before this failure.".to_string()
+                } else {
+                    format!(
+                        "WARNING: {} file(s) were already written before this failure:\n{}",
+                        summaries.len(),
+                        summaries.join("\n")
+                    )
+                };
+                format!("Write failed for {path}: {e}\n\n{written_note}")
+            })?;
+            reindex_after_write(index, path, content, language);
+        }
     }
 
     Ok(summaries)
@@ -1376,7 +1427,7 @@ mod tests {
             },
         ];
 
-        let summaries = execute_batch_edit(&handle, dir.path(), &edits).unwrap();
+        let summaries = execute_batch_edit(&handle, dir.path(), &edits, false).unwrap();
         assert_eq!(summaries.len(), 2);
 
         let a_content = std::fs::read_to_string(src.join("a.rs")).unwrap();
@@ -1418,9 +1469,136 @@ mod tests {
             },
         ];
 
-        let result = execute_batch_edit(&handle, dir.path(), &edits);
+        let result = execute_batch_edit(&handle, dir.path(), &edits, false);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Overlapping"));
+    }
+
+    #[test]
+    fn test_execute_batch_edit_rollback_message_on_nonexistent_symbol() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("a.rs"), b"fn foo() {}\n").unwrap();
+
+        let handle = crate::live_index::LiveIndex::empty();
+        let content = b"fn foo() {}\n" as &[u8];
+        let result = crate::parsing::process_file("src/a.rs", content, LanguageId::Rust);
+        let indexed = IndexedFile::from_parse_result(result, content.to_vec());
+        handle.update_file("src/a.rs".to_string(), indexed);
+
+        // First edit targets a real symbol; second targets a nonexistent one.
+        let edits = vec![
+            SingleEdit {
+                path: "src/a.rs".to_string(),
+                name: "foo".to_string(),
+                kind: None,
+                symbol_line: None,
+                operation: EditOperation::Replace {
+                    new_body: "fn foo() { modified }".to_string(),
+                },
+            },
+            SingleEdit {
+                path: "src/a.rs".to_string(),
+                name: "nonexistent_symbol".to_string(),
+                kind: None,
+                symbol_line: None,
+                operation: EditOperation::Delete,
+            },
+        ];
+
+        let result = execute_batch_edit(&handle, dir.path(), &edits, false);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("ROLLED BACK"),
+            "expected ROLLED BACK in: {err}"
+        );
+        assert!(
+            err.contains("No files were modified"),
+            "expected 'No files were modified' in: {err}"
+        );
+        assert!(err.contains("2"), "expected edit count (2) in: {err}");
+
+        // Confirm the file was NOT modified.
+        let file_content = std::fs::read_to_string(src.join("a.rs")).unwrap();
+        assert!(
+            file_content.contains("fn foo() {}"),
+            "file should be unmodified: {file_content}"
+        );
+    }
+
+    #[test]
+    fn test_execute_batch_edit_dry_run_previews_without_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("a.rs"), b"fn alpha() { old }\n").unwrap();
+
+        let handle = crate::live_index::LiveIndex::empty();
+        let content = b"fn alpha() { old }\n" as &[u8];
+        let result = crate::parsing::process_file("src/a.rs", content, LanguageId::Rust);
+        let indexed = IndexedFile::from_parse_result(result, content.to_vec());
+        handle.update_file("src/a.rs".to_string(), indexed);
+
+        let edits = vec![SingleEdit {
+            path: "src/a.rs".to_string(),
+            name: "alpha".to_string(),
+            kind: None,
+            symbol_line: None,
+            operation: EditOperation::Replace {
+                new_body: "fn alpha() { new }".to_string(),
+            },
+        }];
+
+        let summaries = execute_batch_edit(&handle, dir.path(), &edits, true).unwrap();
+        assert_eq!(summaries.len(), 1, "expected one preview line");
+        assert!(
+            summaries[0].contains("[DRY RUN]"),
+            "expected [DRY RUN] prefix in: {}",
+            summaries[0]
+        );
+
+        // File must be unchanged.
+        let file_content = std::fs::read_to_string(src.join("a.rs")).unwrap();
+        assert!(
+            file_content.contains("old"),
+            "dry_run must not write to disk: {file_content}"
+        );
+        assert!(
+            !file_content.contains("new"),
+            "dry_run must not write to disk: {file_content}"
+        );
+    }
+
+    #[test]
+    fn test_execute_batch_edit_dry_run_same_error_as_real() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("a.rs"), b"fn foo() {}\n").unwrap();
+
+        let handle = crate::live_index::LiveIndex::empty();
+        let content = b"fn foo() {}\n" as &[u8];
+        let result = crate::parsing::process_file("src/a.rs", content, LanguageId::Rust);
+        let indexed = IndexedFile::from_parse_result(result, content.to_vec());
+        handle.update_file("src/a.rs".to_string(), indexed);
+
+        let edits = vec![SingleEdit {
+            path: "src/a.rs".to_string(),
+            name: "nonexistent_symbol".to_string(),
+            kind: None,
+            symbol_line: None,
+            operation: EditOperation::Delete,
+        }];
+
+        let real_err = execute_batch_edit(&handle, dir.path(), &edits, false).unwrap_err();
+        let dry_err = execute_batch_edit(&handle, dir.path(), &edits, true).unwrap_err();
+
+        assert_eq!(
+            real_err, dry_err,
+            "dry_run must produce identical error to real run"
+        );
     }
 
     // -- execute_batch_insert --
@@ -1796,6 +1974,100 @@ mod tests {
         assert!(
             result_str.contains("Point3D { x: f64 }\n\nstruct Point"),
             "should have \\n\\n separator when no doc comment: {result_str}"
+        );
+    }
+
+    #[test]
+    fn test_build_insert_before_no_double_blank_line() {
+        // File already has a blank line before the symbol: inserting should NOT create \n\n\n.
+        // "\n"            =  1 byte (0..1)   — blank line preceding the symbol
+        // "fn existing() {}\n" = 18 bytes (1..19)
+        let content = b"\nfn existing() {}\n";
+        let sym = SymbolRecord {
+            name: "existing".to_string(),
+            kind: SymbolKind::Function,
+            depth: 0,
+            sort_order: 0,
+            byte_range: (1, 18),
+            line_range: (1, 1),
+            doc_byte_range: None,
+        };
+        let result = build_insert_before(content, &sym, "fn new_fn() {}");
+        let result_str = String::from_utf8(result).unwrap();
+        assert!(
+            !result_str.contains("\n\n\n"),
+            "should not produce triple newline when blank line already precedes symbol: {result_str:?}"
+        );
+        assert!(
+            result_str.contains("fn new_fn() {}"),
+            "inserted content missing: {result_str:?}"
+        );
+        assert!(
+            result_str.contains("fn existing() {}"),
+            "existing content missing: {result_str:?}"
+        );
+    }
+
+    #[test]
+    fn test_build_insert_before_first_symbol_in_file() {
+        // Symbol starts at byte 0 (prefix is empty) — no double blank line should be produced.
+        let content = b"fn first() {}\n";
+        let sym = SymbolRecord {
+            name: "first".to_string(),
+            kind: SymbolKind::Function,
+            depth: 0,
+            sort_order: 0,
+            byte_range: (0, 13),
+            line_range: (0, 0),
+            doc_byte_range: None,
+        };
+        let result = build_insert_before(content, &sym, "fn before() {}");
+        let result_str = String::from_utf8(result).unwrap();
+        assert!(
+            !result_str.contains("\n\n\n"),
+            "should not produce triple newline when symbol is first in file: {result_str:?}"
+        );
+        assert!(
+            result_str.contains("fn before() {}"),
+            "inserted content missing: {result_str:?}"
+        );
+        assert!(
+            result_str.contains("fn first() {}"),
+            "original content missing: {result_str:?}"
+        );
+    }
+
+    #[test]
+    fn test_build_insert_before_with_doc_byte_range() {
+        // Symbol has doc_byte_range — separator is always \n (tight against doc comment).
+        // "/// Doc\n"       =  8 bytes (0..8)
+        // "fn target() {}\n" = 15 bytes (8..23)
+        // "\n"               =  1 byte  (23..24)
+        // "fn other() {}\n"  = 14 bytes (24..38)
+        let content = b"/// Doc\nfn target() {}\n\nfn other() {}\n";
+        let sym = SymbolRecord {
+            name: "target".to_string(),
+            kind: SymbolKind::Function,
+            depth: 0,
+            sort_order: 0,
+            byte_range: (8, 23),
+            line_range: (1, 1),
+            doc_byte_range: Some((0, 8)),
+        };
+        let result = build_insert_before(content, &sym, "fn inserted() {}");
+        let result_str = String::from_utf8(result).unwrap();
+        // insertion goes above the doc comment, with \n separator (not \n\n)
+        assert!(
+            !result_str.contains("\n\n\n"),
+            "should not produce triple newline with doc_byte_range: {result_str:?}"
+        );
+        let ins_pos = result_str
+            .find("fn inserted()")
+            .expect("inserted content missing");
+        let doc_pos = result_str.find("/// Doc").expect("doc comment missing");
+        assert!(
+            ins_pos < doc_pos,
+            "insertion should appear before doc comment: ins={ins_pos} doc={doc_pos}"
         );
     }
 

@@ -158,7 +158,12 @@ impl ContentContext {
         }
     }
 
-    pub const fn around_line(around_line: u32, context_lines: Option<u32>) -> Self {
+    pub fn around_line(
+        around_line: u32,
+        context_lines: Option<u32>,
+        show_line_numbers: bool,
+        header: bool,
+    ) -> Self {
         Self {
             start_line: None,
             end_line: None,
@@ -169,12 +174,17 @@ impl ContentContext {
             context_lines,
             chunk_index: None,
             max_lines: None,
-            show_line_numbers: false,
-            header: false,
+            show_line_numbers,
+            header,
         }
     }
 
-    pub fn around_match(around_match: impl Into<String>, context_lines: Option<u32>) -> Self {
+    pub fn around_match(
+        around_match: impl Into<String>,
+        context_lines: Option<u32>,
+        show_line_numbers: bool,
+        header: bool,
+    ) -> Self {
         Self {
             start_line: None,
             end_line: None,
@@ -185,8 +195,8 @@ impl ContentContext {
             context_lines,
             chunk_index: None,
             max_lines: None,
-            show_line_numbers: false,
-            header: false,
+            show_line_numbers,
+            header,
         }
     }
 
@@ -194,6 +204,24 @@ impl ContentContext {
         around_symbol: impl Into<String>,
         symbol_line: Option<u32>,
         context_lines: Option<u32>,
+    ) -> Self {
+        Self::around_symbol_with_max_lines(
+            around_symbol,
+            symbol_line,
+            context_lines,
+            None,
+            false,
+            false,
+        )
+    }
+
+    pub fn around_symbol_with_max_lines(
+        around_symbol: impl Into<String>,
+        symbol_line: Option<u32>,
+        context_lines: Option<u32>,
+        max_lines: Option<u32>,
+        show_line_numbers: bool,
+        header: bool,
     ) -> Self {
         Self {
             start_line: None,
@@ -204,9 +232,9 @@ impl ContentContext {
             symbol_line,
             context_lines,
             chunk_index: None,
-            max_lines: None,
-            show_line_numbers: false,
-            header: false,
+            max_lines,
+            show_line_numbers,
+            header,
         }
     }
 
@@ -223,6 +251,35 @@ impl ContentContext {
             max_lines: Some(max_lines),
             show_line_numbers: false,
             header: false,
+        }
+    }
+}
+
+/// Semantic noise classification for files matched by gitignore or path heuristics.
+///
+/// This is **suppressive** — files are down-ranked/tagged in explore and repo_map,
+/// but remain visible to search_text, search_symbols, and get_file_context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NoiseClass {
+    /// Not noise — normal project source.
+    #[default]
+    None,
+    /// Third-party / vendored dependency (vendor/, node_modules/, etc.).
+    Vendor,
+    /// Machine-generated output (.lock, .min.js, /dist/, etc.).
+    Generated,
+    /// Matched by .gitignore but not classified as vendor or generated.
+    Ignored,
+}
+
+impl NoiseClass {
+    /// Human-readable tag for file tree rendering (empty string for None).
+    pub fn tag(self) -> &'static str {
+        match self {
+            NoiseClass::None => "",
+            NoiseClass::Vendor => "[vendor]",
+            NoiseClass::Generated => "[generated]",
+            NoiseClass::Ignored => "[ignored]",
         }
     }
 }
@@ -255,6 +312,80 @@ impl NoisePolicy {
         (self.include_generated || !classification.is_generated)
             && (self.include_tests || !classification.is_test)
             && (self.include_vendor || !classification.is_vendor)
+    }
+
+    /// Classify a file path into a `NoiseClass` using heuristic rules first,
+    /// then falling back to gitignore patterns.
+    ///
+    /// Heuristic priority:
+    /// 1. Vendor directories: `vendor/`, `node_modules/`, `third_party/`, etc.
+    /// 2. Generated artifacts: `.lock`, `.min.js`, `.min.css`, `/dist/`, `/generated/`, etc.
+    /// 3. Gitignore catch-all: matched by .gitignore but not heuristic → `Ignored`
+    pub fn classify_path(
+        path: &str,
+        gitignore: Option<&ignore::gitignore::Gitignore>,
+    ) -> NoiseClass {
+        let lower = path.replace('\\', "/").to_ascii_lowercase();
+        let segments: Vec<&str> = lower.split('/').filter(|s| !s.is_empty()).collect();
+        let basename = segments.last().copied().unwrap_or("");
+
+        // 1. Vendor heuristic
+        let is_vendor = segments.iter().any(|s| {
+            matches!(
+                *s,
+                "vendor"
+                    | "node_modules"
+                    | "third_party"
+                    | "third-party"
+                    | ".venv"
+                    | "venv"
+                    | "site-packages"
+                    | "pods"
+                    | "bower_components"
+            )
+        });
+        if is_vendor {
+            return NoiseClass::Vendor;
+        }
+
+        // 2. Generated heuristic
+        let is_generated = segments.iter().any(|s| {
+            matches!(
+                *s,
+                "dist" | "generated" | "__generated__" | "generated-sources"
+            )
+        }) || basename.ends_with(".lock")
+            || basename.contains("-lock.")
+            || basename.ends_with(".min.js")
+            || basename.ends_with(".min.css")
+            || basename.contains(".generated.")
+            || basename.contains(".gen.")
+            || basename.ends_with(".g.dart")
+            || basename.ends_with(".pb.go")
+            || basename.ends_with(".designer.cs");
+        if is_generated {
+            return NoiseClass::Generated;
+        }
+
+        // 3. Gitignore catch-all
+        if let Some(gi) = gitignore {
+            let matched = gi.matched_path_or_any_parents(path, false);
+            if matched.is_ignore() {
+                return NoiseClass::Ignored;
+            }
+        }
+
+        NoiseClass::None
+    }
+
+    /// Whether a file with the given noise class should be hidden in suppressive views.
+    pub fn should_hide(self, class: NoiseClass) -> bool {
+        match class {
+            NoiseClass::None => false,
+            NoiseClass::Vendor => !self.include_vendor,
+            NoiseClass::Generated => !self.include_generated,
+            NoiseClass::Ignored => !self.include_vendor,
+        }
     }
 }
 
@@ -393,10 +524,17 @@ impl FileContentOptions {
         path: impl Into<String>,
         around_line: u32,
         context_lines: Option<u32>,
+        show_line_numbers: bool,
+        header: bool,
     ) -> Self {
         Self {
             path_scope: PathScope::exact(path),
-            content_context: ContentContext::around_line(around_line, context_lines),
+            content_context: ContentContext::around_line(
+                around_line,
+                context_lines,
+                show_line_numbers,
+                header,
+            ),
         }
     }
 
@@ -404,10 +542,17 @@ impl FileContentOptions {
         path: impl Into<String>,
         around_match: impl Into<String>,
         context_lines: Option<u32>,
+        show_line_numbers: bool,
+        header: bool,
     ) -> Self {
         Self {
             path_scope: PathScope::exact(path),
-            content_context: ContentContext::around_match(around_match, context_lines),
+            content_context: ContentContext::around_match(
+                around_match,
+                context_lines,
+                show_line_numbers,
+                header,
+            ),
         }
     }
 
@@ -427,13 +572,19 @@ impl FileContentOptions {
         around_symbol: impl Into<String>,
         symbol_line: Option<u32>,
         context_lines: Option<u32>,
+        max_lines: Option<u32>,
+        show_line_numbers: bool,
+        header: bool,
     ) -> Self {
         Self {
             path_scope: PathScope::exact(path),
-            content_context: ContentContext::around_symbol(
+            content_context: ContentContext::around_symbol_with_max_lines(
                 around_symbol,
                 symbol_line,
                 context_lines,
+                max_lines,
+                show_line_numbers,
+                header,
             ),
         }
     }
@@ -1132,6 +1283,7 @@ mod tests {
             files_by_basename: HashMap::new(),
             files_by_dir_component: HashMap::new(),
             trigram_index,
+            gitignore: None,
         };
         index.rebuild_path_indices();
         index
@@ -1703,8 +1855,13 @@ mod tests {
 
     #[test]
     fn test_explicit_path_read_around_line_options_are_exact() {
-        let options =
-            FileContentOptions::for_explicit_path_read_around_line("src/lib.rs", 3, Some(1));
+        let options = FileContentOptions::for_explicit_path_read_around_line(
+            "src/lib.rs",
+            3,
+            Some(1),
+            false,
+            false,
+        );
 
         assert_eq!(
             options.path_scope,
@@ -1712,7 +1869,7 @@ mod tests {
         );
         assert_eq!(
             options.content_context,
-            ContentContext::around_line(3, Some(1))
+            ContentContext::around_line(3, Some(1), false, false)
         );
     }
 
@@ -1722,6 +1879,8 @@ mod tests {
             "src/lib.rs",
             "needle",
             Some(1),
+            false,
+            false,
         );
 
         assert_eq!(
@@ -1730,7 +1889,7 @@ mod tests {
         );
         assert_eq!(
             options.content_context,
-            ContentContext::around_match("needle", Some(1))
+            ContentContext::around_match("needle", Some(1), false, false)
         );
     }
 
@@ -1752,6 +1911,9 @@ mod tests {
             "connect",
             Some(3),
             Some(1),
+            None,
+            false,
+            false,
         );
 
         assert_eq!(
@@ -1761,6 +1923,172 @@ mod tests {
         assert_eq!(
             options.content_context,
             ContentContext::around_symbol("connect", Some(3), Some(1))
+        );
+    }
+
+    // ── NoiseClass + NoisePolicy tests ──────────────────────────────────
+
+    #[test]
+    fn test_noise_policy_classifies_vendor_paths() {
+        assert_eq!(
+            NoisePolicy::classify_path("vendor/github.com/pkg/errors/errors.go", None),
+            NoiseClass::Vendor
+        );
+        assert_eq!(
+            NoisePolicy::classify_path("node_modules/lodash/index.js", None),
+            NoiseClass::Vendor
+        );
+        assert_eq!(
+            NoisePolicy::classify_path("third_party/protobuf/src/lib.rs", None),
+            NoiseClass::Vendor
+        );
+        assert_eq!(
+            NoisePolicy::classify_path(".venv/lib/site-packages/flask/app.py", None),
+            NoiseClass::Vendor
+        );
+        assert_eq!(
+            NoisePolicy::classify_path("bower_components/jquery/jquery.js", None),
+            NoiseClass::Vendor
+        );
+    }
+
+    #[test]
+    fn test_noise_policy_classifies_generated_paths() {
+        assert_eq!(
+            NoisePolicy::classify_path("Cargo.lock", None),
+            NoiseClass::Generated
+        );
+        assert_eq!(
+            NoisePolicy::classify_path("package-lock.json", None),
+            NoiseClass::Generated
+        );
+        assert_eq!(
+            NoisePolicy::classify_path("assets/app.min.js", None),
+            NoiseClass::Generated
+        );
+        assert_eq!(
+            NoisePolicy::classify_path("styles/theme.min.css", None),
+            NoiseClass::Generated
+        );
+        assert_eq!(
+            NoisePolicy::classify_path("dist/bundle.js", None),
+            NoiseClass::Generated
+        );
+        assert_eq!(
+            NoisePolicy::classify_path("src/generated/api.rs", None),
+            NoiseClass::Generated
+        );
+        assert_eq!(
+            NoisePolicy::classify_path("proto/service.pb.go", None),
+            NoiseClass::Generated
+        );
+        assert_eq!(
+            NoisePolicy::classify_path("lib/model.g.dart", None),
+            NoiseClass::Generated
+        );
+        assert_eq!(
+            NoisePolicy::classify_path("Forms/Form1.Designer.cs", None),
+            NoiseClass::Generated
+        );
+    }
+
+    #[test]
+    fn test_noise_policy_classifies_normal_paths() {
+        assert_eq!(
+            NoisePolicy::classify_path("src/main.rs", None),
+            NoiseClass::None
+        );
+        assert_eq!(
+            NoisePolicy::classify_path("lib/utils.ts", None),
+            NoiseClass::None
+        );
+    }
+
+    #[test]
+    fn test_noise_policy_should_hide_respects_flags() {
+        let restrictive = NoisePolicy::hide_classified_noise();
+        assert!(!restrictive.should_hide(NoiseClass::None));
+        assert!(restrictive.should_hide(NoiseClass::Vendor));
+        assert!(restrictive.should_hide(NoiseClass::Generated));
+        assert!(restrictive.should_hide(NoiseClass::Ignored));
+
+        let permissive = NoisePolicy::permissive();
+        assert!(!permissive.should_hide(NoiseClass::None));
+        assert!(!permissive.should_hide(NoiseClass::Vendor));
+        assert!(!permissive.should_hide(NoiseClass::Generated));
+        assert!(!permissive.should_hide(NoiseClass::Ignored));
+
+        // Custom: include vendor but not generated
+        let custom = NoisePolicy {
+            include_vendor: true,
+            include_generated: false,
+            include_tests: true,
+        };
+        assert!(!custom.should_hide(NoiseClass::None));
+        assert!(!custom.should_hide(NoiseClass::Vendor));
+        assert!(custom.should_hide(NoiseClass::Generated));
+        assert!(!custom.should_hide(NoiseClass::Ignored)); // Ignored follows include_vendor
+    }
+
+    #[test]
+    fn test_noise_class_tag() {
+        assert_eq!(NoiseClass::None.tag(), "");
+        assert_eq!(NoiseClass::Vendor.tag(), "[vendor]");
+        assert_eq!(NoiseClass::Generated.tag(), "[generated]");
+        assert_eq!(NoiseClass::Ignored.tag(), "[ignored]");
+    }
+
+    #[test]
+    fn test_gitignore_vendor_classified() {
+        use ignore::gitignore::GitignoreBuilder;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let mut builder = GitignoreBuilder::new(tmp.path());
+        builder.add_line(None, "build/").unwrap();
+        builder.add_line(None, "*.log").unwrap();
+        let gi = builder.build().unwrap();
+
+        // "build/output.js" matches gitignore but not vendor/generated heuristic → Ignored
+        assert_eq!(
+            NoisePolicy::classify_path("build/output.js", Some(&gi)),
+            NoiseClass::Ignored
+        );
+        // "debug.log" matches gitignore → Ignored
+        assert_eq!(
+            NoisePolicy::classify_path("debug.log", Some(&gi)),
+            NoiseClass::Ignored
+        );
+        // "src/main.rs" does NOT match gitignore → None
+        assert_eq!(
+            NoisePolicy::classify_path("src/main.rs", Some(&gi)),
+            NoiseClass::None
+        );
+        // Vendor heuristic takes priority over gitignore
+        assert_eq!(
+            NoisePolicy::classify_path("node_modules/pkg/index.js", Some(&gi)),
+            NoiseClass::Vendor
+        );
+    }
+
+    #[test]
+    fn test_gitignore_negation_exempts_file() {
+        use ignore::gitignore::GitignoreBuilder;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let mut builder = GitignoreBuilder::new(tmp.path());
+        builder.add_line(None, "build/").unwrap();
+        builder.add_line(None, "!build/important.js").unwrap();
+        let gi = builder.build().unwrap();
+
+        // Negated file should NOT be classified as noise
+        assert_eq!(
+            NoisePolicy::classify_path("build/important.js", Some(&gi)),
+            NoiseClass::None
+        );
+        // Non-negated file in same dir should still be noise
+        assert_eq!(
+            NoisePolicy::classify_path("build/other.js", Some(&gi)),
+            NoiseClass::Ignored
         );
     }
 }

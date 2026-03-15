@@ -180,6 +180,7 @@ impl TokenizorServer {
             } => {
                 self.get_file_content(Parameters(GetFileContentInput {
                     path,
+                    mode: None,
                     start_line,
                     end_line,
                     chunk_index: None,
@@ -437,6 +438,7 @@ mod tests {
             files_by_basename: HashMap::new(),
             files_by_dir_component: HashMap::new(),
             trigram_index: crate::live_index::trigram::TrigramIndex::new(),
+            gitignore: None,
         };
         index.rebuild_reverse_index();
         index.rebuild_path_indices();

@@ -184,8 +184,10 @@ pub struct GetSymbolsInput {
 /// Input for `search_symbols`.
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct SearchSymbolsInput {
-    /// Search query (case-insensitive substring match).
-    pub query: String,
+    /// Search query (case-insensitive substring match). Optional when `kind` or `path_prefix` is
+    /// provided — omitting `query` enables browse mode.
+    #[serde(default)]
+    pub query: Option<String>,
     /// Optional kind filter using display names such as `fn`, `class`, or `interface`.
     pub kind: Option<String>,
     /// Optional relative path prefix scope, for example `src/` or `src/protocol`.
@@ -312,6 +314,11 @@ pub struct WhatChangedInput {
 pub struct GetFileContentInput {
     /// Relative path to the file.
     pub path: String,
+    /// Selection mode: `lines`, `symbol`, `match`, `chunk`.
+    /// When set, only flags valid for that mode are accepted; cross-mode flags error.
+    /// When omitted, mode is inferred from flags (backward compatible).
+    #[serde(default)]
+    pub mode: Option<String>,
     /// First line to include (1-indexed).
     #[serde(default, deserialize_with = "lenient_u32")]
     pub start_line: Option<u32>,
@@ -536,6 +543,9 @@ pub struct InspectMatchInput {
     /// Number of context lines to show around the match (default 3).
     #[serde(default, deserialize_with = "lenient_u32")]
     pub context: Option<u32>,
+    /// Maximum number of siblings to show (default 10). Use 0 to hide siblings entirely.
+    #[serde(default, deserialize_with = "lenient_u32")]
+    pub sibling_limit: Option<u32>,
 }
 
 /// Input for `explore`.
@@ -551,6 +561,10 @@ pub struct ExploreInput {
     /// 3 = adds call chains and type dependency edges for top symbols.
     #[serde(default, deserialize_with = "lenient_u32")]
     pub depth: Option<u32>,
+    /// When true, include results from vendor, generated, and gitignored files.
+    /// By default these are hidden to reduce noise (default false).
+    #[serde(default, deserialize_with = "lenient_bool")]
+    pub include_noise: Option<bool>,
 }
 
 /// Input for `get_co_changes`.
@@ -756,10 +770,18 @@ fn normalize_search_text_glob(input: Option<&str>) -> Option<String> {
 fn search_symbols_options_from_input(
     input: &SearchSymbolsInput,
 ) -> Result<search::SymbolSearchOptions, String> {
+    let is_browse = input
+        .query
+        .as_ref()
+        .map(|q| q.trim().is_empty())
+        .unwrap_or(true);
+    let default_limit = if is_browse { 20u32 } else { 50u32 };
     Ok(search::SymbolSearchOptions {
         path_scope: normalize_path_prefix(input.path_prefix.as_deref()),
         search_scope: search::SearchScope::Code,
-        result_limit: search::ResultLimit::new(input.limit.unwrap_or(50).min(100) as usize),
+        result_limit: search::ResultLimit::new(
+            input.limit.unwrap_or(default_limit).min(100) as usize
+        ),
         noise_policy: search::NoisePolicy {
             include_generated: input.include_generated.unwrap_or(false),
             include_tests: input.include_tests.unwrap_or(false),
@@ -870,7 +892,21 @@ fn file_content_options_from_input(
 ) -> Result<search::FileContentOptions, String> {
     let show_line_numbers = input.show_line_numbers.unwrap_or(false);
     let header = input.header.unwrap_or(false);
-    let ordinary_read_formatting_requested = show_line_numbers || header;
+
+    // ── Mode dispatch ───────────────────────────────────────────────────
+    if let Some(mode) = &input.mode {
+        return match mode.as_str() {
+            "lines" => validate_lines_mode(input),
+            "symbol" => validate_symbol_mode(input),
+            "match" => validate_match_mode(input),
+            "chunk" => validate_chunk_mode(input),
+            "search" => Err("mode 'search' is not yet implemented".to_string()),
+            other => Err(format!(
+                "Unknown mode '{other}'. Valid modes: lines, symbol, match, chunk."
+            )),
+        };
+    }
+    // No mode — infer from flags (existing backward-compatible behavior below)
 
     if input.symbol_line.is_some() && input.around_symbol.is_none() {
         return Err(
@@ -891,17 +927,9 @@ fn file_content_options_from_input(
             || input.around_line.is_some()
             || input.around_match.is_some()
             || input.chunk_index.is_some()
-            || input.max_lines.is_some()
         {
             return Err(
-                "Invalid get_file_content request: `around_symbol` cannot be combined with `start_line`, `end_line`, `around_line`, `around_match`, `chunk_index`, or `max_lines`. Valid with `around_symbol`: `symbol_line`, `context_lines`."
-                    .to_string(),
-            );
-        }
-
-        if ordinary_read_formatting_requested {
-            return Err(
-                "Invalid get_file_content request: `show_line_numbers` and `header` are only supported for full-file reads or explicit-range reads (`start_line`/`end_line`)."
+                "Invalid get_file_content request: `around_symbol` cannot be combined with `start_line`, `end_line`, `around_line`, `around_match`, or `chunk_index`. Valid with `around_symbol`: `symbol_line`, `context_lines`, `max_lines`."
                     .to_string(),
             );
         }
@@ -912,6 +940,9 @@ fn file_content_options_from_input(
                 around_symbol,
                 input.symbol_line,
                 input.context_lines,
+                input.max_lines,
+                show_line_numbers,
+                header,
             ),
         );
     }
@@ -959,6 +990,16 @@ fn file_content_options_from_input(
         ));
     }
 
+    // Reject show_line_numbers / header for contextual reads (around_line, around_match).
+    // These flags are only supported for full-file or explicit-range (start_line/end_line) reads.
+    if (input.show_line_numbers.is_some() || input.header.is_some())
+        && (input.around_line.is_some() || input.around_match.is_some())
+    {
+        return Err(
+            "Invalid get_file_content request: `show_line_numbers` and `header` are only supported for full-file reads or explicit-range reads (`start_line`/`end_line`).".to_string(),
+        );
+    }
+
     if let Some(raw_around_match) = input.around_match.as_deref() {
         let around_match = raw_around_match.trim();
         if around_match.is_empty() {
@@ -974,18 +1015,13 @@ fn file_content_options_from_input(
             );
         }
 
-        if ordinary_read_formatting_requested {
-            return Err(
-                "Invalid get_file_content request: `show_line_numbers` and `header` are only supported for full-file reads or explicit-range reads (`start_line`/`end_line`)."
-                    .to_string(),
-            );
-        }
-
         return Ok(
             search::FileContentOptions::for_explicit_path_read_around_match(
                 input.path.clone(),
                 around_match,
                 input.context_lines,
+                show_line_numbers,
+                header,
             ),
         );
     }
@@ -997,18 +1033,13 @@ fn file_content_options_from_input(
         );
     }
 
-    if input.around_line.is_some() && ordinary_read_formatting_requested {
-        return Err(
-            "Invalid get_file_content request: `show_line_numbers` and `header` are only supported for full-file reads or explicit-range reads (`start_line`/`end_line`)."
-                .to_string(),
-        );
-    }
-
     Ok(match input.around_line {
         Some(around_line) => search::FileContentOptions::for_explicit_path_read_around_line(
             input.path.clone(),
             around_line,
             input.context_lines,
+            show_line_numbers,
+            header,
         ),
         None => search::FileContentOptions::for_explicit_path_read_with_format(
             input.path.clone(),
@@ -1018,6 +1049,248 @@ fn file_content_options_from_input(
             header,
         ),
     })
+}
+
+// ── Mode validators for get_file_content ────────────────────────────────
+
+/// Collect names of flags that are `Some` / `true` for error messages.
+fn describe_received_flags(input: &GetFileContentInput) -> String {
+    let mut flags = Vec::new();
+    if input.start_line.is_some() {
+        flags.push("start_line");
+    }
+    if input.end_line.is_some() {
+        flags.push("end_line");
+    }
+    if input.around_line.is_some() {
+        flags.push("around_line");
+    }
+    if input.around_match.is_some() {
+        flags.push("around_match");
+    }
+    if input.around_symbol.is_some() {
+        flags.push("around_symbol");
+    }
+    if input.symbol_line.is_some() {
+        flags.push("symbol_line");
+    }
+    if input.chunk_index.is_some() {
+        flags.push("chunk_index");
+    }
+    if input.max_lines.is_some() {
+        flags.push("max_lines");
+    }
+    if input.context_lines.is_some() {
+        flags.push("context_lines");
+    }
+    if input.show_line_numbers.is_some() {
+        flags.push("show_line_numbers");
+    }
+    if input.header.is_some() {
+        flags.push("header");
+    }
+    flags.join(", ")
+}
+
+fn validate_lines_mode(input: &GetFileContentInput) -> Result<search::FileContentOptions, String> {
+    let cross: Vec<&str> = [
+        input.around_symbol.as_ref().map(|_| "around_symbol"),
+        input.around_match.as_ref().map(|_| "around_match"),
+        input.chunk_index.map(|_| "chunk_index"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+
+    if !cross.is_empty() {
+        return Err(format!(
+            "mode=lines conflicts with {}. Use mode={}. Received: {}",
+            cross.join(", "),
+            if input.around_symbol.is_some() {
+                "symbol"
+            } else if input.around_match.is_some() {
+                "match"
+            } else {
+                "chunk"
+            },
+            describe_received_flags(input),
+        ));
+    }
+
+    let show_line_numbers = input.show_line_numbers.unwrap_or(false);
+    let header = input.header.unwrap_or(false);
+
+    if input.around_line.is_some() && (input.start_line.is_some() || input.end_line.is_some()) {
+        return Err(
+            "Invalid get_file_content request: `around_line` cannot be combined with `start_line` or `end_line`. Valid with `around_line`: `context_lines`."
+                .to_string(),
+        );
+    }
+
+    Ok(match input.around_line {
+        Some(around_line) => search::FileContentOptions::for_explicit_path_read_around_line(
+            input.path.clone(),
+            around_line,
+            input.context_lines,
+            show_line_numbers,
+            header,
+        ),
+        None => search::FileContentOptions::for_explicit_path_read_with_format(
+            input.path.clone(),
+            input.start_line,
+            input.end_line,
+            show_line_numbers,
+            header,
+        ),
+    })
+}
+
+fn validate_symbol_mode(input: &GetFileContentInput) -> Result<search::FileContentOptions, String> {
+    let Some(raw_around_symbol) = input.around_symbol.as_deref() else {
+        return Err("mode=symbol requires around_symbol".to_string());
+    };
+    let around_symbol = raw_around_symbol.trim();
+    if around_symbol.is_empty() {
+        return Err("mode=symbol requires around_symbol".to_string());
+    }
+
+    let cross: Vec<&str> = [
+        input.start_line.map(|_| "start_line"),
+        input.end_line.map(|_| "end_line"),
+        input.around_line.map(|_| "around_line"),
+        input.around_match.as_ref().map(|_| "around_match"),
+        input.chunk_index.map(|_| "chunk_index"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+
+    if !cross.is_empty() {
+        return Err(format!(
+            "mode=symbol conflicts with {}. Received: {}",
+            cross.join(", "),
+            describe_received_flags(input),
+        ));
+    }
+
+    let show_line_numbers = input.show_line_numbers.unwrap_or(false);
+    let header = input.header.unwrap_or(false);
+
+    Ok(
+        search::FileContentOptions::for_explicit_path_read_around_symbol(
+            input.path.clone(),
+            around_symbol,
+            input.symbol_line,
+            input.context_lines,
+            input.max_lines,
+            show_line_numbers,
+            header,
+        ),
+    )
+}
+
+fn validate_match_mode(input: &GetFileContentInput) -> Result<search::FileContentOptions, String> {
+    let Some(raw_around_match) = input.around_match.as_deref() else {
+        return Err("mode=match requires around_match".to_string());
+    };
+    let around_match = raw_around_match.trim();
+    if around_match.is_empty() {
+        return Err("mode=match requires around_match".to_string());
+    }
+
+    let cross: Vec<&str> = [
+        input.start_line.map(|_| "start_line"),
+        input.end_line.map(|_| "end_line"),
+        input.around_line.map(|_| "around_line"),
+        input.around_symbol.as_ref().map(|_| "around_symbol"),
+        input.chunk_index.map(|_| "chunk_index"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+
+    if !cross.is_empty() {
+        return Err(format!(
+            "mode=match conflicts with {}. Use mode={}. Received: {}",
+            cross.join(", "),
+            if input.around_symbol.is_some() {
+                "symbol"
+            } else if input.start_line.is_some()
+                || input.end_line.is_some()
+                || input.around_line.is_some()
+            {
+                "lines"
+            } else {
+                "chunk"
+            },
+            describe_received_flags(input),
+        ));
+    }
+
+    let show_line_numbers = input.show_line_numbers.unwrap_or(false);
+    let header = input.header.unwrap_or(false);
+
+    Ok(
+        search::FileContentOptions::for_explicit_path_read_around_match(
+            input.path.clone(),
+            around_match,
+            input.context_lines,
+            show_line_numbers,
+            header,
+        ),
+    )
+}
+
+fn validate_chunk_mode(input: &GetFileContentInput) -> Result<search::FileContentOptions, String> {
+    let chunk_index = input
+        .chunk_index
+        .ok_or_else(|| "mode=chunk requires chunk_index".to_string())?;
+    let max_lines = input
+        .max_lines
+        .ok_or_else(|| "mode=chunk requires max_lines".to_string())?;
+
+    if chunk_index == 0 {
+        return Err(
+            "Invalid get_file_content request: `chunk_index` must be 1 or greater.".to_string(),
+        );
+    }
+    if max_lines == 0 {
+        return Err(
+            "Invalid get_file_content request: `max_lines` must be 1 or greater.".to_string(),
+        );
+    }
+
+    let cross: Vec<&str> = [
+        input.around_symbol.as_ref().map(|_| "around_symbol"),
+        input.around_match.as_ref().map(|_| "around_match"),
+        input.around_line.map(|_| "around_line"),
+        input.start_line.map(|_| "start_line"),
+        input.end_line.map(|_| "end_line"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+
+    if !cross.is_empty() {
+        return Err(format!(
+            "mode=chunk conflicts with {}. Use mode={}. Received: {}",
+            cross.join(", "),
+            if input.around_symbol.is_some() {
+                "symbol"
+            } else if input.around_match.is_some() {
+                "match"
+            } else {
+                "lines"
+            },
+            describe_received_flags(input),
+        ));
+    }
+
+    Ok(search::FileContentOptions::for_explicit_path_read_chunk(
+        input.path.clone(),
+        chunk_index,
+        max_lines,
+    ))
 }
 
 fn sidecar_state_for_server(server: &TokenizorServer) -> SidecarState {
@@ -1558,14 +1831,18 @@ impl TokenizorServer {
 
     /// Find symbols by name substring across the project — returns name, kind, file, line range.
     /// Use when you know part of a symbol name but not the file. Supports kind filter, language filter,
-    /// and path prefix scope.
+    /// and path prefix scope. Query is optional: omit it to browse by kind or path_prefix (at least
+    /// one of query, kind, or path_prefix is required).
     /// NOT for text content search (use search_text). NOT for file path search (use search_files).
     #[tool(
-        description = "Find symbols by name substring across the project — returns name, kind, file, line range. Use when you know part of a symbol name but not the file. Supports kind filter, language filter, and path prefix scope. NOT for text content search (use search_text). NOT for file path search (use search_files)."
+        description = "Find symbols by name substring across the project — returns name, kind, file, line range. Use when you know part of a symbol name but not the file. Supports kind filter, language filter, and path prefix scope. Query is optional — omit it to browse all symbols matching kind/path_prefix (browse mode defaults to limit=20, sorted by path+line). At least one of query, kind, or path_prefix is required. NOT for text content search (use search_text). NOT for file path search (use search_files)."
     )]
     pub(crate) async fn search_symbols(&self, params: Parameters<SearchSymbolsInput>) -> String {
-        if params.0.query.trim().is_empty() {
-            return "search_symbols requires a non-empty query. Provide a symbol name or substring to search for.".to_string();
+        let query_str = params.0.query.as_deref().unwrap_or("").trim();
+        let is_browse = query_str.is_empty();
+        if is_browse && params.0.kind.is_none() && params.0.path_prefix.is_none() {
+            return "search_symbols requires at least one of: query, kind, or path_prefix"
+                .to_string();
         }
         if let Some(result) = self.proxy_tool_call("search_symbols", &params.0).await {
             return result;
@@ -1574,17 +1851,23 @@ impl TokenizorServer {
             Ok(options) => options,
             Err(message) => return message,
         };
-        let result = {
+        let mut result = {
             let guard = self.index.read().expect("lock poisoned");
             loading_guard!(guard);
             search::search_symbols_with_options(
                 &guard,
-                &params.0.query,
+                query_str,
                 params.0.kind.as_deref(),
                 &options,
             )
         };
-        format::search_symbols_result_view(&result, &params.0.query)
+        // In browse mode, sort by file path then line number for deterministic output
+        if is_browse {
+            result
+                .hits
+                .sort_by(|a, b| a.path.cmp(&b.path).then(a.line.cmp(&b.line)));
+        }
+        format::search_symbols_result_view(&result, query_str)
     }
 
     /// Full-text search across file contents — literal, OR-terms, or regex. Shows matches with
@@ -1756,7 +2039,12 @@ impl TokenizorServer {
         let view = {
             let guard = self.index.read().expect("lock poisoned");
             loading_guard!(guard);
-            guard.capture_inspect_match_view(&params.0.path, params.0.line, params.0.context)
+            guard.capture_inspect_match_view(
+                &params.0.path,
+                params.0.line,
+                params.0.context,
+                params.0.sibling_limit,
+            )
         };
 
         format::inspect_match_result_view(&view)
@@ -1870,6 +2158,14 @@ impl TokenizorServer {
             if !savings.is_empty() {
                 result.push('\n');
                 result.push_str(&savings);
+            }
+
+            // Append per-tool call counts.
+            let counts = stats.tool_call_counts();
+            let counts_section = format::format_tool_call_counts(&counts);
+            if !counts_section.is_empty() {
+                result.push('\n');
+                result.push_str(&counts_section);
             }
         }
 
@@ -2374,6 +2670,38 @@ impl TokenizorServer {
         let symbol_hits: Vec<(String, String, String)> =
             ranked.into_iter().map(|(k, _)| k).collect();
 
+        // Noise filtering: hide vendor/generated/gitignored files by default.
+        let include_noise = params.0.include_noise.unwrap_or(false);
+        let mut noise_hidden: usize = 0;
+        let (symbol_hits, text_hits) = if !include_noise {
+            let noise_policy = search::NoisePolicy::hide_classified_noise();
+            let filtered_symbols: Vec<(String, String, String)> = symbol_hits
+                .into_iter()
+                .filter(|(_, _, path)| {
+                    let class = search::NoisePolicy::classify_path(path, None);
+                    let hide = noise_policy.should_hide(class);
+                    if hide {
+                        noise_hidden += 1;
+                    }
+                    !hide
+                })
+                .collect();
+            let filtered_text: Vec<(String, String, usize)> = text_hits
+                .into_iter()
+                .filter(|(path, _, _)| {
+                    let class = search::NoisePolicy::classify_path(path, None);
+                    let hide = noise_policy.should_hide(class);
+                    if hide {
+                        noise_hidden += 1;
+                    }
+                    !hide
+                })
+                .collect();
+            (filtered_symbols, filtered_text)
+        } else {
+            (symbol_hits, text_hits)
+        };
+
         // Count files by symbol/text presence
         let mut file_counts: std::collections::HashMap<String, usize> =
             std::collections::HashMap::new();
@@ -2466,7 +2794,7 @@ impl TokenizorServer {
             }
         }
 
-        format::explore_result_view(
+        let mut output = format::explore_result_view(
             &label,
             &symbol_hits,
             &text_hits,
@@ -2475,7 +2803,15 @@ impl TokenizorServer {
             &symbol_impls,
             &symbol_deps,
             depth,
-        )
+        );
+
+        if noise_hidden > 0 {
+            output.push_str(&format!(
+                "\n\nNote: {noise_hidden} result(s) from vendor/generated files hidden. Use include_noise=true to include."
+            ));
+        }
+
+        output
     }
 
     /// Symbol-level diff between two git refs. Shows +added, -removed, ~modified symbols per changed
@@ -2925,7 +3261,7 @@ impl TokenizorServer {
             let guard = self.index.read().expect("lock poisoned");
             loading_guard!(guard);
         }
-        match edit::execute_batch_edit(&self.index, &repo_root, &params.0.edits) {
+        match edit::execute_batch_edit(&self.index, &repo_root, &params.0.edits, params.0.dry_run) {
             Ok(summaries) => {
                 let file_count = params
                     .0
@@ -3092,6 +3428,7 @@ mod tests {
             files_by_basename: HashMap::new(),
             files_by_dir_component: HashMap::new(),
             trigram_index,
+            gitignore: None,
         };
         index.rebuild_reverse_index();
         index.rebuild_path_indices();
@@ -3113,6 +3450,7 @@ mod tests {
             files_by_basename: HashMap::new(),
             files_by_dir_component: HashMap::new(),
             trigram_index: TrigramIndex::new(),
+            gitignore: None,
         }
     }
 
@@ -3139,6 +3477,7 @@ mod tests {
             files_by_basename: HashMap::new(),
             files_by_dir_component: HashMap::new(),
             trigram_index: TrigramIndex::new(),
+            gitignore: None,
         }
     }
 
@@ -3801,6 +4140,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_analyze_file_impact_unchanged_shows_status() {
+        // Use setup_edit_test so the index holds real parsed symbols (correct byte_ranges).
+        // Then call analyze_file_impact WITHOUT modifying the file — should report unchanged.
+        let source = b"pub fn alpha() {}\npub fn beta() {}\n";
+        let (dir, server, _file_path) = setup_edit_test(source);
+        let _ = dir; // keep temp dir alive
+
+        let result = server
+            .analyze_file_impact(Parameters(super::AnalyzeFileImpactInput {
+                path: "src/lib.rs".to_string(),
+                new_file: None,
+                include_co_changes: None,
+                co_changes_limit: None,
+            }))
+            .await;
+
+        assert!(
+            result.contains("indexed and unchanged"),
+            "unchanged file should report 'indexed and unchanged'; got: {result}"
+        );
+        assert!(
+            result.contains("Symbols: 2"),
+            "should show symbol count; got: {result}"
+        );
+        assert!(
+            result.contains("what_changed"),
+            "should suggest what_changed; got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_analyze_file_impact_deleted_file() {
+        let source = b"pub fn gone() {}\n";
+        let (dir, server, file_path) = setup_edit_test(source);
+        let _ = dir; // keep temp dir alive
+
+        // Delete the file from disk to simulate external deletion.
+        fs::remove_file(&file_path).expect("remove source");
+
+        let result = server
+            .analyze_file_impact(Parameters(super::AnalyzeFileImpactInput {
+                path: "src/lib.rs".to_string(),
+                new_file: None,
+                include_co_changes: None,
+                co_changes_limit: None,
+            }))
+            .await;
+
+        assert!(
+            result.contains("not found on disk"),
+            "deleted file should report 'not found on disk'; got: {result}"
+        );
+    }
+
+    #[tokio::test]
     async fn test_index_folder_rebinds_repo_root_for_local_impact_analysis() {
         let repo = TempDir::new().expect("temp repo");
         fs::create_dir_all(repo.path().join("scratch")).expect("scratch dir");
@@ -3902,7 +4296,7 @@ mod tests {
         let server = make_server(make_live_index_ready(vec![(key, file)]));
         let result = server
             .search_symbols(Parameters(super::SearchSymbolsInput {
-                query: "find".to_string(),
+                query: Some("find".to_string()),
                 kind: None,
                 path_prefix: None,
                 language: None,
@@ -3929,7 +4323,7 @@ mod tests {
         let server = make_server(make_live_index_ready(vec![(key, file)]));
         let result = server
             .search_symbols(Parameters(super::SearchSymbolsInput {
-                query: "job".to_string(),
+                query: Some("job".to_string()),
                 kind: Some("class".to_string()),
                 path_prefix: None,
                 language: None,
@@ -3970,7 +4364,7 @@ mod tests {
 
         let result = server
             .search_symbols(Parameters(super::SearchSymbolsInput {
-                query: "job".to_string(),
+                query: Some("job".to_string()),
                 kind: Some("class".to_string()),
                 path_prefix: None,
                 language: None,
@@ -4016,7 +4410,7 @@ mod tests {
 
         let result = server
             .search_symbols(Parameters(super::SearchSymbolsInput {
-                query: "job".to_string(),
+                query: Some("job".to_string()),
                 kind: Some("class".to_string()),
                 path_prefix: None,
                 language: None,
@@ -4062,7 +4456,7 @@ mod tests {
 
         let result = server
             .search_symbols(Parameters(super::SearchSymbolsInput {
-                query: "job".to_string(),
+                query: Some("job".to_string()),
                 kind: Some("class".to_string()),
                 path_prefix: None,
                 language: None,
@@ -4109,7 +4503,7 @@ mod tests {
 
         let result = server
             .search_symbols(Parameters(super::SearchSymbolsInput {
-                query: "job".to_string(),
+                query: Some("job".to_string()),
                 kind: Some("class".to_string()),
                 path_prefix: Some("src/ui".to_string()),
                 language: Some("TypeScript".to_string()),
@@ -4138,6 +4532,111 @@ mod tests {
         assert!(
             !result.contains("fn JobRunner"),
             "kind filter should exclude function: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_symbols_browse_by_kind_without_query() {
+        let sym_fn = make_symbol("do_work", SymbolKind::Function, 1, 5);
+        let sym_struct = make_symbol("Worker", SymbolKind::Class, 6, 10);
+        let (key, file) = make_file(
+            "src/protocol/worker.rs",
+            b"fn do_work() {}\nstruct Worker {}",
+            vec![sym_fn, sym_struct],
+        );
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let result = server
+            .search_symbols(Parameters(super::SearchSymbolsInput {
+                query: None,
+                kind: Some("fn".to_string()),
+                path_prefix: Some("src/protocol/".to_string()),
+                language: None,
+                limit: None,
+                include_generated: None,
+                include_tests: None,
+            }))
+            .await;
+        assert!(
+            result.contains("do_work"),
+            "browse mode should return fn symbols, got: {result}"
+        );
+        assert!(
+            !result.contains("Worker"),
+            "browse mode kind filter should exclude structs, got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_symbols_rejects_fully_unbounded() {
+        let sym = make_symbol("anything", SymbolKind::Function, 1, 5);
+        let (key, file) = make_file("src/lib.rs", b"fn anything() {}", vec![sym]);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let result = server
+            .search_symbols(Parameters(super::SearchSymbolsInput {
+                query: None,
+                kind: None,
+                path_prefix: None,
+                language: None,
+                limit: None,
+                include_generated: None,
+                include_tests: None,
+            }))
+            .await;
+        assert!(
+            result.contains("requires at least one of"),
+            "fully unbounded browse should be rejected, got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_symbols_browse_default_limit_20() {
+        // Create 25 distinct symbols — browse mode should return only 20
+        let syms: Vec<_> = (1..=25)
+            .map(|i| make_symbol(&format!("sym_{i:02}"), SymbolKind::Function, i, i))
+            .collect();
+        let content = b"fn placeholder() {}";
+        let (key, file) = make_file("src/lib.rs", content, syms);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let result = server
+            .search_symbols(Parameters(super::SearchSymbolsInput {
+                query: None,
+                kind: Some("fn".to_string()),
+                path_prefix: None,
+                language: None,
+                limit: None,
+                include_generated: None,
+                include_tests: None,
+            }))
+            .await;
+        assert!(
+            result.contains("20 matches in"),
+            "browse mode default limit should be 20, got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_symbols_query_mode_still_defaults_to_50() {
+        // Create 55 distinct symbols — query mode should return 50
+        let syms: Vec<_> = (1..=55)
+            .map(|i| make_symbol(&format!("item_{i:02}"), SymbolKind::Function, i, i))
+            .collect();
+        let content = b"fn placeholder() {}";
+        let (key, file) = make_file("src/lib.rs", content, syms);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let result = server
+            .search_symbols(Parameters(super::SearchSymbolsInput {
+                query: Some("item".to_string()),
+                kind: None,
+                path_prefix: None,
+                language: None,
+                limit: None,
+                include_generated: None,
+                include_tests: None,
+            }))
+            .await;
+        assert!(
+            result.contains("50 matches in"),
+            "query mode default limit should remain 50, got: {result}"
         );
     }
 
@@ -4834,6 +5333,7 @@ mod tests {
         let result = server
             .get_file_content(Parameters(super::GetFileContentInput {
                 path: "src/lib.rs".to_string(),
+                mode: None,
                 start_line: None,
                 end_line: None,
                 chunk_index: None,
@@ -4859,6 +5359,7 @@ mod tests {
         let result = server
             .get_file_content(Parameters(super::GetFileContentInput {
                 path: "nonexistent.rs".to_string(),
+                mode: None,
                 start_line: None,
                 end_line: None,
                 chunk_index: None,
@@ -4883,6 +5384,7 @@ mod tests {
         let result = server
             .get_file_content(Parameters(super::GetFileContentInput {
                 path: "src/lib.rs".to_string(),
+                mode: None,
                 start_line: Some(2),
                 end_line: Some(3),
                 chunk_index: None,
@@ -4907,6 +5409,7 @@ mod tests {
         let result = server
             .get_file_content(Parameters(super::GetFileContentInput {
                 path: "src/lib.rs".to_string(),
+                mode: None,
                 start_line: None,
                 end_line: None,
                 chunk_index: None,
@@ -4931,6 +5434,7 @@ mod tests {
         let result = server
             .get_file_content(Parameters(super::GetFileContentInput {
                 path: "src/lib.rs".to_string(),
+                mode: None,
                 start_line: Some(2),
                 end_line: Some(3),
                 chunk_index: None,
@@ -4955,6 +5459,7 @@ mod tests {
         let result = server
             .get_file_content(Parameters(super::GetFileContentInput {
                 path: "src/lib.rs".to_string(),
+                mode: None,
                 start_line: None,
                 end_line: None,
                 chunk_index: None,
@@ -4979,6 +5484,7 @@ mod tests {
         let result = server
             .get_file_content(Parameters(super::GetFileContentInput {
                 path: "src/lib.rs".to_string(),
+                mode: None,
                 start_line: None,
                 end_line: None,
                 chunk_index: None,
@@ -5006,6 +5512,7 @@ mod tests {
         let result = server
             .get_file_content(Parameters(super::GetFileContentInput {
                 path: "src/lib.rs".to_string(),
+                mode: None,
                 start_line: Some(2),
                 end_line: None,
                 chunk_index: None,
@@ -5033,6 +5540,7 @@ mod tests {
         let result = server
             .get_file_content(Parameters(super::GetFileContentInput {
                 path: "src/lib.rs".to_string(),
+                mode: None,
                 start_line: None,
                 end_line: None,
                 chunk_index: None,
@@ -5057,6 +5565,7 @@ mod tests {
         let result = server
             .get_file_content(Parameters(super::GetFileContentInput {
                 path: "src/lib.rs".to_string(),
+                mode: None,
                 start_line: None,
                 end_line: None,
                 chunk_index: Some(2),
@@ -5084,6 +5593,7 @@ mod tests {
         let result = server
             .get_file_content(Parameters(super::GetFileContentInput {
                 path: "src/lib.rs".to_string(),
+                mode: None,
                 start_line: None,
                 end_line: None,
                 chunk_index: Some(3),
@@ -5108,6 +5618,7 @@ mod tests {
         let result = server
             .get_file_content(Parameters(super::GetFileContentInput {
                 path: "src/lib.rs".to_string(),
+                mode: None,
                 start_line: None,
                 end_line: None,
                 chunk_index: None,
@@ -5136,6 +5647,7 @@ mod tests {
         let result = server
             .get_file_content(Parameters(super::GetFileContentInput {
                 path: "src/lib.rs".to_string(),
+                mode: None,
                 start_line: None,
                 end_line: None,
                 chunk_index: None,
@@ -5167,6 +5679,7 @@ mod tests {
         let result = server
             .get_file_content(Parameters(super::GetFileContentInput {
                 path: "src/lib.rs".to_string(),
+                mode: None,
                 start_line: None,
                 end_line: None,
                 chunk_index: None,
@@ -5201,6 +5714,7 @@ mod tests {
         let result = server
             .get_file_content(Parameters(super::GetFileContentInput {
                 path: "src/lib.rs".to_string(),
+                mode: None,
                 start_line: None,
                 end_line: None,
                 chunk_index: None,
@@ -5229,6 +5743,7 @@ mod tests {
         let result = server
             .get_file_content(Parameters(super::GetFileContentInput {
                 path: "src/lib.rs".to_string(),
+                mode: None,
                 start_line: None,
                 end_line: None,
                 chunk_index: None,
@@ -5256,6 +5771,7 @@ mod tests {
         let result = server
             .get_file_content(Parameters(super::GetFileContentInput {
                 path: "src/lib.rs".to_string(),
+                mode: None,
                 start_line: Some(2),
                 end_line: None,
                 chunk_index: Some(1),
@@ -5283,6 +5799,7 @@ mod tests {
         let result = server
             .get_file_content(Parameters(super::GetFileContentInput {
                 path: "src/lib.rs".to_string(),
+                mode: None,
                 start_line: None,
                 end_line: None,
                 chunk_index: Some(1),
@@ -5310,10 +5827,11 @@ mod tests {
         let result = server
             .get_file_content(Parameters(super::GetFileContentInput {
                 path: "src/lib.rs".to_string(),
+                mode: None,
                 start_line: Some(2),
                 end_line: None,
                 chunk_index: Some(1),
-                max_lines: Some(2),
+                max_lines: None,
                 around_line: None,
                 around_match: None,
                 around_symbol: Some("connect".to_string()),
@@ -5325,7 +5843,7 @@ mod tests {
             .await;
         assert_eq!(
             result,
-            "Invalid get_file_content request: `around_symbol` cannot be combined with `start_line`, `end_line`, `around_line`, `around_match`, `chunk_index`, or `max_lines`. Valid with `around_symbol`: `symbol_line`, `context_lines`."
+            "Invalid get_file_content request: `around_symbol` cannot be combined with `start_line`, `end_line`, `around_line`, `around_match`, or `chunk_index`. Valid with `around_symbol`: `symbol_line`, `context_lines`, `max_lines`."
         );
     }
 
@@ -5337,6 +5855,7 @@ mod tests {
         let result = server
             .get_file_content(Parameters(super::GetFileContentInput {
                 path: "src/lib.rs".to_string(),
+                mode: None,
                 start_line: None,
                 end_line: None,
                 chunk_index: None,
@@ -5364,6 +5883,7 @@ mod tests {
         let result = server
             .get_file_content(Parameters(super::GetFileContentInput {
                 path: "src/lib.rs".to_string(),
+                mode: None,
                 start_line: None,
                 end_line: Some(3),
                 chunk_index: None,
@@ -5383,6 +5903,288 @@ mod tests {
         );
     }
 
+    // ── Mode enum tests ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_mode_symbol_with_around_symbol_works() {
+        let content = b"line 1\nfn connect() {}\nline 3";
+        let (key, file) = make_file(
+            "src/lib.rs",
+            content,
+            vec![make_symbol("connect", SymbolKind::Function, 2, 2)],
+        );
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let result = server
+            .get_file_content(Parameters(super::GetFileContentInput {
+                path: "src/lib.rs".to_string(),
+                mode: Some("symbol".to_string()),
+                start_line: None,
+                end_line: None,
+                chunk_index: None,
+                max_lines: None,
+                around_line: None,
+                around_match: None,
+                around_symbol: Some("connect".to_string()),
+                symbol_line: None,
+                context_lines: Some(1),
+                show_line_numbers: None,
+                header: None,
+            }))
+            .await;
+        assert!(
+            result.contains("fn connect()"),
+            "expected symbol content, got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mode_symbol_without_around_symbol_errors() {
+        let content = b"line 1\nline 2";
+        let (key, file) = make_file("src/lib.rs", content, vec![]);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let result = server
+            .get_file_content(Parameters(super::GetFileContentInput {
+                path: "src/lib.rs".to_string(),
+                mode: Some("symbol".to_string()),
+                start_line: None,
+                end_line: None,
+                chunk_index: None,
+                max_lines: None,
+                around_line: None,
+                around_match: None,
+                around_symbol: None,
+                symbol_line: None,
+                context_lines: None,
+                show_line_numbers: None,
+                header: None,
+            }))
+            .await;
+        assert_eq!(result, "mode=symbol requires around_symbol");
+    }
+
+    #[tokio::test]
+    async fn test_mode_lines_with_cross_mode_flag_errors() {
+        let content = b"line 1\nline 2";
+        let (key, file) = make_file("src/lib.rs", content, vec![]);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let result = server
+            .get_file_content(Parameters(super::GetFileContentInput {
+                path: "src/lib.rs".to_string(),
+                mode: Some("lines".to_string()),
+                start_line: Some(1),
+                end_line: None,
+                chunk_index: None,
+                max_lines: None,
+                around_line: None,
+                around_match: None,
+                around_symbol: Some("foo".to_string()),
+                symbol_line: None,
+                context_lines: None,
+                show_line_numbers: None,
+                header: None,
+            }))
+            .await;
+        assert!(
+            result.contains("mode=lines conflicts with around_symbol"),
+            "expected cross-mode error, got: {result}"
+        );
+        assert!(
+            result.contains("Use mode=symbol"),
+            "expected guidance, got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_no_mode_legacy_flags_backward_compatible() {
+        let content = b"line 1\nline 2\nline 3";
+        let (key, file) = make_file("src/lib.rs", content, vec![]);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let result = server
+            .get_file_content(Parameters(super::GetFileContentInput {
+                path: "src/lib.rs".to_string(),
+                mode: None,
+                start_line: Some(1),
+                end_line: Some(2),
+                chunk_index: None,
+                max_lines: None,
+                around_line: None,
+                around_match: None,
+                around_symbol: None,
+                symbol_line: None,
+                context_lines: None,
+                show_line_numbers: None,
+                header: None,
+            }))
+            .await;
+        assert!(
+            result.contains("line 1"),
+            "expected file content, got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mode_search_not_implemented() {
+        let content = b"line 1";
+        let (key, file) = make_file("src/lib.rs", content, vec![]);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let result = server
+            .get_file_content(Parameters(super::GetFileContentInput {
+                path: "src/lib.rs".to_string(),
+                mode: Some("search".to_string()),
+                start_line: None,
+                end_line: None,
+                chunk_index: None,
+                max_lines: None,
+                around_line: None,
+                around_match: None,
+                around_symbol: None,
+                symbol_line: None,
+                context_lines: None,
+                show_line_numbers: None,
+                header: None,
+            }))
+            .await;
+        assert_eq!(result, "mode 'search' is not yet implemented");
+    }
+
+    #[tokio::test]
+    async fn test_mode_symbol_with_context_lines_works() {
+        let content = b"line 1\nfn connect() {}\nline 3";
+        let (key, file) = make_file(
+            "src/lib.rs",
+            content,
+            vec![make_symbol("connect", SymbolKind::Function, 2, 2)],
+        );
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let result = server
+            .get_file_content(Parameters(super::GetFileContentInput {
+                path: "src/lib.rs".to_string(),
+                mode: Some("symbol".to_string()),
+                start_line: None,
+                end_line: None,
+                chunk_index: None,
+                max_lines: None,
+                around_line: None,
+                around_match: None,
+                around_symbol: Some("connect".to_string()),
+                symbol_line: None,
+                context_lines: Some(10),
+                show_line_numbers: None,
+                header: None,
+            }))
+            .await;
+        assert!(
+            result.contains("fn connect()"),
+            "expected symbol content with context, got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mode_unknown_errors() {
+        let content = b"line 1";
+        let (key, file) = make_file("src/lib.rs", content, vec![]);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let result = server
+            .get_file_content(Parameters(super::GetFileContentInput {
+                path: "src/lib.rs".to_string(),
+                mode: Some("fancy".to_string()),
+                start_line: None,
+                end_line: None,
+                chunk_index: None,
+                max_lines: None,
+                around_line: None,
+                around_match: None,
+                around_symbol: None,
+                symbol_line: None,
+                context_lines: None,
+                show_line_numbers: None,
+                header: None,
+            }))
+            .await;
+        assert_eq!(
+            result,
+            "Unknown mode 'fancy'. Valid modes: lines, symbol, match, chunk."
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mode_match_without_around_match_errors() {
+        let content = b"line 1";
+        let (key, file) = make_file("src/lib.rs", content, vec![]);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let result = server
+            .get_file_content(Parameters(super::GetFileContentInput {
+                path: "src/lib.rs".to_string(),
+                mode: Some("match".to_string()),
+                start_line: None,
+                end_line: None,
+                chunk_index: None,
+                max_lines: None,
+                around_line: None,
+                around_match: None,
+                around_symbol: None,
+                symbol_line: None,
+                context_lines: None,
+                show_line_numbers: None,
+                header: None,
+            }))
+            .await;
+        assert_eq!(result, "mode=match requires around_match");
+    }
+
+    #[tokio::test]
+    async fn test_mode_chunk_without_required_flags_errors() {
+        let content = b"line 1";
+        let (key, file) = make_file("src/lib.rs", content, vec![]);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let result = server
+            .get_file_content(Parameters(super::GetFileContentInput {
+                path: "src/lib.rs".to_string(),
+                mode: Some("chunk".to_string()),
+                start_line: None,
+                end_line: None,
+                chunk_index: None,
+                max_lines: None,
+                around_line: None,
+                around_match: None,
+                around_symbol: None,
+                symbol_line: None,
+                context_lines: None,
+                show_line_numbers: None,
+                header: None,
+            }))
+            .await;
+        assert_eq!(result, "mode=chunk requires chunk_index");
+    }
+
+    #[tokio::test]
+    async fn test_mode_chunk_cross_mode_errors() {
+        let content = b"line 1\nline 2\nline 3";
+        let (key, file) = make_file("src/lib.rs", content, vec![]);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let result = server
+            .get_file_content(Parameters(super::GetFileContentInput {
+                path: "src/lib.rs".to_string(),
+                mode: Some("chunk".to_string()),
+                start_line: None,
+                end_line: None,
+                chunk_index: Some(1),
+                max_lines: Some(10),
+                around_line: None,
+                around_match: Some("line".to_string()),
+                around_symbol: None,
+                symbol_line: None,
+                context_lines: None,
+                show_line_numbers: None,
+                header: None,
+            }))
+            .await;
+        assert!(
+            result.contains("mode=chunk conflicts with around_match"),
+            "expected cross-mode error, got: {result}"
+        );
+    }
+
     // ── Explore tool tests ──────────────────────────────────────────────────
 
     #[tokio::test]
@@ -5396,6 +6198,7 @@ mod tests {
                 query: "error handling".to_string(),
                 limit: Some(5),
                 depth: None,
+                include_noise: None,
             }))
             .await;
         assert!(
@@ -5419,6 +6222,7 @@ mod tests {
                 query: "process data".to_string(),
                 limit: Some(5),
                 depth: None,
+                include_noise: None,
             }))
             .await;
         assert!(
@@ -5435,6 +6239,7 @@ mod tests {
                 query: "".to_string(),
                 limit: None,
                 depth: None,
+                include_noise: None,
             }))
             .await;
         assert!(
@@ -5462,6 +6267,7 @@ mod tests {
                 query: "error handling".to_string(),
                 limit: Some(5),
                 depth: Some(2),
+                include_noise: None,
             }))
             .await;
         assert!(
@@ -5493,6 +6299,7 @@ mod tests {
                 query: "burst debounce".to_string(),
                 limit: Some(10),
                 depth: None,
+                include_noise: None,
             }))
             .await;
         assert!(
@@ -5520,6 +6327,7 @@ mod tests {
                 query: "watcher".to_string(),
                 limit: Some(10),
                 depth: None,
+                include_noise: None,
             }))
             .await;
         assert!(
@@ -5547,6 +6355,7 @@ mod tests {
                 query: "error handling in the watcher".to_string(),
                 limit: Some(10),
                 depth: None,
+                include_noise: None,
             }))
             .await;
         assert!(
@@ -5574,11 +6383,113 @@ mod tests {
                 query: "error handling".to_string(),
                 limit: Some(10),
                 depth: None,
+                include_noise: None,
             }))
             .await;
         assert!(
             result.contains("TokenizorError"),
             "exact concept should find error symbols: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_explore_hides_vendor_noise_by_default() {
+        // Vendor file should be filtered out when include_noise is false (default).
+        let vendor_content = b"pub fn vendor_func() {}\n";
+        let vendor_sym = SymbolRecord {
+            name: "vendor_func".to_string(),
+            kind: SymbolKind::Function,
+            depth: 0,
+            sort_order: 0,
+            byte_range: (0, vendor_content.len() as u32),
+            line_range: (0, 0),
+            doc_byte_range: None,
+        };
+        let src_content = b"pub fn process_error() {}\n";
+        let src_sym = SymbolRecord {
+            name: "process_error".to_string(),
+            kind: SymbolKind::Function,
+            depth: 0,
+            sort_order: 0,
+            byte_range: (0, src_content.len() as u32),
+            line_range: (0, 0),
+            doc_byte_range: None,
+        };
+        let (vkey, vfile) = make_file("vendor/somelib/lib.rs", vendor_content, vec![vendor_sym]);
+        let (skey, sfile) = make_file("src/error.rs", src_content, vec![src_sym]);
+        let server = make_server(make_live_index_ready(vec![(vkey, vfile), (skey, sfile)]));
+        let result = server
+            .explore(Parameters(super::ExploreInput {
+                query: "error handling".to_string(),
+                limit: Some(10),
+                depth: None,
+                include_noise: None,
+            }))
+            .await;
+        assert!(
+            !result.contains("vendor_func"),
+            "vendor symbol should be hidden by default: {result}"
+        );
+        assert!(
+            result.contains("process_error"),
+            "src symbol should still appear: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_explore_includes_vendor_when_include_noise_true() {
+        let vendor_content = b"pub struct VendorError {}\n";
+        let vendor_sym = SymbolRecord {
+            name: "VendorError".to_string(),
+            kind: SymbolKind::Struct,
+            depth: 0,
+            sort_order: 0,
+            byte_range: (0, vendor_content.len() as u32),
+            line_range: (0, 0),
+            doc_byte_range: None,
+        };
+        let (vkey, vfile) = make_file("vendor/somelib/lib.rs", vendor_content, vec![vendor_sym]);
+        let server = make_server(make_live_index_ready(vec![(vkey, vfile)]));
+        let result = server
+            .explore(Parameters(super::ExploreInput {
+                query: "error handling".to_string(),
+                limit: Some(10),
+                depth: None,
+                include_noise: Some(true),
+            }))
+            .await;
+        assert!(
+            result.contains("VendorError"),
+            "vendor symbol should appear with include_noise=true: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_explore_noise_hint_shown_when_results_hidden() {
+        let vendor_content = b"pub struct VendorError {}\n";
+        let vendor_sym = SymbolRecord {
+            name: "VendorError".to_string(),
+            kind: SymbolKind::Struct,
+            depth: 0,
+            sort_order: 0,
+            byte_range: (0, vendor_content.len() as u32),
+            line_range: (0, 0),
+            doc_byte_range: None,
+        };
+        let (vkey, vfile) = make_file("vendor/somelib/lib.rs", vendor_content, vec![vendor_sym]);
+        let server = make_server(make_live_index_ready(vec![(vkey, vfile)]));
+        let result = server
+            .explore(Parameters(super::ExploreInput {
+                query: "error handling".to_string(),
+                limit: Some(10),
+                depth: None,
+                include_noise: None,
+            }))
+            .await;
+        assert!(
+            result.contains("vendor/generated files hidden")
+                && result.contains("include_noise=true"),
+            "should show noise hint when results are hidden: {result}"
         );
     }
 
@@ -5720,6 +6631,7 @@ mod tests {
                 path: "src/lib.rs".to_string(),
                 line: 2,
                 context: None,
+                sibling_limit: None,
             }))
             .await;
 
@@ -5729,6 +6641,109 @@ mod tests {
         assert!(
             result.contains("Enclosing symbol: fn process (lines 1-3)"),
             "got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_inspect_match_default_sibling_limit_caps_at_10() {
+        // Build a file with 15 top-level functions (depth 0).
+        let mut syms = Vec::new();
+        for i in 0u32..15 {
+            syms.push(make_symbol(&format!("fn_{i}"), SymbolKind::Function, i, i));
+        }
+        let content = (0u32..15)
+            .map(|i| format!("fn fn_{i}() {{}}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let target = make_file("src/lib.rs", content.as_bytes(), syms);
+        let server = make_server(make_live_index_ready(vec![target]));
+
+        // No sibling_limit — defaults to 10.
+        let result = server
+            .inspect_match(Parameters(super::InspectMatchInput {
+                path: "src/lib.rs".to_string(),
+                line: 1,
+                context: Some(0),
+                sibling_limit: None,
+            }))
+            .await;
+
+        // Count sibling rows (each rendered with two-space indent).
+        let sibling_rows = result
+            .lines()
+            .filter(|l| l.starts_with("  ") && !l.starts_with("  ..."))
+            .count();
+        assert!(
+            sibling_rows <= 10,
+            "expected ≤10 siblings, got {sibling_rows}; output:\n{result}"
+        );
+        assert!(
+            result.contains("... and 5 more siblings"),
+            "expected overflow hint; got:\n{result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_inspect_match_sibling_limit_5_shows_exactly_5() {
+        let mut syms = Vec::new();
+        for i in 0u32..12 {
+            syms.push(make_symbol(&format!("fn_{i}"), SymbolKind::Function, i, i));
+        }
+        let content = (0u32..12)
+            .map(|i| format!("fn fn_{i}() {{}}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let target = make_file("src/lib.rs", content.as_bytes(), syms);
+        let server = make_server(make_live_index_ready(vec![target]));
+
+        let result = server
+            .inspect_match(Parameters(super::InspectMatchInput {
+                path: "src/lib.rs".to_string(),
+                line: 1,
+                context: Some(0),
+                sibling_limit: Some(5),
+            }))
+            .await;
+
+        let sibling_rows = result
+            .lines()
+            .filter(|l| l.starts_with("  ") && !l.starts_with("  ..."))
+            .count();
+        assert_eq!(
+            sibling_rows, 5,
+            "expected exactly 5 siblings; output:\n{result}"
+        );
+        assert!(
+            result.contains("... and 7 more siblings"),
+            "expected overflow hint; got:\n{result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_inspect_match_sibling_limit_0_hides_siblings() {
+        let mut syms = Vec::new();
+        for i in 0u32..5 {
+            syms.push(make_symbol(&format!("fn_{i}"), SymbolKind::Function, i, i));
+        }
+        let content = (0u32..5)
+            .map(|i| format!("fn fn_{i}() {{}}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let target = make_file("src/lib.rs", content.as_bytes(), syms);
+        let server = make_server(make_live_index_ready(vec![target]));
+
+        let result = server
+            .inspect_match(Parameters(super::InspectMatchInput {
+                path: "src/lib.rs".to_string(),
+                line: 1,
+                context: Some(0),
+                sibling_limit: Some(0),
+            }))
+            .await;
+
+        assert!(
+            !result.contains("Nearby siblings:"),
+            "siblings should be hidden; got:\n{result}"
         );
     }
 
@@ -6063,10 +7078,11 @@ mod tests {
         let (key, file) = make_file("src/lib.rs", b"struct Foo {}", vec![sym]);
         let server = make_server(make_live_index_ready(vec![(key, file)]));
 
+        // Empty/whitespace query with no kind or path_prefix is fully unbounded — must be rejected
         for query in ["", "   ", "\t"] {
             let result = server
                 .search_symbols(Parameters(super::SearchSymbolsInput {
-                    query: query.to_string(),
+                    query: Some(query.to_string()),
                     kind: None,
                     path_prefix: None,
                     language: None,
@@ -6076,8 +7092,8 @@ mod tests {
                 }))
                 .await;
             assert!(
-                result.contains("non-empty query"),
-                "empty query '{query}' should be rejected, got: {result}"
+                result.contains("requires at least one of"),
+                "empty query '{query}' with no kind/path_prefix should be rejected, got: {result}"
             );
         }
     }
@@ -6093,6 +7109,7 @@ mod tests {
                 path: "src/lib.rs".to_string(),
                 line: 999999,
                 context: None,
+                sibling_limit: None,
             }))
             .await;
         assert!(
@@ -6225,6 +7242,7 @@ mod tests {
                 path: "src/lib.rs".to_string(),
                 line: 0,
                 context: None,
+                sibling_limit: None,
             }))
             .await;
         assert!(
@@ -6732,6 +7750,7 @@ mod tests {
                     operation: EditOperation::Delete,
                 },
             ],
+            dry_run: false,
         };
         let result = server.batch_edit(Parameters(input)).await;
         assert!(result.contains("2 edit(s)"), "result: {result}");
