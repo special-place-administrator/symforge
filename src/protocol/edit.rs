@@ -561,7 +561,10 @@ pub(crate) fn execute_batch_edit(
     }
 
     // Phase 3: Apply edits per file, write, reindex.
+    // Best-effort: each file is written+reindexed independently.
+    // If one file's write fails, continue with the rest and report the failure.
     let mut summaries = Vec::new();
+    let mut write_failures: Vec<String> = Vec::new();
 
     for (path, indices) in &by_file {
         let file = {
@@ -573,6 +576,7 @@ pub(crate) fn execute_batch_edit(
 
         let mut content = file.content.clone();
         let language = resolved[indices[0]].language.clone();
+        let mut file_summaries: Vec<String> = Vec::new();
 
         for &ri in indices {
             let r = &resolved[ri];
@@ -589,7 +593,7 @@ pub(crate) fn execute_batch_edit(
                     let indent = detect_indentation(&content, r.sym.byte_range.0);
                     let indented = apply_indentation(new_body, &indent);
                     content = apply_splice(&content, (line_start, r.sym.byte_range.1), &indented);
-                    summaries.push(super::edit_format::format_replace(
+                    file_summaries.push(super::edit_format::format_replace(
                         path,
                         &r.sym.name,
                         &r.sym.kind.to_string(),
@@ -599,7 +603,7 @@ pub(crate) fn execute_batch_edit(
                 }
                 EditOperation::InsertBefore { content: code } => {
                     content = build_insert_before(&content, &r.sym, code);
-                    summaries.push(super::edit_format::format_insert(
+                    file_summaries.push(super::edit_format::format_insert(
                         path,
                         &r.sym.name,
                         "before",
@@ -608,7 +612,7 @@ pub(crate) fn execute_batch_edit(
                 }
                 EditOperation::InsertAfter { content: code } => {
                     content = build_insert_after(&content, &r.sym, code);
-                    summaries.push(super::edit_format::format_insert(
+                    file_summaries.push(super::edit_format::format_insert(
                         path,
                         &r.sym.name,
                         "after",
@@ -618,7 +622,7 @@ pub(crate) fn execute_batch_edit(
                 EditOperation::Delete => {
                     let deleted = (r.sym.byte_range.1 - r.sym.byte_range.0) as usize;
                     content = build_delete(&content, &r.sym);
-                    summaries.push(super::edit_format::format_delete(
+                    file_summaries.push(super::edit_format::format_delete(
                         path,
                         &r.sym.name,
                         &r.sym.kind.to_string(),
@@ -631,7 +635,7 @@ pub(crate) fn execute_batch_edit(
                         build_edit_within(&content, &r.sym, old_text, new_text, false)
                             .map_err(|e| format!("Edit in {path}:{}: {e}", r.sym.name))?;
                     content = new;
-                    summaries.push(super::edit_format::format_edit_within(
+                    file_summaries.push(super::edit_format::format_edit_within(
                         path,
                         &r.sym.name,
                         count,
@@ -644,27 +648,43 @@ pub(crate) fn execute_batch_edit(
 
         if dry_run {
             // Prefix summaries for this file's edits with [DRY RUN] and skip all writes.
-            let file_edit_count = indices.len();
-            let start = summaries.len() - file_edit_count;
-            for s in &mut summaries[start..] {
+            for s in &mut file_summaries {
                 *s = format!("[DRY RUN] Would {s}");
             }
+            summaries.extend(file_summaries);
         } else {
             let abs_path = repo_root.join(path);
-            atomic_write_file(&abs_path, &content).map_err(|e| {
-                let written_note = if summaries.is_empty() {
-                    "No files were written before this failure.".to_string()
-                } else {
-                    format!(
-                        "WARNING: {} file(s) were already written before this failure:\n{}",
-                        summaries.len(),
-                        summaries.join("\n")
-                    )
-                };
-                format!("Write failed for {path}: {e}\n\n{written_note}")
-            })?;
-            reindex_after_write(index, &abs_path, path, &content, language);
+            match atomic_write_file(&abs_path, &content) {
+                Ok(()) => {
+                    reindex_after_write(index, &abs_path, path, &content, language);
+                    summaries.extend(file_summaries);
+                }
+                Err(e) => {
+                    // Best-effort: record the failure and continue with remaining files.
+                    // The index is NOT updated for this file — it retains the pre-edit state.
+                    write_failures.push(format!("FAILED {path}: {e}"));
+                }
+            }
         }
+    }
+
+    if !write_failures.is_empty() {
+        let failure_block = write_failures.join("\n");
+        let success_block = if summaries.is_empty() {
+            "No files were written.".to_string()
+        } else {
+            format!(
+                "{} file(s) written successfully:\n{}",
+                summaries.len(),
+                summaries.join("\n")
+            )
+        };
+        return Err(format!(
+            "batch_edit partial failure — {} file(s) could not be written:\n{}\n\n{}",
+            write_failures.len(),
+            failure_block,
+            success_block,
+        ));
     }
 
     Ok(summaries)
@@ -822,11 +842,20 @@ pub(crate) fn execute_batch_rename(
         return Ok(lines.join("\n"));
     }
 
-    // Phase 4: Apply renames (confident only), write, reindex.
+    // Phase 4: Atomic rename — stage all new content in memory first, then write all.
+    // On any write failure, roll back already-written files to their original content.
     let new_name_bytes = input.new_name.as_bytes();
-    let mut files_updated = 0;
-    let mut refs_updated = 0;
 
+    // Stage: compute new content for every file without touching disk.
+    struct StagedFile {
+        path: String,
+        abs_path: std::path::PathBuf,
+        original: Vec<u8>,
+        new_content: Vec<u8>,
+        language: LanguageId,
+        refs_count: usize,
+    }
+    let mut staged: Vec<StagedFile> = Vec::with_capacity(by_file.len());
     for (path, ranges) in &by_file {
         let file = {
             let guard = index.read().expect("lock poisoned");
@@ -834,24 +863,94 @@ pub(crate) fn execute_batch_rename(
                 .capture_shared_file(path)
                 .ok_or_else(|| format!("File disappeared: {path}"))?
         };
-
-        let mut content = file.content.clone();
+        let original = file.content.clone();
+        let mut new_content = original.clone();
         for range in ranges {
-            content = apply_splice(&content, *range, new_name_bytes);
-            refs_updated += 1;
+            new_content = apply_splice(&new_content, *range, new_name_bytes);
         }
-
-        let abs_path = repo_root.join(path);
-        atomic_write_file(&abs_path, &content)
-            .map_err(|e| format!("Write failed for {path}: {e}"))?;
-
         let lang = if path == &input.path {
             language.clone()
         } else {
             file.language.clone()
         };
-        reindex_after_write(index, &abs_path, path, &content, lang);
+        staged.push(StagedFile {
+            path: path.clone(),
+            abs_path: repo_root.join(path),
+            original,
+            new_content,
+            language: lang,
+            refs_count: ranges.len(),
+        });
+    }
+
+    // Apply: write each staged file; on failure roll back already-written files.
+    let mut written: Vec<usize> = Vec::new(); // indices into staged
+    let mut write_error: Option<String> = None;
+    for (i, sf) in staged.iter().enumerate() {
+        if let Err(e) = atomic_write_file(&sf.abs_path, &sf.new_content) {
+            write_error = Some(format!("Write failed for {}: {e}", sf.path));
+            break;
+        }
+        written.push(i);
+    }
+
+    if let Some(err_msg) = write_error {
+        // Rollback: restore every file that was already written.
+        let mut rollback_failures: Vec<String> = Vec::new();
+        for &wi in &written {
+            let sf = &staged[wi];
+            if let Err(rb_err) = std::fs::write(&sf.abs_path, &sf.original) {
+                rollback_failures.push(format!("  {}: {rb_err}", sf.path));
+                continue;
+            }
+            // Re-read from disk and reindex to ensure index matches disk.
+            match std::fs::read(&sf.abs_path) {
+                Ok(on_disk) => {
+                    reindex_after_write(
+                        index,
+                        &sf.abs_path,
+                        &sf.path,
+                        &on_disk,
+                        sf.language.clone(),
+                    );
+                }
+                Err(rb_err) => {
+                    rollback_failures.push(format!(
+                        "  {} (reindex after rollback): {rb_err}",
+                        sf.path
+                    ));
+                }
+            }
+        }
+        if rollback_failures.is_empty() {
+            return Err(format!(
+                "{err_msg}\n\nROLLED BACK — {} file(s) restored to original content. \
+                 No rename was applied.",
+                written.len(),
+            ));
+        } else {
+            return Err(format!(
+                "{err_msg}\n\nROLLBACK INCOMPLETE — {} file(s) could not be restored:\n{}\n\
+                 WARNING: codebase may be in a partially-renamed state. \
+                 Manually verify the following files:\n{}",
+                rollback_failures.len(),
+                rollback_failures.join("\n"),
+                written
+                    .iter()
+                    .map(|&wi| format!("  {}", staged[wi].path))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ));
+        }
+    }
+
+    // All writes succeeded — reindex every file.
+    let mut files_updated = 0;
+    let mut refs_updated = 0;
+    for sf in &staged {
+        reindex_after_write(index, &sf.abs_path, &sf.path, &sf.new_content, sf.language.clone());
         files_updated += 1;
+        refs_updated += sf.refs_count;
     }
 
     let mut output = format!(
@@ -903,12 +1002,16 @@ pub struct InsertTarget {
 }
 
 /// Insert the same code before or after multiple symbols across the project.
+/// Best-effort: each target is written+reindexed independently. If one write
+/// fails, the remaining targets are still attempted. Partial failures are
+/// reported in the return value.
 pub(crate) fn execute_batch_insert(
     index: &SharedIndex,
     repo_root: &Path,
     input: &BatchInsertInput,
 ) -> Result<Vec<String>, String> {
     let mut summaries = Vec::new();
+    let mut write_failures: Vec<String> = Vec::new();
     let position_label = match input.position {
         InsertPosition::Before => "before",
         InsertPosition::After => "after",
@@ -936,16 +1039,40 @@ pub(crate) fn execute_batch_insert(
         };
 
         let abs_path = repo_root.join(&target.path);
-        atomic_write_file(&abs_path, &new_content)
-            .map_err(|e| format!("Write failed for {}: {e}", target.path))?;
+        match atomic_write_file(&abs_path, &new_content) {
+            Ok(()) => {
+                let lang = file.language.clone();
+                reindex_after_write(index, &abs_path, &target.path, &new_content, lang);
+                summaries.push(super::edit_format::format_insert(
+                    &target.path,
+                    &target.name,
+                    position_label,
+                    input.content.len(),
+                ));
+            }
+            Err(e) => {
+                // Best-effort: record the failure, index unchanged for this file.
+                write_failures.push(format!("FAILED {}: {e}", target.path));
+            }
+        }
+    }
 
-        let lang = file.language.clone();
-        reindex_after_write(index, &abs_path, &target.path, &new_content, lang);
-        summaries.push(super::edit_format::format_insert(
-            &target.path,
-            &target.name,
-            position_label,
-            input.content.len(),
+    if !write_failures.is_empty() {
+        let failure_block = write_failures.join("\n");
+        let success_block = if summaries.is_empty() {
+            "No files were written.".to_string()
+        } else {
+            format!(
+                "{} file(s) written successfully:\n{}",
+                summaries.len(),
+                summaries.join("\n")
+            )
+        };
+        return Err(format!(
+            "batch_insert partial failure — {} file(s) could not be written:\n{}\n\n{}",
+            write_failures.len(),
+            failure_block,
+            success_block,
         ));
     }
 
@@ -2011,6 +2138,165 @@ mod tests {
         assert!(a.contains("logging"), "a.rs: {a}");
         let b = std::fs::read_to_string(src.join("b.rs")).unwrap();
         assert!(b.contains("logging"), "b.rs: {b}");
+    }
+
+    // -- partial failure / atomicity --
+
+    #[test]
+    #[cfg(unix)]
+    fn test_batch_edit_partial_success_reindexes_completed() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+
+        // File 1: writable, has symbol "alpha"
+        std::fs::write(src.join("a.rs"), b"fn alpha() { old }\n").unwrap();
+        // File 2: will be made read-only after indexing
+        std::fs::write(src.join("b.rs"), b"fn beta() { old }\n").unwrap();
+        // File 3: writable, has symbol "gamma"
+        std::fs::write(src.join("c.rs"), b"fn gamma() { old }\n").unwrap();
+
+        let handle = crate::live_index::LiveIndex::empty();
+        for (path, content) in [
+            ("src/a.rs", b"fn alpha() { old }\n" as &[u8]),
+            ("src/b.rs", b"fn beta() { old }\n"),
+            ("src/c.rs", b"fn gamma() { old }\n"),
+        ] {
+            let result = crate::parsing::process_file(path, content, LanguageId::Rust);
+            let indexed = IndexedFile::from_parse_result(result, content.to_vec());
+            handle.update_file(path.to_string(), indexed);
+        }
+
+        // Make file 2 read-only so the write will fail.
+        let b_path = src.join("b.rs");
+        std::fs::set_permissions(&b_path, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+        let edits = vec![
+            SingleEdit {
+                path: "src/a.rs".to_string(),
+                name: "alpha".to_string(),
+                kind: None,
+                symbol_line: None,
+                operation: EditOperation::Replace {
+                    new_body: "fn alpha() { new }".to_string(),
+                },
+            },
+            SingleEdit {
+                path: "src/b.rs".to_string(),
+                name: "beta".to_string(),
+                kind: None,
+                symbol_line: None,
+                operation: EditOperation::Replace {
+                    new_body: "fn beta() { new }".to_string(),
+                },
+            },
+            SingleEdit {
+                path: "src/c.rs".to_string(),
+                name: "gamma".to_string(),
+                kind: None,
+                symbol_line: None,
+                operation: EditOperation::Replace {
+                    new_body: "fn gamma() { new }".to_string(),
+                },
+            },
+        ];
+
+        let result = execute_batch_edit(&handle, dir.path(), &edits, false);
+
+        // Restore permissions before any assertions that might panic.
+        std::fs::set_permissions(&b_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        // Result must be an error reporting the partial failure.
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("FAILED src/b.rs"),
+            "expected FAILED src/b.rs in: {err}"
+        );
+        assert!(
+            err.contains("partial failure"),
+            "expected 'partial failure' in: {err}"
+        );
+
+        // File 1 (a.rs): was written successfully — disk and index reflect edit.
+        let a_content = std::fs::read_to_string(src.join("a.rs")).unwrap();
+        assert!(a_content.contains("new"), "a.rs should be updated: {a_content}");
+
+        // File 2 (b.rs): write failed — disk unchanged, index unchanged.
+        let b_content = std::fs::read_to_string(&b_path).unwrap();
+        assert!(b_content.contains("old"), "b.rs should be unchanged: {b_content}");
+
+        // File 3 (c.rs): also attempted — best-effort continues past file 2.
+        // (Whether c.rs succeeded depends on iteration order, but the error must mention b.rs.)
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_batch_rename_rolls_back_on_failure() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+
+        // Three files all containing "OldName".
+        std::fs::write(src.join("a.rs"), b"struct OldName;\n").unwrap();
+        std::fs::write(src.join("b.rs"), b"use crate::OldName;\n").unwrap();
+        std::fs::write(src.join("c.rs"), b"fn use_it(x: OldName) {}\n").unwrap();
+
+        let handle = crate::live_index::LiveIndex::empty();
+        for (path, content) in [
+            ("src/a.rs", b"struct OldName;\n" as &[u8]),
+            ("src/b.rs", b"use crate::OldName;\n"),
+            ("src/c.rs", b"fn use_it(x: OldName) {}\n"),
+        ] {
+            let result = crate::parsing::process_file(path, content, LanguageId::Rust);
+            let indexed = IndexedFile::from_parse_result(result, content.to_vec());
+            handle.update_file(path.to_string(), indexed);
+        }
+
+        // Make src/b.rs read-only so its write will fail mid-rename.
+        let b_path = src.join("b.rs");
+        std::fs::set_permissions(&b_path, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+        let input = crate::protocol::edit::BatchRenameInput {
+            path: "src/a.rs".to_string(),
+            name: "OldName".to_string(),
+            new_name: "NewName".to_string(),
+            kind: None,
+            symbol_line: None,
+            dry_run: Some(false),
+        };
+
+        let result = execute_batch_rename(&handle, dir.path(), &input);
+
+        // Restore permissions before assertions.
+        std::fs::set_permissions(&b_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        // Must be an error.
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("ROLLED BACK") || err.contains("Write failed"),
+            "expected rollback message in: {err}"
+        );
+
+        // All files that were written before the failure must be rolled back to "OldName".
+        let a_content = std::fs::read_to_string(src.join("a.rs")).unwrap();
+        assert!(
+            a_content.contains("OldName"),
+            "a.rs should be rolled back to OldName: {a_content}"
+        );
+        assert!(
+            !a_content.contains("NewName"),
+            "a.rs must not contain NewName after rollback: {a_content}"
+        );
+
+        let b_content = std::fs::read_to_string(&b_path).unwrap();
+        assert!(
+            b_content.contains("OldName"),
+            "b.rs (read-only, never written) should still have OldName: {b_content}"
+        );
     }
 
     // -- extract_signature --
