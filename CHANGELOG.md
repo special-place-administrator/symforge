@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.30.1](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.30.0...v0.30.1) (2026-03-15)
+
+
+### Bug Fixes
+
+* prevent async runtime starvation under concurrent subagent load ([2ed134a](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/2ed134aa34a82f258eb37be4121c341272cc85d6))
+
 ## [0.30.0](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.29.1...v0.30.0) (2026-03-15)
 
 
