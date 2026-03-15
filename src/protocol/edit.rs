@@ -911,6 +911,45 @@ pub struct BatchRenameInput {
     pub dry_run: Option<bool>,
 }
 
+/// Validate rename ranges for a single file. Sorts descending, deduplicates exact matches,
+/// validates bounds/text/overlaps. Mutates `ranges` in place.
+fn validate_rename_ranges(
+    ranges: &mut Vec<(u32, u32)>,
+    original: &[u8],
+    old_name: &str,
+    file_path: &str,
+) -> Result<(), String> {
+    let old_bytes = old_name.as_bytes();
+
+    // Sort descending by (start, end) — current code only sorts by start
+    ranges.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+    ranges.dedup();
+
+    // Validate bounds and text match; remove ranges that don't match (xref may
+    // produce wider ranges for qualified paths like crate::Widget).
+    ranges.retain(|&(start, end)| {
+        if start >= end || end as usize > original.len() {
+            return false;
+        }
+        let actual = &original[start as usize..end as usize];
+        actual == old_bytes
+    });
+
+    // Check overlaps: ranges sorted descending, so prev.start >= curr.start
+    for window in ranges.windows(2) {
+        let prev = window[0]; // higher offset
+        let curr = window[1]; // lower offset
+        if curr.1 > prev.0 {
+            return Err(format!(
+                "{file_path}: overlapping ranges ({}, {}) and ({}, {})",
+                curr.0, curr.1, prev.0, prev.1
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 /// Rename a symbol and all its references across the project.
 pub(crate) fn execute_batch_rename(
     index: &SharedIndex,
@@ -1003,10 +1042,15 @@ pub(crate) fn execute_batch_rename(
     for (path, range) in &qualified_confident {
         by_file.entry(path.clone()).or_default().push(*range);
     }
-    // Sort reverse by offset, dedup (removes overlap between indexed refs and qualified scan).
-    for ranges in by_file.values_mut() {
-        ranges.sort_by(|a, b| b.0.cmp(&a.0));
-        ranges.dedup();
+    // Validate, sort descending, dedup, and check for overlaps.
+    for (path, ranges) in by_file.iter_mut() {
+        let file = {
+            let guard = index.read().expect("lock poisoned");
+            guard
+                .capture_shared_file(path)
+                .ok_or_else(|| format!("File disappeared: {path}"))?
+        };
+        validate_rename_ranges(ranges, &file.content, &input.name, path)?;
     }
 
     // Build uncertain warning lines sorted by file then line, deduped.
@@ -1065,8 +1109,16 @@ pub(crate) fn execute_batch_rename(
         };
         let original = file.content.clone();
         let mut new_content = original.clone();
+        let mut last_start: Option<u32> = None;
         for range in ranges {
+            debug_assert!(
+                last_start.map_or(true, |prev| range.0 < prev),
+                "ranges must be strictly descending: {} not < {:?}",
+                range.0,
+                last_start
+            );
             new_content = apply_splice(&new_content, *range, new_name_bytes);
+            last_start = Some(range.0);
         }
         let lang = if path == &input.path {
             language.clone()
@@ -1722,6 +1774,75 @@ mod tests {
         let content = b"ab";
         let result = apply_splice(content, (1, 1), b"X");
         assert_eq!(result, b"aXb");
+    }
+
+    // -- validate_rename_ranges --
+
+    #[test]
+    fn test_validate_rename_ranges_exact_dedup() {
+        let content = b"foo bar foo baz foo";
+        let mut ranges = vec![(0u32, 3u32), (8, 11), (16, 19), (8, 11)];
+        validate_rename_ranges(&mut ranges, content, "foo", "test.rs").unwrap();
+        assert_eq!(ranges.len(), 3);
+    }
+
+    #[test]
+    fn test_validate_rename_ranges_overlap_rejected() {
+        // "aaaa" contains "aa" at overlapping offsets (0,2) and (1,3)
+        let content = b"aaaa";
+        let mut ranges = vec![(0u32, 2u32), (1, 3)];
+        let result = validate_rename_ranges(&mut ranges, content, "aa", "test.rs");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("overlapping"));
+    }
+
+    #[test]
+    fn test_validate_rename_ranges_mismatched_filtered() {
+        // Ranges that don't match the expected text are silently removed
+        let content = b"xxfooxxfooxx";
+        let mut ranges = vec![(0u32, 12u32), (2, 5)];
+        validate_rename_ranges(&mut ranges, content, "foo", "test.rs").unwrap();
+        // (0,12) doesn't match "foo", filtered out; (2,5) = "foo", kept
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0], (2, 5));
+    }
+
+    #[test]
+    fn test_validate_rename_ranges_adjacent_allowed() {
+        let content = b"foofoofoo";
+        let mut ranges = vec![(0u32, 3u32), (3, 6), (6, 9)];
+        validate_rename_ranges(&mut ranges, content, "foo", "test.rs").unwrap();
+        assert_eq!(ranges.len(), 3);
+    }
+
+    #[test]
+    fn test_validate_rename_ranges_text_mismatch_filtered() {
+        let content = b"foo bar baz";
+        let mut ranges = vec![(4u32, 7u32)];
+        validate_rename_ranges(&mut ranges, content, "foo", "test.rs").unwrap();
+        // (4,7) = "bar", doesn't match "foo" — filtered out
+        assert_eq!(ranges.len(), 0);
+    }
+
+    #[test]
+    fn test_validate_rename_ranges_dedup_count() {
+        let content = b"foo + foo + foo";
+        let mut ranges = vec![(0u32, 3u32), (6, 9), (12, 15), (6, 9)];
+        validate_rename_ranges(&mut ranges, content, "foo", "test.rs").unwrap();
+        assert_eq!(ranges.len(), 3);
+    }
+
+    #[test]
+    fn test_batch_rename_length_change_close_refs() {
+        let content = b"ab ab ab";
+        let mut ranges = vec![(0u32, 2u32), (3, 5), (6, 8)];
+        validate_rename_ranges(&mut ranges, content, "ab", "test.rs").unwrap();
+        let new_name = b"xyz";
+        let mut result = content.to_vec();
+        for range in &ranges {
+            result = apply_splice(&result, *range, new_name);
+        }
+        assert_eq!(result, b"xyz xyz xyz");
     }
 
     // -- atomic_write_file --
@@ -3165,7 +3286,10 @@ mod tests {
         let indent = b"    ";
         let result = apply_indentation(text, indent, LineEnding::CrLf);
         // Must contain CRLF
-        assert!(result.windows(2).any(|w| w == b"\r\n"), "should contain CRLF");
+        assert!(
+            result.windows(2).any(|w| w == b"\r\n"),
+            "should contain CRLF"
+        );
         // No bare \n (every \n must be preceded by \r)
         for (i, &byte) in result.iter().enumerate() {
             if byte == b'\n' {
@@ -3232,7 +3356,10 @@ mod tests {
         let content = b"fn existing() {\n    body();\n}\n";
         let sym = make_test_symbol("existing", SymbolKind::Function, (0, 29), 1);
         let result = build_insert_before(content, &sym, "fn new_fn() {}", LineEnding::Lf);
-        assert!(!result.contains(&b'\r'), "LF file edit must not introduce CR");
+        assert!(
+            !result.contains(&b'\r'),
+            "LF file edit must not introduce CR"
+        );
     }
 
     #[test]
