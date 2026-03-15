@@ -2317,10 +2317,42 @@ impl TokenizorServer {
             }
         }
 
-        // Phase 3: Filter noise, sort by match count descending, truncate to limit
-        // Exclude explore.rs itself (CONCEPT_MAP contains concept keywords in its body)
+        // Phase 3: Filter noise, weight by kind and path, sort, truncate to limit.
+        // Exclude explore.rs itself (CONCEPT_MAP contains concept keywords in its body).
         match_counts.retain(|(_, _, path), _| !path.ends_with("protocol/explore.rs"));
-        let mut ranked: Vec<_> = match_counts.into_iter().collect();
+
+        // Score each symbol: match_count * kind_weight, penalized for doc/generated files.
+        let scored: Vec<((String, String, String), u64)> = match_counts
+            .into_iter()
+            .map(|((name, kind, path), count)| {
+                // Kind weight: definition-like symbols rank higher than incidental matches.
+                let kind_weight: u64 = match kind.as_str() {
+                    "fn" | "method" => 4,
+                    "struct" | "class" | "trait" | "interface" | "enum" => 4,
+                    "impl" | "mod" | "module" => 3,
+                    "const" | "type" => 2,
+                    "variable" | "let" => 1,
+                    "key" | "section" => 1,
+                    _ => 2, // "other" (selectors, etc.)
+                };
+                // Path penalty: doc, changelog, generated, planning files rank lower.
+                let path_lower = path.to_ascii_lowercase();
+                let path_penalty: u64 = if path_lower.contains("changelog")
+                    || path_lower.contains(".auto-claude")
+                    || path_lower.contains(".planning/")
+                    || path_lower.ends_with(".md")
+                    || path_lower.contains("/docs/")
+                {
+                    1 // heavy penalty: score / 4 effectively
+                } else {
+                    4 // no penalty
+                };
+                let score = (count as u64) * kind_weight * path_penalty;
+                ((name, kind, path), score)
+            })
+            .collect();
+
+        let mut ranked = scored;
         ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.0.cmp(&b.0.0)));
         ranked.truncate(limit);
         let symbol_hits: Vec<(String, String, String)> =
