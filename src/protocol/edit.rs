@@ -450,16 +450,33 @@ pub(crate) fn execute_batch_edit(
     }
 
     // Phase 1: Resolve all symbols.
-    let mut resolved = Vec::with_capacity(edits.len());
+    let n = edits.len();
+    let targeted_paths: Vec<&str> = edits.iter().map(|e| e.path.as_str()).collect();
+    let rollback_footer = |paths: &[&str]| -> String {
+        let path_list = paths
+            .iter()
+            .map(|p| format!("  - {p}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!("\n\nROLLED BACK — {n} edit(s) attempted on:\n{path_list}\nNo files were modified.")
+    };
+
+    let mut resolved = Vec::with_capacity(n);
     {
         let guard = index.read().expect("lock poisoned");
         for (i, edit) in edits.iter().enumerate() {
-            let file = guard
-                .get_file(&edit.path)
-                .ok_or_else(|| format!("File not indexed: {}", edit.path))?;
+            let file = guard.get_file(&edit.path).ok_or_else(|| {
+                format!(
+                    "File not indexed: {}{}",
+                    edit.path,
+                    rollback_footer(&targeted_paths)
+                )
+            })?;
             let (_, sym) =
                 resolve_or_error(file, &edit.name, edit.kind.as_deref(), edit.symbol_line)
-                    .map_err(|e| format!("Edit {}: {e}", i + 1))?;
+                    .map_err(|e| {
+                        format!("Edit {}: {e}{}", i + 1, rollback_footer(&targeted_paths))
+                    })?;
             resolved.push(ResolvedEdit {
                 path: edit.path.clone(),
                 sym,
@@ -489,13 +506,14 @@ pub(crate) fn execute_batch_edit(
                 if a.0 < b.1 && b.0 < a.1 {
                     return Err(format!(
                         "Overlapping edits in {path}: `{}` ({}-{}) and `{}` ({}-{}). \
-                         Split into separate calls.",
+                         Split into separate calls.{}",
                         resolved[indices[i]].sym.name,
                         a.0,
                         a.1,
                         resolved[indices[j]].sym.name,
                         b.0,
                         b.1,
+                        rollback_footer(&targeted_paths),
                     ));
                 }
             }
@@ -595,8 +613,18 @@ pub(crate) fn execute_batch_edit(
         }
 
         let abs_path = repo_root.join(path);
-        atomic_write_file(&abs_path, &content)
-            .map_err(|e| format!("Write failed for {path}: {e}"))?;
+        atomic_write_file(&abs_path, &content).map_err(|e| {
+            let written_note = if summaries.is_empty() {
+                "No files were written before this failure.".to_string()
+            } else {
+                format!(
+                    "WARNING: {} file(s) were already written before this failure:\n{}",
+                    summaries.len(),
+                    summaries.join("\n")
+                )
+            };
+            format!("Write failed for {path}: {e}\n\n{written_note}")
+        })?;
         reindex_after_write(index, path, content, language);
     }
 
@@ -1431,6 +1459,60 @@ mod tests {
         assert!(result.unwrap_err().contains("Overlapping"));
     }
 
+    #[test]
+    fn test_execute_batch_edit_rollback_message_on_nonexistent_symbol() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("a.rs"), b"fn foo() {}\n").unwrap();
+
+        let handle = crate::live_index::LiveIndex::empty();
+        let content = b"fn foo() {}\n" as &[u8];
+        let result = crate::parsing::process_file("src/a.rs", content, LanguageId::Rust);
+        let indexed = IndexedFile::from_parse_result(result, content.to_vec());
+        handle.update_file("src/a.rs".to_string(), indexed);
+
+        // First edit targets a real symbol; second targets a nonexistent one.
+        let edits = vec![
+            SingleEdit {
+                path: "src/a.rs".to_string(),
+                name: "foo".to_string(),
+                kind: None,
+                symbol_line: None,
+                operation: EditOperation::Replace {
+                    new_body: "fn foo() { modified }".to_string(),
+                },
+            },
+            SingleEdit {
+                path: "src/a.rs".to_string(),
+                name: "nonexistent_symbol".to_string(),
+                kind: None,
+                symbol_line: None,
+                operation: EditOperation::Delete,
+            },
+        ];
+
+        let result = execute_batch_edit(&handle, dir.path(), &edits);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("ROLLED BACK"),
+            "expected ROLLED BACK in: {err}"
+        );
+        assert!(
+            err.contains("No files were modified"),
+            "expected 'No files were modified' in: {err}"
+        );
+        assert!(err.contains("2"), "expected edit count (2) in: {err}");
+
+        // Confirm the file was NOT modified.
+        let file_content = std::fs::read_to_string(src.join("a.rs")).unwrap();
+        assert!(
+            file_content.contains("fn foo() {}"),
+            "file should be unmodified: {file_content}"
+        );
+    }
+
     // -- execute_batch_insert --
 
     #[test]
@@ -1891,7 +1973,9 @@ mod tests {
             !result_str.contains("\n\n\n"),
             "should not produce triple newline with doc_byte_range: {result_str:?}"
         );
-        let ins_pos = result_str.find("fn inserted()").expect("inserted content missing");
+        let ins_pos = result_str
+            .find("fn inserted()")
+            .expect("inserted content missing");
         let doc_pos = result_str.find("/// Doc").expect("doc comment missing");
         assert!(
             ins_pos < doc_pos,
