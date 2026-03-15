@@ -103,9 +103,13 @@ test("locked Windows binary is replaced after stopping running Tokenizor process
   await installer.main();
 
   const powershellCalls = execCalls.filter((c) => c.command === "powershell.exe");
-  const initCalls = execCalls.filter((c) => c.command !== "powershell.exe");
+  const nonPsCalls = execCalls.filter((c) => c.command !== "powershell.exe");
+  const versionCalls = nonPsCalls.filter((c) => c.args.includes("--version"));
+  const initCalls = nonPsCalls.filter((c) => c.args.some((a) => /init/.test(a)));
   // stopAllRunningProcesses + stopRunningWindowsProcesses (EPERM fallback)
   assert.equal(powershellCalls.length, 2);
+  // getInstalledVersion calls the binary with --version
+  assert.equal(versionCalls.length, 1);
   // runAutoInit calls the installed binary
   assert.equal(initCalls.length, 1);
   assert.match(initCalls[0].args.join(" "), /init/);
