@@ -57,10 +57,10 @@ fn main() -> anyhow::Result<()> {
 fn run_daemon() -> anyhow::Result<()> {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        // Tool handlers acquire std::sync::RwLock on the index, which blocks
-        // the OS thread. Reserve 2 threads for the OS/system, use the rest
-        // for tokio workers so blocked threads don't exhaust the pool.
-        .worker_threads(std::thread::available_parallelism().map_or(4, |n| n.get().saturating_sub(2).max(4)))
+        // Default worker_threads = num_cpus. Tool handlers that acquire
+        // std::sync::RwLock are wrapped in spawn_blocking (see daemon.rs
+        // call_tool_handler), so they run on the blocking thread pool
+        // (up to 512 threads) and don't starve async workers.
         .build()?
         .block_on(async {
             observability::init_tracing()?;
