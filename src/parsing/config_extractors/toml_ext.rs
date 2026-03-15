@@ -27,6 +27,8 @@ impl ConfigExtractor for TomlExtractor {
         // Try strict parse first; fall back to line-scanning on parse error.
         // Note: DocumentMut rejects some constructs (e.g. [a] with a.b="v" then [a.b])
         // that real-world TOML files use. Line scanning handles these gracefully.
+        let line_starts = build_line_starts(content);
+
         match content_str.parse::<toml_edit::DocumentMut>() {
             Ok(doc) => {
                 let mut symbols = Vec::new();
@@ -36,6 +38,7 @@ impl ConfigExtractor for TomlExtractor {
                     "",
                     0,
                     content,
+                    &line_starts,
                     &mut symbols,
                     &mut sort_order,
                 );
@@ -49,7 +52,7 @@ impl ConfigExtractor for TomlExtractor {
                 // Only return Failed for truly unparseable content (binary, wrong encoding, etc.)
                 // — but we already handled UTF-8 above. A TOML "duplicate key" error still
                 // produces meaningful output from line scanning.
-                let symbols = line_scan(content);
+                let symbols = line_scan(content, &line_starts);
                 if symbols.is_empty() {
                     // If line scan also produced nothing, report failure so callers know
                     // parsing was degraded. But we check for the specific case of truly
@@ -89,6 +92,7 @@ fn walk_table(
     parent_path: &str,
     depth: u32,
     raw: &[u8],
+    line_starts: &[u32],
     symbols: &mut Vec<SymbolRecord>,
     sort_order: &mut u32,
 ) {
@@ -97,7 +101,16 @@ fn walk_table(
     }
     for (key, item) in table.iter() {
         let key_path = join_key_path(parent_path, key);
-        walk_item(item, key, &key_path, depth, raw, symbols, sort_order);
+        walk_item(
+            item,
+            key,
+            &key_path,
+            depth,
+            raw,
+            line_starts,
+            symbols,
+            sort_order,
+        );
     }
 }
 
@@ -107,6 +120,7 @@ fn walk_item(
     key_path: &str,
     depth: u32,
     raw: &[u8],
+    line_starts: &[u32],
     symbols: &mut Vec<SymbolRecord>,
     sort_order: &mut u32,
 ) {
@@ -115,7 +129,14 @@ fn walk_item(
 
         toml_edit::Item::Value(value) => {
             let (start, end) = find_key_value_bytes(raw, raw_key);
-            symbols.push(make_symbol(key_path, depth, start, end, *sort_order));
+            symbols.push(make_symbol(
+                key_path,
+                depth,
+                start,
+                end,
+                *sort_order,
+                line_starts,
+            ));
             *sort_order += 1;
 
             if depth + 1 < MAX_DEPTH {
@@ -128,6 +149,7 @@ fn walk_item(
                             &child_path,
                             depth + 1,
                             raw,
+                            line_starts,
                             symbols,
                             sort_order,
                         );
@@ -138,10 +160,25 @@ fn walk_item(
 
         toml_edit::Item::Table(table) => {
             let (start, end) = find_table_header_bytes(raw, key_path);
-            symbols.push(make_symbol(key_path, depth, start, end, *sort_order));
+            symbols.push(make_symbol(
+                key_path,
+                depth,
+                start,
+                end,
+                *sort_order,
+                line_starts,
+            ));
             *sort_order += 1;
             if depth + 1 < MAX_DEPTH {
-                walk_table(table, key_path, depth + 1, raw, symbols, sort_order);
+                walk_table(
+                    table,
+                    key_path,
+                    depth + 1,
+                    raw,
+                    line_starts,
+                    symbols,
+                    sort_order,
+                );
             }
         }
 
@@ -149,10 +186,25 @@ fn walk_item(
             for (i, table) in array.iter().enumerate() {
                 let indexed_path = format!("{}[{}]", key_path, i);
                 let (start, end) = find_array_table_header_bytes(raw, key_path, i);
-                symbols.push(make_symbol(&indexed_path, depth, start, end, *sort_order));
+                symbols.push(make_symbol(
+                    &indexed_path,
+                    depth,
+                    start,
+                    end,
+                    *sort_order,
+                    line_starts,
+                ));
                 *sort_order += 1;
                 if depth + 1 < MAX_DEPTH {
-                    walk_table(table, &indexed_path, depth + 1, raw, symbols, sort_order);
+                    walk_table(
+                        table,
+                        &indexed_path,
+                        depth + 1,
+                        raw,
+                        line_starts,
+                        symbols,
+                        sort_order,
+                    );
                 }
             }
         }
@@ -165,7 +217,7 @@ fn walk_item(
 
 /// Scan TOML line by line, extracting section headers and key = value lines.
 /// Does not recurse into inline tables. Suitable for files that toml_edit rejects.
-fn line_scan(raw: &[u8]) -> Vec<SymbolRecord> {
+fn line_scan(raw: &[u8], line_starts: &[u32]) -> Vec<SymbolRecord> {
     let mut symbols = Vec::new();
     let mut sort_order: u32 = 0;
     let mut current_section: String = String::new();
@@ -201,6 +253,7 @@ fn line_scan(raw: &[u8]) -> Vec<SymbolRecord> {
                     line_start,
                     line_end,
                     sort_order,
+                    line_starts,
                 ));
                 sort_order += 1;
             }
@@ -215,6 +268,7 @@ fn line_scan(raw: &[u8]) -> Vec<SymbolRecord> {
                     line_start,
                     line_end,
                     sort_order,
+                    line_starts,
                 ));
                 sort_order += 1;
             }
@@ -227,7 +281,14 @@ fn line_scan(raw: &[u8]) -> Vec<SymbolRecord> {
             };
             let d = depth_offset + 1;
             if d < MAX_DEPTH {
-                symbols.push(make_symbol(&key_path, d, line_start, line_end, sort_order));
+                symbols.push(make_symbol(
+                    &key_path,
+                    d,
+                    line_start,
+                    line_end,
+                    sort_order,
+                    line_starts,
+                ));
                 sort_order += 1;
             }
         }
@@ -398,20 +459,42 @@ fn line_starts_with_key(line: &[u8], key: &[u8]) -> bool {
         .unwrap_or(false)
 }
 
+/// Build a table mapping line index → byte offset of line start.
+fn build_line_starts(content: &[u8]) -> Vec<u32> {
+    let mut starts: Vec<u32> = vec![0];
+    for (i, &b) in content.iter().enumerate() {
+        if b == b'\n' {
+            starts.push((i + 1) as u32);
+        }
+    }
+    starts
+}
+
+/// Convert a byte offset into a 0-based line number.
+fn byte_to_line(line_starts: &[u32], offset: u32) -> u32 {
+    match line_starts.binary_search(&offset) {
+        Ok(idx) => idx as u32,
+        Err(idx) => (idx.saturating_sub(1)) as u32,
+    }
+}
+
 fn make_symbol(
     name: &str,
     depth: u32,
     byte_start: usize,
     byte_end: usize,
     sort_order: u32,
+    line_starts: &[u32],
 ) -> SymbolRecord {
+    let start_line = byte_to_line(line_starts, byte_start as u32);
+    let end_line = byte_to_line(line_starts, byte_end.saturating_sub(1) as u32);
     SymbolRecord {
         name: name.to_string(),
         kind: SymbolKind::Key,
         depth,
         sort_order,
         byte_range: (byte_start as u32, byte_end as u32),
-        line_range: (0, 0),
+        line_range: (start_line, end_line),
         doc_byte_range: None,
     }
 }
@@ -419,6 +502,28 @@ fn make_symbol(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_line_ranges_are_not_zero() {
+        let content = b"name = \"test\"\nversion = \"1.0\"\n[package]\nauthors = [\"me\"]\n";
+        let result = TomlExtractor.extract(content);
+        assert!(!result.symbols.is_empty(), "should have symbols");
+        // "version" is on line 1 (0-indexed). Its line_range must NOT be (0,0).
+        let version = result.symbols.iter().find(|s| s.name == "version").unwrap();
+        assert_eq!(
+            version.line_range,
+            (1, 1),
+            "version is on line 1 but got {:?}",
+            version.line_range
+        );
+        // [package] header is on line 2
+        let package = result.symbols.iter().find(|s| s.name == "package").unwrap();
+        assert_eq!(
+            package.line_range.0, 2,
+            "package header starts on line 2 but got {:?}",
+            package.line_range
+        );
+    }
 
     #[test]
     fn test_top_level_keys() {
