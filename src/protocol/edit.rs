@@ -730,44 +730,48 @@ pub(crate) fn execute_batch_rename(
             .collect()
     };
 
-    // Phase 2b: Supplemental literal scan for path-qualified usages.
+    // Phase 2b: Supplemental qualified-path scan with confidence classification.
     // The xref index tracks call targets (e.g. "new" in Widget::new()), not
-    // path prefixes. A literal whole-word scan catches Type::method() patterns,
-    // import paths, and any other usage the xref system doesn't index.
-    let literal_sites: Vec<(String, (u32, u32))> = {
+    // path prefixes. find_qualified_usages catches Type::method() patterns,
+    // import paths, and any other qualified usage the xref system doesn't index.
+    // Matches are split into confident (code context) and uncertain (comments/strings).
+    //
+    // We collect file content snapshots under the lock, then run the scan outside it.
+    let file_contents: Vec<(String, Vec<u8>)> = {
         let guard = index.read().expect("lock poisoned");
-        let name_bytes = input.name.as_bytes();
-        let name_len = name_bytes.len();
-        let mut sites = Vec::new();
-        for (file_path, file) in &guard.files {
-            let content = &file.content;
-            let mut start = 0;
-            while let Some(pos) = content[start..]
-                .windows(name_len)
-                .position(|w| w == name_bytes)
-            {
-                let abs_pos = start + pos;
-                // Whole-word check: char before must not be alphanumeric/underscore,
-                // char after must not be alphanumeric/underscore.
-                let before_ok = abs_pos == 0
-                    || !content[abs_pos - 1].is_ascii_alphanumeric()
-                        && content[abs_pos - 1] != b'_';
-                let after_pos = abs_pos + name_len;
-                let after_ok = after_pos >= content.len()
-                    || !content[after_pos].is_ascii_alphanumeric() && content[after_pos] != b'_';
-                if before_ok && after_ok {
-                    sites.push((
-                        file_path.clone(),
-                        (abs_pos as u32, (abs_pos + name_len) as u32),
-                    ));
-                }
-                start = abs_pos + 1;
-            }
-        }
-        sites
+        guard
+            .files
+            .iter()
+            .map(|(path, file)| (path.clone(), file.content.clone()))
+            .collect()
     };
 
-    // Phase 3: Group all rename sites by file (indexed refs + literal scan).
+    // Collect confident and uncertain supplemental matches separately.
+    // Each entry: (file_path, byte_range (start, end))
+    let mut qualified_confident: Vec<(String, (u32, u32))> = Vec::new();
+    // Uncertain entries also carry the display context string for the warning block.
+    let mut qualified_uncertain: Vec<(String, u32, String)> = Vec::new(); // (path, line, context)
+
+    for (file_path, content_bytes) in &file_contents {
+        let source = match std::str::from_utf8(content_bytes) {
+            Ok(s) => s,
+            Err(_) => continue, // skip non-UTF-8 files
+        };
+        let matches = find_qualified_usages(&input.name, source);
+        for m in matches {
+            let end = m.offset + input.name.len();
+            let range = (m.offset as u32, end as u32);
+            if m.confident {
+                qualified_confident.push((file_path.clone(), range));
+            } else {
+                qualified_uncertain.push((file_path.clone(), m.line as u32, m.context.clone()));
+            }
+        }
+    }
+
+    // Phase 3: Group rename sites by file.
+    // Confident sources: definition site, indexed refs, qualified confident matches.
+    // Uncertain matches are NOT applied — only surfaced in output.
     let mut by_file: std::collections::HashMap<String, Vec<(u32, u32)>> =
         std::collections::HashMap::new();
     by_file
@@ -777,34 +781,48 @@ pub(crate) fn execute_batch_rename(
     for (path, range) in &ref_sites {
         by_file.entry(path.clone()).or_default().push(*range);
     }
-    for (path, range) in &literal_sites {
+    for (path, range) in &qualified_confident {
         by_file.entry(path.clone()).or_default().push(*range);
     }
-    // Sort reverse by offset, dedup.
+    // Sort reverse by offset, dedup (removes overlap between indexed refs and qualified scan).
     for ranges in by_file.values_mut() {
         ranges.sort_by(|a, b| b.0.cmp(&a.0));
         ranges.dedup();
     }
 
-    // Dry run: return preview without writing.
+    // Build uncertain warning lines sorted by file then line.
+    let mut sorted_uncertain = qualified_uncertain.clone();
+    sorted_uncertain.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    let uncertain_lines: Vec<String> = sorted_uncertain
+        .iter()
+        .map(|(path, line, ctx)| format!("  {}:{}  {}", path, line, ctx))
+        .collect();
+
+    // Dry run: return preview without writing, with separate confident/uncertain sections.
     if input.dry_run.unwrap_or(false) {
-        let total_sites: usize = by_file.values().map(|r| r.len()).sum();
-        let mut lines = vec![format!(
-            "Dry run: `{}` → `{}` — {} site(s) across {} file(s)",
-            input.name,
-            input.new_name,
-            total_sites,
+        let total_confident: usize = by_file.values().map(|r| r.len()).sum();
+        let mut lines = vec![format!("Dry run: `{}` → `{}`", input.name, input.new_name,)];
+        lines.push(format!(
+            "\n── Confident matches (will be applied) — {} site(s) across {} file(s) ──",
+            total_confident,
             by_file.len(),
-        )];
+        ));
         let mut sorted_files: Vec<_> = by_file.iter().collect();
         sorted_files.sort_by_key(|(p, _)| (*p).clone());
         for (path, ranges) in sorted_files {
             lines.push(format!("  {} ({} site(s))", path, ranges.len()));
         }
+        if !uncertain_lines.is_empty() {
+            lines.push(format!(
+                "\n── Uncertain matches (NOT applied — review manually) — {} site(s) ──",
+                uncertain_lines.len(),
+            ));
+            lines.extend(uncertain_lines);
+        }
         return Ok(lines.join("\n"));
     }
 
-    // Phase 4: Apply renames, write, reindex.
+    // Phase 4: Apply renames (confident only), write, reindex.
     let new_name_bytes = input.new_name.as_bytes();
     let mut files_updated = 0;
     let mut refs_updated = 0;
@@ -836,10 +854,18 @@ pub(crate) fn execute_batch_rename(
         files_updated += 1;
     }
 
-    Ok(format!(
+    let mut output = format!(
         "Renamed `{}` → `{}` — {refs_updated} site(s) across {files_updated} file(s)",
         input.name, input.new_name,
-    ))
+    );
+    if !uncertain_lines.is_empty() {
+        output.push_str(&format!(
+            "\n\n── Uncertain matches (NOT applied — review manually) — {} site(s) ──\n",
+            uncertain_lines.len(),
+        ));
+        output.push_str(&uncertain_lines.join("\n"));
+    }
+    Ok(output)
 }
 
 // ---------------------------------------------------------------------------
@@ -1187,14 +1213,16 @@ pub fn find_qualified_usages(identifier: &str, source: &str) -> Vec<QualifiedMat
             // Check for block comment start/end
             if !in_block_comment {
                 // Check for line comment: rest of line is a comment — scan for matches then break
-                if col + 1 < line_bytes.len() && line_bytes[col] == b'/' && line_bytes[col + 1] == b'/' {
+                if col + 1 < line_bytes.len()
+                    && line_bytes[col] == b'/'
+                    && line_bytes[col + 1] == b'/'
+                {
                     // Everything from here to end of line is a line comment (uncertain)
                     let rest = &line[col..];
                     let mut search_start = 0usize;
                     while let Some(pos) = rest[search_start..].find(identifier) {
                         let abs_col = col + search_start + pos;
-                        let preceded_by_colon = abs_col >= 2
-                            && &line[abs_col - 2..abs_col] == "::"
+                        let preceded_by_colon = abs_col >= 2 && &line[abs_col - 2..abs_col] == "::"
                             || abs_col >= 2 && line_bytes[abs_col - 1] == b':';
                         let followed_by_colon = abs_col + id_len + 1 < line_bytes.len()
                             && &line[abs_col + id_len..abs_col + id_len + 2] == "::";
@@ -1218,14 +1246,20 @@ pub fn find_qualified_usages(identifier: &str, source: &str) -> Vec<QualifiedMat
                 }
 
                 // Block comment start
-                if col + 1 < line_bytes.len() && line_bytes[col] == b'/' && line_bytes[col + 1] == b'*' {
+                if col + 1 < line_bytes.len()
+                    && line_bytes[col] == b'/'
+                    && line_bytes[col + 1] == b'*'
+                {
                     in_block_comment = true;
                     col += 2;
                     continue;
                 }
             } else {
                 // Inside block comment — look for end
-                if col + 1 < line_bytes.len() && line_bytes[col] == b'*' && line_bytes[col + 1] == b'/' {
+                if col + 1 < line_bytes.len()
+                    && line_bytes[col] == b'*'
+                    && line_bytes[col + 1] == b'/'
+                {
                     in_block_comment = false;
                     col += 2;
                     continue;
@@ -1233,7 +1267,8 @@ pub fn find_qualified_usages(identifier: &str, source: &str) -> Vec<QualifiedMat
                 // Still in block comment — check for identifier match (uncertain)
                 if col + id_len <= line_bytes.len() && &line[col..col + id_len] == identifier {
                     let prec2 = col >= 2 && &line[col - 2..col] == "::";
-                    let fol2 = col + id_len + 2 <= line.len() && &line[col + id_len..col + id_len + 2] == "::";
+                    let fol2 = col + id_len + 2 <= line.len()
+                        && &line[col + id_len..col + id_len + 2] == "::";
                     if prec2 || fol2 {
                         let ctx_start = col.saturating_sub(20);
                         let ctx_end = (col + id_len + 20).min(line.len());
@@ -1283,8 +1318,8 @@ pub fn find_qualified_usages(identifier: &str, source: &str) -> Vec<QualifiedMat
             // Normal code: check for identifier match
             if col + id_len <= line_bytes.len() && &line[col..col + id_len] == identifier {
                 let prec2 = col >= 2 && &line[col - 2..col] == "::";
-                let fol2 = col + id_len + 2 <= line.len()
-                    && &line[col + id_len..col + id_len + 2] == "::";
+                let fol2 =
+                    col + id_len + 2 <= line.len() && &line[col + id_len..col + id_len + 2] == "::";
                 if prec2 || fol2 {
                     let ctx_start = col.saturating_sub(20);
                     let ctx_end = (col + id_len + 20).min(line.len());
