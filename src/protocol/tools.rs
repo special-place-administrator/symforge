@@ -6977,4 +6977,46 @@ mod tests {
         let result = super::filter_paths_by_prefix_and_language(paths, None, None, true).unwrap();
         assert_eq!(result, vec!["src/main.rs", "src/lib.rs"]);
     }
+
+    #[test]
+    fn test_normalize_search_text_glob() {
+        use super::normalize_search_text_glob;
+        // Bare filename → auto-prefix with **/
+        assert_eq!(
+            normalize_search_text_glob(Some("foo.rs")),
+            Some("**/foo.rs".to_string())
+        );
+        // Path with separator → no prefix
+        assert_eq!(
+            normalize_search_text_glob(Some("src/foo.rs")),
+            Some("src/foo.rs".to_string())
+        );
+        // Already has glob char → no prefix
+        assert_eq!(
+            normalize_search_text_glob(Some("*.rs")),
+            Some("*.rs".to_string())
+        );
+        assert_eq!(
+            normalize_search_text_glob(Some("[test]*.rs")),
+            Some("[test]*.rs".to_string())
+        );
+        assert_eq!(
+            normalize_search_text_glob(Some("src/**/*.ts")),
+            Some("src/**/*.ts".to_string())
+        );
+        // Leading ./ stripped, then bare → auto-prefix
+        assert_eq!(
+            normalize_search_text_glob(Some("./foo.rs")),
+            Some("**/foo.rs".to_string())
+        );
+        // Backslash replaced, leading / stripped, then bare → auto-prefix
+        assert_eq!(
+            normalize_search_text_glob(Some("\\foo.rs")),
+            Some("**/foo.rs".to_string())
+        );
+        // Empty / whitespace → None
+        assert_eq!(normalize_search_text_glob(Some("")), None);
+        assert_eq!(normalize_search_text_glob(Some("  ")), None);
+        assert_eq!(normalize_search_text_glob(None), None);
+    }
 }
