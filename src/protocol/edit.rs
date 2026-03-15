@@ -48,11 +48,22 @@ pub(crate) fn apply_splice(content: &[u8], range: (u32, u32), replacement: &[u8]
 // Atomic file write
 // ---------------------------------------------------------------------------
 
-/// Write content to a file atomically: write to a temp file, then rename.
+/// Write content to a file atomically: write to a unique temp file in the same directory,
+/// then rename over the target. Using a `NamedTempFile` in the same directory ensures the
+/// rename is within a single filesystem (no cross-device move) and avoids collisions between
+/// concurrent callers that would occur with a fixed `.tokenizor_tmp` extension.
 pub(crate) fn atomic_write_file(path: &Path, content: &[u8]) -> std::io::Result<()> {
-    let tmp = path.with_extension("tokenizor_tmp");
-    std::fs::write(&tmp, content)?;
-    std::fs::rename(&tmp, path)?;
+    use std::io::Write;
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no parent directory")
+    })?;
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+    tmp.write_all(content)?;
+    tmp.flush()?;
+    tmp.as_file().sync_all()?;
+    // persist() uses rename(2) on Unix and MoveFileExW(MOVEFILE_REPLACE_EXISTING) on Windows,
+    // atomically replacing any existing target file.
+    tmp.persist(path).map_err(|e| e.error)?;
     Ok(())
 }
 
@@ -2865,5 +2876,86 @@ mod tests {
         let matches = find_qualified_usages("MyType", source);
         assert_eq!(matches.len(), 1);
         assert!(!matches[0].confident);
+    }
+
+    // -- atomic_write_file --
+
+    #[test]
+    fn test_atomic_write_concurrent_no_hybrid() {
+        use std::sync::{Arc, Barrier};
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.txt");
+
+        // Write an initial file so the target exists before threads start.
+        std::fs::write(&target, b"initial").unwrap();
+
+        let payload_a = vec![b'A'; 1024 * 1024];
+        let payload_b = vec![b'B'; 1024 * 1024];
+
+        let barrier = Arc::new(Barrier::new(2));
+        let target_a = target.clone();
+        let target_b = target.clone();
+        let pa = payload_a.clone();
+        let pb = payload_b.clone();
+        let ba = Arc::clone(&barrier);
+        let bb = Arc::clone(&barrier);
+
+        let ha = std::thread::spawn(move || {
+            ba.wait();
+            atomic_write_file(&target_a, &pa).unwrap();
+        });
+        let hb = std::thread::spawn(move || {
+            bb.wait();
+            atomic_write_file(&target_b, &pb).unwrap();
+        });
+        ha.join().unwrap();
+        hb.join().unwrap();
+
+        let result = std::fs::read(&target).unwrap();
+        assert!(
+            result == payload_a || result == payload_b,
+            "file must be exactly payload A or B, not a hybrid (len={})",
+            result.len()
+        );
+    }
+
+    #[test]
+    fn test_atomic_write_no_orphan_temp_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("output.txt");
+
+        atomic_write_file(&target, b"hello world").unwrap();
+
+        let entries: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .collect();
+        assert_eq!(
+            entries.len(),
+            1,
+            "expected exactly 1 file in dir, found: {:?}",
+            entries.iter().map(|e| e.file_name()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_atomic_write_error_path_no_orphan() {
+        let dir = tempfile::tempdir().unwrap();
+        // Target is in a nonexistent subdirectory — write must fail.
+        let bad_target = dir.path().join("nonexistent_subdir").join("file.txt");
+
+        let result = atomic_write_file(&bad_target, b"data");
+        assert!(result.is_err(), "expected error for nonexistent parent dir");
+
+        // No temp files should have leaked into the real dir.
+        let entries: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .collect();
+        assert!(
+            entries.is_empty(),
+            "expected no orphan temp files, found: {:?}",
+            entries.iter().map(|e| e.file_name()).collect::<Vec<_>>()
+        );
     }
 }
