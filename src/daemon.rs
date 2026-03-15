@@ -62,6 +62,8 @@ pub struct DaemonState {
     projects: RwLock<HashMap<String, ProjectInstance>>,
     sessions: RwLock<HashMap<String, SessionRecord>>,
     identity: DaemonIdentity,
+    /// Concurrency governor — limits parallel tool calls and enforces timeouts.
+    governor: crate::sidecar::governor::RequestGovernor,
 }
 
 struct ProjectInstance {
@@ -179,6 +181,7 @@ impl DaemonState {
             projects: RwLock::new(HashMap::new()),
             sessions: RwLock::new(HashMap::new()),
             identity: current_daemon_identity(),
+            governor: crate::sidecar::governor::RequestGovernor::new(),
         }
     }
 
@@ -471,8 +474,22 @@ impl Default for DaemonState {
 
 impl DaemonSessionClient {
     fn new(base_url: String, project_id: String, session_id: String, project_name: String) -> Self {
+        // CRITICAL: reqwest::Client::new() has NO timeout by default.
+        // Under concurrent load, if the daemon is slow, HTTP requests hang
+        // indefinitely while holding read locks on daemon_lock in the proxy
+        // layer. This creates a deadlock-like scenario when a reconnect
+        // attempt needs a write lock but reads never release.
+        //
+        // 30s connect + 60s total covers heavy ops (batch_edit on large repos)
+        // while ensuring stuck requests eventually fail and release locks.
+        let http_client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+
         Self {
-            http_client: reqwest::Client::new(),
+            http_client,
             base_url,
             project_id,
             session_id,
@@ -1067,8 +1084,11 @@ async fn call_tool_handler(
         )
     })?;
 
-    execute_tool_call(runtime, &tool_name, params)
+    state
+        .governor
+        .execute(&tool_name, execute_tool_call(runtime, &tool_name, params))
         .await
+        .map_err(|gov_err| bad_request(gov_err.into()))?
         .map_err(bad_request)
 }
 

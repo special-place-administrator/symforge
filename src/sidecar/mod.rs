@@ -1,8 +1,10 @@
+pub mod governor;
 pub mod handlers;
 pub mod port_file;
 pub mod router;
 pub mod server;
 
+pub use governor::RequestGovernor;
 pub use server::spawn_sidecar;
 
 use std::collections::HashMap;

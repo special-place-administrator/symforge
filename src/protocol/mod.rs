@@ -145,14 +145,30 @@ impl TokenizorServer {
         };
 
         // First attempt.
+        // IMPORTANT: The read lock on daemon_lock is held for the duration of
+        // the HTTP call. If this hangs, it blocks reconnect (which needs a
+        // write lock). We wrap in a timeout so read locks release promptly
+        // on failure — the reqwest client also has its own timeout as a
+        // backstop, but this ensures lock release within a tighter window.
         {
             let client = daemon_lock.read().await;
-            match client.call_tool_value(tool_name, value.clone()).await {
-                Ok(result) => return Some(result),
-                Err(error) => {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                client.call_tool_value(tool_name, value.clone()),
+            )
+            .await
+            {
+                Ok(Ok(result)) => return Some(result),
+                Ok(Err(error)) => {
                     tracing::warn!(
                         tool = tool_name,
                         "daemon proxy call failed, attempting reconnect: {error}"
+                    );
+                }
+                Err(_elapsed) => {
+                    tracing::warn!(
+                        tool = tool_name,
+                        "daemon proxy call timed out after 30s, attempting reconnect"
                     );
                 }
             }
@@ -185,12 +201,26 @@ impl TokenizorServer {
         // Retry with the fresh client.
         {
             let client = daemon_lock.read().await;
-            match client.call_tool_value(tool_name, value).await {
-                Ok(result) => Some(result),
-                Err(error) => {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                client.call_tool_value(tool_name, value),
+            )
+            .await
+            {
+                Ok(Ok(result)) => Some(result),
+                Ok(Err(error)) => {
                     tracing::warn!(
                         tool = tool_name,
                         "daemon proxy call failed after reconnect, falling back to local: {error}"
+                    );
+                    self.daemon_degraded.store(true, Ordering::Relaxed);
+                    self.ensure_local_index().await;
+                    None
+                }
+                Err(_elapsed) => {
+                    tracing::warn!(
+                        tool = tool_name,
+                        "daemon proxy call timed out after reconnect, falling back to local"
                     );
                     self.daemon_degraded.store(true, Ordering::Relaxed);
                     self.ensure_local_index().await;
