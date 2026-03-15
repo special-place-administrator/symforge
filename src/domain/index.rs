@@ -523,6 +523,8 @@ const DENYLISTED_EXTENSIONS: &[&str] = &[
     "eot",
     // Binary
     "bin",
+    // Executables and libraries
+    "exe", "dll", "so", "dylib", "class",
 ];
 
 pub fn is_denylisted_extension(ext: &str) -> bool {
@@ -775,6 +777,24 @@ mod tests {
         assert!(!is_denylisted_extension("svg")); // SVG intentionally NOT denylisted
         assert!(!is_denylisted_extension("md"));
         assert!(!is_denylisted_extension("toml"));
+    }
+
+    #[test]
+    fn test_new_executable_extensions_denylisted() {
+        assert!(is_denylisted_extension("exe"));
+        assert!(is_denylisted_extension("dll"));
+        assert!(is_denylisted_extension("so"));
+        assert!(is_denylisted_extension("dylib"));
+        assert!(is_denylisted_extension("class"));
+    }
+
+    #[test]
+    fn test_denylist_case_insensitive() {
+        assert!(is_denylisted_extension("DLL"));
+        assert!(is_denylisted_extension("So"));
+        assert!(is_denylisted_extension("EXE"));
+        assert!(is_denylisted_extension("Dylib"));
+        assert!(is_denylisted_extension("CLASS"));
     }
 
     #[test]
