@@ -3156,4 +3156,124 @@ mod tests {
         let result = normalize_line_endings(b"line1\rline2\r", LineEnding::CrLf);
         assert_eq!(result, b"line1\r\nline2\r\n");
     }
+
+    // -- CRLF preservation tests --
+
+    #[test]
+    fn test_apply_indentation_preserves_crlf() {
+        let text = "fn foo() {\n    bar();\n}\n";
+        let indent = b"    ";
+        let result = apply_indentation(text, indent, LineEnding::CrLf);
+        // Must contain CRLF
+        assert!(result.windows(2).any(|w| w == b"\r\n"), "should contain CRLF");
+        // No bare \n (every \n must be preceded by \r)
+        for (i, &byte) in result.iter().enumerate() {
+            if byte == b'\n' {
+                assert!(i > 0 && result[i - 1] == b'\r', "bare LF at byte {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_build_insert_before_crlf_preserved() {
+        // Build a CRLF file and insert before the symbol; verify no bare \n in output
+        let content = b"fn existing() {\r\n    body();\r\n}\r\n";
+        let sym = make_test_symbol("existing", SymbolKind::Function, (0, 32), 1);
+        let result = build_insert_before(content, &sym, "fn new_fn() {}", LineEnding::CrLf);
+        // No bare \n in output (every \n must be preceded by \r)
+        for (i, &byte) in result.iter().enumerate() {
+            if byte == b'\n' {
+                assert!(
+                    i > 0 && result[i - 1] == b'\r',
+                    "bare LF at byte {i} in insert_before output"
+                );
+            }
+        }
+        // Output must contain CRLF
+        assert!(
+            result.windows(2).any(|w| w == b"\r\n"),
+            "output should contain CRLF"
+        );
+    }
+
+    #[test]
+    fn test_build_delete_crlf_no_orphan_cr() {
+        // Three CRLF functions; delete the middle one; verify no orphan \r
+        let content = b"fn keep1() {}\r\n\r\nfn remove() {}\r\n\r\nfn keep2() {}\r\n";
+        // "fn remove() {}" occupies bytes 17..31 (exclusive)
+        let sym = make_test_symbol("remove", SymbolKind::Function, (17, 31), 3);
+        let result = build_delete(content, &sym, LineEnding::CrLf);
+        // No orphan \r (every \r must be followed by \n)
+        for (i, &byte) in result.iter().enumerate() {
+            if byte == b'\r' {
+                assert!(
+                    i + 1 < result.len() && result[i + 1] == b'\n',
+                    "orphan CR at byte {i}"
+                );
+            }
+        }
+        let text = std::str::from_utf8(&result).unwrap();
+        assert!(!text.contains("remove"), "deleted symbol should be absent");
+        assert!(text.contains("keep1"), "keep1 should remain");
+        assert!(text.contains("keep2"), "keep2 should remain");
+    }
+
+    #[test]
+    fn test_collapse_blank_lines_crlf() {
+        // 4 CRLFs between lines = 3 blank lines — should collapse to 1 blank line (2 CRLFs)
+        let input = b"line1\r\n\r\n\r\n\r\nline2\r\n";
+        let result = collapse_blank_lines(input, LineEnding::CrLf);
+        assert_eq!(result, b"line1\r\n\r\nline2\r\n");
+    }
+
+    #[test]
+    fn test_lf_file_stays_lf_after_edit() {
+        // Editing an LF file must not introduce any \r
+        let content = b"fn existing() {\n    body();\n}\n";
+        let sym = make_test_symbol("existing", SymbolKind::Function, (0, 29), 1);
+        let result = build_insert_before(content, &sym, "fn new_fn() {}", LineEnding::Lf);
+        assert!(!result.contains(&b'\r'), "LF file edit must not introduce CR");
+    }
+
+    #[test]
+    fn test_batch_edit_crlf_multiple_replacements() {
+        // Normalize replacement text for CRLF, verify it uses CRLF with no bare LF
+        let replacement = "fn alpha() {}\nfn beta() {}\n";
+        let normalized = normalize_line_endings(replacement.as_bytes(), LineEnding::CrLf);
+        // Must contain CRLF
+        assert!(
+            normalized.windows(2).any(|w| w == b"\r\n"),
+            "normalized replacement should contain CRLF"
+        );
+        // No bare \n
+        for (i, &byte) in normalized.iter().enumerate() {
+            if byte == b'\n' {
+                assert!(
+                    i > 0 && normalized[i - 1] == b'\r',
+                    "bare LF at byte {i} in normalized replacement"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_crlf_edit_no_mixed_endings() {
+        // Splice normalized CRLF replacement into a CRLF file; verify no bare LF in result
+        let file_content = b"fn keep() {\r\n    x();\r\n}\r\n";
+        let replacement_lf = b"fn keep() {\r\n    y();\r\n}\r\n";
+        // Normalize (already CRLF, but exercise the path)
+        let normalized = normalize_line_endings(replacement_lf, LineEnding::CrLf);
+        // Splice normalized text over the entire file range
+        let range = (0u32, file_content.len() as u32);
+        let result = apply_splice(file_content, range, &normalized);
+        // No bare \n in the final result
+        for (i, &byte) in result.iter().enumerate() {
+            if byte == b'\n' {
+                assert!(
+                    i > 0 && result[i - 1] == b'\r',
+                    "bare LF at byte {i} after splice into CRLF file"
+                );
+            }
+        }
+    }
 }
