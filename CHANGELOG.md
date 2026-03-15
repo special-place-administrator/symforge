@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.27.3](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.27.2...v0.27.3) (2026-03-15)
+
+
+### Bug Fixes
+
+* delete_symbol orphaned docs, diff_symbols code_only, glob auto-prefix ([3b1cc4e](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/3b1cc4ed6ae8591ca8afc720158f2241cbec80de))
+* delete_symbol orphaned docs, diff_symbols code_only, glob auto-prefix ([b793579](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/b793579b2f1bdfdd7fb266bfa9bf7dd76590ea9e))
+
 ## [0.27.2](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.27.1...v0.27.2) (2026-03-15)
 
 
