@@ -1507,7 +1507,10 @@ impl TokenizorServer {
                 let path = params.0.path.as_deref().unwrap_or("");
                 let depth = params.0.depth.unwrap_or(2).min(5);
                 let view = self.index.published_repo_outline();
-                format::file_tree_view(&view.files, path, depth)
+                let guard = self.index.read().expect("lock poisoned");
+                let skipped = guard.skipped_files().to_vec();
+                drop(guard);
+                format::file_tree_view_with_skipped(&view.files, &skipped, path, depth)
             }
             _ => {
                 // Compact overview (default)
