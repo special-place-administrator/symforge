@@ -398,6 +398,10 @@ pub struct EditWithinSymbolInput {
 pub struct BatchEditInput {
     /// List of individual edits to apply atomically.
     pub edits: Vec<SingleEdit>,
+    /// When true, validate and plan all edits but skip disk writes and index mutation.
+    /// Returns per-edit preview lines prefixed with `[DRY RUN]`.
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -437,10 +441,12 @@ pub enum EditOperation {
 
 /// Apply multiple symbol-addressed edits atomically.
 /// Validates all symbols first, rejects overlapping ranges, then applies in reverse-offset order.
+/// When `dry_run` is true, all validation runs identically but disk writes and index mutation are skipped.
 pub(crate) fn execute_batch_edit(
     index: &SharedIndex,
     repo_root: &Path,
     edits: &[SingleEdit],
+    dry_run: bool,
 ) -> Result<Vec<String>, String> {
     struct ResolvedEdit {
         path: String,
@@ -612,20 +618,29 @@ pub(crate) fn execute_batch_edit(
             }
         }
 
-        let abs_path = repo_root.join(path);
-        atomic_write_file(&abs_path, &content).map_err(|e| {
-            let written_note = if summaries.is_empty() {
-                "No files were written before this failure.".to_string()
-            } else {
-                format!(
-                    "WARNING: {} file(s) were already written before this failure:\n{}",
-                    summaries.len(),
-                    summaries.join("\n")
-                )
-            };
-            format!("Write failed for {path}: {e}\n\n{written_note}")
-        })?;
-        reindex_after_write(index, path, content, language);
+        if dry_run {
+            // Prefix summaries for this file's edits with [DRY RUN] and skip all writes.
+            let file_edit_count = indices.len();
+            let start = summaries.len() - file_edit_count;
+            for s in &mut summaries[start..] {
+                *s = format!("[DRY RUN] Would {s}");
+            }
+        } else {
+            let abs_path = repo_root.join(path);
+            atomic_write_file(&abs_path, &content).map_err(|e| {
+                let written_note = if summaries.is_empty() {
+                    "No files were written before this failure.".to_string()
+                } else {
+                    format!(
+                        "WARNING: {} file(s) were already written before this failure:\n{}",
+                        summaries.len(),
+                        summaries.join("\n")
+                    )
+                };
+                format!("Write failed for {path}: {e}\n\n{written_note}")
+            })?;
+            reindex_after_write(index, path, content, language);
+        }
     }
 
     Ok(summaries)
@@ -1412,7 +1427,7 @@ mod tests {
             },
         ];
 
-        let summaries = execute_batch_edit(&handle, dir.path(), &edits).unwrap();
+        let summaries = execute_batch_edit(&handle, dir.path(), &edits, false).unwrap();
         assert_eq!(summaries.len(), 2);
 
         let a_content = std::fs::read_to_string(src.join("a.rs")).unwrap();
@@ -1454,7 +1469,7 @@ mod tests {
             },
         ];
 
-        let result = execute_batch_edit(&handle, dir.path(), &edits);
+        let result = execute_batch_edit(&handle, dir.path(), &edits, false);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Overlapping"));
     }
@@ -1492,7 +1507,7 @@ mod tests {
             },
         ];
 
-        let result = execute_batch_edit(&handle, dir.path(), &edits);
+        let result = execute_batch_edit(&handle, dir.path(), &edits, false);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
@@ -1510,6 +1525,79 @@ mod tests {
         assert!(
             file_content.contains("fn foo() {}"),
             "file should be unmodified: {file_content}"
+        );
+    }
+
+    #[test]
+    fn test_execute_batch_edit_dry_run_previews_without_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("a.rs"), b"fn alpha() { old }\n").unwrap();
+
+        let handle = crate::live_index::LiveIndex::empty();
+        let content = b"fn alpha() { old }\n" as &[u8];
+        let result = crate::parsing::process_file("src/a.rs", content, LanguageId::Rust);
+        let indexed = IndexedFile::from_parse_result(result, content.to_vec());
+        handle.update_file("src/a.rs".to_string(), indexed);
+
+        let edits = vec![SingleEdit {
+            path: "src/a.rs".to_string(),
+            name: "alpha".to_string(),
+            kind: None,
+            symbol_line: None,
+            operation: EditOperation::Replace {
+                new_body: "fn alpha() { new }".to_string(),
+            },
+        }];
+
+        let summaries = execute_batch_edit(&handle, dir.path(), &edits, true).unwrap();
+        assert_eq!(summaries.len(), 1, "expected one preview line");
+        assert!(
+            summaries[0].contains("[DRY RUN]"),
+            "expected [DRY RUN] prefix in: {}",
+            summaries[0]
+        );
+
+        // File must be unchanged.
+        let file_content = std::fs::read_to_string(src.join("a.rs")).unwrap();
+        assert!(
+            file_content.contains("old"),
+            "dry_run must not write to disk: {file_content}"
+        );
+        assert!(
+            !file_content.contains("new"),
+            "dry_run must not write to disk: {file_content}"
+        );
+    }
+
+    #[test]
+    fn test_execute_batch_edit_dry_run_same_error_as_real() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("a.rs"), b"fn foo() {}\n").unwrap();
+
+        let handle = crate::live_index::LiveIndex::empty();
+        let content = b"fn foo() {}\n" as &[u8];
+        let result = crate::parsing::process_file("src/a.rs", content, LanguageId::Rust);
+        let indexed = IndexedFile::from_parse_result(result, content.to_vec());
+        handle.update_file("src/a.rs".to_string(), indexed);
+
+        let edits = vec![SingleEdit {
+            path: "src/a.rs".to_string(),
+            name: "nonexistent_symbol".to_string(),
+            kind: None,
+            symbol_line: None,
+            operation: EditOperation::Delete,
+        }];
+
+        let real_err = execute_batch_edit(&handle, dir.path(), &edits, false).unwrap_err();
+        let dry_err = execute_batch_edit(&handle, dir.path(), &edits, true).unwrap_err();
+
+        assert_eq!(
+            real_err, dry_err,
+            "dry_run must produce identical error to real run"
         );
     }
 

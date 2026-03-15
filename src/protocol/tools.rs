@@ -2925,7 +2925,7 @@ impl TokenizorServer {
             let guard = self.index.read().expect("lock poisoned");
             loading_guard!(guard);
         }
-        match edit::execute_batch_edit(&self.index, &repo_root, &params.0.edits) {
+        match edit::execute_batch_edit(&self.index, &repo_root, &params.0.edits, params.0.dry_run) {
             Ok(summaries) => {
                 let file_count = params
                     .0
@@ -6735,6 +6735,7 @@ mod tests {
                     operation: EditOperation::Delete,
                 },
             ],
+            dry_run: false,
         };
         let result = server.batch_edit(Parameters(input)).await;
         assert!(result.contains("2 edit(s)"), "result: {result}");
