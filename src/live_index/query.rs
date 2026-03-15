@@ -617,6 +617,8 @@ pub struct RepoOutlineFileView {
     pub relative_path: String,
     pub language: LanguageId,
     pub symbol_count: usize,
+    /// Noise classification for suppressive filtering in explore/repo_map views.
+    pub noise_class: crate::live_index::search::NoiseClass,
 }
 
 /// Owned compatibility/test view for file outline rendering.
@@ -1897,9 +1899,12 @@ impl LiveIndex {
 
     /// Capture the data needed to render `repo_outline` without holding the read lock.
     pub fn capture_repo_outline_view(&self) -> RepoOutlineView {
+        use crate::live_index::search::NoisePolicy;
+        let gi_ref = self.gitignore.as_ref();
         let mut files: Vec<RepoOutlineFileView> = self
             .all_files()
             .map(|(relative_path, file)| RepoOutlineFileView {
+                noise_class: NoisePolicy::classify_path(relative_path, gi_ref),
                 relative_path: relative_path.clone(),
                 language: file.language.clone(),
                 symbol_count: file.symbols.len(),
@@ -2558,6 +2563,7 @@ mod tests {
             files_by_basename: std::collections::HashMap::new(),
             files_by_dir_component: std::collections::HashMap::new(),
             trigram_index,
+            gitignore: None,
         };
         // Rebuild the reverse index so xref query tests work.
         index.rebuild_reverse_index();
@@ -3609,6 +3615,7 @@ mod tests {
             files_by_basename: std::collections::HashMap::new(),
             files_by_dir_component: std::collections::HashMap::new(),
             trigram_index: crate::live_index::trigram::TrigramIndex::new(),
+            gitignore: None,
         };
         assert!(!index.is_ready());
     }
@@ -3643,6 +3650,7 @@ mod tests {
             files_by_basename: std::collections::HashMap::new(),
             files_by_dir_component: std::collections::HashMap::new(),
             trigram_index: crate::live_index::trigram::TrigramIndex::new(),
+            gitignore: None,
         };
 
         match index.index_state() {

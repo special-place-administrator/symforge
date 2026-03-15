@@ -63,6 +63,65 @@ pub fn discover_files(root: &Path) -> Result<Vec<DiscoveredFile>> {
     Ok(files)
 }
 
+/// Load all `.gitignore` patterns from a repository root and nested directories.
+///
+/// Uses `ignore::gitignore::GitignoreBuilder` to build a composite gitignore matcher.
+/// Walks nested `.gitignore` files up to `max_depth` levels (default 6).
+/// Returns `None` if no `.gitignore` files are found or if loading fails.
+pub fn load_gitignore(root: &Path) -> Option<ignore::gitignore::Gitignore> {
+    use ignore::gitignore::GitignoreBuilder;
+    use std::collections::VecDeque;
+
+    let root_gitignore = root.join(".gitignore");
+    if !root_gitignore.exists() {
+        return None;
+    }
+
+    let mut builder = GitignoreBuilder::new(root);
+
+    // BFS to find nested .gitignore files (max depth 6)
+    let max_depth: usize = 6;
+    let mut queue: VecDeque<(PathBuf, usize)> = VecDeque::new();
+    queue.push_back((root.to_path_buf(), 0));
+
+    while let Some((dir, depth)) = queue.pop_front() {
+        let gitignore_path = dir.join(".gitignore");
+        if gitignore_path.is_file() {
+            if let Some(err) = builder.add(&gitignore_path) {
+                tracing::debug!("failed to load {:?}: {}", gitignore_path, err);
+            }
+        }
+
+        if depth < max_depth {
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        // Skip common directories that won't have relevant .gitignore files
+                        let name = entry.file_name();
+                        let name_str = name.to_string_lossy();
+                        if name_str.starts_with('.') && name_str != ".github" {
+                            continue;
+                        }
+                        queue.push_back((path, depth + 1));
+                    }
+                }
+            }
+        }
+    }
+
+    match builder.build() {
+        Ok(gi) => {
+            // Only return Some if there are actual patterns
+            if gi.is_empty() { None } else { Some(gi) }
+        }
+        Err(e) => {
+            tracing::debug!("failed to build gitignore matcher: {}", e);
+            None
+        }
+    }
+}
+
 /// Walk upward from the current working directory, looking for a `.git` directory.
 /// Returns `None` if no git root is found and the cwd is a forbidden directory.
 pub fn find_project_root() -> Option<PathBuf> {

@@ -579,10 +579,18 @@ pub fn file_tree_view(files: &[RepoOutlineFileView], path: &str, depth: u32) -> 
         for (name, file) in &files_here {
             let sym_count = file.symbol_count;
             let sym_label = if sym_count == 1 { "symbol" } else { "symbols" };
-            lines.push(format!(
-                "{}{} [{}]  ({} {})",
-                pad, name, file.language, sym_count, sym_label
-            ));
+            let tag = file.noise_class.tag();
+            if tag.is_empty() {
+                lines.push(format!(
+                    "{}{} [{}]  ({} {})",
+                    pad, name, file.language, sym_count, sym_label
+                ));
+            } else {
+                lines.push(format!(
+                    "{}{} [{}]  ({} {}) {}",
+                    pad, name, file.language, sym_count, sym_label, tag
+                ));
+            }
         }
 
         // Directories at this level
@@ -2573,6 +2581,7 @@ mod tests {
             files_by_basename: HashMap::new(),
             files_by_dir_component: HashMap::new(),
             trigram_index,
+            gitignore: None,
         };
         index.rebuild_path_indices();
         index
@@ -3102,6 +3111,7 @@ mod tests {
             files_by_basename: HashMap::new(),
             files_by_dir_component: HashMap::new(),
             trigram_index: crate::live_index::trigram::TrigramIndex::new(),
+            gitignore: None,
         };
         let result = health_report(&index);
         assert!(result.contains("Status: Empty"), "got: {result}");
@@ -3685,6 +3695,7 @@ mod tests {
             files_by_basename: HashMap::new(),
             files_by_dir_component: HashMap::new(),
             trigram_index,
+            gitignore: None,
         };
         index.rebuild_reverse_index();
         index.rebuild_path_indices();

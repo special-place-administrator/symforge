@@ -305,6 +305,9 @@ pub struct LiveIndex {
     pub(crate) files_by_dir_component: HashMap<String, Vec<String>>,
     /// Trigram search index for file-level text search acceleration.
     pub(crate) trigram_index: super::trigram::TrigramIndex,
+    /// Compiled gitignore patterns loaded at index time. Used by NoisePolicy
+    /// to classify files as vendor/generated/ignored noise.
+    pub(crate) gitignore: Option<ignore::gitignore::Gitignore>,
 }
 
 /// Central shared handle for the live in-memory index.
@@ -574,6 +577,7 @@ impl LiveIndex {
         );
 
         let trigram_index = super::trigram::TrigramIndex::build_from_files(&files);
+        let gitignore = discovery::load_gitignore(root);
 
         let mut index = LiveIndex {
             files,
@@ -588,6 +592,7 @@ impl LiveIndex {
             files_by_basename: HashMap::new(),
             files_by_dir_component: HashMap::new(),
             trigram_index,
+            gitignore,
         };
         index.rebuild_reverse_index();
         index.rebuild_path_indices();
@@ -613,6 +618,7 @@ impl LiveIndex {
             files_by_basename: HashMap::new(),
             files_by_dir_component: HashMap::new(),
             trigram_index: super::trigram::TrigramIndex::new(),
+            gitignore: None,
         };
         SharedIndexHandle::shared(index)
     }
@@ -713,6 +719,7 @@ impl LiveIndex {
         self.load_source = IndexLoadSource::FreshLoad;
         self.snapshot_verify_state = SnapshotVerifyState::NotNeeded;
         self.trigram_index = super::trigram::TrigramIndex::build_from_files(&self.files);
+        self.gitignore = discovery::load_gitignore(root);
         self.rebuild_reverse_index();
         self.rebuild_path_indices();
 
@@ -1437,6 +1444,7 @@ mod tests {
             files_by_basename: HashMap::new(),
             files_by_dir_component: HashMap::new(),
             trigram_index: crate::live_index::trigram::TrigramIndex::new(),
+            gitignore: None,
         }
     }
 

@@ -1526,6 +1526,7 @@ mod tests {
             files_by_basename: HashMap::new(),
             files_by_dir_component: HashMap::new(),
             trigram_index,
+            gitignore: None,
         };
         index.rebuild_reverse_index();
         index.rebuild_path_indices();
