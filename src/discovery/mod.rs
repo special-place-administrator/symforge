@@ -278,6 +278,47 @@ pub fn is_binary_content(content: &[u8]) -> bool {
     false
 }
 
+use crate::domain::index::{
+    AdmissionDecision, AdmissionTier, HARD_SKIP_BYTES, METADATA_ONLY_BYTES, SkipReason,
+};
+
+/// Classify a file's admission tier. Returns AdmissionDecision with both tier and reason.
+///
+/// Precedence (first match wins):
+/// 1. Hard-skip size ceiling (>100MB) → Tier 3
+/// 2. Extension denylist → Tier 2
+/// 3. Metadata-only size threshold (>1MB) → Tier 2
+/// 4. Binary sniff (null bytes in first 8KB) → Tier 2
+/// 5. All else → Tier 1
+pub fn classify_admission(
+    path: &std::path::Path,
+    file_size: u64,
+    content_sample: Option<&[u8]>,
+) -> AdmissionDecision {
+    use crate::domain::index::is_denylisted_extension;
+
+    if file_size > HARD_SKIP_BYTES {
+        return AdmissionDecision::skip(AdmissionTier::HardSkip, SkipReason::SizeCeiling);
+    }
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        if is_denylisted_extension(ext) {
+            return AdmissionDecision::skip(
+                AdmissionTier::MetadataOnly,
+                SkipReason::DenylistedExtension,
+            );
+        }
+    }
+    if file_size > METADATA_ONLY_BYTES {
+        return AdmissionDecision::skip(AdmissionTier::MetadataOnly, SkipReason::SizeThreshold);
+    }
+    if let Some(content) = content_sample {
+        if is_binary_content(content) {
+            return AdmissionDecision::skip(AdmissionTier::MetadataOnly, SkipReason::BinaryContent);
+        }
+    }
+    AdmissionDecision::normal()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -512,5 +553,72 @@ mod tests {
     fn test_binary_sniff_allows_common_whitespace_controls() {
         let content = b"col1\tcol2\tcol3\r\nval1\tval2\tval3\r\n";
         assert!(!is_binary_content(content));
+    }
+
+    // ── classify_admission tests ──
+
+    use crate::domain::index::{AdmissionDecision, AdmissionTier, SkipReason};
+
+    #[test]
+    fn test_huge_text_file_is_hard_skip() {
+        let decision =
+            classify_admission(std::path::Path::new("huge.txt"), 150 * 1024 * 1024, None);
+        assert_eq!(decision.tier, AdmissionTier::HardSkip);
+        assert_eq!(decision.reason, Some(SkipReason::SizeCeiling));
+    }
+
+    #[test]
+    fn test_small_ckpt_is_metadata_only() {
+        let decision = classify_admission(std::path::Path::new("model.ckpt"), 50 * 1024, None);
+        assert_eq!(decision.tier, AdmissionTier::MetadataOnly);
+        assert_eq!(decision.reason, Some(SkipReason::DenylistedExtension));
+    }
+
+    #[test]
+    fn test_huge_ckpt_is_hard_skip() {
+        let decision = classify_admission(std::path::Path::new("big.ckpt"), 4_200_000_000, None);
+        assert_eq!(decision.tier, AdmissionTier::HardSkip);
+        assert_eq!(decision.reason, Some(SkipReason::SizeCeiling));
+    }
+
+    #[test]
+    fn test_large_json_is_metadata_only() {
+        let decision = classify_admission(std::path::Path::new("big.json"), 2 * 1024 * 1024, None);
+        assert_eq!(decision.tier, AdmissionTier::MetadataOnly);
+        assert_eq!(decision.reason, Some(SkipReason::SizeThreshold));
+    }
+
+    #[test]
+    fn test_small_txt_is_normal() {
+        let decision = classify_admission(std::path::Path::new("readme.txt"), 50 * 1024, None);
+        assert_eq!(decision, AdmissionDecision::normal());
+    }
+
+    #[test]
+    fn test_medium_rust_source_is_normal() {
+        let decision = classify_admission(std::path::Path::new("big_module.rs"), 500 * 1024, None);
+        assert_eq!(decision, AdmissionDecision::normal());
+    }
+
+    #[test]
+    fn test_binary_content_is_metadata_only() {
+        let content = b"ELF\x00\x00\x00binary";
+        let decision =
+            classify_admission(std::path::Path::new("unknown_file"), 1024, Some(content));
+        assert_eq!(decision.tier, AdmissionTier::MetadataOnly);
+        assert_eq!(decision.reason, Some(SkipReason::BinaryContent));
+    }
+
+    #[test]
+    fn test_svg_not_denylisted() {
+        let decision = classify_admission(std::path::Path::new("icon.svg"), 50 * 1024, None);
+        assert_eq!(decision, AdmissionDecision::normal());
+    }
+
+    #[test]
+    fn test_large_svg_is_metadata_only_by_size() {
+        let decision = classify_admission(std::path::Path::new("huge.svg"), 2 * 1024 * 1024, None);
+        assert_eq!(decision.tier, AdmissionTier::MetadataOnly);
+        assert_eq!(decision.reason, Some(SkipReason::SizeThreshold));
     }
 }
