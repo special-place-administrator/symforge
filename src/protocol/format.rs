@@ -2015,7 +2015,7 @@ pub fn trace_symbol_result_view(
             let mut output = render_context_bundle_found(&found.context_bundle, verbosity);
 
             if !found.siblings.is_empty() {
-                output.push_str(&format_siblings(&found.siblings));
+                output.push_str(&format_siblings(&found.siblings, 0));
             }
 
             if !found.dependents.files.is_empty() {
@@ -2050,13 +2050,16 @@ pub fn trace_symbol_result_view(
     }
 }
 
-fn format_siblings(siblings: &[crate::live_index::SiblingSymbolView]) -> String {
+fn format_siblings(siblings: &[crate::live_index::SiblingSymbolView], overflow: usize) -> String {
     let mut lines = vec!["\nNearby siblings:".to_string()];
     for sib in siblings {
         lines.push(format!(
             "  {:<12} {:<30} {}-{}",
             sib.kind_label, sib.name, sib.line_range.0, sib.line_range.1
         ));
+    }
+    if overflow > 0 {
+        lines.push(format!("  ... and {overflow} more siblings"));
     }
     lines.join("\n")
 }
@@ -2112,8 +2115,8 @@ pub fn inspect_match_result_view(view: &InspectMatchView) -> String {
             }
 
             // 3. Siblings
-            if !found.siblings.is_empty() {
-                output.push_str(&format_siblings(&found.siblings));
+            if !found.siblings.is_empty() || found.siblings_overflow > 0 {
+                output.push_str(&format_siblings(&found.siblings, found.siblings_overflow));
             }
 
             output
@@ -2252,20 +2255,72 @@ fn is_external_symbol(name: &str, file_path: &str) -> bool {
     common_builtins.contains(&name)
 }
 
-/// Extract the signature (first meaningful line) from a symbol body.
+/// Extract the full signature from a symbol body.
 ///
 /// Handles common patterns: `fn foo(...)`, `pub struct Foo`, `class Bar`, etc.
-/// Returns the first non-empty, non-comment line. If the body is a single line
-/// or empty, returns it as-is.
+/// Skips leading doc comments, then collects lines until the declaration is
+/// complete (opening brace `{`, `where` clause, or terminating `;`).
+/// Multi-line signatures are joined on one line with spaces, preserving
+/// visibility, generic parameters, and return type.
 fn extract_signature(body: &str) -> String {
+    let mut sig_lines: Vec<&str> = Vec::new();
+    let mut in_sig = false;
+
     for line in body.lines() {
         let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with('#') {
-            continue;
+
+        if !in_sig {
+            // Skip leading empty lines and doc/attribute comments
+            if trimmed.is_empty()
+                || trimmed.starts_with("///")
+                || trimmed.starts_with("//!")
+                || trimmed.starts_with("//")
+                || trimmed.starts_with("/**")
+                || trimmed.starts_with("/*")
+                || trimmed.starts_with('*')
+                || trimmed.starts_with('#')
+            {
+                continue;
+            }
+            in_sig = true;
         }
-        return line.to_string();
+
+        sig_lines.push(trimmed);
+
+        // Stop once the signature is terminated:
+        // - opens a body block: `{`
+        // - `where` clause (generics constraints) — include the where line then stop at `{`
+        // - declaration terminator: `;` (abstract methods, type aliases, extern fns)
+        // - `=>` (match arm / single-expr lambda — stop collecting)
+        if trimmed.ends_with('{')
+            || trimmed.ends_with("where")
+            || trimmed.ends_with(';')
+            || trimmed == "{"
+        {
+            break;
+        }
+        // A line that IS just a where clause body — keep collecting until `{`
+        // A plain `)` or `->` line means multi-line sig still continuing — keep going
+        // But cap at 10 lines to avoid pulling in the entire body for edge cases
+        if sig_lines.len() >= 10 {
+            break;
+        }
     }
-    body.lines().next().unwrap_or("").to_string()
+
+    if sig_lines.is_empty() {
+        return body.lines().next().unwrap_or("").to_string();
+    }
+
+    // Join multi-line signatures onto a single line, collapsing extra whitespace
+    let joined = sig_lines.join(" ");
+    // Strip trailing ` {` or ` ;` from the end — the signature line should not
+    // include the opening brace or semicolon
+    let result = joined
+        .trim_end_matches(" {")
+        .trim_end_matches('{')
+        .trim_end_matches(';')
+        .trim();
+    result.to_string()
 }
 
 /// Extract the first doc-comment line from a symbol body.
@@ -2329,7 +2384,7 @@ fn extract_first_doc_line(body: &str) -> Option<String> {
 
 /// Apply verbosity filter to a symbol body.
 ///
-/// - `"signature"`: first meaningful line only (~80% smaller).
+/// - `"signature"`: full declaration line — visibility, name, generics, params, return type (~80% smaller).
 /// - `"compact"`: signature + first doc-comment line.
 /// - `"full"` or anything else: complete body (default).
 pub(crate) fn apply_verbosity(body: &str, verbosity: &str) -> String {
@@ -4704,6 +4759,110 @@ mod tests {
         assert_eq!(
             super::extract_declaration_name("use std::collections::HashMap;"),
             None
+        );
+    }
+
+    // ─── extract_signature / apply_verbosity tests (U6) ──────────────────────
+
+    #[test]
+    fn test_extract_signature_single_line_full_decl() {
+        // Full single-line Rust fn — visibility, generics, params, return type all preserved
+        let body = "pub fn foo<T: Display>(x: T) -> Result<String> {\n    todo!()\n}";
+        assert_eq!(
+            super::extract_signature(body),
+            "pub fn foo<T: Display>(x: T) -> Result<String>"
+        );
+    }
+
+    #[test]
+    fn test_extract_signature_pub_crate_visibility() {
+        let body = "pub(crate) fn bar(x: i32) -> bool {\n    x > 0\n}";
+        assert_eq!(
+            super::extract_signature(body),
+            "pub(crate) fn bar(x: i32) -> bool"
+        );
+    }
+
+    #[test]
+    fn test_extract_signature_multi_line_joins_to_one_line() {
+        // Multi-line fn signature — params on separate lines
+        let body = "pub fn process<T>(\n    input: T,\n    verbose: bool,\n) -> Result<String> {\n    todo!()\n}";
+        let sig = super::extract_signature(body);
+        // Must be a single line
+        assert!(
+            !sig.contains('\n'),
+            "signature must be one line, got: {sig:?}"
+        );
+        // Must include visibility, generics, return type
+        assert!(
+            sig.contains("pub fn process"),
+            "missing pub fn process: {sig:?}"
+        );
+        assert!(sig.contains("<T>"), "missing generic: {sig:?}");
+        assert!(
+            sig.contains("-> Result<String>"),
+            "missing return type: {sig:?}"
+        );
+    }
+
+    #[test]
+    fn test_extract_signature_skips_doc_comments() {
+        let body = "/// Does something important\n/// Multi-line doc\npub fn documented() -> u32 {\n    42\n}";
+        let sig = super::extract_signature(body);
+        assert_eq!(sig, "pub fn documented() -> u32");
+    }
+
+    #[test]
+    fn test_extract_signature_struct_with_generics() {
+        let body = "pub struct Wrapper<T: Clone> {\n    inner: T,\n}";
+        let sig = super::extract_signature(body);
+        assert_eq!(sig, "pub struct Wrapper<T: Clone>");
+    }
+
+    #[test]
+    fn test_extract_signature_trait_decl() {
+        let body = "pub trait Processor: Send + Sync {\n    fn process(&self);\n}";
+        let sig = super::extract_signature(body);
+        assert_eq!(sig, "pub trait Processor: Send + Sync");
+    }
+
+    #[test]
+    fn test_apply_verbosity_signature_is_one_line() {
+        // Verifies output stability — always one line regardless of body size
+        let body = "pub fn foo<T: Display>(x: T) -> Result<String> {\n    let a = 1;\n    let b = 2;\n    todo!()\n}";
+        let result = super::apply_verbosity(body, "signature");
+        assert!(
+            !result.contains('\n'),
+            "signature verbosity must produce one line, got: {result:?}"
+        );
+        assert!(
+            result.contains("pub fn foo"),
+            "must include pub fn foo: {result:?}"
+        );
+        assert!(
+            result.contains("-> Result<String>"),
+            "must include return type: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_apply_verbosity_full_returns_whole_body() {
+        let body = "pub fn foo() {\n    let x = 1;\n}";
+        assert_eq!(super::apply_verbosity(body, "full"), body);
+    }
+
+    #[test]
+    fn test_apply_verbosity_compact_includes_doc() {
+        let body = "/// Does the thing\npub fn bar() -> u32 {\n    1\n}";
+        let result = super::apply_verbosity(body, "compact");
+        assert!(
+            result.contains("pub fn bar() -> u32"),
+            "missing sig: {result:?}"
+        );
+        assert!(result.contains("Does the thing"), "missing doc: {result:?}");
+        assert!(
+            !result.contains("1\n"),
+            "body should not be in compact: {result:?}"
         );
     }
 }
