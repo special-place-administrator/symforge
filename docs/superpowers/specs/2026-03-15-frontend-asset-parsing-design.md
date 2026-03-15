@@ -62,6 +62,8 @@ Grammar dependencies:
 
 **Extraction rule:** Extract top-level elements, custom elements (tag contains `-`), `ng-template`, control-flow blocks, template refs, and `@let` declarations. Skip generic nested HTML tags, subordinate control-flow branches (`@else`, `@empty`), interpolation, and bindings.
 
+**Dedup rule:** Each node is emitted at most once. A top-level custom element (e.g., `<app-root>` at depth 0) satisfies both "top-level" and "custom element" criteria — it is emitted once. The extraction walker should check a set of already-emitted byte ranges to prevent duplicates.
+
 ### CSS
 
 | Node type | Symbol name | SymbolKind |
@@ -118,11 +120,11 @@ pub fn edit_capability_for_language(language: &LanguageId) -> Option<EditCapabil
 }
 ```
 
-This function lives in `config_extractors/mod.rs` because it already owns `EditCapability`. The name `edit_capability_for_language` distinguishes it from the existing `edit_capability_for` (config-only).
+This function lives in `config_extractors/mod.rs` because it already owns `EditCapability`. The module name `config_extractors` is now a misnomer since it also governs source-language edit policy — a future refactor could move `EditCapability` and the unified helper to a neutral `src/parsing/edit_policy.rs` module. For Sprint 12, the current location is acceptable to avoid a refactor mid-sprint. The name `edit_capability_for_language` distinguishes it from the existing `edit_capability_for` (config-only).
 
 The existing `check_config_edit_capability` in `tools.rs` (line ~2476) is renamed to `check_edit_capability` and updated to call `edit_capability_for_language` instead of `edit_capability_for`. The three call sites (in `replace_symbol_body`, `delete_symbol`, `edit_within_symbol`) and the function's internal comment ("Non-config files → no restriction") must all be updated. After the change, Html/Css/Scss source files will be gated at `TextEditSafe`, while all other source languages remain unrestricted.
 
-**Cross-reference extraction:** The `xref::extract_references` function in `src/parsing/xref.rs` has an exhaustive match on `LanguageId` for tree-sitter grammar selection. Html/Css/Scss need `unreachable!()` arms there (same pattern as config languages), since cross-reference extraction is not implemented for these languages in v1. The xref pass will return empty references for these file types.
+**Cross-reference extraction:** The `xref::extract_references` function in `src/parsing/xref.rs` has an exhaustive match on `LanguageId` for tree-sitter grammar selection. Html/Css/Scss must return `(vec![], HashMap::new())` explicitly — do NOT use `unreachable!()` since these languages DO enter the tree-sitter pipeline (unlike config languages which are branched away before `parse_source`). The xref pass produces empty references for these file types in v1; cross-reference extraction for frontend files is a future enhancement.
 
 ## ABI Compatibility Validation
 
@@ -160,6 +162,8 @@ Transitive: `tree-sitter-html` pulled in by `tree-sitter-angular`.
 - `@let user = expr` extracted as `Variable`
 - Generic nested `div`/`span` skipped
 - Interpolation and bindings skipped
+- Plain (non-Angular) HTML indexes sanely — `<div><p>text</p></div>` produces top-level `div` only, no Angular-specific noise
+- Top-level custom element is not emitted twice (dedup)
 - Empty file → zero symbols
 
 **CSS** (`src/parsing/languages/css.rs`):
@@ -168,6 +172,7 @@ Transitive: `tree-sitter-html` pulled in by `tree-sitter-angular`.
 - Custom property `--var` extracted as `Variable`
 - `@media` extracted as `Module`
 - `@keyframes` outer block extracted, inner steps skipped
+- `@layer` extraction: test with `@layer utilities { .a { } }` snippet — if grammar lacks `@layer` node type, skip extraction and document as known gap
 - Empty file → zero symbols
 
 **SCSS** (`src/parsing/languages/scss.rs`):
@@ -209,6 +214,8 @@ One test per grammar: create parser, set language, parse trivial snippet, assert
 - [ ] Control-flow blocks (`@if`, `@for`, `@switch`, `@defer`) extracted
 - [ ] Template refs and `@let` declarations extracted
 - [ ] `@else`/`@empty` not separate symbols
+- [ ] Plain (non-Angular) HTML indexes sanely — no Angular-specific noise
+- [ ] Top-level custom element emitted once, not duplicated
 
 ### Edit Safety
 - [ ] All three languages gated at `TextEditSafe`
