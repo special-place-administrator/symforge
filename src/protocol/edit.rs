@@ -135,7 +135,10 @@ pub(crate) fn normalize_line_endings(text: &[u8], target: LineEnding) -> Vec<u8>
 pub(crate) fn atomic_write_file(path: &Path, content: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     let parent = path.parent().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no parent directory")
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "path has no parent directory",
+        )
     })?;
     let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
     tmp.write_all(content)?;
@@ -237,20 +240,20 @@ pub(crate) fn detect_indentation(content: &[u8], byte_offset: u32) -> Vec<u8> {
     content[line_start..line_start + indent_end].to_vec()
 }
 
-/// Prefix each non-empty line of `text` with `indent`.
-pub(crate) fn apply_indentation(text: &str, indent: &[u8]) -> Vec<u8> {
+/// Prefix each non-empty line of `text` with `indent`, using the given line ending.
+pub(crate) fn apply_indentation(text: &str, indent: &[u8], line_ending: LineEnding) -> Vec<u8> {
     let mut result = Vec::new();
     for (i, line) in text.lines().enumerate() {
         if i > 0 {
-            result.push(b'\n');
+            result.extend_from_slice(line_ending.as_bytes());
         }
         if !line.is_empty() {
             result.extend_from_slice(indent);
             result.extend_from_slice(line.as_bytes());
         }
     }
-    if text.ends_with('\n') {
-        result.push(b'\n');
+    if text.ends_with('\n') || text.ends_with("\r\n") {
+        result.extend_from_slice(line_ending.as_bytes());
     }
     result
 }
@@ -268,6 +271,7 @@ pub(crate) fn build_insert_before(
     file_content: &[u8],
     sym: &SymbolRecord,
     new_code: &str,
+    line_ending: LineEnding,
 ) -> Vec<u8> {
     let sym_start = sym.effective_start() as usize;
     let line_start = file_content[..sym_start]
@@ -276,21 +280,42 @@ pub(crate) fn build_insert_before(
         .map(|p| p + 1)
         .unwrap_or(0) as u32;
     let indent = detect_indentation(file_content, sym.byte_range.0);
-    let indented = apply_indentation(new_code, &indent);
+    let normalized = normalize_line_endings(new_code.as_bytes(), line_ending);
+    let normalized_str = std::str::from_utf8(&normalized).unwrap_or(new_code);
+    let indented = apply_indentation(&normalized_str, &indent, line_ending);
     let mut insertion = indented;
-    let separator: &[u8] = if sym.doc_byte_range.is_some() {
-        b"\n"
+    let le = line_ending.as_bytes();
+    let separator: Vec<u8> = if sym.doc_byte_range.is_some() {
+        le.to_vec()
     } else {
         // Use single newline only when a blank line already precedes the symbol
         // (avoids creating triple-newline sequences). At start-of-file (empty prefix),
         // there's no existing blank line, so use double newline for visual separation.
         let prefix = &file_content[..line_start as usize];
-        let already_has_blank = prefix.len() >= 2
-            && prefix[prefix.len() - 1] == b'\n'
-            && prefix[prefix.len() - 2] == b'\n';
-        if already_has_blank { b"\n" } else { b"\n\n" }
+        let already_has_blank = match line_ending {
+            LineEnding::CrLf => {
+                prefix.len() >= 4
+                    && prefix[prefix.len() - 2] == b'\r'
+                    && prefix[prefix.len() - 1] == b'\n'
+                    && prefix[prefix.len() - 4] == b'\r'
+                    && prefix[prefix.len() - 3] == b'\n'
+            }
+            LineEnding::Lf => {
+                prefix.len() >= 2
+                    && prefix[prefix.len() - 1] == b'\n'
+                    && prefix[prefix.len() - 2] == b'\n'
+            }
+        };
+        if already_has_blank {
+            le.to_vec()
+        } else {
+            let mut sep = Vec::with_capacity(le.len() * 2);
+            sep.extend_from_slice(le);
+            sep.extend_from_slice(le);
+            sep
+        }
     };
-    insertion.extend_from_slice(separator);
+    insertion.extend_from_slice(&separator);
     apply_splice(file_content, (line_start, line_start), &insertion)
 }
 
@@ -299,11 +324,16 @@ pub(crate) fn build_insert_after(
     file_content: &[u8],
     sym: &SymbolRecord,
     new_code: &str,
+    line_ending: LineEnding,
 ) -> Vec<u8> {
     let indent = detect_indentation(file_content, sym.byte_range.0);
-    let indented = apply_indentation(new_code, &indent);
+    let normalized = normalize_line_endings(new_code.as_bytes(), line_ending);
+    let normalized_str = std::str::from_utf8(&normalized).unwrap_or(new_code);
+    let indented = apply_indentation(&normalized_str, &indent, line_ending);
+    let le = line_ending.as_bytes();
     let mut insertion = Vec::new();
-    insertion.extend_from_slice(b"\n\n");
+    insertion.extend_from_slice(le);
+    insertion.extend_from_slice(le);
     insertion.extend_from_slice(&indented);
     apply_splice(
         file_content,
@@ -318,7 +348,11 @@ pub(crate) fn build_insert_after(
 
 /// Build file content with the symbol removed, including leading whitespace and trailing newlines.
 /// Collapses runs of 3+ consecutive blank lines down to 1 after deletion.
-pub(crate) fn build_delete(file_content: &[u8], sym: &SymbolRecord) -> Vec<u8> {
+pub(crate) fn build_delete(
+    file_content: &[u8],
+    sym: &SymbolRecord,
+    line_ending: LineEnding,
+) -> Vec<u8> {
     // Extend to start of line (include leading whitespace).
     let start = {
         let s = sym.effective_start() as usize;
@@ -375,37 +409,77 @@ pub(crate) fn build_delete(file_content: &[u8], sym: &SymbolRecord) -> Vec<u8> {
         line_start as u32
     };
     // Extend past trailing newlines (consume up to one blank line).
+    // CRLF-aware: on CRLF files, a line ending is \r\n not just \n.
     let end = {
         let e = sym.byte_range.1 as usize;
         let mut pos = e;
+        // Skip to end of current line (past any trailing non-newline chars).
         while pos < file_content.len() && file_content[pos] != b'\n' {
             pos += 1;
         }
-        if pos < file_content.len() {
-            pos += 1;
-        }
+        // Consume the \n (or \r\n).
         if pos < file_content.len() && file_content[pos] == b'\n' {
             pos += 1;
+        }
+        // Consume one more blank line if present.
+        match line_ending {
+            LineEnding::CrLf => {
+                if pos + 1 < file_content.len()
+                    && file_content[pos] == b'\r'
+                    && file_content[pos + 1] == b'\n'
+                {
+                    pos += 2;
+                }
+            }
+            LineEnding::Lf => {
+                if pos < file_content.len() && file_content[pos] == b'\n' {
+                    pos += 1;
+                }
+            }
         }
         pos as u32
     };
     let spliced = apply_splice(file_content, (start, end), b"");
-    collapse_blank_lines(&spliced)
+    collapse_blank_lines(&spliced, line_ending)
 }
 
-/// Collapse runs of 3+ consecutive newlines (\n\n\n+) down to 2 (\n\n = one blank line).
-fn collapse_blank_lines(content: &[u8]) -> Vec<u8> {
+/// Collapse runs of 3+ consecutive newlines down to 2 (one blank line).
+/// On CRLF files, counts `\r\n` pairs; on LF files, counts `\n` bytes.
+fn collapse_blank_lines(content: &[u8], line_ending: LineEnding) -> Vec<u8> {
     let mut result = Vec::with_capacity(content.len());
-    let mut consecutive_newlines = 0u32;
-    for &b in content {
-        if b == b'\n' {
-            consecutive_newlines += 1;
-            if consecutive_newlines <= 2 {
-                result.push(b);
+    match line_ending {
+        LineEnding::Lf => {
+            let mut consecutive_newlines = 0u32;
+            for &b in content {
+                if b == b'\n' {
+                    consecutive_newlines += 1;
+                    if consecutive_newlines <= 2 {
+                        result.push(b);
+                    }
+                } else {
+                    consecutive_newlines = 0;
+                    result.push(b);
+                }
             }
-        } else {
-            consecutive_newlines = 0;
-            result.push(b);
+        }
+        LineEnding::CrLf => {
+            // Count \r\n pairs as line endings; threshold at 2 pairs (one blank line).
+            let mut consecutive_line_endings = 0u32;
+            let mut i = 0;
+            while i < content.len() {
+                if i + 1 < content.len() && content[i] == b'\r' && content[i + 1] == b'\n' {
+                    consecutive_line_endings += 1;
+                    if consecutive_line_endings <= 2 {
+                        result.push(b'\r');
+                        result.push(b'\n');
+                    }
+                    i += 2;
+                } else {
+                    consecutive_line_endings = 0;
+                    result.push(content[i]);
+                    i += 1;
+                }
+            }
         }
     }
     result
@@ -687,6 +761,7 @@ pub(crate) fn execute_batch_edit(
 
         let mut content = file.content.clone();
         let language = resolved[indices[0]].language.clone();
+        let line_ending = detect_line_ending(&content);
         let mut file_summaries: Vec<String> = Vec::new();
 
         for &ri in indices {
@@ -702,7 +777,9 @@ pub(crate) fn execute_batch_edit(
                         .map(|p| p + 1)
                         .unwrap_or(0) as u32;
                     let indent = detect_indentation(&content, r.sym.byte_range.0);
-                    let indented = apply_indentation(new_body, &indent);
+                    let normalized = normalize_line_endings(new_body.as_bytes(), line_ending);
+                    let normalized_str = std::str::from_utf8(&normalized).unwrap_or(new_body);
+                    let indented = apply_indentation(&normalized_str, &indent, line_ending);
                     content = apply_splice(&content, (line_start, r.sym.byte_range.1), &indented);
                     file_summaries.push(super::edit_format::format_replace(
                         path,
@@ -713,7 +790,7 @@ pub(crate) fn execute_batch_edit(
                     ));
                 }
                 EditOperation::InsertBefore { content: code } => {
-                    content = build_insert_before(&content, &r.sym, code);
+                    content = build_insert_before(&content, &r.sym, code, line_ending);
                     file_summaries.push(super::edit_format::format_insert(
                         path,
                         &r.sym.name,
@@ -722,7 +799,7 @@ pub(crate) fn execute_batch_edit(
                     ));
                 }
                 EditOperation::InsertAfter { content: code } => {
-                    content = build_insert_after(&content, &r.sym, code);
+                    content = build_insert_after(&content, &r.sym, code, line_ending);
                     file_summaries.push(super::edit_format::format_insert(
                         path,
                         &r.sym.name,
@@ -732,7 +809,7 @@ pub(crate) fn execute_batch_edit(
                 }
                 EditOperation::Delete => {
                     let deleted = (r.sym.byte_range.1 - r.sym.byte_range.0) as usize;
-                    content = build_delete(&content, &r.sym);
+                    content = build_delete(&content, &r.sym, line_ending);
                     file_summaries.push(super::edit_format::format_delete(
                         path,
                         &r.sym.name,
@@ -1164,9 +1241,10 @@ pub(crate) fn execute_batch_insert(
         )
         .map_err(|e| format!("Target {}: {e}", target.path))?;
 
+        let le = detect_line_ending(&file.content);
         let new_content = match input.position {
-            InsertPosition::Before => build_insert_before(&file.content, &sym, &input.content),
-            InsertPosition::After => build_insert_after(&file.content, &sym, &input.content),
+            InsertPosition::Before => build_insert_before(&file.content, &sym, &input.content, le),
+            InsertPosition::After => build_insert_after(&file.content, &sym, &input.content, le),
         };
 
         let abs_path = match safe_repo_path(repo_root, &target.path) {
@@ -1904,21 +1982,21 @@ mod tests {
 
     #[test]
     fn test_apply_indentation_adds_prefix() {
-        let result = apply_indentation("fn new() {\n    body;\n}", b"    ");
+        let result = apply_indentation("fn new() {\n    body;\n}", b"    ", LineEnding::Lf);
         let text = std::str::from_utf8(&result).unwrap();
         assert_eq!(text, "    fn new() {\n        body;\n    }");
     }
 
     #[test]
     fn test_apply_indentation_preserves_empty_lines() {
-        let result = apply_indentation("a\n\nb", b"  ");
+        let result = apply_indentation("a\n\nb", b"  ", LineEnding::Lf);
         let text = std::str::from_utf8(&result).unwrap();
         assert_eq!(text, "  a\n\n  b");
     }
 
     #[test]
     fn test_apply_indentation_empty_indent_is_identity() {
-        let result = apply_indentation("fn foo() {}", b"");
+        let result = apply_indentation("fn foo() {}", b"", LineEnding::Lf);
         assert_eq!(result, b"fn foo() {}");
     }
 
@@ -1928,7 +2006,7 @@ mod tests {
     fn test_build_insert_before_adds_content_with_indent() {
         let content = b"    fn existing() {}\n";
         let sym = make_test_symbol("existing", SymbolKind::Function, (4, 20), 1);
-        let result = build_insert_before(content, &sym, "fn new_fn() {}");
+        let result = build_insert_before(content, &sym, "fn new_fn() {}", LineEnding::Lf);
         let text = std::str::from_utf8(&result).unwrap();
         // No doc comment on the symbol → expect \n\n separator for visual separation.
         assert!(
@@ -1941,7 +2019,7 @@ mod tests {
     fn test_build_insert_after_adds_content_with_indent() {
         let content = b"    fn existing() {}";
         let sym = make_test_symbol("existing", SymbolKind::Function, (4, 20), 1);
-        let result = build_insert_after(content, &sym, "fn new_fn() {}");
+        let result = build_insert_after(content, &sym, "fn new_fn() {}", LineEnding::Lf);
         let text = std::str::from_utf8(&result).unwrap();
         assert!(
             text.contains("fn existing() {}\n\n    fn new_fn() {}"),
@@ -1955,7 +2033,7 @@ mod tests {
     fn test_build_delete_removes_symbol_and_trailing_newline() {
         let content = b"fn keep() {}\n\nfn remove() {}\n\nfn also_keep() {}\n";
         let sym = make_test_symbol("remove", SymbolKind::Function, (14, 28), 3);
-        let result = build_delete(content, &sym);
+        let result = build_delete(content, &sym, LineEnding::Lf);
         let text = std::str::from_utf8(&result).unwrap();
         assert!(!text.contains("remove"), "got: {text}");
         assert!(text.contains("keep"), "got: {text}");
@@ -1968,7 +2046,7 @@ mod tests {
         let content = b"fn a() {}\n\n\n\nfn d() {}\n";
         // "a" occupies bytes 0..9, pretend we already removed the middle ones.
         // Just verify collapse_blank_lines works on this content.
-        let collapsed = super::collapse_blank_lines(content);
+        let collapsed = super::collapse_blank_lines(content, LineEnding::Lf);
         let text = std::str::from_utf8(&collapsed).unwrap();
         // Should have at most one blank line (two consecutive \n).
         assert!(
@@ -2665,7 +2743,7 @@ mod tests {
             line_range: (2, 2),
             doc_byte_range: Some((0, 30)),
         };
-        let result = build_delete(content, &sym);
+        let result = build_delete(content, &sym, LineEnding::Lf);
         let result_str = String::from_utf8(result).unwrap();
         assert!(
             !result_str.contains("/// Doc line 1"),
@@ -2702,7 +2780,7 @@ mod tests {
             line_range: (2, 2),
             doc_byte_range: None, // blank line prevents attachment
         };
-        let result = build_delete(content, &sym);
+        let result = build_delete(content, &sym, LineEnding::Lf);
         let result_str = String::from_utf8(result).unwrap();
         assert!(
             !result_str.contains("/// Batch-inserted marker"),
@@ -2728,7 +2806,7 @@ mod tests {
             line_range: (1, 1),
             doc_byte_range: Some((0, 16)),
         };
-        let result = build_insert_before(content, &sym, "use std::io;");
+        let result = build_insert_before(content, &sym, "use std::io;", LineEnding::Lf);
         let result_str = String::from_utf8(result).unwrap();
         let use_pos = result_str
             .find("use std::io;")
@@ -2754,7 +2832,8 @@ mod tests {
             line_range: (0, 0),
             doc_byte_range: None,
         };
-        let result = build_insert_before(content, &sym, "struct Point3D { x: f64 }");
+        let result =
+            build_insert_before(content, &sym, "struct Point3D { x: f64 }", LineEnding::Lf);
         let result_str = String::from_utf8(result).unwrap();
         assert!(
             result_str.contains("Point3D { x: f64 }\n\nstruct Point"),
@@ -2777,7 +2856,7 @@ mod tests {
             line_range: (1, 1),
             doc_byte_range: None,
         };
-        let result = build_insert_before(content, &sym, "fn new_fn() {}");
+        let result = build_insert_before(content, &sym, "fn new_fn() {}", LineEnding::Lf);
         let result_str = String::from_utf8(result).unwrap();
         assert!(
             !result_str.contains("\n\n\n"),
@@ -2806,7 +2885,7 @@ mod tests {
             line_range: (0, 0),
             doc_byte_range: None,
         };
-        let result = build_insert_before(content, &sym, "fn before() {}");
+        let result = build_insert_before(content, &sym, "fn before() {}", LineEnding::Lf);
         let result_str = String::from_utf8(result).unwrap();
         assert!(
             !result_str.contains("\n\n\n"),
@@ -2839,7 +2918,7 @@ mod tests {
             line_range: (1, 1),
             doc_byte_range: Some((0, 8)),
         };
-        let result = build_insert_before(content, &sym, "fn inserted() {}");
+        let result = build_insert_before(content, &sym, "fn inserted() {}", LineEnding::Lf);
         let result_str = String::from_utf8(result).unwrap();
         // insertion goes above the doc comment, with \n separator (not \n\n)
         assert!(

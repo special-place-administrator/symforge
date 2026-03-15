@@ -78,7 +78,6 @@ enum ActivationState {
     Active,
 }
 
-
 struct ProjectInstance {
     project_id: String,
     canonical_root: PathBuf,
@@ -213,11 +212,12 @@ impl DaemonState {
 
         let (project_name, canonical_root_text, session_count) = {
             let mut projects = self.projects.write().expect("lock poisoned");
-            let project = projects
-                .get_mut(project_id)
-                .ok_or_else(|| anyhow::anyhow!(
-                    "project {} was removed between check and session registration", project_id
-                ))?;
+            let project = projects.get_mut(project_id).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "project {} was removed between check and session registration",
+                    project_id
+                )
+            })?;
             project.session_ids.insert(session_id.clone());
             (
                 project.project_name.clone(),
@@ -248,7 +248,6 @@ impl DaemonState {
         })
     }
 
-
     pub fn open_project_session(
         &self,
         request: OpenProjectRequest,
@@ -262,7 +261,9 @@ impl DaemonState {
             if projects.contains_key(&project_id) {
                 drop(projects);
                 return self.register_session_for_existing_project(
-                    &project_id, &request, &canonical_root,
+                    &project_id,
+                    &request,
+                    &canonical_root,
                 );
             }
         }
@@ -893,34 +894,34 @@ fn stable_path_identity(path: &str) -> String {
 
 impl ProjectInstance {
     fn load(canonical_root: &Path) -> anyhow::Result<Self> {
-            let project_name = canonical_root
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("project")
-                .to_string();
+        let project_name = canonical_root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("project")
+            .to_string();
 
-            let index = live_index::LiveIndex::load(canonical_root).with_context(|| {
-                format!(
-                    "failed to load project index for {}",
-                    canonical_root.display()
-                )
-            })?;
-            let watcher_info = Arc::new(Mutex::new(WatcherInfo::default()));
+        let index = live_index::LiveIndex::load(canonical_root).with_context(|| {
+            format!(
+                "failed to load project index for {}",
+                canonical_root.display()
+            )
+        })?;
+        let watcher_info = Arc::new(Mutex::new(WatcherInfo::default()));
 
-            Ok(Self {
-                project_id: project_key(canonical_root),
-                canonical_root: canonical_root.to_path_buf(),
-                project_name,
-                index,
-                watcher_info,
-                watcher_task: None,
-                token_stats: TokenStats::new(),
-                symbol_cache: Arc::new(RwLock::new(HashMap::new())),
-                session_ids: HashSet::new(),
-                opened_at: SystemTime::now(),
-                activation_state: ActivationState::Inactive,
-            })
-        }
+        Ok(Self {
+            project_id: project_key(canonical_root),
+            canonical_root: canonical_root.to_path_buf(),
+            project_name,
+            index,
+            watcher_info,
+            watcher_task: None,
+            token_stats: TokenStats::new(),
+            symbol_cache: Arc::new(RwLock::new(HashMap::new())),
+            session_ids: HashSet::new(),
+            opened_at: SystemTime::now(),
+            activation_state: ActivationState::Inactive,
+        })
+    }
 
     /// Activate background tasks (watcher + git temporal) for this project.
     /// Must only be called once, on an `Inactive` instance, after the caller
@@ -947,7 +948,6 @@ impl ProjectInstance {
 
         self.activation_state = ActivationState::Active;
     }
-
 
     fn reload(&mut self, canonical_root: &Path) -> anyhow::Result<(usize, usize)> {
         self.index.reload(canonical_root)?;
@@ -2519,12 +2519,19 @@ mod tests {
             .collect();
 
         for handle in handles {
-            handle.join().expect("thread panicked").expect("open_project_session failed");
+            handle
+                .join()
+                .expect("thread panicked")
+                .expect("open_project_session failed");
         }
 
         let projects = state.list_projects();
         assert_eq!(projects.len(), 1, "exactly 1 project instance expected");
-        assert_eq!(state.health().session_count, 2, "exactly 2 sessions expected");
+        assert_eq!(
+            state.health().session_count,
+            2,
+            "exactly 2 sessions expected"
+        );
 
         let project_id = &projects[0].project_id;
         let projects_lock = state.projects.read().expect("lock poisoned");
@@ -2541,11 +2548,17 @@ mod tests {
         use std::sync::{Arc, Barrier};
 
         let project_a = project_dir("tokenizor-conc-diff-a");
-        std::fs::write(project_a.path().join("src").join("main.rs"), "fn main() {}\n")
-            .expect("write source a");
+        std::fs::write(
+            project_a.path().join("src").join("main.rs"),
+            "fn main() {}\n",
+        )
+        .expect("write source a");
         let project_b = project_dir("tokenizor-conc-diff-b");
-        std::fs::write(project_b.path().join("src").join("main.rs"), "fn main() {}\n")
-            .expect("write source b");
+        std::fs::write(
+            project_b.path().join("src").join("main.rs"),
+            "fn main() {}\n",
+        )
+        .expect("write source b");
 
         let root_a = project_a.path().display().to_string();
         let root_b = project_b.path().display().to_string();
@@ -2581,7 +2594,11 @@ mod tests {
             responses[0].project_id, responses[1].project_id,
             "two distinct projects expected"
         );
-        assert_eq!(state.list_projects().len(), 2, "exactly 2 project instances expected");
+        assert_eq!(
+            state.list_projects().len(),
+            2,
+            "exactly 2 project instances expected"
+        );
     }
 
     #[test]
@@ -2629,7 +2646,10 @@ mod tests {
         });
 
         // Both must return Ok / Some — not panic.
-        open_handle.join().expect("open thread panicked").expect("open failed");
+        open_handle
+            .join()
+            .expect("open thread panicked")
+            .expect("open failed");
         close_handle.join().expect("close thread panicked");
         // (close_session returns Option — None is acceptable if session was already gone)
     }
@@ -2663,12 +2683,19 @@ mod tests {
             .collect();
 
         for handle in handles {
-            handle.join().expect("thread panicked").expect("open_project_session failed");
+            handle
+                .join()
+                .expect("thread panicked")
+                .expect("open_project_session failed");
         }
 
         let projects = state.list_projects();
         assert_eq!(projects.len(), 1, "exactly 1 project instance expected");
-        assert_eq!(state.health().session_count, 3, "exactly 3 sessions expected");
+        assert_eq!(
+            state.health().session_count,
+            3,
+            "exactly 3 sessions expected"
+        );
 
         let project_id = &projects[0].project_id;
         let projects_lock = state.projects.read().expect("lock poisoned");

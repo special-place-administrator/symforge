@@ -3020,7 +3020,10 @@ impl TokenizorServer {
             .map(|p| p + 1)
             .unwrap_or(0) as u32;
         let indent = edit::detect_indentation(&file.content, sym.byte_range.0);
-        let indented = edit::apply_indentation(&params.0.new_body, &indent);
+        let line_ending = edit::detect_line_ending(&file.content);
+        let normalized = edit::normalize_line_endings(params.0.new_body.as_bytes(), line_ending);
+        let normalized_str = std::str::from_utf8(&normalized).unwrap_or(&params.0.new_body);
+        let indented = edit::apply_indentation(normalized_str, &indent, line_ending);
         let new_content =
             edit::apply_splice(&file.content, (line_start, sym.byte_range.1), &indented);
         let abs_path = match edit::safe_repo_path(&repo_root, &params.0.path) {
@@ -3105,10 +3108,11 @@ impl TokenizorServer {
             Ok(s) => s,
             Err(e) => return e,
         };
+        let line_ending = edit::detect_line_ending(&file.content);
         let new_content = if position == "before" {
-            edit::build_insert_before(&file.content, &sym, &params.0.content)
+            edit::build_insert_before(&file.content, &sym, &params.0.content, line_ending)
         } else {
-            edit::build_insert_after(&file.content, &sym, &params.0.content)
+            edit::build_insert_after(&file.content, &sym, &params.0.content, line_ending)
         };
         let abs_path = match edit::safe_repo_path(&repo_root, &params.0.path) {
             Ok(p) => p,
@@ -3174,7 +3178,8 @@ impl TokenizorServer {
             Err(e) => return e,
         };
         let deleted_bytes = (sym.byte_range.1 - sym.byte_range.0) as usize;
-        let new_content = edit::build_delete(&file.content, &sym);
+        let line_ending = edit::detect_line_ending(&file.content);
+        let new_content = edit::build_delete(&file.content, &sym, line_ending);
         let abs_path = match edit::safe_repo_path(&repo_root, &params.0.path) {
             Ok(p) => p,
             Err(e) => return format!("Error: {e}"),
@@ -3247,14 +3252,20 @@ impl TokenizorServer {
             Ok(s) => s,
             Err(_) => return "Error: symbol body is not valid UTF-8.".to_string(),
         };
+        // Normalize replacement text to match file line endings.
+        let line_ending = edit::detect_line_ending(&file.content);
+        let normalized_new =
+            edit::normalize_line_endings(params.0.new_text.as_bytes(), line_ending);
+        let normalized_new_str =
+            String::from_utf8(normalized_new).unwrap_or_else(|_| params.0.new_text.clone());
         let (new_body, count) = if params.0.replace_all {
-            let replaced = body_str.replace(&params.0.old_text, &params.0.new_text);
+            let replaced = body_str.replace(&params.0.old_text, &normalized_new_str);
             let count = body_str.matches(&params.0.old_text).count();
             (replaced, count)
         } else {
             match body_str.find(&params.0.old_text) {
                 Some(_) => (
-                    body_str.replacen(&params.0.old_text, &params.0.new_text, 1),
+                    body_str.replacen(&params.0.old_text, &normalized_new_str, 1),
                     1,
                 ),
                 None => {
