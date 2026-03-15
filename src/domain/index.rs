@@ -524,7 +524,11 @@ const DENYLISTED_EXTENSIONS: &[&str] = &[
     // Binary
     "bin",
     // Executables and libraries
-    "exe", "dll", "so", "dylib", "class",
+    "exe",
+    "dll",
+    "so",
+    "dylib",
+    "class",
 ];
 
 pub fn is_denylisted_extension(ext: &str) -> bool {

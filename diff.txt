@@ -1,0 +1,18 @@
+diff --git a/src/main.rs b/src/main.rs
+index 2459926..0bf7e86 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -58,10 +58,9 @@ fn run_daemon() -> anyhow::Result<()> {
+     tokio::runtime::Builder::new_multi_thread()
+         .enable_all()
+         // Tool handlers acquire std::sync::RwLock on the index, which blocks
+-        // the OS thread. With the default worker_threads (= num_cpus), 10+
+-        // concurrent subagent calls can starve the runtime. Scale to 4x CPU
+-        // cores (min 16, max 64) so blocked threads don't exhaust the pool.
+-        .worker_threads(std::thread::available_parallelism().map_or(16, |n| (n.get() * 4).clamp(16, 64)))
++        // the OS thread. Reserve 2 threads for the OS/system, use the rest
++        // for tokio workers so blocked threads don't exhaust the pool.
++        .worker_threads(std::thread::available_parallelism().map_or(4, |n| n.get().saturating_sub(2).max(4)))
+         .build()?
+         .block_on(async {
+             observability::init_tracing()?;

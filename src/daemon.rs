@@ -1091,7 +1091,7 @@ pub async fn run_daemon_until_shutdown(bind_host: &str) -> anyhow::Result<()> {
     // Both trigger the same graceful shutdown path.
     #[cfg(unix)]
     {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
         let mut sigterm = signal(SignalKind::terminate())?;
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
@@ -1636,7 +1636,9 @@ fn terminate_process(pid: u32) -> io::Result<()> {
         if status.success() || status.code() == Some(128) {
             Ok(())
         } else {
-            Err(io::Error::other(format!("taskkill exited with status {status}")))
+            Err(io::Error::other(format!(
+                "taskkill exited with status {status}"
+            )))
         }
     }
 
