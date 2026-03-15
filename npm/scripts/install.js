@@ -351,6 +351,19 @@ function createInstaller(overrides = {}) {
       const data = await download(url);
       const result = await installDownloadedBinary(binPath, pendingPath, data);
 
+      // Clean up npm cache to reclaim disk space after download.
+      // npm cache grows unbounded over time; verify removes stale entries.
+      try {
+        execSyncFn("npm cache verify --silent", {
+          encoding: "utf8",
+          timeout: 30000,
+          stdio: "ignore",
+        });
+        consoleMod.log("npm cache verified (stale entries cleaned)");
+      } catch {
+        // Non-fatal — skip if npm isn't available or verify fails
+      }
+
       if (result.status === "installed") {
         // Binary replaced in place — run init now.
         runAutoInit(binPath);
