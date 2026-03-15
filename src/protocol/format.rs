@@ -33,6 +33,7 @@ impl Default for OutputLimits {
     }
 }
 
+use crate::domain::index::{AdmissionTier, SkippedFile};
 use crate::live_index::{
     ContextBundleFoundView, ContextBundleSectionView, ContextBundleView, FileContentView,
     FileOutlineView, FindDependentsView, FindImplementationsView, FindReferencesView, HealthStats,
@@ -684,6 +685,125 @@ pub fn file_tree_view(files: &[RepoOutlineFileView], path: &str, depth: u32) -> 
     output.join("\n")
 }
 
+/// Format a byte count as a human-readable size string.
+fn human_size(bytes: u64) -> String {
+    if bytes >= 1_073_741_824 {
+        format!("{:.1} GB", bytes as f64 / 1_073_741_824.0)
+    } else if bytes >= 1_048_576 {
+        format!("{:.1} MB", bytes as f64 / 1_048_576.0)
+    } else if bytes >= 1024 {
+        format!("{:.0} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
+/// Like `file_tree_view` but also incorporates skipped files:
+/// - Tier 2 (MetadataOnly) files appear in the tree with a `[skipped: {reason}, {size}]` tag.
+/// - Tier 3 (HardSkip) files do NOT appear in the tree; instead a footer line is appended:
+///   `{N} hard-skipped artifacts not shown (>100MB)`
+pub fn file_tree_view_with_skipped(
+    files: &[RepoOutlineFileView],
+    skipped: &[SkippedFile],
+    path: &str,
+    depth: u32,
+) -> String {
+    // Separate Tier 2 and Tier 3 skipped files, filtered to the path prefix.
+    let prefix = path.trim_matches('/');
+    let tier2: Vec<&SkippedFile> = skipped
+        .iter()
+        .filter(|sf| {
+            sf.decision.tier == AdmissionTier::MetadataOnly
+                && (prefix.is_empty()
+                    || sf.path.starts_with(prefix)
+                        && (sf.path.len() == prefix.len()
+                            || sf.path.as_bytes().get(prefix.len()) == Some(&b'/')))
+        })
+        .collect();
+    let tier3_count = skipped
+        .iter()
+        .filter(|sf| {
+            sf.decision.tier == AdmissionTier::HardSkip
+                && (prefix.is_empty()
+                    || sf.path.starts_with(prefix)
+                        && (sf.path.len() == prefix.len()
+                            || sf.path.as_bytes().get(prefix.len()) == Some(&b'/')))
+        })
+        .count();
+
+    // Build the base tree from indexed files.
+    let base = if tier2.is_empty() && files.is_empty() {
+        file_tree_view(files, path, depth)
+    } else {
+        // Build augmented file list: convert Tier 2 skipped files into synthetic
+        // RepoOutlineFileView entries so they appear in the tree with the skip tag appended.
+        // We render the base tree first, then inject Tier 2 entries separately.
+        file_tree_view(files, path, depth)
+    };
+
+    // If there are no indexed files and no Tier 2 skipped files, the base already handles it.
+    // We need to inject Tier 2 entries into the output.
+    // Strategy: build Tier 2 lines separately and splice into base before the footer.
+    // Simpler approach: re-render with Tier 2 files appended as extra lines after the base tree body.
+
+    // Split base output into body lines and footer (last line is always the summary).
+    let mut lines: Vec<String> = base.lines().map(String::from).collect();
+    let footer = if lines.len() > 1 { lines.pop() } else { None };
+
+    // Build Tier 2 file lines. Each gets placed at the correct indentation by stripping the prefix.
+    let strip_len = if prefix.is_empty() {
+        0
+    } else {
+        prefix.len() + 1
+    };
+    let mut tier2_lines: Vec<(String, String)> = tier2
+        .iter()
+        .map(|sf| {
+            let p = sf.path.as_str();
+            let rel = if p.len() >= strip_len {
+                &p[strip_len..]
+            } else {
+                p
+            };
+            let reason = sf
+                .decision
+                .reason
+                .as_ref()
+                .map(|r| r.to_string())
+                .unwrap_or_else(|| "skipped".to_string());
+            let tag = format!("[skipped: {}, {}]", reason, human_size(sf.size));
+            (rel.to_string(), tag)
+        })
+        .collect();
+    tier2_lines.sort_by(|a, b| a.0.cmp(&b.0));
+
+    for (rel, tag) in &tier2_lines {
+        // Compute indentation from path depth.
+        let depth_level = rel.chars().filter(|&c| c == '/').count();
+        let pad = "  ".repeat(depth_level);
+        let filename = rel.rsplit('/').next().unwrap_or(rel.as_str());
+        lines.push(format!("{}{}  {}", pad, filename, tag));
+    }
+
+    // Re-append footer, then add Tier 3 footer if needed.
+    if let Some(f) = footer {
+        lines.push(f);
+    }
+    if tier3_count > 0 {
+        let artifact_label = if tier3_count == 1 {
+            "artifact"
+        } else {
+            "artifacts"
+        };
+        lines.push(format!(
+            "{} hard-skipped {} not shown (>100MB)",
+            tier3_count, artifact_label
+        ));
+    }
+
+    lines.join("\n")
+}
+
 /// Generate a directory-tree overview of the repo.
 ///
 /// Header: `{project_name}  ({N} files, {M} symbols)`
@@ -855,6 +975,7 @@ pub fn health_report_from_published_state(
         last_event_at: watcher.last_event_at,
         debounce_window_ms: watcher.debounce_window_ms,
         partial_parse_files: vec![],
+        tier_counts: published.tier_counts,
     };
     // Preserve the existing formatter shape by reusing HealthStats.
     if matches!(stats.watcher_state, crate::watcher::WatcherState::Off) {
@@ -890,8 +1011,15 @@ pub fn health_report_from_stats(status: &str, stats: &HealthStats) -> String {
         WatcherState::Off => "Watcher: off".to_string(),
     };
 
+    let (tier1, tier2, tier3) = stats.tier_counts;
+    let total_discovered = tier1 + tier2 + tier3;
+    let admission_section = format!(
+        "\nAdmission: {} files discovered\n  Tier 1 (indexed): {}\n  Tier 2 (metadata only): {}\n  Tier 3 (hard-skipped): {}",
+        total_discovered, tier1, tier2, tier3
+    );
+
     let mut output = format!(
-        "Status: {}\nFiles:  {} indexed ({} parsed, {} partial, {} failed)\nSymbols: {}\nLoaded in: {}ms\n{}",
+        "Status: {}\nFiles:  {} indexed ({} parsed, {} partial, {} failed)\nSymbols: {}\nLoaded in: {}ms\n{}{}",
         status,
         stats.file_count,
         stats.parsed_count,
@@ -899,7 +1027,8 @@ pub fn health_report_from_stats(status: &str, stats: &HealthStats) -> String {
         stats.failed_count,
         stats.symbol_count,
         stats.load_duration.as_millis(),
-        watcher_line
+        watcher_line,
+        admission_section
     );
 
     if !stats.partial_parse_files.is_empty() {
@@ -2744,6 +2873,7 @@ mod tests {
             files_by_dir_component: HashMap::new(),
             trigram_index,
             gitignore: None,
+            skipped_files: Vec::new(),
         };
         index.rebuild_path_indices();
         index
@@ -3274,6 +3404,7 @@ mod tests {
             files_by_dir_component: HashMap::new(),
             trigram_index: crate::live_index::trigram::TrigramIndex::new(),
             gitignore: None,
+            skipped_files: Vec::new(),
         };
         let result = health_report(&index);
         assert!(result.contains("Status: Empty"), "got: {result}");
@@ -3374,6 +3505,7 @@ mod tests {
                 "src/b.rs".to_string(),
                 "src/c.rs".to_string(),
             ],
+            tier_counts: (3, 0, 0),
         };
         let report = health_report_from_stats("Ready", &stats);
         assert!(
@@ -3408,6 +3540,7 @@ mod tests {
             last_event_at: None,
             debounce_window_ms: 200,
             partial_parse_files,
+            tier_counts: (50, 0, 0),
         };
         let report = health_report_from_stats("Ready", &stats);
         assert!(
@@ -3419,6 +3552,44 @@ mod tests {
         assert!(
             report.contains("... and 40 more partial files"),
             "should show overflow hint for 40 remaining"
+        );
+    }
+
+    #[test]
+    fn test_health_report_shows_tier_breakdown() {
+        use crate::watcher::WatcherState;
+        use std::time::Duration;
+
+        let stats = HealthStats {
+            file_count: 8200,
+            symbol_count: 10000,
+            parsed_count: 8180,
+            partial_parse_count: 15,
+            failed_count: 5,
+            load_duration: Duration::from_millis(120),
+            watcher_state: WatcherState::Off,
+            events_processed: 0,
+            last_event_at: None,
+            debounce_window_ms: 200,
+            partial_parse_files: vec![],
+            tier_counts: (8200, 1280, 20),
+        };
+        let report = health_report_from_stats("Ready", &stats);
+        assert!(
+            report.contains("Admission: 9500 files discovered"),
+            "should show total discovered count; got:\n{report}"
+        );
+        assert!(
+            report.contains("Tier 1 (indexed): 8200"),
+            "should show Tier 1 count; got:\n{report}"
+        );
+        assert!(
+            report.contains("Tier 2 (metadata only): 1280"),
+            "should show Tier 2 count; got:\n{report}"
+        );
+        assert!(
+            report.contains("Tier 3 (hard-skipped): 20"),
+            "should show Tier 3 count; got:\n{report}"
         );
     }
 
@@ -4072,6 +4243,7 @@ mod tests {
             files_by_dir_component: HashMap::new(),
             trigram_index,
             gitignore: None,
+            skipped_files: Vec::new(),
         };
         index.rebuild_reverse_index();
         index.rebuild_path_indices();
@@ -4995,6 +5167,103 @@ mod tests {
         assert!(
             result.contains("0 files") || result.contains("No source files"),
             "got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_repo_map_shows_tier2_tagged() {
+        use crate::domain::index::{AdmissionDecision, AdmissionTier, SkipReason, SkippedFile};
+
+        // No indexed files — only a Tier 2 skipped file.
+        let skipped = vec![SkippedFile {
+            path: "model.safetensors".to_string(),
+            size: 4_509_715_456, // ~4.2 GB
+            extension: Some("safetensors".to_string()),
+            decision: AdmissionDecision {
+                tier: AdmissionTier::MetadataOnly,
+                reason: Some(SkipReason::DenylistedExtension),
+            },
+        }];
+
+        let result = file_tree_view_with_skipped(&[], &skipped, "", 2);
+        assert!(
+            result.contains("[skipped:"),
+            "expected [skipped: tag for Tier 2 file, got: {result}"
+        );
+        assert!(
+            result.contains("model.safetensors"),
+            "expected filename in output, got: {result}"
+        );
+        assert!(
+            result.contains("artifact"),
+            "expected SkipReason display 'artifact' in tag, got: {result}"
+        );
+        // Tier 3 footer should NOT appear.
+        assert!(
+            !result.contains("hard-skipped"),
+            "should not have tier3 footer, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_repo_map_tier3_footer_only() {
+        use crate::domain::index::{AdmissionDecision, AdmissionTier, SkipReason, SkippedFile};
+
+        let skipped = vec![
+            SkippedFile {
+                path: "data/huge1.bin".to_string(),
+                size: 200 * 1024 * 1024,
+                extension: Some("bin".to_string()),
+                decision: AdmissionDecision {
+                    tier: AdmissionTier::HardSkip,
+                    reason: Some(SkipReason::SizeCeiling),
+                },
+            },
+            SkippedFile {
+                path: "data/huge2.bin".to_string(),
+                size: 300 * 1024 * 1024,
+                extension: Some("bin".to_string()),
+                decision: AdmissionDecision {
+                    tier: AdmissionTier::HardSkip,
+                    reason: Some(SkipReason::SizeCeiling),
+                },
+            },
+        ];
+
+        let sym = make_symbol("foo", SymbolKind::Function, 0, 1, 3);
+        let (k, f) = make_file_with_lang(
+            "src/main.rs",
+            b"fn foo() {}",
+            vec![sym],
+            crate::domain::LanguageId::Rust,
+        );
+        let index = make_index(vec![(k, f)]);
+        let view = index.capture_repo_outline_view();
+
+        let result = file_tree_view_with_skipped(&view.files, &skipped, "", 2);
+
+        // Tier 3 files must NOT appear in the tree body.
+        assert!(
+            !result.contains("huge1.bin"),
+            "Tier 3 file should not be in tree, got: {result}"
+        );
+        assert!(
+            !result.contains("huge2.bin"),
+            "Tier 3 file should not be in tree, got: {result}"
+        );
+        // Footer must appear.
+        assert!(
+            result.contains("2 hard-skipped"),
+            "expected '2 hard-skipped' footer, got: {result}"
+        );
+        assert!(
+            result.contains("not shown (>100MB)"),
+            "expected '>100MB' in footer, got: {result}"
+        );
+        // The indexed file must still appear.
+        assert!(
+            result.contains("main.rs"),
+            "indexed file should appear, got: {result}"
         );
     }
 

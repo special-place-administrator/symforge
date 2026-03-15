@@ -9,6 +9,7 @@ use rayon::prelude::*;
 use tracing::{error, info, warn};
 
 use super::query::RepoOutlineView;
+use crate::domain::index::{AdmissionTier, SkippedFile};
 use crate::domain::{
     FileClassification, FileOutcome, FileProcessingResult, LanguageId, ReferenceRecord,
     SymbolRecord, find_enclosing_symbol,
@@ -278,6 +279,8 @@ pub struct PublishedIndexState {
     pub load_source: IndexLoadSource,
     pub snapshot_verify_state: SnapshotVerifyState,
     pub is_empty: bool,
+    /// Admission tier counts: (Tier1 indexed, Tier2 metadata-only, Tier3 hard-skipped).
+    pub tier_counts: (usize, usize, usize),
 }
 
 /// The in-memory index: file contents and parsed symbols for all discovered files.
@@ -308,6 +311,8 @@ pub struct LiveIndex {
     /// Compiled gitignore patterns loaded at index time. Used by NoisePolicy
     /// to classify files as vendor/generated/ignored noise.
     pub(crate) gitignore: Option<ignore::gitignore::Gitignore>,
+    /// Files that were not fully indexed (Tier 2 metadata-only or Tier 3 hard-skipped).
+    pub(crate) skipped_files: Vec<SkippedFile>,
 }
 
 /// Central shared handle for the live in-memory index.
@@ -485,6 +490,7 @@ impl PublishedIndexState {
             load_source: index.load_source,
             snapshot_verify_state: index.snapshot_verify_state,
             is_empty: index.is_empty,
+            tier_counts: stats.tier_counts,
         }
     }
 
@@ -509,34 +515,171 @@ impl LiveIndex {
 
         info!("LiveIndex::load starting at {:?}", root);
 
-        // 1. Discover all source files
-        let discovered = discovery::discover_files(root)?;
-        info!("discovered {} source files", discovered.len());
+        // 1. Discover ALL files (not just known-language ones) so the admission gate
+        //    can classify every file, including those with denylisted or unknown extensions.
+        let all_entries = discovery::discover_all_files(root)?;
+        info!(
+            "discovered {} total files (pre-admission)",
+            all_entries.len()
+        );
 
-        // 2. Parse all files in parallel via Rayon
-        let parse_results: Vec<(String, IndexedFile)> = discovered
+        // 2. Run admission gate in parallel.
+        //    For files that pass Tier-1 initially (size/extension checks), we read content
+        //    and re-run the binary sniff before committing to parse.
+        //    Files that are non-Normal skip reading entirely.
+        use crate::discovery::classify_admission;
+        use crate::domain::index::{AdmissionTier, SkippedFile};
+
+        enum AdmissionOutcome {
+            Parse {
+                relative_path: String,
+                language: crate::domain::LanguageId,
+                classification: crate::domain::FileClassification,
+                bytes: Vec<u8>,
+            },
+            Skip(SkippedFile),
+        }
+
+        let outcomes: Vec<AdmissionOutcome> = all_entries
             .par_iter()
-            .filter_map(|df| {
-                let bytes = match std::fs::read(&df.absolute_path) {
+            .filter_map(|entry| {
+                // Phase 1: size + extension check (no I/O beyond what the walk gave us).
+                let decision_pre = classify_admission(
+                    &entry.absolute_path,
+                    entry.file_size,
+                    None, // no content yet
+                );
+
+                match decision_pre.tier {
+                    AdmissionTier::HardSkip | AdmissionTier::MetadataOnly => {
+                        // No need to read content — already decided.
+                        let sf = SkippedFile {
+                            path: entry.relative_path.clone(),
+                            size: entry.file_size,
+                            extension: entry
+                                .absolute_path
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .map(|s| s.to_string()),
+                            decision: decision_pre,
+                        };
+                        return Some(AdmissionOutcome::Skip(sf));
+                    }
+                    AdmissionTier::Normal => {}
+                }
+
+                // Phase 2: we tentatively have Tier-1. If the file has no recognized
+                // language, we cannot parse it — skip it as metadata-only.
+                let language = match &entry.language {
+                    Some(lang) => lang.clone(),
+                    None => {
+                        // Unknown extension, not on denylist, under size limit.
+                        // Read content to do binary sniff, then store as skipped.
+                        let bytes = match std::fs::read(&entry.absolute_path) {
+                            Ok(b) => b,
+                            Err(e) => {
+                                warn!("failed to read {:?}: {}", entry.absolute_path, e);
+                                return None;
+                            }
+                        };
+                        let decision_post =
+                            classify_admission(&entry.absolute_path, entry.file_size, Some(&bytes));
+                        let sf = SkippedFile {
+                            path: entry.relative_path.clone(),
+                            size: entry.file_size,
+                            extension: entry
+                                .absolute_path
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .map(|s| s.to_string()),
+                            decision: decision_post,
+                        };
+                        return Some(AdmissionOutcome::Skip(sf));
+                    }
+                };
+
+                // Phase 3: read content and do binary sniff before passing to parser.
+                let bytes = match std::fs::read(&entry.absolute_path) {
                     Ok(b) => b,
                     Err(e) => {
-                        warn!("failed to read {:?}: {}", df.absolute_path, e);
+                        warn!("failed to read {:?}: {}", entry.absolute_path, e);
                         return None;
                     }
                 };
 
-                let result = parsing::process_file_with_classification(
-                    &df.relative_path,
-                    &bytes,
-                    df.language.clone(),
-                    df.classification,
-                );
-                let indexed = IndexedFile::from_parse_result(result, bytes);
-                Some((df.relative_path.clone(), indexed))
+                let decision_post =
+                    classify_admission(&entry.absolute_path, entry.file_size, Some(&bytes));
+
+                match decision_post.tier {
+                    AdmissionTier::HardSkip | AdmissionTier::MetadataOnly => {
+                        // Binary sniff reclassified this file — do NOT parse.
+                        let sf = SkippedFile {
+                            path: entry.relative_path.clone(),
+                            size: entry.file_size,
+                            extension: entry
+                                .absolute_path
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .map(|s| s.to_string()),
+                            decision: decision_post,
+                        };
+                        Some(AdmissionOutcome::Skip(sf))
+                    }
+                    AdmissionTier::Normal => Some(AdmissionOutcome::Parse {
+                        relative_path: entry.relative_path.clone(),
+                        language,
+                        classification: entry.classification,
+                        bytes,
+                    }),
+                }
             })
             .collect();
 
-        // 3. Build HashMap sequentially, running circuit breaker checks
+        // 3. Split outcomes into parse candidates and skipped files.
+        let mut skipped_files: Vec<SkippedFile> = Vec::new();
+        let mut to_parse: Vec<(
+            String,
+            crate::domain::LanguageId,
+            crate::domain::FileClassification,
+            Vec<u8>,
+        )> = Vec::new();
+
+        for outcome in outcomes {
+            match outcome {
+                AdmissionOutcome::Skip(sf) => skipped_files.push(sf),
+                AdmissionOutcome::Parse {
+                    relative_path,
+                    language,
+                    classification,
+                    bytes,
+                } => {
+                    to_parse.push((relative_path, language, classification, bytes));
+                }
+            }
+        }
+
+        info!(
+            "admission gate: {} to parse, {} skipped",
+            to_parse.len(),
+            skipped_files.len()
+        );
+
+        // 4. Parse all admitted files in parallel via Rayon.
+        let parse_results: Vec<(String, IndexedFile)> = to_parse
+            .par_iter()
+            .map(|(relative_path, language, classification, bytes)| {
+                let result = parsing::process_file_with_classification(
+                    relative_path,
+                    bytes,
+                    language.clone(),
+                    *classification,
+                );
+                let indexed = IndexedFile::from_parse_result(result, bytes.clone());
+                (relative_path.clone(), indexed)
+            })
+            .collect();
+
+        // 5. Build HashMap sequentially, running circuit breaker checks.
         let cb_state = CircuitBreakerState::from_env();
         let mut files: HashMap<String, Arc<IndexedFile>> =
             HashMap::with_capacity(parse_results.len());
@@ -570,9 +713,10 @@ impl LiveIndex {
 
         let load_duration = start.elapsed();
         info!(
-            "LiveIndex loaded: {} files, {} symbols, {:?}",
+            "LiveIndex loaded: {} files, {} symbols, {} skipped, {:?}",
             files.len(),
             files.values().map(|f| f.symbols.len()).sum::<usize>(),
+            skipped_files.len(),
             load_duration
         );
 
@@ -593,6 +737,7 @@ impl LiveIndex {
             files_by_dir_component: HashMap::new(),
             trigram_index,
             gitignore,
+            skipped_files,
         };
         index.rebuild_reverse_index();
         index.rebuild_path_indices();
@@ -619,8 +764,34 @@ impl LiveIndex {
             files_by_dir_component: HashMap::new(),
             trigram_index: super::trigram::TrigramIndex::new(),
             gitignore: None,
+            skipped_files: Vec::new(),
         };
         SharedIndexHandle::shared(index)
+    }
+
+    pub fn add_skipped_file(&mut self, sf: SkippedFile) {
+        self.skipped_files.push(sf);
+    }
+
+    pub fn skipped_files(&self) -> &[SkippedFile] {
+        &self.skipped_files
+    }
+
+    /// Returns (tier1_count, tier2_count, tier3_count).
+    /// Tier 1 = number of indexed files (self.files.len()).
+    /// Tier 2/3 = from skipped_files.
+    pub fn tier_counts(&self) -> (usize, usize, usize) {
+        let tier1 = self.files.len();
+        let mut tier2 = 0;
+        let mut tier3 = 0;
+        for sf in &self.skipped_files {
+            match sf.tier() {
+                AdmissionTier::MetadataOnly => tier2 += 1,
+                AdmissionTier::HardSkip => tier3 += 1,
+                AdmissionTier::Normal => {} // shouldn't happen
+            }
+        }
+        (tier1, tier2, tier3)
     }
 
     /// Reload all source files under `root` into this index in-place.
@@ -1445,6 +1616,7 @@ mod tests {
             files_by_dir_component: HashMap::new(),
             trigram_index: crate::live_index::trigram::TrigramIndex::new(),
             gitignore: None,
+            skipped_files: Vec::new(),
         }
     }
 
@@ -1970,5 +2142,31 @@ mod tests {
             incremental, full_rebuild,
             "incremental remove should match full rebuild"
         );
+    }
+
+    #[test]
+    fn test_tier_counts() {
+        use crate::domain::index::{AdmissionDecision, AdmissionTier, SkipReason, SkippedFile};
+
+        let mut index = make_empty_live_index();
+        assert_eq!(index.tier_counts(), (0, 0, 0));
+
+        index.add_skipped_file(SkippedFile {
+            path: "model.bin".into(),
+            size: 1000,
+            extension: Some("bin".into()),
+            decision: AdmissionDecision::skip(
+                AdmissionTier::MetadataOnly,
+                SkipReason::DenylistedExtension,
+            ),
+        });
+        index.add_skipped_file(SkippedFile {
+            path: "huge.dat".into(),
+            size: 200_000_000,
+            extension: Some("dat".into()),
+            decision: AdmissionDecision::skip(AdmissionTier::HardSkip, SkipReason::SizeCeiling),
+        });
+
+        assert_eq!(index.tier_counts(), (0, 1, 1));
     }
 }

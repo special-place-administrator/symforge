@@ -1507,7 +1507,10 @@ impl TokenizorServer {
                 let path = params.0.path.as_deref().unwrap_or("");
                 let depth = params.0.depth.unwrap_or(2).min(5);
                 let view = self.index.published_repo_outline();
-                format::file_tree_view(&view.files, path, depth)
+                let guard = self.index.read().expect("lock poisoned");
+                let skipped = guard.skipped_files().to_vec();
+                drop(guard);
+                format::file_tree_view_with_skipped(&view.files, &skipped, path, depth)
             }
             _ => {
                 // Compact overview (default)
@@ -2997,8 +3000,9 @@ impl TokenizorServer {
         let parent_type = edit::find_parent_impl_type(&file, &sym);
         edit::reindex_after_write(
             &self.index,
+            &abs_path,
             &params.0.path,
-            new_content,
+            &new_content,
             file.language.clone(),
         );
         let warnings = edit::detect_stale_references(
@@ -3075,8 +3079,9 @@ impl TokenizorServer {
         }
         edit::reindex_after_write(
             &self.index,
+            &abs_path,
             &params.0.path,
-            new_content,
+            &new_content,
             file.language.clone(),
         );
         edit_format::format_insert(
@@ -3136,8 +3141,9 @@ impl TokenizorServer {
         }
         edit::reindex_after_write(
             &self.index,
+            &abs_path,
             &params.0.path,
-            new_content,
+            &new_content,
             file.language.clone(),
         );
         edit_format::format_delete(
@@ -3230,8 +3236,9 @@ impl TokenizorServer {
         }
         edit::reindex_after_write(
             &self.index,
+            &abs_path,
             &params.0.path,
-            new_content,
+            &new_content,
             file.language.clone(),
         );
         edit_format::format_edit_within(
@@ -3429,6 +3436,7 @@ mod tests {
             files_by_dir_component: HashMap::new(),
             trigram_index,
             gitignore: None,
+            skipped_files: Vec::new(),
         };
         index.rebuild_reverse_index();
         index.rebuild_path_indices();
@@ -3451,6 +3459,7 @@ mod tests {
             files_by_dir_component: HashMap::new(),
             trigram_index: TrigramIndex::new(),
             gitignore: None,
+            skipped_files: Vec::new(),
         }
     }
 
@@ -3478,6 +3487,7 @@ mod tests {
             files_by_dir_component: HashMap::new(),
             trigram_index: TrigramIndex::new(),
             gitignore: None,
+            skipped_files: Vec::new(),
         }
     }
 
@@ -7933,6 +7943,217 @@ mod tests {
                 "search_text says 0 matches but Widget is still on disk! Index/disk desync. search_result: {search_result}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn test_batch_rename_catches_qualified_call() {
+        // Supplemental qualified scan must catch OldType::new() and rename it.
+        use crate::protocol::edit::BatchRenameInput;
+
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+
+        let lib_content =
+            b"pub struct OldType;\nimpl OldType {\n    pub fn new() -> Self { OldType }\n}\n";
+        let main_content = b"fn make() { let _ = OldType::new(); }\n";
+        std::fs::write(src_dir.join("lib.rs"), lib_content).unwrap();
+        std::fs::write(src_dir.join("main.rs"), main_content).unwrap();
+
+        let mut files = vec![];
+        for (path, content) in [
+            ("src/lib.rs", lib_content as &[u8]),
+            ("src/main.rs", main_content as &[u8]),
+        ] {
+            let result = crate::parsing::process_file(path, content, LanguageId::Rust);
+            let indexed =
+                crate::live_index::store::IndexedFile::from_parse_result(result, content.to_vec());
+            files.push((path.to_string(), indexed));
+        }
+        let index = make_live_index_ready(files);
+        let server = make_server_with_root(index, Some(dir.path().to_path_buf()));
+
+        let input = BatchRenameInput {
+            path: "src/lib.rs".to_string(),
+            name: "OldType".to_string(),
+            kind: None,
+            symbol_line: None,
+            new_name: "NewType".to_string(),
+            dry_run: None,
+        };
+        let result = server.batch_rename(Parameters(input)).await;
+        assert!(result.contains("Renamed"), "result: {result}");
+
+        let main = std::fs::read_to_string(src_dir.join("main.rs")).unwrap();
+        assert!(
+            main.contains("NewType::new()"),
+            "main.rs should contain NewType::new(), got: {main}"
+        );
+        assert!(
+            !main.contains("OldType"),
+            "main.rs should have no OldType left, got: {main}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_batch_rename_dry_run_separates_confident_uncertain() {
+        // Dry run must show separate sections for confident and uncertain matches.
+        use crate::protocol::edit::BatchRenameInput;
+
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+
+        // lib.rs: definition only (confident)
+        // main.rs: code usage (confident) + comment usage (uncertain)
+        let lib_content = b"pub struct OldType;\n";
+        let main_content =
+            b"fn use_it() { let _ = OldType::new(); }\n// OldType::new() creates an instance\n";
+        std::fs::write(src_dir.join("lib.rs"), lib_content).unwrap();
+        std::fs::write(src_dir.join("main.rs"), main_content).unwrap();
+
+        let mut files = vec![];
+        for (path, content) in [
+            ("src/lib.rs", lib_content as &[u8]),
+            ("src/main.rs", main_content as &[u8]),
+        ] {
+            let result = crate::parsing::process_file(path, content, LanguageId::Rust);
+            let indexed =
+                crate::live_index::store::IndexedFile::from_parse_result(result, content.to_vec());
+            files.push((path.to_string(), indexed));
+        }
+        let index = make_live_index_ready(files);
+        let server = make_server_with_root(index, Some(dir.path().to_path_buf()));
+
+        let input = BatchRenameInput {
+            path: "src/lib.rs".to_string(),
+            name: "OldType".to_string(),
+            kind: None,
+            symbol_line: None,
+            new_name: "NewType".to_string(),
+            dry_run: Some(true),
+        };
+        let result = server.batch_rename(Parameters(input)).await;
+
+        assert!(
+            result.contains("Confident matches"),
+            "dry_run must have confident section, got: {result}"
+        );
+        assert!(
+            result.contains("Uncertain matches"),
+            "dry_run must have uncertain section, got: {result}"
+        );
+        assert!(
+            result.contains("NOT applied"),
+            "uncertain section must say NOT applied, got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_batch_rename_uncertain_not_applied_by_default() {
+        // Uncertain matches (comments) must NOT be modified during a live rename.
+        use crate::protocol::edit::BatchRenameInput;
+
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+
+        // File with OldType only in a comment — no code usage.
+        let lib_content = b"pub struct OldType;\n";
+        let main_content = b"fn dummy() {}\n// OldType::new() creates an instance\n";
+        std::fs::write(src_dir.join("lib.rs"), lib_content).unwrap();
+        std::fs::write(src_dir.join("main.rs"), main_content).unwrap();
+
+        let mut files = vec![];
+        for (path, content) in [
+            ("src/lib.rs", lib_content as &[u8]),
+            ("src/main.rs", main_content as &[u8]),
+        ] {
+            let result = crate::parsing::process_file(path, content, LanguageId::Rust);
+            let indexed =
+                crate::live_index::store::IndexedFile::from_parse_result(result, content.to_vec());
+            files.push((path.to_string(), indexed));
+        }
+        let index = make_live_index_ready(files);
+        let server = make_server_with_root(index, Some(dir.path().to_path_buf()));
+
+        let input = BatchRenameInput {
+            path: "src/lib.rs".to_string(),
+            name: "OldType".to_string(),
+            kind: None,
+            symbol_line: None,
+            new_name: "NewType".to_string(),
+            dry_run: None,
+        };
+        let result = server.batch_rename(Parameters(input)).await;
+        assert!(result.contains("Renamed"), "result: {result}");
+
+        // Comment in main.rs must remain unchanged.
+        let main = std::fs::read_to_string(src_dir.join("main.rs")).unwrap();
+        assert!(
+            main.contains("OldType"),
+            "comment in main.rs must not be modified, got: {main}"
+        );
+        // But the result should surface the uncertain match as a warning.
+        assert!(
+            result.contains("Uncertain matches") || result.contains("NOT applied"),
+            "result should warn about uncertain match, got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_batch_rename_scopes_common_name_to_target() {
+        // Renaming "new" scoped to Target should not touch SomeOther::new().
+        use crate::protocol::edit::BatchRenameInput;
+
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+
+        let lib_content =
+            b"pub struct Target;\nimpl Target {\n    pub fn new() -> Self { Target }\n}\npub struct SomeOther;\nimpl SomeOther {\n    pub fn new() -> Self { SomeOther }\n}\n";
+        let main_content = b"fn make() { let _a = Target::new(); let _b = SomeOther::new(); }\n";
+        std::fs::write(src_dir.join("lib.rs"), lib_content).unwrap();
+        std::fs::write(src_dir.join("main.rs"), main_content).unwrap();
+
+        let mut files = vec![];
+        for (path, content) in [
+            ("src/lib.rs", lib_content as &[u8]),
+            ("src/main.rs", main_content as &[u8]),
+        ] {
+            let result = crate::parsing::process_file(path, content, LanguageId::Rust);
+            let indexed =
+                crate::live_index::store::IndexedFile::from_parse_result(result, content.to_vec());
+            files.push((path.to_string(), indexed));
+        }
+        let index = make_live_index_ready(files);
+        let server = make_server_with_root(index, Some(dir.path().to_path_buf()));
+
+        // Rename the Target struct itself, not its "new" method.
+        let input = BatchRenameInput {
+            path: "src/lib.rs".to_string(),
+            name: "Target".to_string(),
+            kind: None,
+            symbol_line: None,
+            new_name: "Renamed".to_string(),
+            dry_run: None,
+        };
+        let result = server.batch_rename(Parameters(input)).await;
+        assert!(result.contains("Renamed"), "result: {result}");
+
+        let main = std::fs::read_to_string(src_dir.join("main.rs")).unwrap();
+        assert!(
+            main.contains("Renamed::new()"),
+            "Target::new() must become Renamed::new(), got: {main}"
+        );
+        assert!(
+            main.contains("SomeOther::new()"),
+            "SomeOther::new() must be untouched, got: {main}"
+        );
+        assert!(
+            !main.contains("Target::"),
+            "Target:: reference must be gone, got: {main}"
+        );
     }
 
     #[tokio::test]

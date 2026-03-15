@@ -611,6 +611,8 @@ pub struct HealthStats {
     pub debounce_window_ms: u64,
     /// Sorted, deduplicated list of files with partial-parse status.
     pub partial_parse_files: Vec<String>,
+    /// Admission tier counts: (Tier1 indexed, Tier2 metadata-only, Tier3 hard-skipped).
+    pub tier_counts: (usize, usize, usize),
 }
 
 /// Owned entry used to render the repo outline after releasing the index lock.
@@ -2032,6 +2034,7 @@ impl LiveIndex {
             last_event_at: None,
             debounce_window_ms: 200,
             partial_parse_files,
+            tier_counts: self.tier_counts(),
         }
     }
 
@@ -2592,6 +2595,7 @@ mod tests {
             files_by_dir_component: std::collections::HashMap::new(),
             trigram_index,
             gitignore: None,
+            skipped_files: Vec::new(),
         };
         // Rebuild the reverse index so xref query tests work.
         index.rebuild_reverse_index();
@@ -3645,6 +3649,7 @@ mod tests {
             files_by_dir_component: std::collections::HashMap::new(),
             trigram_index: crate::live_index::trigram::TrigramIndex::new(),
             gitignore: None,
+            skipped_files: Vec::new(),
         };
         assert!(!index.is_ready());
     }
@@ -3680,6 +3685,7 @@ mod tests {
             files_by_dir_component: std::collections::HashMap::new(),
             trigram_index: crate::live_index::trigram::TrigramIndex::new(),
             gitignore: None,
+            skipped_files: Vec::new(),
         };
 
         match index.index_state() {

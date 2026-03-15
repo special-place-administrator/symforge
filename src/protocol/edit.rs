@@ -40,15 +40,39 @@ pub(crate) fn atomic_write_file(path: &Path, content: &[u8]) -> std::io::Result<
 // Reindex after write
 // ---------------------------------------------------------------------------
 
-/// Re-parse file content and update the live index. Call after writing to disk.
+/// Write content to a file and fully reindex from disk.
+///
+/// INVARIANT: All derived index state is rebuilt from the persisted on-disk bytes,
+/// never from the in-memory buffer passed to `fs::write`. If the write partially
+/// fails or the OS buffers differently, the index will still reflect reality.
 pub(crate) fn reindex_after_write(
     index: &SharedIndex,
+    abs_path: &Path,
     relative_path: &str,
-    content: Vec<u8>,
+    written: &[u8],
     language: LanguageId,
 ) {
-    let result = crate::parsing::process_file(relative_path, &content, language);
-    let indexed = IndexedFile::from_parse_result(result, content);
+    // Re-read from disk — not from the `written` parameter.
+    let on_disk = match std::fs::read(abs_path) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            tracing::warn!(
+                "reindex_after_write: failed to re-read {}: {e}",
+                abs_path.display()
+            );
+            return;
+        }
+    };
+
+    debug_assert_eq!(
+        written,
+        on_disk.as_slice(),
+        "reindex_after_write: disk content differs from written buffer for {}",
+        abs_path.display()
+    );
+
+    let result = crate::parsing::process_file(relative_path, &on_disk, language);
+    let indexed = IndexedFile::from_parse_result(result, on_disk);
     index.update_file(relative_path.to_string(), indexed);
 }
 
@@ -537,7 +561,10 @@ pub(crate) fn execute_batch_edit(
     }
 
     // Phase 3: Apply edits per file, write, reindex.
+    // Best-effort: each file is written+reindexed independently.
+    // If one file's write fails, continue with the rest and report the failure.
     let mut summaries = Vec::new();
+    let mut write_failures: Vec<String> = Vec::new();
 
     for (path, indices) in &by_file {
         let file = {
@@ -549,6 +576,7 @@ pub(crate) fn execute_batch_edit(
 
         let mut content = file.content.clone();
         let language = resolved[indices[0]].language.clone();
+        let mut file_summaries: Vec<String> = Vec::new();
 
         for &ri in indices {
             let r = &resolved[ri];
@@ -565,7 +593,7 @@ pub(crate) fn execute_batch_edit(
                     let indent = detect_indentation(&content, r.sym.byte_range.0);
                     let indented = apply_indentation(new_body, &indent);
                     content = apply_splice(&content, (line_start, r.sym.byte_range.1), &indented);
-                    summaries.push(super::edit_format::format_replace(
+                    file_summaries.push(super::edit_format::format_replace(
                         path,
                         &r.sym.name,
                         &r.sym.kind.to_string(),
@@ -575,7 +603,7 @@ pub(crate) fn execute_batch_edit(
                 }
                 EditOperation::InsertBefore { content: code } => {
                     content = build_insert_before(&content, &r.sym, code);
-                    summaries.push(super::edit_format::format_insert(
+                    file_summaries.push(super::edit_format::format_insert(
                         path,
                         &r.sym.name,
                         "before",
@@ -584,7 +612,7 @@ pub(crate) fn execute_batch_edit(
                 }
                 EditOperation::InsertAfter { content: code } => {
                     content = build_insert_after(&content, &r.sym, code);
-                    summaries.push(super::edit_format::format_insert(
+                    file_summaries.push(super::edit_format::format_insert(
                         path,
                         &r.sym.name,
                         "after",
@@ -594,7 +622,7 @@ pub(crate) fn execute_batch_edit(
                 EditOperation::Delete => {
                     let deleted = (r.sym.byte_range.1 - r.sym.byte_range.0) as usize;
                     content = build_delete(&content, &r.sym);
-                    summaries.push(super::edit_format::format_delete(
+                    file_summaries.push(super::edit_format::format_delete(
                         path,
                         &r.sym.name,
                         &r.sym.kind.to_string(),
@@ -607,7 +635,7 @@ pub(crate) fn execute_batch_edit(
                         build_edit_within(&content, &r.sym, old_text, new_text, false)
                             .map_err(|e| format!("Edit in {path}:{}: {e}", r.sym.name))?;
                     content = new;
-                    summaries.push(super::edit_format::format_edit_within(
+                    file_summaries.push(super::edit_format::format_edit_within(
                         path,
                         &r.sym.name,
                         count,
@@ -620,27 +648,43 @@ pub(crate) fn execute_batch_edit(
 
         if dry_run {
             // Prefix summaries for this file's edits with [DRY RUN] and skip all writes.
-            let file_edit_count = indices.len();
-            let start = summaries.len() - file_edit_count;
-            for s in &mut summaries[start..] {
+            for s in &mut file_summaries {
                 *s = format!("[DRY RUN] Would {s}");
             }
+            summaries.extend(file_summaries);
         } else {
             let abs_path = repo_root.join(path);
-            atomic_write_file(&abs_path, &content).map_err(|e| {
-                let written_note = if summaries.is_empty() {
-                    "No files were written before this failure.".to_string()
-                } else {
-                    format!(
-                        "WARNING: {} file(s) were already written before this failure:\n{}",
-                        summaries.len(),
-                        summaries.join("\n")
-                    )
-                };
-                format!("Write failed for {path}: {e}\n\n{written_note}")
-            })?;
-            reindex_after_write(index, path, content, language);
+            match atomic_write_file(&abs_path, &content) {
+                Ok(()) => {
+                    reindex_after_write(index, &abs_path, path, &content, language);
+                    summaries.extend(file_summaries);
+                }
+                Err(e) => {
+                    // Best-effort: record the failure and continue with remaining files.
+                    // The index is NOT updated for this file — it retains the pre-edit state.
+                    write_failures.push(format!("FAILED {path}: {e}"));
+                }
+            }
         }
+    }
+
+    if !write_failures.is_empty() {
+        let failure_block = write_failures.join("\n");
+        let success_block = if summaries.is_empty() {
+            "No files were written.".to_string()
+        } else {
+            format!(
+                "{} file(s) written successfully:\n{}",
+                summaries.len(),
+                summaries.join("\n")
+            )
+        };
+        return Err(format!(
+            "batch_edit partial failure — {} file(s) could not be written:\n{}\n\n{}",
+            write_failures.len(),
+            failure_block,
+            success_block,
+        ));
     }
 
     Ok(summaries)
@@ -706,44 +750,48 @@ pub(crate) fn execute_batch_rename(
             .collect()
     };
 
-    // Phase 2b: Supplemental literal scan for path-qualified usages.
+    // Phase 2b: Supplemental qualified-path scan with confidence classification.
     // The xref index tracks call targets (e.g. "new" in Widget::new()), not
-    // path prefixes. A literal whole-word scan catches Type::method() patterns,
-    // import paths, and any other usage the xref system doesn't index.
-    let literal_sites: Vec<(String, (u32, u32))> = {
+    // path prefixes. find_qualified_usages catches Type::method() patterns,
+    // import paths, and any other qualified usage the xref system doesn't index.
+    // Matches are split into confident (code context) and uncertain (comments/strings).
+    //
+    // We collect file content snapshots under the lock, then run the scan outside it.
+    let file_contents: Vec<(String, Vec<u8>)> = {
         let guard = index.read().expect("lock poisoned");
-        let name_bytes = input.name.as_bytes();
-        let name_len = name_bytes.len();
-        let mut sites = Vec::new();
-        for (file_path, file) in &guard.files {
-            let content = &file.content;
-            let mut start = 0;
-            while let Some(pos) = content[start..]
-                .windows(name_len)
-                .position(|w| w == name_bytes)
-            {
-                let abs_pos = start + pos;
-                // Whole-word check: char before must not be alphanumeric/underscore,
-                // char after must not be alphanumeric/underscore.
-                let before_ok = abs_pos == 0
-                    || !content[abs_pos - 1].is_ascii_alphanumeric()
-                        && content[abs_pos - 1] != b'_';
-                let after_pos = abs_pos + name_len;
-                let after_ok = after_pos >= content.len()
-                    || !content[after_pos].is_ascii_alphanumeric() && content[after_pos] != b'_';
-                if before_ok && after_ok {
-                    sites.push((
-                        file_path.clone(),
-                        (abs_pos as u32, (abs_pos + name_len) as u32),
-                    ));
-                }
-                start = abs_pos + 1;
-            }
-        }
-        sites
+        guard
+            .files
+            .iter()
+            .map(|(path, file)| (path.clone(), file.content.clone()))
+            .collect()
     };
 
-    // Phase 3: Group all rename sites by file (indexed refs + literal scan).
+    // Collect confident and uncertain supplemental matches separately.
+    // Each entry: (file_path, byte_range (start, end))
+    let mut qualified_confident: Vec<(String, (u32, u32))> = Vec::new();
+    // Uncertain entries also carry the display context string for the warning block.
+    let mut qualified_uncertain: Vec<(String, u32, String)> = Vec::new(); // (path, line, context)
+
+    for (file_path, content_bytes) in &file_contents {
+        let source = match std::str::from_utf8(content_bytes) {
+            Ok(s) => s,
+            Err(_) => continue, // skip non-UTF-8 files
+        };
+        let matches = find_qualified_usages(&input.name, source);
+        for m in matches {
+            let end = m.offset + input.name.len();
+            let range = (m.offset as u32, end as u32);
+            if m.confident {
+                qualified_confident.push((file_path.clone(), range));
+            } else {
+                qualified_uncertain.push((file_path.clone(), m.line as u32, m.context.clone()));
+            }
+        }
+    }
+
+    // Phase 3: Group rename sites by file.
+    // Confident sources: definition site, indexed refs, qualified confident matches.
+    // Uncertain matches are NOT applied — only surfaced in output.
     let mut by_file: std::collections::HashMap<String, Vec<(u32, u32)>> =
         std::collections::HashMap::new();
     by_file
@@ -753,38 +801,61 @@ pub(crate) fn execute_batch_rename(
     for (path, range) in &ref_sites {
         by_file.entry(path.clone()).or_default().push(*range);
     }
-    for (path, range) in &literal_sites {
+    for (path, range) in &qualified_confident {
         by_file.entry(path.clone()).or_default().push(*range);
     }
-    // Sort reverse by offset, dedup.
+    // Sort reverse by offset, dedup (removes overlap between indexed refs and qualified scan).
     for ranges in by_file.values_mut() {
         ranges.sort_by(|a, b| b.0.cmp(&a.0));
         ranges.dedup();
     }
 
-    // Dry run: return preview without writing.
+    // Build uncertain warning lines sorted by file then line.
+    let mut sorted_uncertain = qualified_uncertain.clone();
+    sorted_uncertain.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    let uncertain_lines: Vec<String> = sorted_uncertain
+        .iter()
+        .map(|(path, line, ctx)| format!("  {}:{}  {}", path, line, ctx))
+        .collect();
+
+    // Dry run: return preview without writing, with separate confident/uncertain sections.
     if input.dry_run.unwrap_or(false) {
-        let total_sites: usize = by_file.values().map(|r| r.len()).sum();
-        let mut lines = vec![format!(
-            "Dry run: `{}` → `{}` — {} site(s) across {} file(s)",
-            input.name,
-            input.new_name,
-            total_sites,
+        let total_confident: usize = by_file.values().map(|r| r.len()).sum();
+        let mut lines = vec![format!("Dry run: `{}` → `{}`", input.name, input.new_name,)];
+        lines.push(format!(
+            "\n── Confident matches (will be applied) — {} site(s) across {} file(s) ──",
+            total_confident,
             by_file.len(),
-        )];
+        ));
         let mut sorted_files: Vec<_> = by_file.iter().collect();
         sorted_files.sort_by_key(|(p, _)| (*p).clone());
         for (path, ranges) in sorted_files {
             lines.push(format!("  {} ({} site(s))", path, ranges.len()));
         }
+        if !uncertain_lines.is_empty() {
+            lines.push(format!(
+                "\n── Uncertain matches (NOT applied — review manually) — {} site(s) ──",
+                uncertain_lines.len(),
+            ));
+            lines.extend(uncertain_lines);
+        }
         return Ok(lines.join("\n"));
     }
 
-    // Phase 4: Apply renames, write, reindex.
+    // Phase 4: Atomic rename — stage all new content in memory first, then write all.
+    // On any write failure, roll back already-written files to their original content.
     let new_name_bytes = input.new_name.as_bytes();
-    let mut files_updated = 0;
-    let mut refs_updated = 0;
 
+    // Stage: compute new content for every file without touching disk.
+    struct StagedFile {
+        path: String,
+        abs_path: std::path::PathBuf,
+        original: Vec<u8>,
+        new_content: Vec<u8>,
+        language: LanguageId,
+        refs_count: usize,
+    }
+    let mut staged: Vec<StagedFile> = Vec::with_capacity(by_file.len());
     for (path, ranges) in &by_file {
         let file = {
             let guard = index.read().expect("lock poisoned");
@@ -792,30 +863,112 @@ pub(crate) fn execute_batch_rename(
                 .capture_shared_file(path)
                 .ok_or_else(|| format!("File disappeared: {path}"))?
         };
-
-        let mut content = file.content.clone();
+        let original = file.content.clone();
+        let mut new_content = original.clone();
         for range in ranges {
-            content = apply_splice(&content, *range, new_name_bytes);
-            refs_updated += 1;
+            new_content = apply_splice(&new_content, *range, new_name_bytes);
         }
-
-        let abs_path = repo_root.join(path);
-        atomic_write_file(&abs_path, &content)
-            .map_err(|e| format!("Write failed for {path}: {e}"))?;
-
         let lang = if path == &input.path {
             language.clone()
         } else {
             file.language.clone()
         };
-        reindex_after_write(index, path, content, lang);
-        files_updated += 1;
+        staged.push(StagedFile {
+            path: path.clone(),
+            abs_path: repo_root.join(path),
+            original,
+            new_content,
+            language: lang,
+            refs_count: ranges.len(),
+        });
     }
 
-    Ok(format!(
+    // Apply: write each staged file; on failure roll back already-written files.
+    let mut written: Vec<usize> = Vec::new(); // indices into staged
+    let mut write_error: Option<String> = None;
+    for (i, sf) in staged.iter().enumerate() {
+        if let Err(e) = atomic_write_file(&sf.abs_path, &sf.new_content) {
+            write_error = Some(format!("Write failed for {}: {e}", sf.path));
+            break;
+        }
+        written.push(i);
+    }
+
+    if let Some(err_msg) = write_error {
+        // Rollback: restore every file that was already written.
+        let mut rollback_failures: Vec<String> = Vec::new();
+        for &wi in &written {
+            let sf = &staged[wi];
+            if let Err(rb_err) = std::fs::write(&sf.abs_path, &sf.original) {
+                rollback_failures.push(format!("  {}: {rb_err}", sf.path));
+                continue;
+            }
+            // Re-read from disk and reindex to ensure index matches disk.
+            match std::fs::read(&sf.abs_path) {
+                Ok(on_disk) => {
+                    reindex_after_write(
+                        index,
+                        &sf.abs_path,
+                        &sf.path,
+                        &on_disk,
+                        sf.language.clone(),
+                    );
+                }
+                Err(rb_err) => {
+                    rollback_failures
+                        .push(format!("  {} (reindex after rollback): {rb_err}", sf.path));
+                }
+            }
+        }
+        if rollback_failures.is_empty() {
+            return Err(format!(
+                "{err_msg}\n\nROLLED BACK — {} file(s) restored to original content. \
+                 No rename was applied.",
+                written.len(),
+            ));
+        } else {
+            return Err(format!(
+                "{err_msg}\n\nROLLBACK INCOMPLETE — {} file(s) could not be restored:\n{}\n\
+                 WARNING: codebase may be in a partially-renamed state. \
+                 Manually verify the following files:\n{}",
+                rollback_failures.len(),
+                rollback_failures.join("\n"),
+                written
+                    .iter()
+                    .map(|&wi| format!("  {}", staged[wi].path))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ));
+        }
+    }
+
+    // All writes succeeded — reindex every file.
+    let mut files_updated = 0;
+    let mut refs_updated = 0;
+    for sf in &staged {
+        reindex_after_write(
+            index,
+            &sf.abs_path,
+            &sf.path,
+            &sf.new_content,
+            sf.language.clone(),
+        );
+        files_updated += 1;
+        refs_updated += sf.refs_count;
+    }
+
+    let mut output = format!(
         "Renamed `{}` → `{}` — {refs_updated} site(s) across {files_updated} file(s)",
         input.name, input.new_name,
-    ))
+    );
+    if !uncertain_lines.is_empty() {
+        output.push_str(&format!(
+            "\n\n── Uncertain matches (NOT applied — review manually) — {} site(s) ──\n",
+            uncertain_lines.len(),
+        ));
+        output.push_str(&uncertain_lines.join("\n"));
+    }
+    Ok(output)
 }
 
 // ---------------------------------------------------------------------------
@@ -853,12 +1006,16 @@ pub struct InsertTarget {
 }
 
 /// Insert the same code before or after multiple symbols across the project.
+/// Best-effort: each target is written+reindexed independently. If one write
+/// fails, the remaining targets are still attempted. Partial failures are
+/// reported in the return value.
 pub(crate) fn execute_batch_insert(
     index: &SharedIndex,
     repo_root: &Path,
     input: &BatchInsertInput,
 ) -> Result<Vec<String>, String> {
     let mut summaries = Vec::new();
+    let mut write_failures: Vec<String> = Vec::new();
     let position_label = match input.position {
         InsertPosition::Before => "before",
         InsertPosition::After => "after",
@@ -886,16 +1043,40 @@ pub(crate) fn execute_batch_insert(
         };
 
         let abs_path = repo_root.join(&target.path);
-        atomic_write_file(&abs_path, &new_content)
-            .map_err(|e| format!("Write failed for {}: {e}", target.path))?;
+        match atomic_write_file(&abs_path, &new_content) {
+            Ok(()) => {
+                let lang = file.language.clone();
+                reindex_after_write(index, &abs_path, &target.path, &new_content, lang);
+                summaries.push(super::edit_format::format_insert(
+                    &target.path,
+                    &target.name,
+                    position_label,
+                    input.content.len(),
+                ));
+            }
+            Err(e) => {
+                // Best-effort: record the failure, index unchanged for this file.
+                write_failures.push(format!("FAILED {}: {e}", target.path));
+            }
+        }
+    }
 
-        let lang = file.language.clone();
-        reindex_after_write(index, &target.path, new_content, lang);
-        summaries.push(super::edit_format::format_insert(
-            &target.path,
-            &target.name,
-            position_label,
-            input.content.len(),
+    if !write_failures.is_empty() {
+        let failure_block = write_failures.join("\n");
+        let success_block = if summaries.is_empty() {
+            "No files were written.".to_string()
+        } else {
+            format!(
+                "{} file(s) written successfully:\n{}",
+                summaries.len(),
+                summaries.join("\n")
+            )
+        };
+        return Err(format!(
+            "batch_insert partial failure — {} file(s) could not be written:\n{}\n\n{}",
+            write_failures.len(),
+            failure_block,
+            success_block,
         ));
     }
 
@@ -1055,6 +1236,246 @@ pub(crate) fn detect_stale_references(
 }
 
 // ---------------------------------------------------------------------------
+// Qualified path scanner
+// ---------------------------------------------------------------------------
+
+/// A qualified path match with confidence classification.
+#[derive(Debug)]
+pub struct QualifiedMatch {
+    /// Byte offset of the match in the source.
+    pub offset: usize,
+    /// Line number (1-based).
+    pub line: usize,
+    /// The full matched segment (e.g., "MyType::new()").
+    pub context: String,
+    /// Whether the match is confident (code context) or uncertain (string/comment).
+    pub confident: bool,
+}
+
+/// Find qualified path usages of `identifier` in `source`.
+///
+/// Looks for patterns where the identifier appears as a path segment:
+/// - `identifier::method()` — associated function call
+/// - `module::identifier::method()` — deeper nesting
+/// - `use path::identifier` — import path
+/// - `identifier::<T>::method()` — turbofish syntax
+///
+/// Classifies matches as confident (in code) vs uncertain (in strings/comments).
+pub fn find_qualified_usages(identifier: &str, source: &str) -> Vec<QualifiedMatch> {
+    let mut results = Vec::new();
+
+    // Track block comment nesting depth across the whole source.
+    // We scan line by line but need to carry block-comment state.
+    let mut in_block_comment = false;
+    // Track raw string state: None = not in raw string, Some(n) = in raw string with n #s.
+    let mut in_raw_string: Option<usize> = None;
+
+    let mut line_num = 0usize;
+    let mut line_byte_offset = 0usize;
+
+    for line in source.split('\n') {
+        line_num += 1;
+
+        // Scan this line for occurrences of `identifier`, updating parse state.
+        let line_bytes = line.as_bytes();
+        let id_len = identifier.len();
+
+        // We walk through the line character by character to find all occurrences
+        // of `identifier` and classify each.
+        let mut col = 0usize; // byte index within line
+
+        while col < line_bytes.len() {
+            // --- Update parse state at current col ---
+
+            // Check for raw string start: r" or r#..."#
+            if !in_block_comment && in_raw_string.is_none() {
+                if line_bytes[col] == b'r' {
+                    // Count leading #s
+                    let mut hashes = 0usize;
+                    let mut j = col + 1;
+                    while j < line_bytes.len() && line_bytes[j] == b'#' {
+                        hashes += 1;
+                        j += 1;
+                    }
+                    if j < line_bytes.len() && line_bytes[j] == b'"' {
+                        in_raw_string = Some(hashes);
+                        col = j + 1;
+                        continue;
+                    }
+                }
+            }
+
+            // Check for raw string end or matches inside raw string (uncertain)
+            if let Some(hashes) = in_raw_string {
+                if line_bytes[col] == b'"' {
+                    // Check for matching #s after closing quote
+                    let mut j = col + 1;
+                    let mut count = 0usize;
+                    while j < line_bytes.len() && line_bytes[j] == b'#' && count < hashes {
+                        count += 1;
+                        j += 1;
+                    }
+                    if count == hashes {
+                        in_raw_string = None;
+                        col = j;
+                        continue;
+                    }
+                }
+                // Inside raw string — check for identifier match (uncertain)
+                if col + id_len <= line_bytes.len() && &line[col..col + id_len] == identifier {
+                    let preceded = col >= 2 && &line[col - 2..col] == "::";
+                    let followed = col + id_len + 2 <= line.len()
+                        && &line[col + id_len..col + id_len + 2] == "::";
+                    if preceded || followed {
+                        let ctx_start = col.saturating_sub(20);
+                        let ctx_end = (col + id_len + 20).min(line.len());
+                        results.push(QualifiedMatch {
+                            offset: line_byte_offset + col,
+                            line: line_num,
+                            context: line[ctx_start..ctx_end].to_string(),
+                            confident: false,
+                        });
+                    }
+                }
+                col += 1;
+                continue;
+            }
+
+            // Check for block comment start/end
+            if !in_block_comment {
+                // Check for line comment: rest of line is a comment — scan for matches then break
+                if col + 1 < line_bytes.len()
+                    && line_bytes[col] == b'/'
+                    && line_bytes[col + 1] == b'/'
+                {
+                    // Everything from here to end of line is a line comment (uncertain)
+                    let rest = &line[col..];
+                    let mut search_start = 0usize;
+                    while let Some(pos) = rest[search_start..].find(identifier) {
+                        let abs_col = col + search_start + pos;
+                        let preceded_by_colon = abs_col >= 2 && &line[abs_col - 2..abs_col] == "::"
+                            || abs_col >= 2 && line_bytes[abs_col - 1] == b':';
+                        let followed_by_colon = abs_col + id_len + 1 < line_bytes.len()
+                            && &line[abs_col + id_len..abs_col + id_len + 2] == "::";
+                        let preceded_2 = abs_col >= 2 && &line[abs_col - 2..abs_col] == "::";
+                        let followed_2 = abs_col + id_len + 2 <= line.len()
+                            && &line[abs_col + id_len..abs_col + id_len + 2] == "::";
+                        let _ = (preceded_by_colon, followed_by_colon);
+                        if preceded_2 || followed_2 {
+                            let ctx_start = abs_col.saturating_sub(20);
+                            let ctx_end = (abs_col + id_len + 20).min(line.len());
+                            results.push(QualifiedMatch {
+                                offset: line_byte_offset + abs_col,
+                                line: line_num,
+                                context: line[ctx_start..ctx_end].to_string(),
+                                confident: false,
+                            });
+                        }
+                        search_start += pos + 1;
+                    }
+                    break; // rest of line consumed
+                }
+
+                // Block comment start
+                if col + 1 < line_bytes.len()
+                    && line_bytes[col] == b'/'
+                    && line_bytes[col + 1] == b'*'
+                {
+                    in_block_comment = true;
+                    col += 2;
+                    continue;
+                }
+            } else {
+                // Inside block comment — look for end
+                if col + 1 < line_bytes.len()
+                    && line_bytes[col] == b'*'
+                    && line_bytes[col + 1] == b'/'
+                {
+                    in_block_comment = false;
+                    col += 2;
+                    continue;
+                }
+                // Still in block comment — check for identifier match (uncertain)
+                if col + id_len <= line_bytes.len() && &line[col..col + id_len] == identifier {
+                    let prec2 = col >= 2 && &line[col - 2..col] == "::";
+                    let fol2 = col + id_len + 2 <= line.len()
+                        && &line[col + id_len..col + id_len + 2] == "::";
+                    if prec2 || fol2 {
+                        let ctx_start = col.saturating_sub(20);
+                        let ctx_end = (col + id_len + 20).min(line.len());
+                        results.push(QualifiedMatch {
+                            offset: line_byte_offset + col,
+                            line: line_num,
+                            context: line[ctx_start..ctx_end].to_string(),
+                            confident: false,
+                        });
+                    }
+                }
+                col += 1;
+                continue;
+            }
+
+            // Normal code: check for string literal (double-quote)
+            if line_bytes[col] == b'"' {
+                // Scan to closing quote (handling backslash escapes), emit uncertain matches
+                col += 1;
+                while col < line_bytes.len() && line_bytes[col] != b'"' {
+                    if line_bytes[col] == b'\\' {
+                        col += 2; // skip escaped char
+                        continue;
+                    }
+                    // Check for identifier match inside string
+                    if col + id_len <= line_bytes.len() && &line[col..col + id_len] == identifier {
+                        let prec2 = col >= 2 && &line[col - 2..col] == "::";
+                        let fol2 = col + id_len + 2 <= line.len()
+                            && &line[col + id_len..col + id_len + 2] == "::";
+                        if prec2 || fol2 {
+                            let ctx_start = col.saturating_sub(20);
+                            let ctx_end = (col + id_len + 20).min(line.len());
+                            results.push(QualifiedMatch {
+                                offset: line_byte_offset + col,
+                                line: line_num,
+                                context: line[ctx_start..ctx_end].to_string(),
+                                confident: false,
+                            });
+                        }
+                    }
+                    col += 1;
+                }
+                col += 1; // skip closing quote
+                continue;
+            }
+
+            // Normal code: check for identifier match
+            if col + id_len <= line_bytes.len() && &line[col..col + id_len] == identifier {
+                let prec2 = col >= 2 && &line[col - 2..col] == "::";
+                let fol2 =
+                    col + id_len + 2 <= line.len() && &line[col + id_len..col + id_len + 2] == "::";
+                if prec2 || fol2 {
+                    let ctx_start = col.saturating_sub(20);
+                    let ctx_end = (col + id_len + 20).min(line.len());
+                    results.push(QualifiedMatch {
+                        offset: line_byte_offset + col,
+                        line: line_num,
+                        context: line[ctx_start..ctx_end].to_string(),
+                        confident: true,
+                    });
+                }
+                col += id_len;
+                continue;
+            }
+
+            col += 1;
+        }
+
+        // +1 for the '\n' that split() consumed
+        line_byte_offset += line.len() + 1;
+    }
+
+    results
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1132,9 +1553,12 @@ mod tests {
 
     #[test]
     fn test_reindex_after_write_updates_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let abs_path = dir.path().join("lib.rs");
+        let content = b"fn hello() {}\nfn world() {}\n";
+        std::fs::write(&abs_path, content).unwrap();
         let handle = crate::live_index::LiveIndex::empty();
-        let content = b"fn hello() {}\nfn world() {}\n".to_vec();
-        reindex_after_write(&handle, "src/lib.rs", content, LanguageId::Rust);
+        reindex_after_write(&handle, &abs_path, "src/lib.rs", content, LanguageId::Rust);
         let guard = handle.read().expect("lock");
         let file = guard.get_file("src/lib.rs");
         assert!(file.is_some());
@@ -1145,16 +1569,87 @@ mod tests {
 
     #[test]
     fn test_reindex_after_write_replaces_existing_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let abs_path = dir.path().join("lib.rs");
         let handle = crate::live_index::LiveIndex::empty();
-        let v1 = b"fn alpha() {}\n".to_vec();
-        reindex_after_write(&handle, "src/lib.rs", v1, LanguageId::Rust);
-        let v2 = b"fn beta() {}\n".to_vec();
-        reindex_after_write(&handle, "src/lib.rs", v2, LanguageId::Rust);
+
+        let v1 = b"fn alpha() {}\n";
+        std::fs::write(&abs_path, v1).unwrap();
+        reindex_after_write(&handle, &abs_path, "src/lib.rs", v1, LanguageId::Rust);
+
+        let v2 = b"fn beta() {}\n";
+        std::fs::write(&abs_path, v2).unwrap();
+        reindex_after_write(&handle, &abs_path, "src/lib.rs", v2, LanguageId::Rust);
 
         let guard = handle.read().expect("lock");
         let file = guard.get_file("src/lib.rs").unwrap();
         assert!(!file.symbols.iter().any(|s| s.name == "alpha"));
         assert!(file.symbols.iter().any(|s| s.name == "beta"));
+    }
+
+    #[test]
+    fn test_reindex_reads_from_disk_not_buffer() {
+        // Verify the INVARIANT: index state is built from on-disk bytes.
+        // Write one thing to disk, pass different bytes as `written` — the
+        // debug_assert would fire in debug builds, but in release builds the
+        // index should reflect what is actually on disk.
+        let dir = tempfile::tempdir().unwrap();
+        let abs_path = dir.path().join("lib.rs");
+        let on_disk = b"fn disk_fn() {}\n";
+        std::fs::write(&abs_path, on_disk).unwrap();
+        let handle = crate::live_index::LiveIndex::empty();
+        // Pass the real on-disk bytes as `written` (normal case — no divergence).
+        reindex_after_write(&handle, &abs_path, "src/lib.rs", on_disk, LanguageId::Rust);
+        let guard = handle.read().expect("lock");
+        let file = guard.get_file("src/lib.rs").unwrap();
+        // Index reflects what is on disk.
+        assert!(file.symbols.iter().any(|s| s.name == "disk_fn"));
+    }
+
+    #[test]
+    fn test_search_text_matches_disk_after_edit() {
+        // Setup: write old content to disk and index it.
+        let dir = tempfile::tempdir().unwrap();
+        let abs_path = dir.path().join("lib.rs");
+        let old_content = b"fn old_content_marker() {}\n";
+        std::fs::write(&abs_path, old_content).unwrap();
+        let handle = crate::live_index::LiveIndex::empty();
+        reindex_after_write(
+            &handle,
+            &abs_path,
+            "src/lib.rs",
+            old_content,
+            LanguageId::Rust,
+        );
+        // Verify old content is in the index.
+        {
+            let guard = handle.read().expect("lock");
+            let file = guard.get_file("src/lib.rs").unwrap();
+            assert!(file.symbols.iter().any(|s| s.name == "old_content_marker"));
+        }
+
+        // Edit: overwrite disk with new content and reindex.
+        let new_content = b"fn new_content_marker() {}\n";
+        atomic_write_file(&abs_path, new_content).unwrap();
+        reindex_after_write(
+            &handle,
+            &abs_path,
+            "src/lib.rs",
+            new_content,
+            LanguageId::Rust,
+        );
+
+        // Verify: old symbol gone, new symbol present — index matches disk.
+        let guard = handle.read().expect("lock");
+        let file = guard.get_file("src/lib.rs").unwrap();
+        assert!(
+            !file.symbols.iter().any(|s| s.name == "old_content_marker"),
+            "old symbol should no longer be in the index"
+        );
+        assert!(
+            file.symbols.iter().any(|s| s.name == "new_content_marker"),
+            "new symbol should be in the index after reindex from disk"
+        );
     }
 
     // -- resolve_or_error --
@@ -1649,6 +2144,171 @@ mod tests {
         assert!(b.contains("logging"), "b.rs: {b}");
     }
 
+    // -- partial failure / atomicity --
+
+    #[test]
+    #[cfg(unix)]
+    fn test_batch_edit_partial_success_reindexes_completed() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+
+        // File 1: writable, has symbol "alpha"
+        std::fs::write(src.join("a.rs"), b"fn alpha() { old }\n").unwrap();
+        // File 2: will be made read-only after indexing
+        std::fs::write(src.join("b.rs"), b"fn beta() { old }\n").unwrap();
+        // File 3: writable, has symbol "gamma"
+        std::fs::write(src.join("c.rs"), b"fn gamma() { old }\n").unwrap();
+
+        let handle = crate::live_index::LiveIndex::empty();
+        for (path, content) in [
+            ("src/a.rs", b"fn alpha() { old }\n" as &[u8]),
+            ("src/b.rs", b"fn beta() { old }\n"),
+            ("src/c.rs", b"fn gamma() { old }\n"),
+        ] {
+            let result = crate::parsing::process_file(path, content, LanguageId::Rust);
+            let indexed = IndexedFile::from_parse_result(result, content.to_vec());
+            handle.update_file(path.to_string(), indexed);
+        }
+
+        // Make file 2 read-only so the write will fail.
+        let b_path = src.join("b.rs");
+        std::fs::set_permissions(&b_path, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+        let edits = vec![
+            SingleEdit {
+                path: "src/a.rs".to_string(),
+                name: "alpha".to_string(),
+                kind: None,
+                symbol_line: None,
+                operation: EditOperation::Replace {
+                    new_body: "fn alpha() { new }".to_string(),
+                },
+            },
+            SingleEdit {
+                path: "src/b.rs".to_string(),
+                name: "beta".to_string(),
+                kind: None,
+                symbol_line: None,
+                operation: EditOperation::Replace {
+                    new_body: "fn beta() { new }".to_string(),
+                },
+            },
+            SingleEdit {
+                path: "src/c.rs".to_string(),
+                name: "gamma".to_string(),
+                kind: None,
+                symbol_line: None,
+                operation: EditOperation::Replace {
+                    new_body: "fn gamma() { new }".to_string(),
+                },
+            },
+        ];
+
+        let result = execute_batch_edit(&handle, dir.path(), &edits, false);
+
+        // Restore permissions before any assertions that might panic.
+        std::fs::set_permissions(&b_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        // Result must be an error reporting the partial failure.
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("FAILED src/b.rs"),
+            "expected FAILED src/b.rs in: {err}"
+        );
+        assert!(
+            err.contains("partial failure"),
+            "expected 'partial failure' in: {err}"
+        );
+
+        // File 1 (a.rs): was written successfully — disk and index reflect edit.
+        let a_content = std::fs::read_to_string(src.join("a.rs")).unwrap();
+        assert!(
+            a_content.contains("new"),
+            "a.rs should be updated: {a_content}"
+        );
+
+        // File 2 (b.rs): write failed — disk unchanged, index unchanged.
+        let b_content = std::fs::read_to_string(&b_path).unwrap();
+        assert!(
+            b_content.contains("old"),
+            "b.rs should be unchanged: {b_content}"
+        );
+
+        // File 3 (c.rs): also attempted — best-effort continues past file 2.
+        // (Whether c.rs succeeded depends on iteration order, but the error must mention b.rs.)
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_batch_rename_rolls_back_on_failure() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+
+        // Three files all containing "OldName".
+        std::fs::write(src.join("a.rs"), b"struct OldName;\n").unwrap();
+        std::fs::write(src.join("b.rs"), b"use crate::OldName;\n").unwrap();
+        std::fs::write(src.join("c.rs"), b"fn use_it(x: OldName) {}\n").unwrap();
+
+        let handle = crate::live_index::LiveIndex::empty();
+        for (path, content) in [
+            ("src/a.rs", b"struct OldName;\n" as &[u8]),
+            ("src/b.rs", b"use crate::OldName;\n"),
+            ("src/c.rs", b"fn use_it(x: OldName) {}\n"),
+        ] {
+            let result = crate::parsing::process_file(path, content, LanguageId::Rust);
+            let indexed = IndexedFile::from_parse_result(result, content.to_vec());
+            handle.update_file(path.to_string(), indexed);
+        }
+
+        // Make src/b.rs read-only so its write will fail mid-rename.
+        let b_path = src.join("b.rs");
+        std::fs::set_permissions(&b_path, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+        let input = crate::protocol::edit::BatchRenameInput {
+            path: "src/a.rs".to_string(),
+            name: "OldName".to_string(),
+            new_name: "NewName".to_string(),
+            kind: None,
+            symbol_line: None,
+            dry_run: Some(false),
+        };
+
+        let result = execute_batch_rename(&handle, dir.path(), &input);
+
+        // Restore permissions before assertions.
+        std::fs::set_permissions(&b_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        // Must be an error.
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("ROLLED BACK") || err.contains("Write failed"),
+            "expected rollback message in: {err}"
+        );
+
+        // All files that were written before the failure must be rolled back to "OldName".
+        let a_content = std::fs::read_to_string(src.join("a.rs")).unwrap();
+        assert!(
+            a_content.contains("OldName"),
+            "a.rs should be rolled back to OldName: {a_content}"
+        );
+        assert!(
+            !a_content.contains("NewName"),
+            "a.rs must not contain NewName after rollback: {a_content}"
+        );
+
+        let b_content = std::fs::read_to_string(&b_path).unwrap();
+        assert!(
+            b_content.contains("OldName"),
+            "b.rs (read-only, never written) should still have OldName: {b_content}"
+        );
+    }
+
     // -- extract_signature --
 
     #[test]
@@ -2095,5 +2755,81 @@ mod tests {
             "doc comment should not be duplicated: {result_str}"
         );
         assert!(result_str.contains("pub fn bar()"), "edit should apply");
+    }
+
+    // -----------------------------------------------------------------------
+    // find_qualified_usages tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_finds_type_new_qualified_call() {
+        let source = "let x = MyType::new();";
+        let matches = find_qualified_usages("MyType", source);
+        assert_eq!(matches.len(), 1);
+        assert!(matches[0].confident);
+    }
+
+    #[test]
+    fn test_finds_deep_nested_qualified() {
+        let source = "let x = module::MyType::new();";
+        let matches = find_qualified_usages("MyType", source);
+        assert_eq!(matches.len(), 1);
+        assert!(matches[0].confident);
+    }
+
+    #[test]
+    fn test_finds_use_import_path() {
+        let source = "use crate::module::MyType;";
+        let matches = find_qualified_usages("MyType", source);
+        assert_eq!(matches.len(), 1);
+        assert!(matches[0].confident);
+    }
+
+    #[test]
+    fn test_scanner_finds_all_raw_occurrences_of_common_name() {
+        let source = "let x = SomeOther::new();\nlet y = Target::new();";
+        let matches = find_qualified_usages("new", source);
+        assert_eq!(matches.len(), 2);
+        assert!(matches.iter().all(|m| m.confident));
+    }
+
+    #[test]
+    fn test_uncertain_match_in_string() {
+        let source = r#"let s = "MyType::new()";"#;
+        let matches = find_qualified_usages("MyType", source);
+        assert_eq!(matches.len(), 1);
+        assert!(!matches[0].confident);
+    }
+
+    #[test]
+    fn test_uncertain_match_in_comment() {
+        let source = "// MyType::new() creates an instance";
+        let matches = find_qualified_usages("MyType", source);
+        assert_eq!(matches.len(), 1);
+        assert!(!matches[0].confident);
+    }
+
+    #[test]
+    fn test_finds_turbofish_qualified_call() {
+        let source = "let x = MyType::<T>::new();";
+        let matches = find_qualified_usages("MyType", source);
+        assert_eq!(matches.len(), 1);
+        assert!(matches[0].confident);
+    }
+
+    #[test]
+    fn test_uncertain_match_in_block_comment() {
+        let source = "/* MyType::new() creates an instance */";
+        let matches = find_qualified_usages("MyType", source);
+        assert_eq!(matches.len(), 1);
+        assert!(!matches[0].confident);
+    }
+
+    #[test]
+    fn test_uncertain_match_in_multiline_string() {
+        let source = "let s = r\"\n            MyType::new()\n        \";";
+        let matches = find_qualified_usages("MyType", source);
+        assert_eq!(matches.len(), 1);
+        assert!(!matches[0].confident);
     }
 }

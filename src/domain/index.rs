@@ -400,6 +400,135 @@ pub fn find_enclosing_symbol(symbols: &[SymbolRecord], ref_line: u32) -> Option<
     best.map(|(_, idx)| idx)
 }
 
+/// Admission tier — whether a file is eligible for indexing/parsing at all.
+/// Separate from NoiseClass (which is about ranking/filtering signal).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AdmissionTier {
+    /// Tier 1: Fully indexed — parsed, symbols extracted, text searchable.
+    Normal,
+    /// Tier 2: Metadata only — path, size, classification stored. No parsing.
+    MetadataOnly,
+    /// Tier 3: Hard-skipped — counted in health, minimal registration.
+    HardSkip,
+}
+
+/// Reason a file was placed in Tier 2 or Tier 3.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkipReason {
+    SizeCeiling,
+    DenylistedExtension,
+    SizeThreshold,
+    BinaryContent,
+}
+
+impl std::fmt::Display for SkipReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SkipReason::SizeCeiling => write!(f, ">100MB"),
+            SkipReason::DenylistedExtension => write!(f, "artifact"),
+            SkipReason::SizeThreshold => write!(f, ">1MB"),
+            SkipReason::BinaryContent => write!(f, "binary"),
+        }
+    }
+}
+
+/// Structured result from the admission gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AdmissionDecision {
+    pub tier: AdmissionTier,
+    pub reason: Option<SkipReason>,
+}
+
+impl AdmissionDecision {
+    pub fn normal() -> Self {
+        Self {
+            tier: AdmissionTier::Normal,
+            reason: None,
+        }
+    }
+    pub fn skip(tier: AdmissionTier, reason: SkipReason) -> Self {
+        Self {
+            tier,
+            reason: Some(reason),
+        }
+    }
+}
+
+/// Metadata record for a file that was not fully indexed (Tier 2 or Tier 3).
+/// Stores the AdmissionDecision directly — no re-derivation downstream.
+#[derive(Debug, Clone)]
+pub struct SkippedFile {
+    pub path: String,
+    pub size: u64,
+    pub extension: Option<String>,
+    pub decision: AdmissionDecision,
+}
+
+impl SkippedFile {
+    pub fn tier(&self) -> AdmissionTier {
+        self.decision.tier
+    }
+    pub fn reason(&self) -> Option<SkipReason> {
+        self.decision.reason
+    }
+}
+
+pub const HARD_SKIP_BYTES: u64 = 100 * 1024 * 1024;
+pub const METADATA_ONLY_BYTES: u64 = 1 * 1024 * 1024;
+pub const BINARY_SNIFF_BYTES: usize = 8192;
+
+const DENYLISTED_EXTENSIONS: &[&str] = &[
+    // ML models
+    "safetensors",
+    "ckpt",
+    "pt",
+    "onnx",
+    "gguf",
+    "pth",
+    // VM/disk images
+    "vmdk",
+    "iso",
+    "img",
+    "qcow2",
+    // Archives
+    "tar",
+    "gz",
+    "zip",
+    "7z",
+    "rar",
+    "bz2",
+    "xz",
+    "zst",
+    // Databases
+    "db",
+    "sqlite",
+    "sqlite3",
+    "mdb",
+    // Media
+    "mp3",
+    "mp4",
+    "wav",
+    "avi",
+    "mov",
+    "mkv",
+    "png",
+    "jpg",
+    "jpeg",
+    "gif",
+    "bmp",
+    "ico",
+    "woff",
+    "woff2",
+    "ttf",
+    "eot",
+    // Binary
+    "bin",
+];
+
+pub fn is_denylisted_extension(ext: &str) -> bool {
+    DENYLISTED_EXTENSIONS.contains(&ext.to_lowercase().as_str())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -615,5 +744,50 @@ mod tests {
         // Reference at line 0 is not inside any symbol
         let idx = find_enclosing_symbol(&symbols, 0);
         assert_eq!(idx, None, "should return None when not inside any symbol");
+    }
+
+    #[test]
+    fn test_admission_tier_variants() {
+        let t1 = AdmissionTier::Normal;
+        let t2 = AdmissionTier::MetadataOnly;
+        let t3 = AdmissionTier::HardSkip;
+        assert_ne!(t1, t2);
+        assert_ne!(t2, t3);
+        assert_ne!(t1, t3);
+    }
+
+    #[test]
+    fn test_extension_is_denylisted() {
+        assert!(is_denylisted_extension("safetensors"));
+        assert!(is_denylisted_extension("ckpt"));
+        assert!(is_denylisted_extension("zip"));
+        assert!(is_denylisted_extension("mp4"));
+        assert!(is_denylisted_extension("woff2"));
+        assert!(is_denylisted_extension("png"));
+        assert!(is_denylisted_extension("bin"));
+    }
+
+    #[test]
+    fn test_extension_not_denylisted() {
+        assert!(!is_denylisted_extension("rs"));
+        assert!(!is_denylisted_extension("ts"));
+        assert!(!is_denylisted_extension("json"));
+        assert!(!is_denylisted_extension("svg")); // SVG intentionally NOT denylisted
+        assert!(!is_denylisted_extension("md"));
+        assert!(!is_denylisted_extension("toml"));
+    }
+
+    #[test]
+    fn test_skipped_file_creation() {
+        let decision =
+            AdmissionDecision::skip(AdmissionTier::MetadataOnly, SkipReason::DenylistedExtension);
+        let sf = SkippedFile {
+            path: "model.safetensors".into(),
+            size: 4_200_000_000,
+            extension: Some("safetensors".into()),
+            decision,
+        };
+        assert_eq!(sf.tier(), AdmissionTier::MetadataOnly);
+        assert_eq!(sf.reason(), Some(SkipReason::DenylistedExtension));
     }
 }

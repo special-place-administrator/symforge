@@ -16,6 +16,24 @@ pub struct DiscoveredFile {
     pub classification: FileClassification,
 }
 
+/// A file found during a full-filesystem walk (all files, not just known-language ones).
+///
+/// Used by the admission gate to classify every file — including those with unknown or
+/// denylisted extensions — before deciding whether to parse them.
+#[derive(Debug, Clone)]
+pub struct DiscoveredEntry {
+    /// Relative path from the root, using forward slashes.
+    pub relative_path: String,
+    /// Absolute path on disk.
+    pub absolute_path: PathBuf,
+    /// File size in bytes from the walk metadata (no extra stat syscall).
+    pub file_size: u64,
+    /// Language inferred from the extension, if recognized.
+    pub language: Option<LanguageId>,
+    /// Semantic-lane classification (test/vendor/generated/config flags).
+    pub classification: FileClassification,
+}
+
 /// Discover all source files under `root` that have a recognized language extension.
 ///
 /// - Respects `.gitignore` files via the `ignore` crate.
@@ -61,6 +79,65 @@ pub fn discover_files(root: &Path) -> Result<Vec<DiscoveredFile>> {
     });
 
     Ok(files)
+}
+
+/// Discover ALL files under `root` regardless of extension, for admission-gate classification.
+///
+/// Unlike `discover_files`, this function:
+/// - Yields every file (not just known-language ones), so denylisted/binary files are visible.
+/// - Captures file size from walk metadata (avoids a separate stat() call).
+/// - Sets `language = None` for files with unrecognized extensions.
+/// - Returns files sorted case-insensitively by `relative_path`.
+pub fn discover_all_files(root: &Path) -> Result<Vec<DiscoveredEntry>> {
+    use ignore::WalkBuilder;
+
+    let mut entries: Vec<DiscoveredEntry> = WalkBuilder::new(root)
+        .build()
+        .filter_map(|entry_result| {
+            let entry = entry_result.ok()?;
+            let path = entry.path().to_path_buf();
+
+            if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
+                return None;
+            }
+
+            // Get file size from the walk metadata (DirEntry has it on most platforms).
+            // Fall back to a stat call only when metadata is unavailable.
+            let file_size = entry
+                .metadata()
+                .ok()
+                .map(|m| m.len())
+                .unwrap_or_else(|| std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0));
+
+            // Compute relative path from root
+            let relative = path.strip_prefix(root).ok()?;
+            let relative_path = relative.to_string_lossy().replace('\\', "/");
+
+            // Attempt language detection; None for unknown/denylisted extensions.
+            let language = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .and_then(LanguageId::from_extension);
+
+            let classification = FileClassification::for_code_path(&relative_path);
+
+            Some(DiscoveredEntry {
+                relative_path,
+                absolute_path: path,
+                file_size,
+                language,
+                classification,
+            })
+        })
+        .collect();
+
+    entries.sort_by(|a, b| {
+        a.relative_path
+            .to_lowercase()
+            .cmp(&b.relative_path.to_lowercase())
+    });
+
+    Ok(entries)
 }
 
 /// Load all `.gitignore` patterns from a repository root and nested directories.
@@ -239,6 +316,84 @@ fn home_dir() -> Option<PathBuf> {
 pub fn find_git_root() -> PathBuf {
     find_project_root()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+}
+
+/// Check if content appears to be binary.
+/// Examines up to BINARY_SNIFF_BYTES of the content using three heuristics:
+/// 1. NUL byte present -> binary
+/// 2. UTF-8 decode failure -> binary
+/// 3. >30% suspicious control bytes (excluding \t, \n, \r) -> binary
+pub fn is_binary_content(content: &[u8]) -> bool {
+    if content.is_empty() {
+        return false;
+    }
+    let check_len = content.len().min(crate::domain::index::BINARY_SNIFF_BYTES);
+    let window = &content[..check_len];
+
+    // Heuristic 1: NUL byte
+    if window.contains(&0) {
+        return true;
+    }
+
+    // Heuristic 2: Invalid UTF-8
+    if std::str::from_utf8(window).is_err() {
+        return true;
+    }
+
+    // Heuristic 3: High control byte ratio
+    // Control bytes: 0x01-0x08, 0x0E-0x1F, 0x7F
+    // Excludes common text controls: \t (0x09), \n (0x0A), \r (0x0D)
+    let suspicious_controls = window
+        .iter()
+        .filter(|&&b| matches!(b, 0x01..=0x08 | 0x0E..=0x1F | 0x7F))
+        .count();
+    let ratio = suspicious_controls as f64 / window.len() as f64;
+    if ratio > 0.30 {
+        return true;
+    }
+
+    false
+}
+
+use crate::domain::index::{
+    AdmissionDecision, AdmissionTier, HARD_SKIP_BYTES, METADATA_ONLY_BYTES, SkipReason,
+};
+
+/// Classify a file's admission tier. Returns AdmissionDecision with both tier and reason.
+///
+/// Precedence (first match wins):
+/// 1. Hard-skip size ceiling (>100MB) → Tier 3
+/// 2. Extension denylist → Tier 2
+/// 3. Metadata-only size threshold (>1MB) → Tier 2
+/// 4. Binary sniff (null bytes in first 8KB) → Tier 2
+/// 5. All else → Tier 1
+pub fn classify_admission(
+    path: &std::path::Path,
+    file_size: u64,
+    content_sample: Option<&[u8]>,
+) -> AdmissionDecision {
+    use crate::domain::index::is_denylisted_extension;
+
+    if file_size > HARD_SKIP_BYTES {
+        return AdmissionDecision::skip(AdmissionTier::HardSkip, SkipReason::SizeCeiling);
+    }
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        if is_denylisted_extension(ext) {
+            return AdmissionDecision::skip(
+                AdmissionTier::MetadataOnly,
+                SkipReason::DenylistedExtension,
+            );
+        }
+    }
+    if file_size > METADATA_ONLY_BYTES {
+        return AdmissionDecision::skip(AdmissionTier::MetadataOnly, SkipReason::SizeThreshold);
+    }
+    if let Some(content) = content_sample {
+        if is_binary_content(content) {
+            return AdmissionDecision::skip(AdmissionTier::MetadataOnly, SkipReason::BinaryContent);
+        }
+    }
+    AdmissionDecision::normal()
 }
 
 #[cfg(test)]
@@ -426,6 +581,232 @@ mod tests {
         assert!(
             !is_forbidden_root(tmp.path()),
             "temp project dir should be allowed"
+        );
+    }
+
+    #[test]
+    fn test_binary_sniff_detects_null_bytes() {
+        let content = b"hello\x00world";
+        assert!(is_binary_content(content));
+    }
+
+    #[test]
+    fn test_binary_sniff_allows_pure_utf8() {
+        let content = b"fn main() { println!(\"hello\"); }";
+        assert!(!is_binary_content(content));
+    }
+
+    #[test]
+    fn test_binary_sniff_empty_file() {
+        assert!(!is_binary_content(b""));
+    }
+
+    #[test]
+    fn test_binary_sniff_detects_invalid_utf8() {
+        let content: &[u8] = &[0x80, 0x81, 0x82, 0x83, 0x84];
+        assert!(is_binary_content(content));
+    }
+
+    #[test]
+    fn test_binary_sniff_detects_high_control_ratio() {
+        let mut content = Vec::new();
+        for _ in 0..80 {
+            content.push(0x01); // SOH — control char
+        }
+        for _ in 0..20 {
+            content.push(b'A'); // printable
+        }
+        // 80% control bytes > 30% threshold -> binary
+        assert!(is_binary_content(&content));
+    }
+
+    #[test]
+    fn test_binary_sniff_allows_low_control_ratio() {
+        let content = b"line1\tvalue1\nline2\tvalue2\nline3\tvalue3\n";
+        assert!(!is_binary_content(content));
+    }
+
+    #[test]
+    fn test_binary_sniff_allows_common_whitespace_controls() {
+        let content = b"col1\tcol2\tcol3\r\nval1\tval2\tval3\r\n";
+        assert!(!is_binary_content(content));
+    }
+
+    // ── classify_admission tests ──
+
+    use crate::domain::index::{AdmissionDecision, AdmissionTier, SkipReason};
+
+    #[test]
+    fn test_huge_text_file_is_hard_skip() {
+        let decision =
+            classify_admission(std::path::Path::new("huge.txt"), 150 * 1024 * 1024, None);
+        assert_eq!(decision.tier, AdmissionTier::HardSkip);
+        assert_eq!(decision.reason, Some(SkipReason::SizeCeiling));
+    }
+
+    #[test]
+    fn test_small_ckpt_is_metadata_only() {
+        let decision = classify_admission(std::path::Path::new("model.ckpt"), 50 * 1024, None);
+        assert_eq!(decision.tier, AdmissionTier::MetadataOnly);
+        assert_eq!(decision.reason, Some(SkipReason::DenylistedExtension));
+    }
+
+    #[test]
+    fn test_huge_ckpt_is_hard_skip() {
+        let decision = classify_admission(std::path::Path::new("big.ckpt"), 4_200_000_000, None);
+        assert_eq!(decision.tier, AdmissionTier::HardSkip);
+        assert_eq!(decision.reason, Some(SkipReason::SizeCeiling));
+    }
+
+    #[test]
+    fn test_large_json_is_metadata_only() {
+        let decision = classify_admission(std::path::Path::new("big.json"), 2 * 1024 * 1024, None);
+        assert_eq!(decision.tier, AdmissionTier::MetadataOnly);
+        assert_eq!(decision.reason, Some(SkipReason::SizeThreshold));
+    }
+
+    #[test]
+    fn test_small_txt_is_normal() {
+        let decision = classify_admission(std::path::Path::new("readme.txt"), 50 * 1024, None);
+        assert_eq!(decision, AdmissionDecision::normal());
+    }
+
+    #[test]
+    fn test_medium_rust_source_is_normal() {
+        let decision = classify_admission(std::path::Path::new("big_module.rs"), 500 * 1024, None);
+        assert_eq!(decision, AdmissionDecision::normal());
+    }
+
+    #[test]
+    fn test_binary_content_is_metadata_only() {
+        let content = b"ELF\x00\x00\x00binary";
+        let decision =
+            classify_admission(std::path::Path::new("unknown_file"), 1024, Some(content));
+        assert_eq!(decision.tier, AdmissionTier::MetadataOnly);
+        assert_eq!(decision.reason, Some(SkipReason::BinaryContent));
+    }
+
+    #[test]
+    fn test_svg_not_denylisted() {
+        let decision = classify_admission(std::path::Path::new("icon.svg"), 50 * 1024, None);
+        assert_eq!(decision, AdmissionDecision::normal());
+    }
+
+    #[test]
+    fn test_large_svg_is_metadata_only_by_size() {
+        let decision = classify_admission(std::path::Path::new("huge.svg"), 2 * 1024 * 1024, None);
+        assert_eq!(decision.tier, AdmissionTier::MetadataOnly);
+        assert_eq!(decision.reason, Some(SkipReason::SizeThreshold));
+    }
+
+    // ── discover_all_files + admission gate integration tests ──
+
+    #[test]
+    fn test_discovery_skips_denylisted_extension() {
+        let tmp = TempDir::new().unwrap();
+        create_file(tmp.path(), "main.rs", "fn main() {}");
+        // Write a fake .safetensors file (extension is on the denylist)
+        fs::write(tmp.path().join("model.safetensors"), b"fake model bytes").unwrap();
+
+        let entries = discover_all_files(tmp.path()).unwrap();
+
+        // Classify each entry and collect skipped ones
+        let mut rs_found = false;
+        let mut safetensors_skipped = false;
+        let mut safetensors_reason = None;
+
+        for entry in &entries {
+            let size = entry.file_size;
+            let decision = classify_admission(&entry.absolute_path, size, None);
+            if entry.relative_path == "main.rs" {
+                assert_eq!(
+                    decision.tier,
+                    AdmissionTier::Normal,
+                    ".rs file should be Normal"
+                );
+                rs_found = true;
+            }
+            if entry.relative_path == "model.safetensors" {
+                assert_eq!(
+                    decision.tier,
+                    AdmissionTier::MetadataOnly,
+                    ".safetensors should be MetadataOnly"
+                );
+                safetensors_skipped = true;
+                safetensors_reason = decision.reason;
+            }
+        }
+
+        assert!(rs_found, ".rs file must appear in discovered entries");
+        assert!(
+            safetensors_skipped,
+            ".safetensors must appear in discovered entries and be skipped"
+        );
+        assert_eq!(
+            safetensors_reason,
+            Some(SkipReason::DenylistedExtension),
+            ".safetensors skip reason must be DenylistedExtension"
+        );
+    }
+
+    #[test]
+    fn test_discovery_deferred_binary_sniff_reclassifies() {
+        let tmp = TempDir::new().unwrap();
+        create_file(tmp.path(), "lib.rs", "pub fn hello() {}");
+
+        // Write a .dat file with NUL-heavy content: not on denylist, under 1MB,
+        // but binary sniff (NUL bytes) should reclassify to MetadataOnly.
+        let mut binary_content = vec![0u8; 512]; // NUL bytes — triggers binary sniff
+        binary_content.extend_from_slice(b"some trailing text");
+        fs::write(tmp.path().join("custom.dat"), &binary_content).unwrap();
+
+        let entries = discover_all_files(tmp.path()).unwrap();
+
+        let mut rs_normal = false;
+        let mut dat_skipped = false;
+        let mut dat_reason = None;
+
+        for entry in &entries {
+            let size = entry.file_size;
+
+            // Phase 1: pre-content check
+            let pre = classify_admission(&entry.absolute_path, size, None);
+
+            if entry.relative_path == "lib.rs" {
+                assert_eq!(pre.tier, AdmissionTier::Normal);
+                rs_normal = true;
+            }
+
+            if entry.relative_path == "custom.dat" {
+                // Pre-content: should be Normal (not denylisted, under 1MB)
+                assert_eq!(
+                    pre.tier,
+                    AdmissionTier::Normal,
+                    "custom.dat should be Normal before binary sniff"
+                );
+
+                // Phase 2: with content — binary sniff should reclassify
+                let content = fs::read(&entry.absolute_path).unwrap();
+                let post = classify_admission(&entry.absolute_path, size, Some(&content));
+                assert_eq!(
+                    post.tier,
+                    AdmissionTier::MetadataOnly,
+                    "custom.dat should be MetadataOnly after binary sniff"
+                );
+                dat_skipped = true;
+                dat_reason = post.reason;
+            }
+        }
+
+        assert!(rs_normal, "lib.rs must be Normal");
+        assert!(
+            dat_skipped,
+            "custom.dat must be discovered and reclassified"
+        );
+        assert_eq!(
+            dat_reason,
+            Some(SkipReason::BinaryContent),
+            "custom.dat skip reason must be BinaryContent"
         );
     }
 }
