@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.30.3](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.30.2...v0.30.3) (2026-03-15)
+
+
+### Bug Fixes
+
+* revert worker_threads override — spawn_blocking handles concurrency ([a5d5d4e](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/a5d5d4e77dfd2d438a42ef2161fd1c7111584abd))
+
 ## [0.30.2](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.30.1...v0.30.2) (2026-03-15)
 
 
