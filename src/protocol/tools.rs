@@ -2474,32 +2474,32 @@ impl TokenizorServer {
     // ─── Edit tools (Tier 1) ─────────────────────────────────────────────────
 
     fn check_edit_capability(
-            language: &crate::domain::LanguageId,
-            required: crate::parsing::config_extractors::EditCapability,
-            tool_name: &str,
-        ) -> Option<String> {
-            use crate::parsing::config_extractors::{EditCapability, edit_capability_for_language};
-            if let Some(cap) = edit_capability_for_language(language) {
-                let allowed = match required {
-                    EditCapability::IndexOnly => false,
-                    EditCapability::TextEditSafe => {
-                        matches!(
-                            cap,
-                            EditCapability::TextEditSafe | EditCapability::StructuralEditSafe
-                        )
-                    }
-                    EditCapability::StructuralEditSafe => {
-                        matches!(cap, EditCapability::StructuralEditSafe)
-                    }
-                };
-                if !allowed {
-                    return Some(format!(
-                        "{tool_name}: This file type ({language}) does not support structural edits via Tokenizor. Use edit_within_symbol for scoped text replacements, or the built-in Edit tool for raw text edits."
-                    ));
+        language: &crate::domain::LanguageId,
+        required: crate::parsing::config_extractors::EditCapability,
+        tool_name: &str,
+    ) -> Option<String> {
+        use crate::parsing::config_extractors::{EditCapability, edit_capability_for_language};
+        if let Some(cap) = edit_capability_for_language(language) {
+            let allowed = match required {
+                EditCapability::IndexOnly => false,
+                EditCapability::TextEditSafe => {
+                    matches!(
+                        cap,
+                        EditCapability::TextEditSafe | EditCapability::StructuralEditSafe
+                    )
                 }
+                EditCapability::StructuralEditSafe => {
+                    matches!(cap, EditCapability::StructuralEditSafe)
+                }
+            };
+            if !allowed {
+                return Some(format!(
+                    "{tool_name}: This file type ({language}) does not support structural edits via Tokenizor. Use edit_within_symbol for scoped text replacements, or the built-in Edit tool for raw text edits."
+                ));
             }
-            None // No capability restriction
         }
+        None // No capability restriction
+    }
 
     /// Replace a symbol's entire definition with new source code. The index resolves the symbol's
     /// byte range server-side — no need to read the file first. Content is auto-indented to match
@@ -6515,8 +6515,16 @@ mod tests {
             crate::parsing::config_extractors::EditCapability::StructuralEditSafe,
             "replace_symbol_body",
         );
-        assert!(warning.is_some(), "replace_symbol_body should be blocked for HTML");
-        assert!(warning.as_ref().unwrap().contains("does not support structural edits"));
+        assert!(
+            warning.is_some(),
+            "replace_symbol_body should be blocked for HTML"
+        );
+        assert!(
+            warning
+                .as_ref()
+                .unwrap()
+                .contains("does not support structural edits")
+        );
     }
 
     #[test]
@@ -6527,9 +6535,11 @@ mod tests {
             crate::parsing::config_extractors::EditCapability::TextEditSafe,
             "edit_within_symbol",
         );
-        assert!(warning.is_none(), "edit_within_symbol should be allowed for CSS");
+        assert!(
+            warning.is_none(),
+            "edit_within_symbol should be allowed for CSS"
+        );
     }
-
 
     #[tokio::test]
     async fn test_edit_within_symbol_replaces_text() {
