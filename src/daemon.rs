@@ -199,25 +199,12 @@ impl DaemonState {
         }
     }
 
-    pub fn open_project_session(
+    fn register_session_for_existing_project(
         &self,
-        request: OpenProjectRequest,
+        project_id: &str,
+        request: &OpenProjectRequest,
+        _canonical_root: &Path,
     ) -> anyhow::Result<OpenProjectResponse> {
-        let canonical_root = canonical_project_root(Path::new(&request.project_root))?;
-        let project_id = project_key(&canonical_root);
-
-        {
-            // Hold the write lock for the entire check-and-insert to prevent
-            // TOCTOU: two concurrent callers for the same project_id must not
-            // both load and activate the same project, leaving orphaned tasks.
-            let mut projects = self.projects.write().expect("lock poisoned");
-            if !projects.contains_key(&project_id) {
-                let mut project = ProjectInstance::load(&canonical_root)?;
-                project.activate();
-                projects.insert(project_id.clone(), project);
-            }
-        }
-
         let session_id = format!(
             "session-{}",
             self.next_session_id.fetch_add(1, Ordering::Relaxed)
@@ -227,8 +214,10 @@ impl DaemonState {
         let (project_name, canonical_root_text, session_count) = {
             let mut projects = self.projects.write().expect("lock poisoned");
             let project = projects
-                .get_mut(&project_id)
-                .expect("project must exist after creation");
+                .get_mut(project_id)
+                .ok_or_else(|| anyhow::anyhow!(
+                    "project {} was removed between check and session registration", project_id
+                ))?;
             project.session_ids.insert(session_id.clone());
             (
                 project.project_name.clone(),
@@ -239,8 +228,8 @@ impl DaemonState {
 
         let session = SessionRecord {
             session_id: session_id.clone(),
-            project_id: project_id.clone(),
-            client_name: request.client_name,
+            project_id: project_id.to_string(),
+            client_name: request.client_name.clone(),
             pid: request.pid,
             opened_at: now,
             last_seen_at: now,
@@ -251,12 +240,61 @@ impl DaemonState {
             .insert(session_id.clone(), session);
 
         Ok(OpenProjectResponse {
-            project_id,
+            project_id: project_id.to_string(),
             session_id,
             project_name,
             canonical_root: canonical_root_text,
             session_count,
         })
+    }
+
+
+    pub fn open_project_session(
+        &self,
+        request: OpenProjectRequest,
+    ) -> anyhow::Result<OpenProjectResponse> {
+        let canonical_root = canonical_project_root(Path::new(&request.project_root))?;
+        let project_id = project_key(&canonical_root);
+
+        // Fast path: project already loaded — just add session.
+        {
+            let projects = self.projects.read().expect("lock poisoned");
+            if projects.contains_key(&project_id) {
+                drop(projects);
+                return self.register_session_for_existing_project(
+                    &project_id, &request, &canonical_root,
+                );
+            }
+        }
+
+        // Slow path: project not loaded — load unlocked, then re-check under write lock.
+        let new_project = ProjectInstance::load(&canonical_root)?;
+
+        let needs_activation = {
+            let mut projects = self.projects.write().expect("lock poisoned");
+            if projects.contains_key(&project_id) {
+                // Another thread won the race — discard our loaded instance.
+                // Instance is Inactive with no spawned tasks, safe to drop.
+                false
+            } else {
+                // We won — insert as Inactive. activate() handles all transitions.
+                projects.insert(project_id.clone(), new_project);
+                true
+            }
+        };
+
+        // Activate outside the write lock if we inserted.
+        if needs_activation {
+            let mut projects = self.projects.write().expect("lock poisoned");
+            if let Some(project) = projects.get_mut(&project_id) {
+                if project.activation_state == ActivationState::Inactive {
+                    project.activate();
+                }
+            }
+        }
+
+        // Register session (works whether we inserted or another thread did).
+        self.register_session_for_existing_project(&project_id, &request, &canonical_root)
     }
 
     pub fn heartbeat(&self, session_id: &str) -> HeartbeatResponse {
