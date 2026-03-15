@@ -45,6 +45,86 @@ pub(crate) fn apply_splice(content: &[u8], range: (u32, u32), replacement: &[u8]
 }
 
 // ---------------------------------------------------------------------------
+// Line ending detection and normalization
+// ---------------------------------------------------------------------------
+
+/// Detected line ending style of a file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LineEnding {
+    Lf,
+    CrLf,
+}
+
+impl LineEnding {
+    /// Returns the byte sequence for this line ending.
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        match self {
+            LineEnding::Lf => b"\n",
+            LineEnding::CrLf => b"\r\n",
+        }
+    }
+}
+
+/// Detect the dominant line ending style in file content.
+/// Counts \r\n pairs vs lone \n. If \r\n > lone \n → CrLf, else Lf.
+/// Empty or no-newline content defaults to Lf.
+pub(crate) fn detect_line_ending(content: &[u8]) -> LineEnding {
+    let mut crlf_count: usize = 0;
+    let mut lf_count: usize = 0;
+    let mut i = 0;
+    while i < content.len() {
+        if i + 1 < content.len() && content[i] == b'\r' && content[i + 1] == b'\n' {
+            crlf_count += 1;
+            i += 2;
+        } else if content[i] == b'\n' {
+            lf_count += 1;
+            i += 1;
+        } else {
+            i += 1;
+        }
+    }
+    if crlf_count > lf_count {
+        LineEnding::CrLf
+    } else {
+        LineEnding::Lf
+    }
+}
+
+/// Normalize line endings in generated/replacement text to match the target style.
+/// 1. Convert \r\n → \n  2. Convert lone \r → \n  3. If target is CrLf, convert \n → \r\n
+pub(crate) fn normalize_line_endings(text: &[u8], target: LineEnding) -> Vec<u8> {
+    // Step 1+2: canonicalize to \n
+    let mut canonical = Vec::with_capacity(text.len());
+    let mut i = 0;
+    while i < text.len() {
+        if i + 1 < text.len() && text[i] == b'\r' && text[i + 1] == b'\n' {
+            canonical.push(b'\n');
+            i += 2;
+        } else if text[i] == b'\r' {
+            canonical.push(b'\n');
+            i += 1;
+        } else {
+            canonical.push(text[i]);
+            i += 1;
+        }
+    }
+    match target {
+        LineEnding::Lf => canonical,
+        LineEnding::CrLf => {
+            let mut result = Vec::with_capacity(canonical.len() * 2);
+            for &byte in &canonical {
+                if byte == b'\n' {
+                    result.extend_from_slice(b"\r\n");
+                } else {
+                    result.push(byte);
+                }
+            }
+            result
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Atomic file write
 // ---------------------------------------------------------------------------
 
@@ -2957,5 +3037,44 @@ mod tests {
             "expected no orphan temp files, found: {:?}",
             entries.iter().map(|e| e.file_name()).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn test_detect_line_ending_lf() {
+        assert_eq!(detect_line_ending(b"hello\nworld\n"), LineEnding::Lf);
+    }
+
+    #[test]
+    fn test_detect_line_ending_crlf() {
+        assert_eq!(detect_line_ending(b"hello\r\nworld\r\n"), LineEnding::CrLf);
+    }
+
+    #[test]
+    fn test_detect_line_ending_empty() {
+        assert_eq!(detect_line_ending(b""), LineEnding::Lf);
+    }
+
+    #[test]
+    fn test_detect_line_ending_dominant_count() {
+        assert_eq!(detect_line_ending(b"a\r\nb\r\nc\n"), LineEnding::CrLf);
+        assert_eq!(detect_line_ending(b"a\r\nb\nc\n"), LineEnding::Lf);
+    }
+
+    #[test]
+    fn test_normalize_line_endings_to_crlf() {
+        let result = normalize_line_endings(b"line1\nline2\nline3", LineEnding::CrLf);
+        assert_eq!(result, b"line1\r\nline2\r\nline3");
+    }
+
+    #[test]
+    fn test_normalize_line_endings_to_lf() {
+        let result = normalize_line_endings(b"line1\r\nline2\r\nline3", LineEnding::Lf);
+        assert_eq!(result, b"line1\nline2\nline3");
+    }
+
+    #[test]
+    fn test_normalize_lone_cr() {
+        let result = normalize_line_endings(b"line1\rline2\r", LineEnding::CrLf);
+        assert_eq!(result, b"line1\r\nline2\r\n");
     }
 }
