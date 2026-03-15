@@ -64,13 +64,17 @@ fn load(canonical_root: &Path) -> anyhow::Result<Self> {
 
 /// Post-commit activation: start watcher task and git temporal analysis.
 /// Call only after write-lock re-check confirms this instance won insertion.
+/// Transitions: Inactive → Activating → Active. Panics if not Inactive.
 fn activate(&mut self) {
-    assert_eq!(self.activation_state, ActivationState::Inactive);
+    assert_eq!(self.activation_state, ActivationState::Inactive,
+        "activate() must only be called on an Inactive instance");
     self.activation_state = ActivationState::Activating;
     // Move watcher spawn logic here from old load()
     // Move git temporal spawn here from old load()
     self.activation_state = ActivationState::Active;
 }
+// Note: load() always creates Inactive instances. activate() handles
+// all state transitions. The caller never sets activation_state directly.
 ```
 
 The key is moving `start_project_watcher()` and `spawn_git_temporal_computation()` calls from `load()` into `activate()`.
@@ -122,21 +126,23 @@ pub fn open_project_session(
     let needs_activation = {
         let mut projects = self.projects.write().expect("lock poisoned");
         if projects.contains_key(&project_id) {
-            // Another thread won the race — discard our loaded instance (no tasks to clean up).
+            // Another thread won the race — discard our loaded instance.
+            // Instance is Inactive with no spawned tasks, safe to drop.
             false
         } else {
-            // We won — insert and mark as activating under the lock.
-            new_project.activation_state = ActivationState::Activating;
+            // We won — insert as Inactive. activate() handles all transitions.
             projects.insert(project_id.clone(), new_project);
             true
         }
     };
 
     // Activate outside the write lock if we inserted.
+    // activate() transitions Inactive → Activating → Active and starts
+    // watcher + git temporal. Only the inserting thread reaches here.
     if needs_activation {
         let mut projects = self.projects.write().expect("lock poisoned");
         if let Some(project) = projects.get_mut(&project_id) {
-            if project.activation_state == ActivationState::Activating {
+            if project.activation_state == ActivationState::Inactive {
                 project.activate();
             }
         }
@@ -466,13 +472,37 @@ git commit -m "fix: resolve open_project_session TOCTOU panic (C6)"
 cargo add tempfile
 ```
 
-- [ ] **Step 2: Verify tempfile persist behavior on Windows**
+- [ ] **Step 2: Verify and resolve tempfile persist behavior on Windows**
 
 Check the tempfile crate source to confirm `persist()` uses `MoveFileExW` with
 `MOVEFILE_REPLACE_EXISTING` on Windows. Look at `tempfile/src/file/imp/windows.rs`
-or similar. Document the finding in a code comment.
+in the downloaded crate source (`~/.cargo/registry/src/`).
 
-Run: `cargo doc --open -p tempfile` or check the source directly.
+**Decision tree — resolve before writing any code:**
+
+**If verified (persist uses MOVEFILE_REPLACE_EXISTING):**
+- Use `persist()` directly as written in Step 3 below.
+- Add a code comment: `// persist() uses MoveFileExW(MOVEFILE_REPLACE_EXISTING) on Windows`
+
+**If NOT verified (persist uses plain rename that fails on existing files):**
+- Do NOT use the `remove_file + persist` non-atomic fallback.
+- Instead, implement a platform-specific atomic replace:
+  ```rust
+  #[cfg(windows)]
+  {
+      use std::os::windows::ffi::OsStrExt;
+      // Use windows-sys::Win32::Storage::FileSystem::MoveFileExW
+      // with MOVEFILE_REPLACE_EXISTING flag directly.
+      // Add `windows-sys` to Cargo.toml with feature `Win32_Storage_FileSystem`.
+  }
+  #[cfg(not(windows))]
+  {
+      tmp.persist(path).map_err(|e| e.error)?;
+  }
+  ```
+- Add `windows-sys` dependency only if needed.
+
+**This must be resolved in this step, not deferred to implementation time.**
 
 - [ ] **Step 3: Rewrite atomic_write_file**
 
@@ -813,19 +843,33 @@ pub(crate) fn apply_indentation(text: &str, indent: &[u8], line_ending: LineEndi
 
 - [ ] **Step 2: Update all callers of apply_indentation**
 
-Every caller needs to pass a `LineEnding` parameter. For each call site:
+Every caller needs to pass a `LineEnding` parameter. **Critical rule:** every
+generated/replacement text path must call `normalize_line_endings(text, detected_style)`
+before assembly into the file. This prevents lone `\r` and mixed endings from
+surviving into the output.
 
-1. **build_insert_before** (~line 190): Add `line_ending: LineEnding` parameter, detect from `file_content`, pass to `apply_indentation`. Also normalize the separator bytes.
-2. **build_insert_after** (~line 212): Same — add parameter, detect, pass through. Normalize `b"\n\n"` separator to use detected ending.
-3. **replace_symbol_body** in `src/protocol/tools.rs` (~line 3025): Detect from file content, pass through.
-4. **edit_within_symbol** in `src/protocol/tools.rs` (~line 3275): Detect from file content, pass through.
-5. **execute_batch_edit** in `src/protocol/edit.rs` (~line 615): Detect once per file.
-6. **execute_batch_insert** in `src/protocol/edit.rs`: Detect once per file.
+For each call site:
 
-For each caller, the pattern is:
+1. **build_insert_before** (~line 190): Add `line_ending: LineEnding` parameter.
+   Normalize `new_code` before passing to `apply_indentation`.
+2. **build_insert_after** (~line 212): Same — normalize `new_code` first.
+3. **replace_symbol_body** in `src/protocol/tools.rs` (~line 3025): Detect from
+   file content, normalize replacement text, pass through.
+4. **edit_within_symbol** in `src/protocol/tools.rs` (~line 3275): Detect from
+   file content, normalize replacement text, pass through.
+5. **execute_batch_edit** in `src/protocol/edit.rs` (~line 615): Detect once per
+   file, normalize each edit's replacement text.
+6. **execute_batch_insert** in `src/protocol/edit.rs`: Detect once per file,
+   normalize each insertion's text.
+
+The pattern at every call site is:
 ```rust
 let line_ending = detect_line_ending(file_content);
-// ... then pass line_ending to apply_indentation and normalize any generated separators
+// Normalize ALL generated/replacement text before indentation or splicing
+let normalized_code = std::str::from_utf8(
+    &normalize_line_endings(new_code.as_bytes(), line_ending)
+).unwrap_or(new_code);
+let indented = apply_indentation(normalized_code, &indent, line_ending);
 ```
 
 - [ ] **Step 3: Update build_insert_before and build_insert_after signatures**
@@ -858,11 +902,13 @@ pub(crate) fn build_insert_before(
                 && prefix[prefix.len() - 2] == b'\n'
         }
     };
-    let separator = if already_has_blank { newline } else {
-        // Need double newline — build from line_ending
-        &[newline, newline].concat()  // Note: allocates; or use a local buffer
-    };
-    // ... rest of function uses separator and indented
+    let mut insertion = Vec::new();
+    if !already_has_blank {
+        insertion.extend_from_slice(newline);
+    }
+    insertion.extend_from_slice(newline);
+    insertion.extend_from_slice(&indented);
+    apply_splice(file_content, (line_start, line_start), &insertion)
 }
 
 pub(crate) fn build_insert_after(
@@ -1587,10 +1633,30 @@ async fn test_daemon_sigterm_graceful_shutdown() {
 
     let _lock = env_lock();
 
-    // Spawn the daemon as a child process
-    let current_exe = std::env::current_exe().unwrap();
-    let mut child = Command::new(&current_exe)
+    // Build the actual binary first — current_exe() under cargo test points
+    // to the test harness, NOT the CLI binary. Use cargo build output instead.
+    let binary = {
+        let output = Command::new("cargo")
+            .args(["build", "--quiet", "--message-format=short"])
+            .output()
+            .expect("cargo build failed");
+        assert!(output.status.success(), "cargo build must succeed");
+        // The binary is at target/debug/tokenizor (or the crate's [[bin]] name)
+        let mut path = std::env::current_dir().unwrap();
+        path.push("target/debug/tokenizor");
+        // On Windows it would be tokenizor.exe, but this test is #[cfg(unix)]
+        assert!(path.exists(), "binary not found at {}", path.display());
+        path
+    };
+
+    // Use a temp daemon home to isolate pid/port files
+    let daemon_home = tempfile::TempDir::new().unwrap();
+    let daemon_dir = daemon_home.path().join(".tokenizor");
+    std::fs::create_dir_all(&daemon_dir).unwrap();
+
+    let mut child = Command::new(&binary)
         .arg("daemon")
+        .env("TOKENIZOR_DAEMON_HOME", daemon_home.path())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -1599,8 +1665,14 @@ async fn test_daemon_sigterm_graceful_shutdown() {
 
     let pid = child.id();
 
-    // Give daemon a moment to start
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Give daemon time to start and write pid/port files
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+
+    // Verify pid/port files were created
+    let pid_file = daemon_dir.join("daemon.pid");
+    let port_file = daemon_dir.join("daemon.port");
+    // (These may or may not exist depending on daemon_home env var support —
+    //  skip this assertion if the daemon doesn't honor the env var)
 
     // Send SIGTERM
     unsafe { libc::kill(pid as i32, libc::SIGTERM); }
@@ -1617,8 +1689,19 @@ async fn test_daemon_sigterm_graceful_shutdown() {
     }).await;
 
     assert!(exit_result.is_ok(), "daemon should exit within 5s of SIGTERM");
+
+    // Verify cleanup: pid/port files should be removed after graceful shutdown
+    // Allow a brief grace period for async cleanup
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!pid_file.exists(), "daemon.pid should be cleaned up after SIGTERM");
+    assert!(!port_file.exists(), "daemon.port should be cleaned up after SIGTERM");
 }
 ```
+
+**Note:** This test builds and launches the real CLI binary, not the test harness.
+If the daemon does not support `TOKENIZOR_DAEMON_HOME` for isolating its state
+directory, the test should use the default daemon dir location or adapt accordingly.
+The key assertions are: process exits within timeout AND pid/port files are cleaned up.
 
 - [ ] **Step 3: Run the tests**
 
