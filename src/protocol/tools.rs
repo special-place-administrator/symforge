@@ -883,7 +883,6 @@ fn file_content_options_from_input(
 ) -> Result<search::FileContentOptions, String> {
     let show_line_numbers = input.show_line_numbers.unwrap_or(false);
     let header = input.header.unwrap_or(false);
-    let ordinary_read_formatting_requested = show_line_numbers || header;
 
     if input.symbol_line.is_some() && input.around_symbol.is_none() {
         return Err(
@@ -911,13 +910,6 @@ fn file_content_options_from_input(
             );
         }
 
-        if ordinary_read_formatting_requested {
-            return Err(
-                "Invalid get_file_content request: `show_line_numbers` and `header` are only supported for full-file reads or explicit-range reads (`start_line`/`end_line`)."
-                    .to_string(),
-            );
-        }
-
         return Ok(
             search::FileContentOptions::for_explicit_path_read_around_symbol(
                 input.path.clone(),
@@ -925,6 +917,8 @@ fn file_content_options_from_input(
                 input.symbol_line,
                 input.context_lines,
                 input.max_lines,
+                show_line_numbers,
+                header,
             ),
         );
     }
@@ -987,18 +981,13 @@ fn file_content_options_from_input(
             );
         }
 
-        if ordinary_read_formatting_requested {
-            return Err(
-                "Invalid get_file_content request: `show_line_numbers` and `header` are only supported for full-file reads or explicit-range reads (`start_line`/`end_line`)."
-                    .to_string(),
-            );
-        }
-
         return Ok(
             search::FileContentOptions::for_explicit_path_read_around_match(
                 input.path.clone(),
                 around_match,
                 input.context_lines,
+                show_line_numbers,
+                header,
             ),
         );
     }
@@ -1010,18 +999,13 @@ fn file_content_options_from_input(
         );
     }
 
-    if input.around_line.is_some() && ordinary_read_formatting_requested {
-        return Err(
-            "Invalid get_file_content request: `show_line_numbers` and `header` are only supported for full-file reads or explicit-range reads (`start_line`/`end_line`)."
-                .to_string(),
-        );
-    }
-
     Ok(match input.around_line {
         Some(around_line) => search::FileContentOptions::for_explicit_path_read_around_line(
             input.path.clone(),
             around_line,
             input.context_lines,
+            show_line_numbers,
+            header,
         ),
         None => search::FileContentOptions::for_explicit_path_read_with_format(
             input.path.clone(),

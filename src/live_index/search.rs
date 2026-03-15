@@ -158,7 +158,12 @@ impl ContentContext {
         }
     }
 
-    pub const fn around_line(around_line: u32, context_lines: Option<u32>) -> Self {
+    pub fn around_line(
+        around_line: u32,
+        context_lines: Option<u32>,
+        show_line_numbers: bool,
+        header: bool,
+    ) -> Self {
         Self {
             start_line: None,
             end_line: None,
@@ -169,12 +174,17 @@ impl ContentContext {
             context_lines,
             chunk_index: None,
             max_lines: None,
-            show_line_numbers: false,
-            header: false,
+            show_line_numbers,
+            header,
         }
     }
 
-    pub fn around_match(around_match: impl Into<String>, context_lines: Option<u32>) -> Self {
+    pub fn around_match(
+        around_match: impl Into<String>,
+        context_lines: Option<u32>,
+        show_line_numbers: bool,
+        header: bool,
+    ) -> Self {
         Self {
             start_line: None,
             end_line: None,
@@ -185,8 +195,8 @@ impl ContentContext {
             context_lines,
             chunk_index: None,
             max_lines: None,
-            show_line_numbers: false,
-            header: false,
+            show_line_numbers,
+            header,
         }
     }
 
@@ -195,7 +205,7 @@ impl ContentContext {
         symbol_line: Option<u32>,
         context_lines: Option<u32>,
     ) -> Self {
-        Self::around_symbol_with_max_lines(around_symbol, symbol_line, context_lines, None)
+        Self::around_symbol_with_max_lines(around_symbol, symbol_line, context_lines, None, false, false)
     }
 
     pub fn around_symbol_with_max_lines(
@@ -203,6 +213,8 @@ impl ContentContext {
         symbol_line: Option<u32>,
         context_lines: Option<u32>,
         max_lines: Option<u32>,
+        show_line_numbers: bool,
+        header: bool,
     ) -> Self {
         Self {
             start_line: None,
@@ -214,8 +226,8 @@ impl ContentContext {
             context_lines,
             chunk_index: None,
             max_lines,
-            show_line_numbers: false,
-            header: false,
+            show_line_numbers,
+            header,
         }
     }
 
@@ -505,10 +517,12 @@ impl FileContentOptions {
         path: impl Into<String>,
         around_line: u32,
         context_lines: Option<u32>,
+        show_line_numbers: bool,
+        header: bool,
     ) -> Self {
         Self {
             path_scope: PathScope::exact(path),
-            content_context: ContentContext::around_line(around_line, context_lines),
+            content_context: ContentContext::around_line(around_line, context_lines, show_line_numbers, header),
         }
     }
 
@@ -516,10 +530,12 @@ impl FileContentOptions {
         path: impl Into<String>,
         around_match: impl Into<String>,
         context_lines: Option<u32>,
+        show_line_numbers: bool,
+        header: bool,
     ) -> Self {
         Self {
             path_scope: PathScope::exact(path),
-            content_context: ContentContext::around_match(around_match, context_lines),
+            content_context: ContentContext::around_match(around_match, context_lines, show_line_numbers, header),
         }
     }
 
@@ -540,6 +556,8 @@ impl FileContentOptions {
         symbol_line: Option<u32>,
         context_lines: Option<u32>,
         max_lines: Option<u32>,
+        show_line_numbers: bool,
+        header: bool,
     ) -> Self {
         Self {
             path_scope: PathScope::exact(path),
@@ -548,6 +566,8 @@ impl FileContentOptions {
                 symbol_line,
                 context_lines,
                 max_lines,
+                show_line_numbers,
+                header,
             ),
         }
     }
