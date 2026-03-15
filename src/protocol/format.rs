@@ -854,6 +854,7 @@ pub fn health_report_from_published_state(
         events_processed: watcher.events_processed,
         last_event_at: watcher.last_event_at,
         debounce_window_ms: watcher.debounce_window_ms,
+        partial_parse_files: vec![],
     };
     // Preserve the existing formatter shape by reusing HealthStats.
     if matches!(stats.watcher_state, crate::watcher::WatcherState::Off) {
@@ -889,7 +890,7 @@ pub fn health_report_from_stats(status: &str, stats: &HealthStats) -> String {
         WatcherState::Off => "Watcher: off".to_string(),
     };
 
-    format!(
+    let mut output = format!(
         "Status: {}\nFiles:  {} indexed ({} parsed, {} partial, {} failed)\nSymbols: {}\nLoaded in: {}ms\n{}",
         status,
         stats.file_count,
@@ -899,7 +900,22 @@ pub fn health_report_from_stats(status: &str, stats: &HealthStats) -> String {
         stats.symbol_count,
         stats.load_duration.as_millis(),
         watcher_line
-    )
+    );
+
+    if !stats.partial_parse_files.is_empty() {
+        output.push_str(&format!("\nPartial parse files ({}):\n", stats.partial_parse_files.len()));
+        for (i, path) in stats.partial_parse_files.iter().take(10).enumerate() {
+            output.push_str(&format!("  {}. {}\n", i + 1, path));
+        }
+        if stats.partial_parse_files.len() > 10 {
+            output.push_str(&format!(
+                "  ... and {} more partial files\n",
+                stats.partial_parse_files.len() - 10
+            ));
+        }
+    }
+
+    output
 }
 
 /// List files changed since the given Unix timestamp.
@@ -3245,6 +3261,66 @@ mod tests {
 
         assert_eq!(captured_result, live_result);
     }
+
+        #[test]
+        fn test_health_report_lists_partial_parse_files() {
+            use std::time::Duration;
+            use crate::watcher::WatcherState;
+
+            let stats = HealthStats {
+                file_count: 3,
+                symbol_count: 0,
+                parsed_count: 0,
+                partial_parse_count: 3,
+                failed_count: 0,
+                load_duration: Duration::from_millis(0),
+                watcher_state: WatcherState::Off,
+                events_processed: 0,
+                last_event_at: None,
+                debounce_window_ms: 200,
+                partial_parse_files: vec![
+                    "src/a.rs".to_string(),
+                    "src/b.rs".to_string(),
+                    "src/c.rs".to_string(),
+                ],
+            };
+            let report = health_report_from_stats("Ready", &stats);
+            assert!(report.contains("Partial parse files (3):"), "should contain header");
+            assert!(report.contains("  1. src/a.rs"), "should list first file");
+            assert!(report.contains("  2. src/b.rs"), "should list second file");
+            assert!(report.contains("  3. src/c.rs"), "should list third file");
+            assert!(!report.contains("... and"), "should not show overflow hint for 3 files");
+        }
+
+        #[test]
+        fn test_health_report_caps_partial_list_at_10() {
+            use std::time::Duration;
+            use crate::watcher::WatcherState;
+
+            let partial_parse_files: Vec<String> =
+                (1..=50).map(|i| format!("src/file{:02}.rs", i)).collect();
+            let stats = HealthStats {
+                file_count: 50,
+                symbol_count: 0,
+                parsed_count: 0,
+                partial_parse_count: 50,
+                failed_count: 0,
+                load_duration: Duration::from_millis(0),
+                watcher_state: WatcherState::Off,
+                events_processed: 0,
+                last_event_at: None,
+                debounce_window_ms: 200,
+                partial_parse_files,
+            };
+            let report = health_report_from_stats("Ready", &stats);
+            assert!(report.contains("Partial parse files (50):"), "should show count of 50");
+            assert!(report.contains("  10."), "should list up to entry 10");
+            assert!(!report.contains("  11."), "should not list entry 11");
+            assert!(
+                report.contains("... and 40 more partial files"),
+                "should show overflow hint for 40 remaining"
+            );
+        }
 
     // --- what_changed_result tests ---
 

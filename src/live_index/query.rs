@@ -609,6 +609,8 @@ pub struct HealthStats {
     pub last_event_at: Option<SystemTime>,
     /// Effective debounce window in milliseconds.
     pub debounce_window_ms: u64,
+    /// Sorted, deduplicated list of files with partial-parse status.
+    pub partial_parse_files: Vec<String>,
 }
 
 /// Owned entry used to render the repo outline after releasing the index lock.
@@ -1991,37 +1993,47 @@ impl LiveIndex {
     }
 
     /// Compute health statistics for the index.
-    ///
-    /// Watcher fields are populated with safe defaults (Off state, zero counts).
-    /// Use `health_stats_with_watcher` when a watcher is active.
-    pub fn health_stats(&self) -> HealthStats {
-        let mut parsed_count = 0usize;
-        let mut partial_parse_count = 0usize;
-        let mut failed_count = 0usize;
-        let mut symbol_count = 0usize;
+        ///
+        /// Watcher fields are populated with safe defaults (Off state, zero counts).
+        /// Use `health_stats_with_watcher` when a watcher is active.
+        pub fn health_stats(&self) -> HealthStats {
+            let mut parsed_count = 0usize;
+            let mut partial_parse_count = 0usize;
+            let mut failed_count = 0usize;
+            let mut symbol_count = 0usize;
 
-        for file in self.files.values() {
-            symbol_count += file.symbols.len();
-            match &file.parse_status {
-                ParseStatus::Parsed => parsed_count += 1,
-                ParseStatus::PartialParse { .. } => partial_parse_count += 1,
-                ParseStatus::Failed { .. } => failed_count += 1,
+            for file in self.files.values() {
+                symbol_count += file.symbols.len();
+                match &file.parse_status {
+                    ParseStatus::Parsed => parsed_count += 1,
+                    ParseStatus::PartialParse { .. } => partial_parse_count += 1,
+                    ParseStatus::Failed { .. } => failed_count += 1,
+                }
+            }
+
+            let mut partial_parse_files: Vec<String> = self
+                .files
+                .iter()
+                .filter(|(_, f)| matches!(f.parse_status, ParseStatus::PartialParse { .. }))
+                .map(|(path, _)| path.clone())
+                .collect();
+            partial_parse_files.sort();
+            partial_parse_files.dedup();
+
+            HealthStats {
+                file_count: self.files.len(),
+                symbol_count,
+                parsed_count,
+                partial_parse_count,
+                failed_count,
+                load_duration: self.load_duration,
+                watcher_state: WatcherState::Off,
+                events_processed: 0,
+                last_event_at: None,
+                debounce_window_ms: 200,
+                partial_parse_files,
             }
         }
-
-        HealthStats {
-            file_count: self.files.len(),
-            symbol_count,
-            parsed_count,
-            partial_parse_count,
-            failed_count,
-            load_duration: self.load_duration,
-            watcher_state: WatcherState::Off,
-            events_processed: 0,
-            last_event_at: None,
-            debounce_window_ms: 200,
-        }
-    }
 
     /// Compute health statistics, populating watcher fields from the provided `WatcherInfo`.
     ///
@@ -3598,6 +3610,7 @@ mod tests {
         assert_eq!(stats.parsed_count, 1);
         assert_eq!(stats.partial_parse_count, 1);
         assert_eq!(stats.failed_count, 1);
+        assert_eq!(stats.partial_parse_files, vec!["b.rs".to_string()]);
     }
 
     #[test]
