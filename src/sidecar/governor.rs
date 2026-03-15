@@ -113,7 +113,10 @@ pub fn classify_tool(tool_name: &str) -> ToolWeight {
         "index_folder" | "batch_edit" | "batch_rename" | "batch_insert" => ToolWeight::Heavy,
 
         // Medium: operations that scan many files or do single-file edits
-        "replace_symbol_body" | "edit_within_symbol" | "insert_symbol" | "delete_symbol"
+        "replace_symbol_body"
+        | "edit_within_symbol"
+        | "insert_symbol"
+        | "delete_symbol"
         | "analyze_file_impact" => ToolWeight::Medium,
 
         // Light: everything else (reads, searches, lookups)
@@ -198,15 +201,15 @@ pub struct RequestGovernor {
 impl RequestGovernor {
     /// Create a governor with default settings.
     pub fn new() -> Self {
-        Self::with_config(DEFAULT_MAX_CONCURRENCY, DEFAULT_TIMEOUT, DEFAULT_QUEUE_TIMEOUT)
+        Self::with_config(
+            DEFAULT_MAX_CONCURRENCY,
+            DEFAULT_TIMEOUT,
+            DEFAULT_QUEUE_TIMEOUT,
+        )
     }
 
     /// Create a governor with custom limits.
-    pub fn with_config(
-        max_concurrency: usize,
-        timeout: Duration,
-        queue_timeout: Duration,
-    ) -> Self {
+    pub fn with_config(max_concurrency: usize, timeout: Duration, queue_timeout: Duration) -> Self {
         Self {
             semaphore: Arc::new(Semaphore::new(max_concurrency)),
             write_gate: Arc::new(RwLock::new(())),
@@ -300,12 +303,16 @@ impl RequestGovernor {
             Ok(Ok(permit)) => permit,
             Ok(Err(_closed)) => {
                 self.remove_request(req_id);
-                self.stats.total_queue_rejected.fetch_add(1, Ordering::Relaxed);
+                self.stats
+                    .total_queue_rejected
+                    .fetch_add(1, Ordering::Relaxed);
                 return Err(GovernorError::SemaphoreClosed);
             }
             Err(_elapsed) => {
                 self.remove_request(req_id);
-                self.stats.total_queue_rejected.fetch_add(1, Ordering::Relaxed);
+                self.stats
+                    .total_queue_rejected
+                    .fetch_add(1, Ordering::Relaxed);
                 return Err(GovernorError::QueueTimeout {
                     request_id: RequestId(req_id),
                     tool: tool_name.to_string(),
@@ -328,7 +335,9 @@ impl RequestGovernor {
                 Err(_elapsed) => {
                     self.remove_request(req_id);
                     drop(permit);
-                    self.stats.total_queue_rejected.fetch_add(1, Ordering::Relaxed);
+                    self.stats
+                        .total_queue_rejected
+                        .fetch_add(1, Ordering::Relaxed);
                     return Err(GovernorError::WriteGateTimeout {
                         request_id: RequestId(req_id),
                         tool: tool_name.to_string(),
@@ -340,12 +349,15 @@ impl RequestGovernor {
             drop(gate);
             r
         } else {
-            let gate = match tokio::time::timeout(self.queue_timeout, self.write_gate.read()).await {
+            let gate = match tokio::time::timeout(self.queue_timeout, self.write_gate.read()).await
+            {
                 Ok(guard) => guard,
                 Err(_elapsed) => {
                     self.remove_request(req_id);
                     drop(permit);
-                    self.stats.total_queue_rejected.fetch_add(1, Ordering::Relaxed);
+                    self.stats
+                        .total_queue_rejected
+                        .fetch_add(1, Ordering::Relaxed);
                     return Err(GovernorError::WriteGateTimeout {
                         request_id: RequestId(req_id),
                         tool: tool_name.to_string(),
@@ -437,10 +449,7 @@ pub enum GovernorError {
         "[{request_id}] tool '{tool}' timed out waiting for write gate — \
          a heavy operation is running"
     )]
-    WriteGateTimeout {
-        request_id: RequestId,
-        tool: String,
-    },
+    WriteGateTimeout { request_id: RequestId, tool: String },
 
     #[error("governor semaphore closed — server is shutting down")]
     SemaphoreClosed,
@@ -505,7 +514,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_governor_execution_timeout() {
-        let gov = RequestGovernor::with_config(8, Duration::from_millis(50), Duration::from_secs(5));
+        let gov =
+            RequestGovernor::with_config(8, Duration::from_millis(50), Duration::from_secs(5));
         let result = gov
             .execute("get_symbol", async {
                 tokio::time::sleep(Duration::from_millis(200)).await;
@@ -513,17 +523,24 @@ mod tests {
             })
             .await;
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), GovernorError::ExecutionTimeout { .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            GovernorError::ExecutionTimeout { .. }
+        ));
 
         let snap = gov.snapshot();
         assert_eq!(snap.total_timed_out, 1);
-        assert!(snap.in_flight.is_empty(), "timed-out request should be cleaned up");
+        assert!(
+            snap.in_flight.is_empty(),
+            "timed-out request should be cleaned up"
+        );
     }
 
     #[tokio::test]
     async fn test_governor_queue_timeout() {
         // Only 2 permits, heavy op needs 3 → can never acquire → queue timeout
-        let gov = RequestGovernor::with_config(2, Duration::from_secs(5), Duration::from_millis(50));
+        let gov =
+            RequestGovernor::with_config(2, Duration::from_secs(5), Duration::from_millis(50));
         let result = gov.execute("batch_rename", async { 42 }).await;
 
         assert!(result.is_err());

@@ -721,6 +721,7 @@ mod tests {
                 files_by_dir_component: std::collections::HashMap::new(),
                 trigram_index: crate::live_index::trigram::TrigramIndex::new(),
                 gitignore: None,
+                skipped_files: Vec::new(),
             };
             index.update_file(rel_path.to_string(), indexed);
             crate::live_index::SharedIndexHandle::shared(index)
@@ -797,6 +798,7 @@ mod tests {
                 files_by_dir_component: std::collections::HashMap::new(),
                 trigram_index: crate::live_index::trigram::TrigramIndex::new(),
                 gitignore: None,
+                skipped_files: Vec::new(),
             };
             index.update_file(rel_path.to_string(), indexed);
             crate::live_index::SharedIndexHandle::shared(index)

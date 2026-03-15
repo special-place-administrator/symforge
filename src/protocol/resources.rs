@@ -439,6 +439,7 @@ mod tests {
             files_by_dir_component: HashMap::new(),
             trigram_index: crate::live_index::trigram::TrigramIndex::new(),
             gitignore: None,
+            skipped_files: Vec::new(),
         };
         index.rebuild_reverse_index();
         index.rebuild_path_indices();

@@ -2592,6 +2592,7 @@ mod tests {
             files_by_dir_component: std::collections::HashMap::new(),
             trigram_index,
             gitignore: None,
+            skipped_files: Vec::new(),
         };
         // Rebuild the reverse index so xref query tests work.
         index.rebuild_reverse_index();
@@ -3645,6 +3646,7 @@ mod tests {
             files_by_dir_component: std::collections::HashMap::new(),
             trigram_index: crate::live_index::trigram::TrigramIndex::new(),
             gitignore: None,
+            skipped_files: Vec::new(),
         };
         assert!(!index.is_ready());
     }
@@ -3680,6 +3682,7 @@ mod tests {
             files_by_dir_component: std::collections::HashMap::new(),
             trigram_index: crate::live_index::trigram::TrigramIndex::new(),
             gitignore: None,
+            skipped_files: Vec::new(),
         };
 
         match index.index_state() {

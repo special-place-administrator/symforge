@@ -3429,6 +3429,7 @@ mod tests {
             files_by_dir_component: HashMap::new(),
             trigram_index,
             gitignore: None,
+            skipped_files: Vec::new(),
         };
         index.rebuild_reverse_index();
         index.rebuild_path_indices();
@@ -3451,6 +3452,7 @@ mod tests {
             files_by_dir_component: HashMap::new(),
             trigram_index: TrigramIndex::new(),
             gitignore: None,
+            skipped_files: Vec::new(),
         }
     }
 
@@ -3478,6 +3480,7 @@ mod tests {
             files_by_dir_component: HashMap::new(),
             trigram_index: TrigramIndex::new(),
             gitignore: None,
+            skipped_files: Vec::new(),
         }
     }
 

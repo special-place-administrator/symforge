@@ -9,6 +9,7 @@ use rayon::prelude::*;
 use tracing::{error, info, warn};
 
 use super::query::RepoOutlineView;
+use crate::domain::index::{AdmissionTier, SkippedFile};
 use crate::domain::{
     FileClassification, FileOutcome, FileProcessingResult, LanguageId, ReferenceRecord,
     SymbolRecord, find_enclosing_symbol,
@@ -308,6 +309,8 @@ pub struct LiveIndex {
     /// Compiled gitignore patterns loaded at index time. Used by NoisePolicy
     /// to classify files as vendor/generated/ignored noise.
     pub(crate) gitignore: Option<ignore::gitignore::Gitignore>,
+    /// Files that were not fully indexed (Tier 2 metadata-only or Tier 3 hard-skipped).
+    pub(crate) skipped_files: Vec<SkippedFile>,
 }
 
 /// Central shared handle for the live in-memory index.
@@ -593,6 +596,7 @@ impl LiveIndex {
             files_by_dir_component: HashMap::new(),
             trigram_index,
             gitignore,
+            skipped_files: Vec::new(),
         };
         index.rebuild_reverse_index();
         index.rebuild_path_indices();
@@ -619,8 +623,34 @@ impl LiveIndex {
             files_by_dir_component: HashMap::new(),
             trigram_index: super::trigram::TrigramIndex::new(),
             gitignore: None,
+            skipped_files: Vec::new(),
         };
         SharedIndexHandle::shared(index)
+    }
+
+    pub fn add_skipped_file(&mut self, sf: SkippedFile) {
+        self.skipped_files.push(sf);
+    }
+
+    pub fn skipped_files(&self) -> &[SkippedFile] {
+        &self.skipped_files
+    }
+
+    /// Returns (tier1_count, tier2_count, tier3_count).
+    /// Tier 1 = number of indexed files (self.files.len()).
+    /// Tier 2/3 = from skipped_files.
+    pub fn tier_counts(&self) -> (usize, usize, usize) {
+        let tier1 = self.files.len();
+        let mut tier2 = 0;
+        let mut tier3 = 0;
+        for sf in &self.skipped_files {
+            match sf.tier() {
+                AdmissionTier::MetadataOnly => tier2 += 1,
+                AdmissionTier::HardSkip => tier3 += 1,
+                AdmissionTier::Normal => {} // shouldn't happen
+            }
+        }
+        (tier1, tier2, tier3)
     }
 
     /// Reload all source files under `root` into this index in-place.
@@ -1445,6 +1475,7 @@ mod tests {
             files_by_dir_component: HashMap::new(),
             trigram_index: crate::live_index::trigram::TrigramIndex::new(),
             gitignore: None,
+            skipped_files: Vec::new(),
         }
     }
 
@@ -1970,5 +2001,31 @@ mod tests {
             incremental, full_rebuild,
             "incremental remove should match full rebuild"
         );
+    }
+
+    #[test]
+    fn test_tier_counts() {
+        use crate::domain::index::{AdmissionDecision, AdmissionTier, SkipReason, SkippedFile};
+
+        let mut index = make_empty_live_index();
+        assert_eq!(index.tier_counts(), (0, 0, 0));
+
+        index.add_skipped_file(SkippedFile {
+            path: "model.bin".into(),
+            size: 1000,
+            extension: Some("bin".into()),
+            decision: AdmissionDecision::skip(
+                AdmissionTier::MetadataOnly,
+                SkipReason::DenylistedExtension,
+            ),
+        });
+        index.add_skipped_file(SkippedFile {
+            path: "huge.dat".into(),
+            size: 200_000_000,
+            extension: Some("dat".into()),
+            decision: AdmissionDecision::skip(AdmissionTier::HardSkip, SkipReason::SizeCeiling),
+        });
+
+        assert_eq!(index.tier_counts(), (0, 1, 1));
     }
 }

@@ -454,23 +454,73 @@ impl AdmissionDecision {
     }
 }
 
+/// Metadata record for a file that was not fully indexed (Tier 2 or Tier 3).
+/// Stores the AdmissionDecision directly — no re-derivation downstream.
+#[derive(Debug, Clone)]
+pub struct SkippedFile {
+    pub path: String,
+    pub size: u64,
+    pub extension: Option<String>,
+    pub decision: AdmissionDecision,
+}
+
+impl SkippedFile {
+    pub fn tier(&self) -> AdmissionTier {
+        self.decision.tier
+    }
+    pub fn reason(&self) -> Option<SkipReason> {
+        self.decision.reason
+    }
+}
+
 pub const HARD_SKIP_BYTES: u64 = 100 * 1024 * 1024;
 pub const METADATA_ONLY_BYTES: u64 = 1 * 1024 * 1024;
 pub const BINARY_SNIFF_BYTES: usize = 8192;
 
 const DENYLISTED_EXTENSIONS: &[&str] = &[
     // ML models
-    "safetensors", "ckpt", "pt", "onnx", "gguf", "pth",
+    "safetensors",
+    "ckpt",
+    "pt",
+    "onnx",
+    "gguf",
+    "pth",
     // VM/disk images
-    "vmdk", "iso", "img", "qcow2",
+    "vmdk",
+    "iso",
+    "img",
+    "qcow2",
     // Archives
-    "tar", "gz", "zip", "7z", "rar", "bz2", "xz", "zst",
+    "tar",
+    "gz",
+    "zip",
+    "7z",
+    "rar",
+    "bz2",
+    "xz",
+    "zst",
     // Databases
-    "db", "sqlite", "sqlite3", "mdb",
+    "db",
+    "sqlite",
+    "sqlite3",
+    "mdb",
     // Media
-    "mp3", "mp4", "wav", "avi", "mov", "mkv",
-    "png", "jpg", "jpeg", "gif", "bmp", "ico",
-    "woff", "woff2", "ttf", "eot",
+    "mp3",
+    "mp4",
+    "wav",
+    "avi",
+    "mov",
+    "mkv",
+    "png",
+    "jpg",
+    "jpeg",
+    "gif",
+    "bmp",
+    "ico",
+    "woff",
+    "woff2",
+    "ttf",
+    "eot",
     // Binary
     "bin",
 ];
@@ -725,5 +775,19 @@ mod tests {
         assert!(!is_denylisted_extension("svg")); // SVG intentionally NOT denylisted
         assert!(!is_denylisted_extension("md"));
         assert!(!is_denylisted_extension("toml"));
+    }
+
+    #[test]
+    fn test_skipped_file_creation() {
+        let decision =
+            AdmissionDecision::skip(AdmissionTier::MetadataOnly, SkipReason::DenylistedExtension);
+        let sf = SkippedFile {
+            path: "model.safetensors".into(),
+            size: 4_200_000_000,
+            extension: Some("safetensors".into()),
+            decision,
+        };
+        assert_eq!(sf.tier(), AdmissionTier::MetadataOnly);
+        assert_eq!(sf.reason(), Some(SkipReason::DenylistedExtension));
     }
 }
