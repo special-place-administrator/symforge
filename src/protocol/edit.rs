@@ -2537,8 +2537,20 @@ mod tests {
         }
 
         // Make file 2 read-only so the write will fail.
+        // To trigger a write failure, index b.rs under a nonexistent directory
+        // path so atomic_write_file fails (NamedTempFile::new_in cannot create
+        // temp in a missing parent). File-level read-only is not enough because
+        // tempfile::persist uses rename which bypasses file permissions on Unix.
         let b_path = src.join("b.rs");
-        std::fs::set_permissions(&b_path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        {
+            let content = b"fn beta() { old }\n";
+            let result = crate::parsing::process_file("gone/b.rs", content, LanguageId::Rust);
+            let indexed =
+                crate::live_index::store::IndexedFile::from_parse_result(result, content.to_vec());
+            handle.update_file("gone/b.rs".to_string(), indexed);
+            // Remove the original src/b.rs from the index
+            handle.remove_file("src/b.rs");
+        }
 
         let edits = vec![
             SingleEdit {
@@ -2551,7 +2563,7 @@ mod tests {
                 },
             },
             SingleEdit {
-                path: "src/b.rs".to_string(),
+                path: "gone/b.rs".to_string(),
                 name: "beta".to_string(),
                 kind: None,
                 symbol_line: None,
@@ -2572,14 +2584,11 @@ mod tests {
 
         let result = execute_batch_edit(&handle, dir.path(), &edits, false);
 
-        // Restore permissions before any assertions that might panic.
-        std::fs::set_permissions(&b_path, std::fs::Permissions::from_mode(0o644)).unwrap();
-
         // Result must be an error reporting the partial failure.
         let err = result.unwrap_err();
         assert!(
-            err.contains("FAILED src/b.rs"),
-            "expected FAILED src/b.rs in: {err}"
+            err.contains("FAILED gone/b.rs"),
+            "expected FAILED gone/b.rs in: {err}"
         );
         assert!(
             err.contains("partial failure"),
@@ -2613,15 +2622,20 @@ mod tests {
         let src = dir.path().join("src");
         std::fs::create_dir_all(&src).unwrap();
 
-        // Three files all containing "OldName".
+        // Three files all containing "OldName". Put b.rs in a subdirectory
+        // so we can make that directory read-only (blocking temp file creation).
+        // File-level read-only is not enough — tempfile::persist uses rename
+        // which bypasses file permissions on Unix.
+        let sub = dir.path().join("src").join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
         std::fs::write(src.join("a.rs"), b"struct OldName;\n").unwrap();
-        std::fs::write(src.join("b.rs"), b"use crate::OldName;\n").unwrap();
+        std::fs::write(sub.join("b.rs"), b"use crate::OldName;\n").unwrap();
         std::fs::write(src.join("c.rs"), b"fn use_it(x: OldName) {}\n").unwrap();
 
         let handle = crate::live_index::LiveIndex::empty();
         for (path, content) in [
             ("src/a.rs", b"struct OldName;\n" as &[u8]),
-            ("src/b.rs", b"use crate::OldName;\n"),
+            ("src/sub/b.rs", b"use crate::OldName;\n"),
             ("src/c.rs", b"fn use_it(x: OldName) {}\n"),
         ] {
             let result = crate::parsing::process_file(path, content, LanguageId::Rust);
@@ -2629,9 +2643,9 @@ mod tests {
             handle.update_file(path.to_string(), indexed);
         }
 
-        // Make src/b.rs read-only so its write will fail mid-rename.
-        let b_path = src.join("b.rs");
-        std::fs::set_permissions(&b_path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        // Make the sub directory read-only so NamedTempFile::new_in() fails.
+        let b_path = sub.join("b.rs");
+        std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o555)).unwrap();
 
         let input = crate::protocol::edit::BatchRenameInput {
             path: "src/a.rs".to_string(),
@@ -2644,8 +2658,8 @@ mod tests {
 
         let result = execute_batch_rename(&handle, dir.path(), &input);
 
-        // Restore permissions before assertions.
-        std::fs::set_permissions(&b_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        // Restore directory permissions before assertions.
+        std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         // Must be an error.
         let err = result.unwrap_err();
