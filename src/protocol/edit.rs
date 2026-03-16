@@ -1545,6 +1545,13 @@ pub fn find_qualified_usages(identifier: &str, source: &str) -> Vec<QualifiedMat
         let mut col = 0usize; // byte index within line
 
         while col < line_bytes.len() {
+            // Skip byte positions inside multi-byte UTF-8 sequences.
+            // Identifiers and `::` are ASCII, so no match can start mid-character.
+            if !line.is_char_boundary(col) {
+                col += 1;
+                continue;
+            }
+
             // --- Update parse state at current col ---
 
             // Check for raw string start: r" or r#..."#
@@ -1582,13 +1589,17 @@ pub fn find_qualified_usages(identifier: &str, source: &str) -> Vec<QualifiedMat
                     }
                 }
                 // Inside raw string — check for identifier match (uncertain)
-                if col + id_len <= line_bytes.len() && &line[col..col + id_len] == identifier {
+                if col + id_len <= line_bytes.len()
+                    && line.is_char_boundary(col + id_len)
+                    && &line[col..col + id_len] == identifier
+                {
                     let preceded = col >= 2 && &line[col - 2..col] == "::";
                     let followed = col + id_len + 2 <= line.len()
+                        && line.is_char_boundary(col + id_len + 2)
                         && &line[col + id_len..col + id_len + 2] == "::";
                     if preceded || followed {
-                        let ctx_start = col.saturating_sub(20);
-                        let ctx_end = (col + id_len + 20).min(line.len());
+                        let ctx_start = line.floor_char_boundary(col.saturating_sub(20));
+                        let ctx_end = line.ceil_char_boundary((col + id_len + 20).min(line.len()));
                         results.push(QualifiedMatch {
                             offset: line_byte_offset + col,
                             line: line_num,
@@ -1613,12 +1624,22 @@ pub fn find_qualified_usages(identifier: &str, source: &str) -> Vec<QualifiedMat
                     let mut search_start = 0usize;
                     while let Some(pos) = rest[search_start..].find(identifier) {
                         let abs_col = col + search_start + pos;
-                        let preceded = abs_col >= 2 && &line[abs_col - 2..abs_col] == "::";
+                        // Guard against non-char-boundary slices from multi-byte UTF-8
+                        if !line.is_char_boundary(abs_col) {
+                            search_start += pos + 1;
+                            continue;
+                        }
+                        let preceded = abs_col >= 2
+                            && line.is_char_boundary(abs_col - 2)
+                            && &line[abs_col - 2..abs_col] == "::";
                         let followed = abs_col + id_len + 2 <= line.len()
+                            && line.is_char_boundary(abs_col + id_len)
+                            && line.is_char_boundary(abs_col + id_len + 2)
                             && &line[abs_col + id_len..abs_col + id_len + 2] == "::";
                         if preceded || followed {
-                            let ctx_start = abs_col.saturating_sub(20);
-                            let ctx_end = (abs_col + id_len + 20).min(line.len());
+                            let ctx_start = line.floor_char_boundary(abs_col.saturating_sub(20));
+                            let ctx_end =
+                                line.ceil_char_boundary((abs_col + id_len + 20).min(line.len()));
                             results.push(QualifiedMatch {
                                 offset: line_byte_offset + abs_col,
                                 line: line_num,
@@ -1651,13 +1672,17 @@ pub fn find_qualified_usages(identifier: &str, source: &str) -> Vec<QualifiedMat
                     continue;
                 }
                 // Still in block comment — check for identifier match (uncertain)
-                if col + id_len <= line_bytes.len() && &line[col..col + id_len] == identifier {
+                if col + id_len <= line_bytes.len()
+                    && line.is_char_boundary(col + id_len)
+                    && &line[col..col + id_len] == identifier
+                {
                     let prec2 = col >= 2 && &line[col - 2..col] == "::";
                     let fol2 = col + id_len + 2 <= line.len()
+                        && line.is_char_boundary(col + id_len + 2)
                         && &line[col + id_len..col + id_len + 2] == "::";
                     if prec2 || fol2 {
-                        let ctx_start = col.saturating_sub(20);
-                        let ctx_end = (col + id_len + 20).min(line.len());
+                        let ctx_start = line.floor_char_boundary(col.saturating_sub(20));
+                        let ctx_end = line.ceil_char_boundary((col + id_len + 20).min(line.len()));
                         results.push(QualifiedMatch {
                             offset: line_byte_offset + col,
                             line: line_num,
@@ -1679,14 +1704,24 @@ pub fn find_qualified_usages(identifier: &str, source: &str) -> Vec<QualifiedMat
                         col += 2; // skip escaped char
                         continue;
                     }
+                    // Skip non-char-boundary bytes inside string
+                    if !line.is_char_boundary(col) {
+                        col += 1;
+                        continue;
+                    }
                     // Check for identifier match inside string
-                    if col + id_len <= line_bytes.len() && &line[col..col + id_len] == identifier {
+                    if col + id_len <= line_bytes.len()
+                        && line.is_char_boundary(col + id_len)
+                        && &line[col..col + id_len] == identifier
+                    {
                         let prec2 = col >= 2 && &line[col - 2..col] == "::";
                         let fol2 = col + id_len + 2 <= line.len()
+                            && line.is_char_boundary(col + id_len + 2)
                             && &line[col + id_len..col + id_len + 2] == "::";
                         if prec2 || fol2 {
-                            let ctx_start = col.saturating_sub(20);
-                            let ctx_end = (col + id_len + 20).min(line.len());
+                            let ctx_start = line.floor_char_boundary(col.saturating_sub(20));
+                            let ctx_end =
+                                line.ceil_char_boundary((col + id_len + 20).min(line.len()));
                             results.push(QualifiedMatch {
                                 offset: line_byte_offset + col,
                                 line: line_num,
@@ -1702,13 +1737,17 @@ pub fn find_qualified_usages(identifier: &str, source: &str) -> Vec<QualifiedMat
             }
 
             // Normal code: check for identifier match
-            if col + id_len <= line_bytes.len() && &line[col..col + id_len] == identifier {
+            if col + id_len <= line_bytes.len()
+                && line.is_char_boundary(col + id_len)
+                && &line[col..col + id_len] == identifier
+            {
                 let prec2 = col >= 2 && &line[col - 2..col] == "::";
-                let fol2 =
-                    col + id_len + 2 <= line.len() && &line[col + id_len..col + id_len + 2] == "::";
+                let fol2 = col + id_len + 2 <= line.len()
+                    && line.is_char_boundary(col + id_len + 2)
+                    && &line[col + id_len..col + id_len + 2] == "::";
                 if prec2 || fol2 {
-                    let ctx_start = col.saturating_sub(20);
-                    let ctx_end = (col + id_len + 20).min(line.len());
+                    let ctx_start = line.floor_char_boundary(col.saturating_sub(20));
+                    let ctx_end = line.ceil_char_boundary((col + id_len + 20).min(line.len()));
                     results.push(QualifiedMatch {
                         offset: line_byte_offset + col,
                         line: line_num,
@@ -3156,6 +3195,52 @@ mod tests {
         let matches = find_qualified_usages("MyType", source);
         assert_eq!(matches.len(), 1);
         assert!(!matches[0].confident);
+    }
+
+    #[test]
+    fn test_find_qualified_usages_non_ascii_no_panic() {
+        // Source containing em dash (3-byte UTF-8: \xe2\x80\x94) — must not panic
+        let source = "/// Retry in a moment \u{2014} just wait\nfn foo() { bar::baz(); }\n";
+        let matches = find_qualified_usages("baz", source);
+        assert_eq!(matches.len(), 1);
+        assert!(matches[0].confident);
+    }
+
+    #[test]
+    fn test_find_qualified_usages_emoji_no_panic() {
+        let source = "/// \u{1F980} Rust crab\nfn main() { std::io::println(); }\n";
+        let matches = find_qualified_usages("io", source);
+        assert!(!matches.is_empty());
+    }
+
+    #[test]
+    fn test_find_qualified_usages_cjk_no_panic() {
+        // CJK characters are 3 bytes each
+        let source = "// \u{4F60}\u{597D}\u{4E16}\u{754C} hello::world\nlet x = foo::bar();\n";
+        let matches = find_qualified_usages("bar", source);
+        assert_eq!(matches.len(), 1);
+        assert!(matches[0].confident);
+        // Also check the comment match
+        let matches2 = find_qualified_usages("world", source);
+        assert_eq!(matches2.len(), 1);
+        assert!(!matches2[0].confident);
+    }
+
+    #[test]
+    fn test_find_qualified_usages_multibyte_in_string_literal() {
+        // Em dash inside a string literal with qualified path nearby
+        let source = "let s = \"retry \u{2014} now\"; foo::bar();";
+        let matches = find_qualified_usages("bar", source);
+        assert_eq!(matches.len(), 1);
+        assert!(matches[0].confident);
+    }
+
+    #[test]
+    fn test_find_qualified_usages_multibyte_in_block_comment() {
+        let source = "/* \u{2014} em dash */ foo::bar();";
+        let matches = find_qualified_usages("bar", source);
+        assert_eq!(matches.len(), 1);
+        assert!(matches[0].confident);
     }
 
     // -- atomic_write_file --
