@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.31.5](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.31.4...v0.31.5) (2026-03-16)
+
+
+### Bug Fixes
+
+* surface tool panics as immediate error responses instead of stalls ([31ae935](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/31ae935642876711383897ba3b779ea4c2dc7b52))
+
 ## [0.31.4](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.31.3...v0.31.4) (2026-03-16)
 
 
