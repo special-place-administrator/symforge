@@ -1217,7 +1217,8 @@ async fn call_tool_handler(
     // 512 threads), keeping async worker threads free for I/O, MCP transport,
     // and new request acceptance.
     let tool_name_owned = tool_name.clone();
-    state
+    let tool_name_for_panic = tool_name.clone();
+    match state
         .governor
         .execute(&tool_name, async move {
             let handle = tokio::runtime::Handle::current();
@@ -1228,8 +1229,24 @@ async fn call_tool_handler(
             .map_err(|join_err| anyhow::anyhow!("tool task panicked: {join_err}"))?
         })
         .await
-        .map_err(|gov_err| bad_request(gov_err.into()))?
-        .map_err(bad_request)
+    {
+        Ok(Ok(result)) => Ok(result),
+        Ok(Err(tool_err)) => {
+            // Tool returned an error — surface it as HTTP 200 so the MCP client
+            // gets the message immediately instead of entering reconnect/timeout.
+            Ok(format!("Error in {}: {}", tool_name_for_panic, tool_err))
+        }
+        Err(gov_err) => {
+            // Governor error (timeout, queue full, panic) — return as HTTP 200
+            // with a clear error prefix so the model knows to stop waiting.
+            let msg = format!(
+                "Error: tool '{}' failed — {}. The tool did not complete. Do not retry immediately.",
+                tool_name_for_panic, gov_err
+            );
+            tracing::error!(tool = %tool_name_for_panic, "tool execution failed: {gov_err}");
+            Ok(msg)
+        }
+    }
 }
 
 async fn sidecar_health_handler(
