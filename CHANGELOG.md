@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.31.2](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.31.1...v0.31.2) (2026-03-16)
+
+
+### Bug Fixes
+
+* pin Rust toolchain to 1.94.0 via rust-toolchain.toml ([fed0e20](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/fed0e20560de0356cb86bf5dc9319af2867e770c))
+
 ## [0.31.1](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.31.0...v0.31.1) (2026-03-16)
 
 
