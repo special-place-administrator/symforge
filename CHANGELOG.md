@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.31.1](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.31.0...v0.31.1) (2026-03-16)
+
+
+### Bug Fixes
+
+* daemon lifecycle hardening — stale lock detection, fast-fail proxy, cleanup (DL1-DL4) ([8350d7e](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/8350d7e3b5de2bb16d85d69a817ca459fb43e829))
+
 ## [0.31.0](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.30.8...v0.31.0) (2026-03-15)
 
 
