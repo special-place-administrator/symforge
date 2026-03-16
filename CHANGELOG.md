@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.31.3](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.31.2...v0.31.3) (2026-03-16)
+
+
+### Bug Fixes
+
+* pin CI/release workflows to Rust 1.94.0 matching rust-toolchain.toml ([41d23ab](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/41d23ab3fd83205773f9289cf95cd142fd2cb1b9))
+
 ## [0.31.2](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.31.1...v0.31.2) (2026-03-16)
 
 
