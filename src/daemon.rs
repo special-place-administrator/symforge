@@ -840,9 +840,7 @@ fn try_acquire_start_lock() -> anyhow::Result<Option<DaemonStartLock>> {
             // Daemon startup takes <5s normally, so a 30s-old lock is certainly stale.
             if let Ok(metadata) = std::fs::metadata(&path) {
                 if let Ok(modified) = metadata.modified() {
-                    if modified.elapsed().unwrap_or_default()
-                        > std::time::Duration::from_secs(30)
-                    {
+                    if modified.elapsed().unwrap_or_default() > std::time::Duration::from_secs(30) {
                         tracing::warn!("removing stale daemon start lock (age > 30s)");
                         let _ = std::fs::remove_file(&path);
                         // Retry creation — another process may grab it first.
@@ -2785,8 +2783,7 @@ mod tests {
 
         // Create a lock file and backdate it to 60 seconds ago.
         let file = std::fs::File::create(&lock_path).expect("create lock");
-        let old_time =
-            std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        let old_time = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
         let times = std::fs::FileTimes::new().set_modified(old_time);
         file.set_times(times).expect("set file times");
         drop(file);

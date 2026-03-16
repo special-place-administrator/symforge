@@ -88,8 +88,8 @@ pub(super) fn scan_doc_range(
                 let text_start = sibling.start_byte();
                 let text_end = sibling.end_byte();
                 if text_end <= source.len() {
-                    let text = std::str::from_utf8(&source.as_bytes()[text_start..text_end])
-                        .unwrap_or("");
+                    let text =
+                        std::str::from_utf8(&source.as_bytes()[text_start..text_end]).unwrap_or("");
                     let trimmed = text.trim_start();
                     if !prefixes.iter().any(|p| trimmed.starts_with(p)) {
                         break;
@@ -574,11 +574,17 @@ mod tests {
         let function = first_named_descendant(&root, "function_item");
         // Must not panic; a doc range should be returned.
         let range = scan_doc_range(&function, source, &RUST_DOC_SPEC);
-        assert!(range.is_some(), "expected doc range for non-ASCII Rust doc comment");
+        assert!(
+            range.is_some(),
+            "expected doc range for non-ASCII Rust doc comment"
+        );
         let (start, end) = range.unwrap();
         let doc_bytes = &source.as_bytes()[start as usize..end as usize];
         let doc_text = std::str::from_utf8(doc_bytes).expect("doc range should be valid UTF-8");
-        assert!(doc_text.contains("日本語"), "doc text should contain CJK chars");
+        assert!(
+            doc_text.contains("日本語"),
+            "doc text should contain CJK chars"
+        );
     }
 
     #[test]
@@ -589,7 +595,10 @@ mod tests {
         let root = tree.root_node();
         let function = first_named_descendant(&root, "function_item");
         let range = scan_doc_range(&function, source, &RUST_DOC_SPEC);
-        assert!(range.is_some(), "expected doc range for emoji Rust doc comment");
+        assert!(
+            range.is_some(),
+            "expected doc range for emoji Rust doc comment"
+        );
         let (start, end) = range.unwrap();
         let doc_bytes = &source.as_bytes()[start as usize..end as usize];
         let doc_text = std::str::from_utf8(doc_bytes).expect("doc range should be valid UTF-8");
