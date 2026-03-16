@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.31.4](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.31.3...v0.31.4) (2026-03-16)
+
+
+### Bug Fixes
+
+* prevent non-ASCII panic in find_qualified_usages (batch_rename crash) ([8555d0c](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/8555d0ce0b3ed39acf7d170c0878d4e94267a2ef))
+
 ## [0.31.3](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.31.2...v0.31.3) (2026-03-16)
 
 
