@@ -990,15 +990,8 @@ fn file_content_options_from_input(
         ));
     }
 
-    // Reject show_line_numbers / header for contextual reads (around_line, around_match).
-    // These flags are only supported for full-file or explicit-range (start_line/end_line) reads.
-    if (input.show_line_numbers.is_some() || input.header.is_some())
-        && (input.around_line.is_some() || input.around_match.is_some())
-    {
-        return Err(
-            "Invalid get_file_content request: `show_line_numbers` and `header` are only supported for full-file reads or explicit-range reads (`start_line`/`end_line`).".to_string(),
-        );
-    }
+    // show_line_numbers and header are now allowed with all read modes
+    // including around_line and around_match for better usability.
 
     if let Some(raw_around_match) = input.around_match.as_deref() {
         let around_match = raw_around_match.trim();
@@ -2047,11 +2040,10 @@ impl TokenizorServer {
         format::trace_symbol_result_view(&trace_view, &params.0.name, verbosity)
     }
 
-    /// Deep-dive a search_text match: given path + line number, shows the line in full symbol context
-    /// with callers and type deps. Use AFTER search_text to understand a specific hit.
-    /// NOT as a first-call tool (search first, then inspect).
+    /// Inspect a specific line in full symbol context: shows the enclosing symbol, parent chain,
+    /// and siblings. Works standalone with just path + line, or after search_text to deep-dive a match.
     #[tool(
-        description = "Deep-dive a search_text match: given path + line number, shows the line in full symbol context with callers and type deps. Use AFTER search_text to understand a specific hit. NOT as a first-call tool (search first, then inspect)."
+        description = "Inspect a specific line in full symbol context: enclosing symbol, parent chain (e.g. module → class → method), and sibling symbols. Works standalone with just path + line number, or after search_text to deep-dive a specific hit."
     )]
     pub(crate) async fn inspect_match(&self, params: Parameters<InspectMatchInput>) -> String {
         if let Some(result) = self.proxy_tool_call("inspect_match", &params.0).await {
@@ -2684,17 +2676,17 @@ impl TokenizorServer {
                     "key" | "section" => 1,
                     _ => 2, // "other" (selectors, etc.)
                 };
-                // Path penalty: doc, changelog, generated, planning files rank lower.
+                // Path penalty: doc, changelog, generated, planning files rank much lower.
                 let path_lower = path.to_ascii_lowercase();
                 let path_penalty: u64 = if path_lower.contains("changelog")
                     || path_lower.contains(".auto-claude")
                     || path_lower.contains(".planning/")
-                    || path_lower.ends_with(".md")
-                    || path_lower.contains("/docs/")
                 {
-                    1 // heavy penalty: score / 4 effectively
+                    1 // near-zero: changelogs/planning are almost never relevant
+                } else if path_lower.ends_with(".md") || path_lower.contains("/docs/") {
+                    2 // heavy penalty: docs only surface if they score very high
                 } else {
-                    4 // no penalty
+                    8 // no penalty (base multiplier for code files)
                 };
                 let score = (count as u64) * kind_weight * path_penalty;
                 ((name, kind, path), score)
@@ -2703,6 +2695,8 @@ impl TokenizorServer {
 
         let mut ranked = scored;
         ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.0.cmp(&b.0.0)));
+        // Filter out weak matches (score < 8 means single text-only hit in a doc file).
+        ranked.retain(|(_, score)| *score >= 8);
         ranked.truncate(limit);
         let symbol_hits: Vec<(String, String, String)> =
             ranked.into_iter().map(|(k, _)| k).collect();
@@ -3013,12 +3007,15 @@ impl TokenizorServer {
         };
         let old_bytes = (sym.byte_range.1 - sym.byte_range.0) as usize;
         // Splice at line start and apply indentation — same approach as insert tools.
+        // Extend past orphaned doc comments so they get replaced along with the symbol,
+        // preventing duplicate JSDoc/XML doc blocks.
         let effective = sym.effective_start() as usize;
-        let line_start = file.content[..effective]
+        let raw_line_start = file.content[..effective]
             .iter()
             .rposition(|&b| b == b'\n')
             .map(|p| p + 1)
-            .unwrap_or(0) as u32;
+            .unwrap_or(0);
+        let line_start = edit::extend_past_orphaned_docs(&file.content, raw_line_start, &sym) as u32;
         let indent = edit::detect_indentation(&file.content, sym.byte_range.0);
         let line_ending = edit::detect_line_ending(&file.content);
         let normalized = edit::normalize_line_endings(params.0.new_body.as_bytes(), line_ending);
@@ -5546,7 +5543,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_file_content_rejects_header_with_contextual_read() {
+    async fn test_get_file_content_allows_header_with_around_line() {
         let content = b"line 1\nline 2\nline 3";
         let (key, file) = make_file("src/lib.rs", content, vec![]);
         let server = make_server(make_live_index_ready(vec![(key, file)]));
@@ -5567,9 +5564,14 @@ mod tests {
                 header: Some(true),
             }))
             .await;
-        assert_eq!(
-            result,
-            "Invalid get_file_content request: `show_line_numbers` and `header` are only supported for full-file reads or explicit-range reads (`start_line`/`end_line`)."
+        // Should succeed (not reject) — header is now allowed with around_line.
+        assert!(
+            !result.starts_with("Invalid"),
+            "header + around_line should be allowed, got: {result}"
+        );
+        assert!(
+            result.contains("line 2"),
+            "should contain the around_line content, got: {result}"
         );
     }
 

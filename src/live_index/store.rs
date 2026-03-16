@@ -315,6 +315,18 @@ pub struct LiveIndex {
     pub(crate) skipped_files: Vec<SkippedFile>,
 }
 
+/// Lightweight snapshot of a symbol for pre-update diffing in `analyze_file_impact`.
+///
+/// Stored in [`SharedIndexHandle::pre_update_symbols`] so the impact tool can
+/// compare against the state *before* the watcher or edit tools re-indexed.
+#[derive(Clone, Debug)]
+pub struct PreUpdateSymbol {
+    pub name: String,
+    pub kind: String,
+    pub line_range: (u32, u32),
+    pub byte_range: (u32, u32),
+}
+
 /// Central shared handle for the live in-memory index.
 ///
 /// This is intentionally a thin compatibility shell over the current `RwLock<LiveIndex>` so the
@@ -329,6 +341,10 @@ pub struct SharedIndexHandle {
     /// per-file churn, ownership, and co-change data. Populated asynchronously
     /// after index load/reload completes.
     git_temporal: RwLock<Arc<super::git_temporal::GitTemporalIndex>>,
+    /// Pre-update symbol snapshots: saved automatically by `update_file` before
+    /// the index entry is replaced. Consumed (take) by `analyze_file_impact` to
+    /// compute accurate diffs even when the watcher re-indexes before the hook fires.
+    pre_update_symbols: RwLock<HashMap<String, Vec<PreUpdateSymbol>>>,
 }
 
 /// Write guard that republishes lightweight handle state when mutated data is released.
@@ -348,6 +364,7 @@ impl SharedIndexHandle {
             published_repo_outline: RwLock::new(published_repo_outline),
             next_generation: AtomicU64::new(1),
             git_temporal: RwLock::new(Arc::new(super::git_temporal::GitTemporalIndex::pending())),
+            pre_update_symbols: RwLock::new(HashMap::new()),
         }
     }
 
@@ -396,6 +413,23 @@ impl SharedIndexHandle {
 
     pub fn update_file(&self, path: String, file: IndexedFile) {
         let mut live = self.live.write().expect("lock poisoned");
+        // Capture pre-update symbols so analyze_file_impact can diff correctly
+        // even when the watcher re-indexes before the hook fires.
+        if let Some(existing) = live.get_file(&path) {
+            let snapshot: Vec<PreUpdateSymbol> = existing
+                .symbols
+                .iter()
+                .map(|s| PreUpdateSymbol {
+                    name: s.name.clone(),
+                    kind: s.kind.to_string(),
+                    line_range: s.line_range,
+                    byte_range: s.byte_range,
+                })
+                .collect();
+            if let Ok(mut cache) = self.pre_update_symbols.write() {
+                cache.insert(path.clone(), snapshot);
+            }
+        }
         live.update_file(path, file);
         self.publish_locked(&live);
     }
@@ -435,6 +469,18 @@ impl SharedIndexHandle {
     /// Read the current git temporal index (lock-free Arc clone).
     pub fn git_temporal(&self) -> Arc<super::git_temporal::GitTemporalIndex> {
         self.git_temporal.read().expect("lock poisoned").clone()
+    }
+
+    /// Take (consume) the pre-update symbol snapshot for a file, if any.
+    ///
+    /// Used by `analyze_file_impact` to get the symbols from *before* the last
+    /// `update_file` call — prevents the watcher race where the index is already
+    /// updated to the post-edit state before the hook fires.
+    pub fn take_pre_update_symbols(&self, path: &str) -> Option<Vec<PreUpdateSymbol>> {
+        self.pre_update_symbols
+            .write()
+            .ok()
+            .and_then(|mut cache| cache.remove(path))
     }
 
     /// Atomically replace the git temporal index with a new version.

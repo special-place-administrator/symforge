@@ -472,7 +472,12 @@ async fn handle_edit_impact(
 ) -> Result<String, StatusCode> {
     use crate::domain::LanguageId;
 
-    // Get pre-edit symbols from cache or from current index.
+    // Get pre-edit symbols: sidecar cache → index pre-update snapshot → current index.
+    //
+    // The index pre-update snapshot (`take_pre_update_symbols`) fixes a race
+    // where the watcher re-indexes the file before this hook fires, causing the
+    // current index to already contain post-edit symbols and yielding a false
+    // "no symbol changes detected" result.
     let pre_symbols: Vec<SymbolSnapshot> = {
         let cache = state
             .symbol_cache
@@ -481,30 +486,36 @@ async fn handle_edit_impact(
         if let Some(cached) = cache.get(path) {
             cached.clone()
         } else {
-            // No cache entry — populate from current index.
-            let guard = state
-                .index
-                .read()
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            if let Some(file) = guard.get_file(path) {
-                let file_bytes = file.byte_len;
-                let syms: Vec<SymbolSnapshot> = file
-                    .symbols
-                    .iter()
+            drop(cache);
+            // Try the index-level pre-update snapshot first (survives watcher race).
+            if let Some(pre) = state.index.take_pre_update_symbols(path) {
+                pre.into_iter()
                     .map(|s| SymbolSnapshot {
-                        name: s.name.clone(),
-                        kind: s.kind.to_string(),
+                        name: s.name,
+                        kind: s.kind,
                         line_range: s.line_range,
                         byte_range: s.byte_range,
                     })
-                    .collect();
-                drop(guard);
-                // Can't update cache here (have read lock on cache) — return empty pre
-                // so we get an "all Added" diff on first edit.
-                let _ = file_bytes; // suppress unused warning
-                syms
+                    .collect()
             } else {
-                Vec::new()
+                // No pre-update snapshot — populate from current index.
+                let guard = state
+                    .index
+                    .read()
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                if let Some(file) = guard.get_file(path) {
+                    file.symbols
+                        .iter()
+                        .map(|s| SymbolSnapshot {
+                            name: s.name.clone(),
+                            kind: s.kind.to_string(),
+                            line_range: s.line_range,
+                            byte_range: s.byte_range,
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                }
             }
         }
     };
@@ -889,6 +900,56 @@ pub(crate) fn repo_map_text(state: &SidecarState) -> Result<String, StatusCode> 
             "  {:<35}  {:>3} files   {:>5} symbols",
             dir, file_count, sym_count
         ));
+    }
+
+    // Key entry points: top-level structs/traits/interfaces/enums in src/ (depth 0, limit 10).
+    {
+        let guard = state
+            .index
+            .read()
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let mut entry_points: Vec<(String, String, String)> = Vec::new(); // (kind, name, path)
+        for (path, file) in guard.all_files() {
+            // Only source code, skip docs/tests/vendor
+            let pl = path.to_ascii_lowercase();
+            if pl.ends_with(".md")
+                || pl.contains("/docs/")
+                || pl.contains("vendor/")
+                || pl.contains("node_modules/")
+            {
+                continue;
+            }
+            for sym in &file.symbols {
+                if sym.depth == 0 {
+                    match sym.kind {
+                        crate::domain::SymbolKind::Struct
+                        | crate::domain::SymbolKind::Trait
+                        | crate::domain::SymbolKind::Interface
+                        | crate::domain::SymbolKind::Enum
+                        | crate::domain::SymbolKind::Class => {
+                            entry_points.push((
+                                sym.kind.to_string(),
+                                sym.name.clone(),
+                                path.to_string(),
+                            ));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        if !entry_points.is_empty() {
+            entry_points.sort_by(|a, b| a.2.cmp(&b.2).then(a.1.cmp(&b.1)));
+            entry_points.truncate(15);
+            lines.push(String::new());
+            lines.push("Key types:".to_string());
+            for (kind, name, path) in &entry_points {
+                lines.push(format!("  {kind} {name}  ({path})"));
+            }
+            if entry_points.len() == 15 {
+                lines.push("  ...".to_string());
+            }
+        }
     }
 
     // Apply budget (500 tokens = 2000 bytes).

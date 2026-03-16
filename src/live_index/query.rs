@@ -913,6 +913,9 @@ pub struct InspectMatchFoundView {
     pub line: u32,
     pub excerpt: String,
     pub enclosing: Option<EnclosingSymbolView>,
+    /// Full parent chain from outermost (depth 0) to the enclosing symbol,
+    /// e.g. [module, class, method] — gives full nesting context.
+    pub parent_chain: Vec<EnclosingSymbolView>,
     pub siblings: Vec<SiblingSymbolView>,
     /// Number of siblings omitted due to the sibling_limit cap.
     pub siblings_overflow: usize,
@@ -1135,6 +1138,50 @@ impl LiveIndex {
         let normalized_query = normalize_path_query(query);
         if normalized_query.is_empty() {
             return SearchFilesView::EmptyQuery;
+        }
+
+        // Detect glob patterns and handle them with globset.
+        let is_glob = normalized_query.contains('*')
+            || normalized_query.contains('?')
+            || normalized_query.contains('[');
+        if is_glob {
+            if let Ok(glob) = globset::GlobBuilder::new(&normalized_query)
+                .literal_separator(false)
+                .build()
+            {
+                let matcher = glob.compile_matcher();
+                let mut glob_hits: Vec<String> = self
+                    .all_files()
+                    .map(|(path, _)| path.as_str())
+                    .filter(|path| matcher.is_match(path))
+                    .map(|path| path.to_string())
+                    .collect();
+                glob_hits.sort();
+                let total_matches = glob_hits.len();
+                if total_matches == 0 {
+                    return SearchFilesView::NotFound {
+                        query: normalized_query,
+                    };
+                }
+                let overflow_count = total_matches.saturating_sub(limit);
+                glob_hits.truncate(limit);
+                let hits: Vec<SearchFilesHit> = glob_hits
+                    .into_iter()
+                    .map(|path| SearchFilesHit {
+                        tier: SearchFilesTier::StrongPath,
+                        path,
+                        coupling_score: None,
+                        shared_commits: None,
+                    })
+                    .collect();
+                return SearchFilesView::Found {
+                    query: normalized_query,
+                    total_matches,
+                    overflow_count,
+                    hits,
+                };
+            }
+            // If glob parsing fails, fall through to normal search.
         }
 
         let normalized_query_lower = normalized_query.to_ascii_lowercase();
@@ -1882,6 +1929,27 @@ impl LiveIndex {
             line_range: (s.line_range.0 + 1, s.line_range.1 + 1),
         });
 
+        // 2b. Build parent chain: all enclosing symbols sorted by depth
+        // (outermost first), e.g. [module, class, method].
+        let mut parent_chain: Vec<EnclosingSymbolView> = file
+            .symbols
+            .iter()
+            .filter(|s| s.line_range.0 <= target_line_0 && s.line_range.1 >= target_line_0)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|s| (s.depth, s))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>()
+            .into_values()
+            .map(|s| EnclosingSymbolView {
+                name: s.name.clone(),
+                kind_label: s.kind.to_string(),
+                line_range: (s.line_range.0 + 1, s.line_range.1 + 1),
+            })
+            .collect();
+        parent_chain.sort_by_key(|v| v.line_range.0);
+
         // 3. Find siblings (same depth as enclosing, or depth 0).
         let target_depth = enclosing_symbol.map(|s| s.depth).unwrap_or(0);
         let limit = sibling_limit.unwrap_or(10) as usize;
@@ -1912,6 +1980,7 @@ impl LiveIndex {
             line,
             excerpt,
             enclosing,
+            parent_chain,
             siblings,
             siblings_overflow,
         })

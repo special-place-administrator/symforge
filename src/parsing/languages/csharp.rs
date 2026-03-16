@@ -55,6 +55,12 @@ fn walk_node(
 }
 
 fn find_name(node: &Node, source: &str) -> Option<String> {
+    // Prefer the grammar's "name" field — this correctly skips return-type
+    // identifiers in method_declaration nodes (e.g. `async Task Foo(...)` where
+    // the first identifier child is `Task`, not `Foo`).
+    if let Some(name_node) = node.child_by_field_name("name") {
+        return Some(name_node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+    }
     find_first_named_child(node, source, &["identifier"])
 }
 
@@ -136,6 +142,35 @@ int Add(int a, int b) => a + b;
             symbols
         );
         assert_eq!(add.unwrap().kind, SymbolKind::Function);
+    }
+
+    #[test]
+    fn test_csharp_async_task_method_name() {
+        // Regression: `public async Task Foo(...)` was indexed as "Task" instead
+        // of "Foo" because find_name picked the first `identifier` child (the
+        // return type) rather than the grammar's "name" field.
+        let source = r#"
+public class Svc {
+    public async Task FlushBufferAsync(int x) { }
+    public async Task<string> SearchAsync(string q) { return q; }
+    public async Task DoWorkAsync() { }
+    public void Sync() { }
+    public async void FireAndForget() { }
+}
+"#;
+        let symbols = parse_csharp(source);
+        let methods: Vec<&SymbolRecord> = symbols
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Method)
+            .collect();
+
+        let names: Vec<&str> = methods.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"FlushBufferAsync"), "async Task method: got {:?}", names);
+        assert!(names.contains(&"SearchAsync"), "async Task<T> method: got {:?}", names);
+        assert!(names.contains(&"DoWorkAsync"), "async Task no-args method: got {:?}", names);
+        assert!(names.contains(&"Sync"), "void method: got {:?}", names);
+        assert!(names.contains(&"FireAndForget"), "async void method: got {:?}", names);
+        assert!(!names.contains(&"Task"), "should NOT index 'Task' as a method name: got {:?}", names);
     }
 
     #[test]

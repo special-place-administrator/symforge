@@ -205,7 +205,19 @@ pub(crate) fn resolve_or_error(
         SymbolSelectorMatch::Selected(idx, sym) => Ok((idx, sym.clone())),
         SymbolSelectorMatch::NotFound => {
             let label = render_symbol_selector(name, kind, line);
-            Err(format!("Symbol not found: {label}"))
+            // Surface parse status so users know WHY symbols are missing.
+            let status_hint = match &file.parse_status {
+                crate::live_index::store::ParseStatus::Failed { error } => {
+                    format!(
+                        " (file failed to parse: {error} — symbol tools unavailable for this file)"
+                    )
+                }
+                crate::live_index::store::ParseStatus::PartialParse { warning } => {
+                    format!(" (file partially parsed with errors: {warning} — some symbols may be missing)")
+                }
+                _ => String::new(),
+            };
+            Err(format!("Symbol not found: {label}{status_hint}"))
         }
         SymbolSelectorMatch::Ambiguous(candidate_lines) => {
             let candidates = candidate_lines
@@ -348,65 +360,68 @@ pub(crate) fn build_insert_after(
 
 /// Build file content with the symbol removed, including leading whitespace and trailing newlines.
 /// Collapses runs of 3+ consecutive blank lines down to 1 after deletion.
+/// Scan upward from `line_start` to include orphaned doc comments when
+/// `doc_byte_range` is `None`. Returns the (possibly earlier) byte offset
+/// that includes the orphaned comments. Used by `build_delete` and
+/// `replace_symbol_body` to handle blank-line-separated doc comments.
+pub(crate) fn extend_past_orphaned_docs(
+    file_content: &[u8],
+    line_start: usize,
+    sym: &SymbolRecord,
+) -> usize {
+    if sym.doc_byte_range.is_some() {
+        return line_start;
+    }
+    let above = &file_content[..line_start];
+    let lines: Vec<&[u8]> = above.split(|&b| b == b'\n').collect();
+    let mut i = lines.len();
+    // Skip trailing empty element from split
+    if i > 0 && lines[i - 1].is_empty() {
+        i -= 1;
+    }
+    // Skip exactly one blank line
+    if i > 0 && lines[i - 1].iter().all(|b| b.is_ascii_whitespace()) {
+        i -= 1;
+        // Collect consecutive comment lines above the blank line
+        let mut found_comments = false;
+        while i > 0 {
+            let line_text = std::str::from_utf8(lines[i - 1]).unwrap_or("");
+            let trimmed = line_text.trim_start();
+            if trimmed.starts_with("///")
+                || trimmed.starts_with("//!")
+                || trimmed.starts_with("/**")
+                || trimmed.starts_with("* ")
+                || trimmed == "*/"
+                || trimmed.starts_with("# ")
+                || trimmed == "#"
+            {
+                found_comments = true;
+                i -= 1;
+            } else {
+                break;
+            }
+        }
+        if found_comments {
+            return lines[..i].iter().map(|l| l.len() + 1).sum();
+        }
+    }
+    line_start
+}
+
 pub(crate) fn build_delete(
     file_content: &[u8],
     sym: &SymbolRecord,
     line_ending: LineEnding,
 ) -> Vec<u8> {
-    // Extend to start of line (include leading whitespace).
+    // Extend to start of line (include leading whitespace and orphaned doc comments).
     let start = {
         let s = sym.effective_start() as usize;
-        let mut line_start = file_content[..s]
+        let line_start = file_content[..s]
             .iter()
             .rposition(|&b| b == b'\n')
             .map(|p| p + 1)
             .unwrap_or(0);
-
-        // If doc_byte_range is None (no attached doc comment), scan upward
-        // past a single blank line to find orphaned doc comments. This handles
-        // the case where a blank line separates a comment from its symbol,
-        // preventing scan_doc_range from attaching it.
-        if sym.doc_byte_range.is_none() {
-            // Split content above into lines and scan from bottom up.
-            let above = &file_content[..line_start];
-            let lines: Vec<&[u8]> = above.split(|&b| b == b'\n').collect();
-            // lines has a trailing empty element if above ends with \n.
-            // Walk from the end: skip empty/whitespace lines (blank lines),
-            // then collect consecutive comment lines.
-            let mut i = lines.len();
-            // Skip trailing empty element from split
-            if i > 0 && lines[i - 1].is_empty() {
-                i -= 1;
-            }
-            // Skip exactly one blank line
-            if i > 0 && lines[i - 1].iter().all(|b| b.is_ascii_whitespace()) {
-                i -= 1;
-                // Now collect consecutive comment lines above the blank line
-                let mut found_comments = false;
-                while i > 0 {
-                    let line_text = std::str::from_utf8(lines[i - 1]).unwrap_or("");
-                    let trimmed = line_text.trim_start();
-                    if trimmed.starts_with("///")
-                        || trimmed.starts_with("//!")
-                        || trimmed.starts_with("/**")
-                        || trimmed.starts_with("# ")
-                        || trimmed == "#"
-                    {
-                        found_comments = true;
-                        i -= 1;
-                    } else {
-                        break;
-                    }
-                }
-                if found_comments {
-                    // Compute byte offset: sum of lengths of lines 0..i + newlines
-                    let new_start: usize = lines[..i].iter().map(|l| l.len() + 1).sum();
-                    line_start = new_start;
-                }
-            }
-        }
-
-        line_start as u32
+        extend_past_orphaned_docs(file_content, line_start, sym) as u32
     };
     // Extend past trailing newlines (consume up to one blank line).
     // CRLF-aware: on CRLF files, a line ending is \r\n not just \n.

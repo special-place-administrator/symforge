@@ -885,24 +885,22 @@ pub fn repo_outline_view(view: &RepoOutlineView, project_name: &str) -> String {
         view.total_files, view.total_symbols
     ));
 
-    let labels = repo_outline_display_labels(&view.files);
-    let label_width = labels
-        .values()
-        .map(|label| label.len())
+    // Always show full relative paths for orientation (not just disambiguated basenames).
+    let path_width = view
+        .files
+        .iter()
+        .map(|f| f.relative_path.len())
         .max()
         .unwrap_or(20)
-        .clamp(20, 32);
+        .clamp(20, 50);
 
     for file in &view.files {
-        let label = labels
-            .get(&file.relative_path)
-            .expect("repo outline label should exist");
         lines.push(format!(
             "  {:<width$} {:<12} {} symbols",
-            label,
+            file.relative_path,
             file.language.to_string(),
             file.symbol_count,
-            width = label_width
+            width = path_width
         ));
     }
 
@@ -1692,8 +1690,12 @@ fn not_found_symbol_names(relative_path: &str, symbol_names: &[String], name: &s
     }
 
     // Rank by fuzzy distance and take top 5.
+    // Filter out very short names (1-2 chars like "i", "d") that are usually
+    // loop variables and produce unhelpful suggestions.
+    let min_name_len = 2.min(name.len());
     let mut scored: Vec<(&String, usize)> = symbol_names
         .iter()
+        .filter(|s| s.len() >= min_name_len)
         .map(|s| (s, fuzzy_distance(name, s)))
         .collect();
     scored.sort_by_key(|(_, d)| *d);
@@ -2317,14 +2319,25 @@ pub fn inspect_match_result_view(view: &InspectMatchView) -> String {
             output.push_str(&found.excerpt);
             output.push('\n');
 
-            // 2. Enclosing symbol
+            // 2. Parent chain (shows full nesting context when deeper than 1 level)
+            if found.parent_chain.len() > 1 {
+                output.push_str("\nScope: ");
+                let chain: Vec<String> = found
+                    .parent_chain
+                    .iter()
+                    .map(|p| format!("{} {}", p.kind_label, p.name))
+                    .collect();
+                output.push_str(&chain.join(" → "));
+            }
+
+            // 3. Enclosing symbol (deepest)
             if let Some(enclosing) = &found.enclosing {
                 output.push_str(&format_enclosing(enclosing));
             } else {
                 output.push_str("\n(No enclosing symbol)");
             }
 
-            // 3. Siblings
+            // 4. Siblings
             if !found.siblings.is_empty() || found.siblings_overflow > 0 {
                 output.push_str(&format_siblings(&found.siblings, found.siblings_overflow));
             }
