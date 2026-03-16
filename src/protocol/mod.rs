@@ -153,7 +153,7 @@ impl TokenizorServer {
         {
             let client = daemon_lock.read().await;
             match tokio::time::timeout(
-                std::time::Duration::from_secs(30),
+                std::time::Duration::from_secs(10),
                 client.call_tool_value(tool_name, value.clone()),
             )
             .await
@@ -168,7 +168,7 @@ impl TokenizorServer {
                 Err(_elapsed) => {
                     tracing::warn!(
                         tool = tool_name,
-                        "daemon proxy call timed out after 30s, attempting reconnect"
+                        "daemon proxy call timed out after 10s, attempting reconnect"
                     );
                 }
             }
