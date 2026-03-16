@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.32.1](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.32.0...v0.32.1) (2026-03-16)
+
+
+### Bug Fixes
+
+* update rollback tests for tempfile-based atomic writes ([548c2bb](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/548c2bbede27be2a233fe35a2d7f6b8aa0aee45b))
+
 ## [0.32.0](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.31.5...v0.32.0) (2026-03-16)
 
 
