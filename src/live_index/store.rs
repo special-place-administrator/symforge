@@ -46,6 +46,10 @@ pub struct IndexedFile {
     pub references: Vec<ReferenceRecord>,
     /// Import alias map for this file: alias -> original name.
     pub alias_map: HashMap<String, String>,
+    /// Unix timestamp (seconds) of the file's mtime when it was last indexed.
+    /// Used by the freshness guard to detect files that changed on disk after indexing.
+    /// Zero means mtime was not recorded (indexed before this field was added).
+    pub mtime_secs: u64,
 }
 
 /// Identifies a single reference within a specific file.
@@ -118,7 +122,15 @@ impl IndexedFile {
             content_hash,
             references,
             alias_map,
+            mtime_secs: 0,
         }
+    }
+
+    /// Set the mtime recorded at index time. Call after `from_parse_result` for
+    /// callers that have the file metadata available.
+    pub fn with_mtime(mut self, mtime_secs: u64) -> Self {
+        self.mtime_secs = mtime_secs;
+        self
     }
 }
 
@@ -654,6 +666,7 @@ impl LiveIndex {
                 language: crate::domain::LanguageId,
                 classification: crate::domain::FileClassification,
                 bytes: Vec<u8>,
+                mtime_secs: u64,
             },
             Skip(SkippedFile),
         }
@@ -724,6 +737,12 @@ impl LiveIndex {
                         return None;
                     }
                 };
+                let mtime_secs = std::fs::metadata(&entry.absolute_path)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
 
                 let decision_post =
                     classify_admission(&entry.absolute_path, entry.file_size, Some(&bytes));
@@ -748,6 +767,7 @@ impl LiveIndex {
                         language,
                         classification: entry.classification,
                         bytes,
+                        mtime_secs,
                     }),
                 }
             })
@@ -760,6 +780,7 @@ impl LiveIndex {
             crate::domain::LanguageId,
             crate::domain::FileClassification,
             Vec<u8>,
+            u64, // mtime_secs
         )> = Vec::new();
 
         for outcome in outcomes {
@@ -770,8 +791,9 @@ impl LiveIndex {
                     language,
                     classification,
                     bytes,
+                    mtime_secs,
                 } => {
-                    to_parse.push((relative_path, language, classification, bytes));
+                    to_parse.push((relative_path, language, classification, bytes, mtime_secs));
                 }
             }
         }
@@ -785,14 +807,15 @@ impl LiveIndex {
         // 4. Parse all admitted files in parallel via Rayon.
         let mut parse_results: Vec<(String, IndexedFile)> = to_parse
             .par_iter()
-            .map(|(relative_path, language, classification, bytes)| {
+            .map(|(relative_path, language, classification, bytes, mtime_secs)| {
                 let result = parsing::process_file_with_classification(
                     relative_path,
                     bytes,
                     language.clone(),
                     *classification,
                 );
-                let indexed = IndexedFile::from_parse_result(result, bytes.clone());
+                let indexed =
+                    IndexedFile::from_parse_result(result, bytes.clone()).with_mtime(*mtime_secs);
                 (relative_path.clone(), indexed)
             })
             .collect();
@@ -944,13 +967,21 @@ impl LiveIndex {
                     }
                 };
 
+                let mtime_secs = std::fs::metadata(&df.absolute_path)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+
                 let result = parsing::process_file_with_classification(
                     &df.relative_path,
                     &bytes,
                     df.language.clone(),
                     df.classification,
                 );
-                let indexed = IndexedFile::from_parse_result(result, bytes);
+                let indexed =
+                    IndexedFile::from_parse_result(result, bytes).with_mtime(mtime_secs);
                 Some((df.relative_path.clone(), indexed))
             })
             .collect();

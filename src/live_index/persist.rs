@@ -181,6 +181,7 @@ pub fn snapshot_to_live_index(snapshot: IndexSnapshot) -> LiveIndex {
             content_hash: snap_file.content_hash,
             references: snap_file.references,
             alias_map: snap_file.alias_map,
+            mtime_secs: 0, // snapshot predates mtime tracking; freshness guard will re-check
         };
         files.insert(path, Arc::new(indexed_file));
     }

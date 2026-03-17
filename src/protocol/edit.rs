@@ -185,8 +185,14 @@ pub(crate) fn reindex_after_write(
         abs_path.display()
     );
 
+    let mtime_secs = std::fs::metadata(abs_path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     let result = crate::parsing::process_file(relative_path, &on_disk, language);
-    let indexed = IndexedFile::from_parse_result(result, on_disk);
+    let indexed = IndexedFile::from_parse_result(result, on_disk).with_mtime(mtime_secs);
     index.update_file(relative_path.to_string(), indexed);
 }
 

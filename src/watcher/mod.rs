@@ -35,6 +35,14 @@ pub struct WatcherInfo {
     pub events_processed: u64,
     pub last_event_at: Option<SystemTime>,
     pub debounce_window_ms: u64,
+    /// Number of watcher buffer overflow events detected.
+    pub overflow_count: u64,
+    /// Wall-clock time of the most recent overflow event.
+    pub last_overflow_at: Option<SystemTime>,
+    /// Cumulative count of stale files found and re-indexed by reconciliation sweeps.
+    pub stale_files_found: u64,
+    /// Wall-clock time of the most recent reconciliation sweep.
+    pub last_reconcile_at: Option<SystemTime>,
 }
 
 impl Default for WatcherInfo {
@@ -44,6 +52,10 @@ impl Default for WatcherInfo {
             events_processed: 0,
             last_event_at: None,
             debounce_window_ms: 200,
+            overflow_count: 0,
+            last_overflow_at: None,
+            stale_files_found: 0,
+            last_reconcile_at: None,
         }
     }
 }
@@ -206,7 +218,7 @@ pub(crate) fn maybe_reindex(
     shared: &SharedIndex,
     language: LanguageId,
 ) -> ReindexResult {
-    // 1. Read file bytes
+    // 1. Read file bytes and mtime
     let bytes = match std::fs::read(abs_path) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -220,6 +232,12 @@ pub(crate) fn maybe_reindex(
             return ReindexResult::ReadError(e.to_string());
         }
     };
+    let mtime_secs = std::fs::metadata(abs_path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
 
     // 2. Compute hash and check against existing entry (read lock, dropped before parse)
     let new_hash = hash::digest_hex(&bytes);
@@ -241,13 +259,79 @@ pub(crate) fn maybe_reindex(
         language,
         FileClassification::for_code_path(relative_path),
     );
-    let indexed = IndexedFile::from_parse_result(result, bytes);
+    let indexed = IndexedFile::from_parse_result(result, bytes).with_mtime(mtime_secs);
 
     // 4. Acquire write lock and update
     shared.update_file(relative_path.to_string(), indexed);
 
     debug!("watcher: re-indexed {relative_path}");
     ReindexResult::Reindexed
+}
+
+/// Mtime-based freshness check for a single file.
+///
+/// Compares the file's current mtime on disk against the value stored in the
+/// index. If they differ (or the file is not yet indexed), re-indexes it
+/// immediately before the caller proceeds.
+///
+/// Returns `true` if the file was stale and was re-indexed, `false` if it was
+/// already up to date or could not be checked (e.g. unsupported language).
+pub(crate) fn freshen_file_if_stale(
+    relative_path: &str,
+    abs_path: &Path,
+    shared: &SharedIndex,
+) -> bool {
+    // 1. Stat the file on disk
+    let disk_mtime = std::fs::metadata(abs_path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    // 2. Compare against indexed mtime (read lock, released immediately)
+    let indexed_mtime = {
+        let index = shared.read();
+        index.get_file(relative_path).map(|f| f.mtime_secs).unwrap_or(u64::MAX)
+    };
+
+    if disk_mtime != 0 && disk_mtime == indexed_mtime {
+        return false; // already fresh
+    }
+
+    // 3. Stale — re-index
+    let language = match supported_language(abs_path) {
+        Some(l) => l,
+        None => return false,
+    };
+
+    debug!("freshness guard: stale file detected, re-indexing {relative_path}");
+    maybe_reindex(relative_path, abs_path, shared, language);
+    true
+}
+
+/// Walk all indexed files and re-index any whose on-disk mtime differs from
+/// the stored value. Returns the number of stale files re-indexed.
+///
+/// Called on watcher overflow and by the periodic reconciliation timer.
+pub(crate) fn reconcile_stale_files(repo_root: &Path, shared: &SharedIndex) -> usize {
+    let paths: Vec<String> = {
+        let index = shared.read();
+        index.all_files().map(|(p, _)| p.clone()).collect()
+    };
+
+    let mut stale_count = 0usize;
+    for relative_path in &paths {
+        let abs_path = repo_root.join(relative_path);
+        if freshen_file_if_stale(relative_path, &abs_path, shared) {
+            stale_count += 1;
+        }
+    }
+
+    if stale_count > 0 {
+        warn!("reconciliation found and re-indexed {stale_count} stale file(s)");
+    }
+    stale_count
 }
 
 // ---------------------------------------------------------------------------
@@ -407,7 +491,31 @@ pub async fn run_watcher(
                 // Poll timeout: yield to tokio between checks to avoid blocking the executor.
                 const RECV_TIMEOUT_MS: u64 = 50;
 
+                // Reconciliation interval from env (default 30s, 0 to disable).
+                let reconcile_interval_secs: u64 = std::env::var("SYMFORGE_RECONCILE_INTERVAL")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(30);
+                let mut last_reconcile = Instant::now();
+
                 loop {
+                    // Periodic reconciliation sweep (belt-and-suspenders against missed events).
+                    if reconcile_interval_secs > 0
+                        && last_reconcile.elapsed()
+                            >= Duration::from_secs(reconcile_interval_secs)
+                    {
+                        let shared_clone = shared.clone();
+                        let root_clone = repo_root.clone();
+                        let watcher_info_clone = watcher_info.clone();
+                        tokio::task::spawn_blocking(move || {
+                            let stale = reconcile_stale_files(&root_clone, &shared_clone);
+                            let mut info = watcher_info_clone.lock().unwrap();
+                            info.stale_files_found += stale as u64;
+                            info.last_reconcile_at = Some(SystemTime::now());
+                        });
+                        last_reconcile = Instant::now();
+                    }
+
                     match handle
                         .event_rx
                         .recv_timeout(Duration::from_millis(RECV_TIMEOUT_MS))
@@ -440,8 +548,35 @@ pub async fn run_watcher(
                             }
                         }
                         Ok(Err(errors)) => {
+                            let mut overflow_detected = false;
                             for err in &errors {
                                 warn!("watcher: notify error: {err}");
+                                // Detect watcher buffer overflow / rescan events.
+                                if matches!(
+                                    err.kind,
+                                    notify::ErrorKind::Io(_)
+                                        | notify::ErrorKind::Generic(_)
+                                        | notify::ErrorKind::MaxFilesWatch
+                                ) {
+                                    overflow_detected = true;
+                                }
+                            }
+                            if overflow_detected {
+                                warn!(
+                                    "watcher: buffer overflow detected — running full reconciliation"
+                                );
+                                let shared_clone = shared.clone();
+                                let root_clone = repo_root.clone();
+                                let watcher_info_clone = watcher_info.clone();
+                                tokio::task::spawn_blocking(move || {
+                                    let stale =
+                                        reconcile_stale_files(&root_clone, &shared_clone);
+                                    let mut info = watcher_info_clone.lock().unwrap();
+                                    info.overflow_count += 1;
+                                    info.last_overflow_at = Some(SystemTime::now());
+                                    info.stale_files_found += stale as u64;
+                                    info.last_reconcile_at = Some(SystemTime::now());
+                                });
                             }
                             session_errors += errors.len() as u32;
                             if session_errors >= MAX_SESSION_ERRORS {
