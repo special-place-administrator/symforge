@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.32.3](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.32.2...v0.32.3) (2026-03-17)
+
+
+### Bug Fixes
+
+* complete parking_lot::RwLock migration across live_index and protocol ([c48d865](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/c48d865c2e9c717b89da9d446a51f326af5d3052))
+
 ## [0.32.2](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.32.1...v0.32.2) (2026-03-16)
 
 
