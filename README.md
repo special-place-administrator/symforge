@@ -1,6 +1,4 @@
-<p align="center">
-  <img src="./symforge-banner.png" alt="SymForge" width="100%">
-</p>
+![SymForge](./symforge-banner.png)
 
 ```bash
 npm install -g tokenizor-mcp
