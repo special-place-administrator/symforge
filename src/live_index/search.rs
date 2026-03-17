@@ -432,7 +432,7 @@ impl SymbolSearchOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TextSearchOptions {
     pub path_scope: PathScope,
     pub search_scope: SearchScope,
@@ -446,6 +446,10 @@ pub struct TextSearchOptions {
     pub case_sensitive: Option<bool>,
     pub whole_word: bool,
     pub ranked: bool,
+    /// Optional pre-computed churn scores keyed by relative file path.
+    /// When `Some`, the ranking code uses these instead of the default `0.0`.
+    /// Populated by the protocol handler from `GitTemporalIndex` when available.
+    pub churn_scores: Option<HashMap<String, f32>>,
 }
 
 impl Default for TextSearchOptions {
@@ -463,6 +467,7 @@ impl Default for TextSearchOptions {
             case_sensitive: None,
             whole_word: false,
             ranked: false,
+            churn_scores: None,
         }
     }
 }
@@ -486,6 +491,7 @@ impl TextSearchOptions {
             case_sensitive: None,
             whole_word: false,
             ranked: false,
+            churn_scores: None,
         }
     }
 }
@@ -918,6 +924,7 @@ pub fn search_text_with_options(
             noise_policy: options.noise_policy,
             context: options.context,
             ranked: options.ranked,
+            churn_scores: options.churn_scores.clone(),
         };
         &effective_options
     } else {
@@ -1211,11 +1218,14 @@ where
     // Apply semantic re-ranking when requested.
     if options.ranked {
         let match_count_max = files.iter().map(|f| f.matches.len()).max().unwrap_or(1);
+        let churn = options.churn_scores.as_ref();
         files.sort_by(|a, b| {
+            let churn_a = churn.and_then(|m| m.get(&a.path).copied()).unwrap_or(0.0);
+            let churn_b = churn.and_then(|m| m.get(&b.path).copied()).unwrap_or(0.0);
             let score_a =
-                compute_importance_score(a, match_count_max, &index.reverse_index, 0.0);
+                compute_importance_score(a, match_count_max, &index.reverse_index, churn_a);
             let score_b =
-                compute_importance_score(b, match_count_max, &index.reverse_index, 0.0);
+                compute_importance_score(b, match_count_max, &index.reverse_index, churn_b);
             score_b
                 .partial_cmp(&score_a)
                 .unwrap_or(std::cmp::Ordering::Equal)
@@ -1658,6 +1668,7 @@ mod tests {
             case_sensitive: None,
             whole_word: false,
             ranked: false,
+            churn_scores: None,
         };
 
         let result = search_text_with_options(&index, Some("needle"), None, false, &options)
@@ -1696,6 +1707,7 @@ mod tests {
             case_sensitive: None,
             whole_word: false,
             ranked: false,
+            churn_scores: None,
         };
 
         let result = search_text_with_options(&index, Some("needle"), None, false, &options)

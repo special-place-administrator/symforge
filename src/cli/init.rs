@@ -215,6 +215,14 @@ const TOKENIZOR_TOOL_NAMES: &[&str] = &[
     "mcp__tokenizor__what_changed",
     "mcp__tokenizor__get_co_changes",
     "mcp__tokenizor__diff_symbols",
+    "mcp__tokenizor__explore",
+    "mcp__tokenizor__replace_symbol_body",
+    "mcp__tokenizor__edit_within_symbol",
+    "mcp__tokenizor__insert_symbol",
+    "mcp__tokenizor__delete_symbol",
+    "mcp__tokenizor__batch_edit",
+    "mcp__tokenizor__batch_insert",
+    "mcp__tokenizor__batch_rename",
 ];
 
 /// Tool names allowed by default for the Kilo Code VS Code extension.
@@ -233,6 +241,13 @@ const KILO_ALWAYS_ALLOW: &[&str] = &[
     "find_references",
     "explore",
     "get_file_outline",
+    "replace_symbol_body",
+    "edit_within_symbol",
+    "insert_symbol",
+    "delete_symbol",
+    "batch_edit",
+    "batch_insert",
+    "batch_rename",
 ];
 
 fn merge_allowed_tools(settings: &mut Value) {
@@ -633,19 +648,108 @@ fn upsert_markdown_block(existing: &str, guidance_block: &str) -> String {
 
 fn claude_guidance_block() -> String {
     format!(
-        "{TOKENIZOR_GUIDANCE_START}\n## Tokenizor MCP\n- Prefer the Tokenizor MCP for codebase navigation when the `tokenizor` server is connected.\n- Start with `get_repo_map`, `get_repo_outline`, `get_file_context`, or `get_symbol_context` before broad raw file scans.\n- Use `analyze_file_impact` after edits and `what_changed` when resuming work.\n- Use Tokenizor MCP slash commands and `tokenizor://...` resources when Claude surfaces them.\n{TOKENIZOR_GUIDANCE_END}"
+        "{TOKENIZOR_GUIDANCE_START}\n\
+## Tokenizor MCP — Code Intelligence\n\
+\n\
+Tokenizor MCP is installed and active. It provides indexed code search, symbol extraction, and structural analysis that is faster and more token-efficient than raw file operations.\n\
+\n\
+### Decision Rules\n\
+\n\
+1. **Before reading a file**, call `get_file_context` — it returns the file's symbol outline, imports, and references, saving 70-95% of tokens vs reading raw source. Only read the full file if you need exact surrounding context that the outline doesn't provide.\n\
+\n\
+2. **Before grepping**, call `search_text` — it returns matches with enclosing symbol context and file structure awareness. Use `group_by='symbol'` to deduplicate and `follow_refs=true` to inline callers.\n\
+\n\
+3. **To find a function/class/type**, call `search_symbols` — it searches indexed symbol names across the entire repo in milliseconds.\n\
+\n\
+4. **To understand a symbol's source**, call `get_symbol` — it returns the full source of a specific function, struct, class, etc. with doc comments.\n\
+\n\
+5. **To get a project overview**, call `get_repo_map` — it returns a structured outline of the entire repository with file counts, languages, and symbol summaries.\n\
+\n\
+6. **To trace call relationships**, call `find_references` — it shows callers and callees without scanning files. Use `get_symbol_context` for comprehensive usage analysis.\n\
+\n\
+7. **To check repo health**, call `health` — it shows index status, file counts, and watcher state.\n\
+\n\
+8. **After editing a file**, call `analyze_file_impact` — it re-indexes the file and reports affected dependents.\n\
+\n\
+9. **When resuming work**, call `what_changed` — it shows uncommitted changes so you can pick up where you left off.\n\
+\n\
+### When to use raw file reads instead\n\
+- Reading non-code files (docs, configs) where exact wording matters\n\
+- When you need the full file content including whitespace and formatting\n\
+- When Tokenizor tools return an error or the file isn't indexed\n\
+{TOKENIZOR_GUIDANCE_END}"
     )
 }
 
 fn codex_guidance_block() -> String {
     format!(
-        "{TOKENIZOR_GUIDANCE_START}\n## Tokenizor MCP\n- Prefer the Tokenizor MCP for codebase navigation when the `tokenizor` server is connected.\n- Start with `get_repo_map`, `get_repo_outline`, `get_file_context`, or `get_symbol_context` before broad raw file scans.\n- Use `analyze_file_impact` after edits and `what_changed` when resuming work.\n- Codex is configured to read `CLAUDE.md` project guidance too, so treat project Tokenizor instructions there as authoritative when `AGENTS.md` is absent.\n{TOKENIZOR_GUIDANCE_END}"
+        "{TOKENIZOR_GUIDANCE_START}\n\
+## Tokenizor MCP — Code Intelligence\n\
+\n\
+Tokenizor MCP is installed and active. It provides indexed code search, symbol extraction, and structural analysis that is faster and more token-efficient than raw file operations.\n\
+\n\
+### Decision Rules\n\
+\n\
+1. **Before reading a file**, call `get_file_context` — it returns the file's symbol outline, imports, and references, saving 70-95% of tokens vs reading raw source. Only read the full file if you need exact surrounding context that the outline doesn't provide.\n\
+\n\
+2. **Before grepping**, call `search_text` — it returns matches with enclosing symbol context and file structure awareness. Use `group_by='symbol'` to deduplicate and `follow_refs=true` to inline callers.\n\
+\n\
+3. **To find a function/class/type**, call `search_symbols` — it searches indexed symbol names across the entire repo in milliseconds.\n\
+\n\
+4. **To understand a symbol's source**, call `get_symbol` — it returns the full source of a specific function, struct, class, etc. with doc comments.\n\
+\n\
+5. **To get a project overview**, call `get_repo_map` — it returns a structured outline of the entire repository with file counts, languages, and symbol summaries.\n\
+\n\
+6. **To trace call relationships**, call `find_references` — it shows callers and callees without scanning files. Use `get_symbol_context` for comprehensive usage analysis.\n\
+\n\
+7. **To check repo health**, call `health` — it shows index status, file counts, and watcher state.\n\
+\n\
+8. **After editing a file**, call `analyze_file_impact` — it re-indexes the file and reports affected dependents.\n\
+\n\
+9. **When resuming work**, call `what_changed` — it shows uncommitted changes so you can pick up where you left off.\n\
+\n\
+### When to use raw file reads instead\n\
+- Reading non-code files (docs, configs) where exact wording matters\n\
+- When you need the full file content including whitespace and formatting\n\
+- When Tokenizor tools return an error or the file isn't indexed\n\
+\n\
+Codex is configured to read `CLAUDE.md` project guidance too, so treat project Tokenizor instructions there as authoritative when `AGENTS.md` is absent.\n\
+{TOKENIZOR_GUIDANCE_END}"
     )
 }
 
 fn gemini_guidance_block() -> String {
     format!(
-        "{TOKENIZOR_GUIDANCE_START}\n## Tokenizor MCP\n- Prefer the Tokenizor MCP for codebase navigation when the `tokenizor` server is connected.\n- Start with `get_repo_map`, `get_repo_outline`, `get_file_context`, or `get_symbol_context` before broad raw file scans.\n- Use `analyze_file_impact` after edits and `what_changed` when resuming work.\n{TOKENIZOR_GUIDANCE_END}"
+        "{TOKENIZOR_GUIDANCE_START}\n\
+## Tokenizor MCP — Code Intelligence\n\
+\n\
+Tokenizor MCP is installed and active. It provides indexed code search, symbol extraction, and structural analysis that is faster and more token-efficient than raw file operations.\n\
+\n\
+### Decision Rules\n\
+\n\
+1. **Before reading a file**, call `get_file_context` — it returns the file's symbol outline, imports, and references, saving 70-95% of tokens vs reading raw source. Only read the full file if you need exact surrounding context that the outline doesn't provide.\n\
+\n\
+2. **Before grepping**, call `search_text` — it returns matches with enclosing symbol context and file structure awareness. Use `group_by='symbol'` to deduplicate and `follow_refs=true` to inline callers.\n\
+\n\
+3. **To find a function/class/type**, call `search_symbols` — it searches indexed symbol names across the entire repo in milliseconds.\n\
+\n\
+4. **To understand a symbol's source**, call `get_symbol` — it returns the full source of a specific function, struct, class, etc. with doc comments.\n\
+\n\
+5. **To get a project overview**, call `get_repo_map` — it returns a structured outline of the entire repository with file counts, languages, and symbol summaries.\n\
+\n\
+6. **To trace call relationships**, call `find_references` — it shows callers and callees without scanning files. Use `get_symbol_context` for comprehensive usage analysis.\n\
+\n\
+7. **To check repo health**, call `health` — it shows index status, file counts, and watcher state.\n\
+\n\
+8. **After editing a file**, call `analyze_file_impact` — it re-indexes the file and reports affected dependents.\n\
+\n\
+9. **When resuming work**, call `what_changed` — it shows uncommitted changes so you can pick up where you left off.\n\
+\n\
+### When to use raw file reads instead\n\
+- Reading non-code files (docs, configs) where exact wording matters\n\
+- When you need the full file content including whitespace and formatting\n\
+- When Tokenizor tools return an error or the file isn't indexed\n\
+{TOKENIZOR_GUIDANCE_END}"
     )
 }
 

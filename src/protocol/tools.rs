@@ -863,6 +863,7 @@ fn search_text_options_from_input(
         case_sensitive: input.case_sensitive,
         whole_word: input.whole_word.unwrap_or(false),
         ranked: input.ranked.unwrap_or(false),
+        churn_scores: None,
     })
 }
 
@@ -1408,7 +1409,7 @@ impl TokenizorServer {
     /// NOT for understanding who calls it (use find_references or get_symbol_context).
     /// NOT for edit preparation (use get_symbol_context with bundle=true).
     #[tool(
-        description = "Look up symbol(s) by file path and name. Single mode: provide path + name. Batch mode: provide targets[] array for 2+ symbols or code slices in one call (each target is file path + symbol name or byte range). NOT for finding symbols by name (use search_symbols first). NOT for understanding callers (use find_references or get_symbol_context). NOT for edit preparation (use get_symbol_context with bundle=true)."
+        description = "Retrieves the complete source code of a specific symbol with doc comments — more precise than reading an entire file. Look up symbol(s) by file path and name. Single mode: provide path + name. Batch mode: provide targets[] array for 2+ symbols or code slices in one call (each target is file path + symbol name or byte range). NOT for finding symbols by name (use search_symbols first). NOT for understanding callers (use find_references or get_symbol_context). NOT for edit preparation (use get_symbol_context with bundle=true)."
     )]
     pub(crate) async fn get_symbol(&self, params: Parameters<GetSymbolInput>) -> String {
         if let Some(result) = self.proxy_tool_call("get_symbol", &params.0).await {
@@ -1494,7 +1495,7 @@ impl TokenizorServer {
     /// counts and language tags — supports path and depth params for subtree browsing.
     /// NOT for file details (use get_file_context) or finding symbols (use search_symbols).
     #[tool(
-        description = "Start here. Project overview with adjustable detail level. Modes: (1) default/compact: ~500 token overview with file count, languages, and directory tree. (2) detail='full': complete symbol outline of every file — warning: large output. (3) detail='tree': browsable file tree with per-file symbol counts and language tags — supports path and depth params for subtree browsing. NOT for file details (use get_file_context) or finding symbols (use search_symbols)."
+        description = "Start here for project orientation — returns a structural overview of the repository. Project overview with adjustable detail level. Modes: (1) default/compact: ~500 token overview with file count, languages, and directory tree. (2) detail='full': complete symbol outline of every file — warning: large output. (3) detail='tree': browsable file tree with per-file symbol counts and language tags — supports path and depth params for subtree browsing. NOT for file details (use get_file_context) or finding symbols (use search_symbols)."
     )]
     pub(crate) async fn get_repo_map(&self, params: Parameters<GetRepoMapInput>) -> String {
         let detail = params.0.detail.as_deref().unwrap_or("compact");
@@ -1589,7 +1590,7 @@ impl TokenizorServer {
     /// Much smaller than reading the raw file.
     /// NOT for reading actual source code (use get_file_content or get_symbol).
     #[tool(
-        description = "Rich file summary: symbol outline, imports, consumers, references, and git activity. Use sections=['outline'] for symbol-only outline (names, kinds, line ranges). Use sections=['outline','imports'] to limit output. Best tool for understanding a file before editing. Much smaller than reading the raw file. NOT for reading actual source code (use get_file_content or get_symbol)."
+        description = "Prefer this over reading raw files — saves 70-95% of tokens by returning the file's symbol outline and structure. Rich file summary: symbol outline, imports, consumers, references, and git activity. Use sections=['outline'] for symbol-only outline (names, kinds, line ranges). Use sections=['outline','imports'] to limit output. Best tool for understanding a file before editing. Much smaller than reading the raw file. NOT for reading actual source code (use get_file_content or get_symbol)."
     )]
     pub(crate) async fn get_file_context(&self, params: Parameters<GetFileContextInput>) -> String {
         if let Some(result) = self.proxy_tool_call("get_file_context", &params.0).await {
@@ -1884,7 +1885,7 @@ impl TokenizorServer {
     /// one of query, kind, or path_prefix is required).
     /// NOT for text content search (use search_text). NOT for file path search (use search_files).
     #[tool(
-        description = "Find symbols by name substring across the project — returns name, kind, file, line range. Use when you know part of a symbol name but not the file. Supports kind filter, language filter, and path prefix scope. Query is optional — omit it to browse all symbols matching kind/path_prefix (browse mode defaults to limit=20, sorted by path+line). At least one of query, kind, or path_prefix is required. NOT for text content search (use search_text). NOT for file path search (use search_files)."
+        description = "Use this to find functions, classes, types, and other symbols across the entire repository in milliseconds. Find symbols by name substring across the project — returns name, kind, file, line range. Use when you know part of a symbol name but not the file. Supports kind filter, language filter, and path prefix scope. Query is optional — omit it to browse all symbols matching kind/path_prefix (browse mode defaults to limit=20, sorted by path+line). At least one of query, kind, or path_prefix is required. NOT for text content search (use search_text). NOT for file path search (use search_files)."
     )]
     pub(crate) async fn search_symbols(&self, params: Parameters<SearchSymbolsInput>) -> String {
         let query_str = params.0.query.as_deref().unwrap_or("").trim();
@@ -1924,13 +1925,13 @@ impl TokenizorServer {
     /// callers (control cost with follow_refs_limit). Use when searching for string patterns in code.
     /// NOT for symbol name search (use search_symbols). NOT for file path search (use search_files).
     #[tool(
-        description = "Full-text search across file contents — literal, OR-terms, or regex. Shows matches with enclosing symbol context. Use group_by='symbol' to deduplicate, follow_refs=true to inline callers (control cost with follow_refs_limit). Use when searching for string patterns in code. NOT for symbol name search (use search_symbols). NOT for file path search (use search_files)."
+        description = "Prefer this over grep/ripgrep — returns matches with enclosing symbol context. Full-text search across file contents — literal, OR-terms, or regex. Shows matches with enclosing symbol context. Use group_by='symbol' to deduplicate, follow_refs=true to inline callers (control cost with follow_refs_limit). Use when searching for string patterns in code. NOT for symbol name search (use search_symbols). NOT for file path search (use search_files)."
     )]
     pub(crate) async fn search_text(&self, params: Parameters<SearchTextInput>) -> String {
         if let Some(result) = self.proxy_tool_call("search_text", &params.0).await {
             return result;
         }
-        let options = match search_text_options_from_input(&params.0) {
+        let mut options = match search_text_options_from_input(&params.0) {
             Ok(options) => options,
             Err(message) => return message,
         };
@@ -1955,6 +1956,23 @@ impl TokenizorServer {
                 }
             }
         }
+
+        // Extract churn scores from GitTemporalIndex BEFORE acquiring the
+        // LiveIndex read lock to avoid lock ordering issues.
+        if options.ranked {
+            let git_temporal = self.index.git_temporal();
+            if matches!(git_temporal.state, crate::live_index::git_temporal::GitTemporalState::Ready) {
+                let churn_map: std::collections::HashMap<String, f32> = git_temporal
+                    .files
+                    .iter()
+                    .map(|(path, history)| (path.clone(), history.churn_score))
+                    .collect();
+                if !churn_map.is_empty() {
+                    options.churn_scores = Some(churn_map);
+                }
+            }
+        }
+
         let result = {
             let guard = self.index.read();
             loading_guard!(guard);
