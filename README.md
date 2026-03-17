@@ -6,7 +6,7 @@ A code-native MCP server that gives AI coding agents structured, symbol-aware ac
 npm install -g tokenizor-mcp
 ```
 
-The installer downloads a platform binary, auto-detects your CLI agents (Claude Code, Codex, Gemini CLI), registers the MCP server, installs hooks, and auto-allows all tools. No manual configuration needed.
+The installer downloads a platform binary, auto-detects CLI agents (Claude Code, Codex, Gemini CLI), registers the MCP server, installs hooks, and auto-allows all tools. Works with any MCP-compatible client — CLI agents, VS Code extensions (Kilo Code, Roo Code, Cline, Continue), JetBrains plugins, and custom agents.
 
 ## Why Tokenizor
 
@@ -48,10 +48,11 @@ The server does the graph traversal, the agent gets a focused answer. The index 
 - **Tree-sitter parsing** — deterministic, incremental parsing across 19 source languages plus native parsers for 5 config formats. Each symbol gets a byte range, line range, and an attached doc comment range.
 - **Persistent snapshots** — the index serializes to `.tokenizor/index.bin` for fast restarts (~88ms for a 326-file project).
 - **Daemon mode** — multiple terminal sessions share one index via a local loopback daemon. No redundant re-indexing.
+- **Non-poisoning locks** — all shared state uses `parking_lot::RwLock`, which never poisons. A panicked thread releases its lock instead of crashing the daemon.
 
 ## Token Savings — Measured
 
-Every applicable tool response includes a footer showing estimated tokens saved compared to reading the raw file. These are real measurements from Tokenizor's own codebase (~142 files, ~6600 symbols):
+Every applicable tool response includes a footer showing estimated tokens saved compared to reading the raw file. These are real measurements from Tokenizor's own codebase (~159 files, ~7500 symbols):
 
 | Operation | Raw file approach | Tokenizor | Savings |
 |-----------|------------------|-----------|---------|
@@ -68,7 +69,7 @@ Token savings are tracked per-session and reported by the `health` tool. Skeptic
 
 ## Tools
 
-17 unique tools + 7 backward-compatible aliases, organized by workflow stage. Edit tools accept symbol names — no need to read files first.
+24 unique tools + 7 backward-compatible aliases, organized by workflow stage. Edit tools accept symbol names — no need to read files first.
 
 ### Orientation
 
@@ -219,7 +220,7 @@ The installer downloads the platform binary to `~/.tokenizor/bin/`. Set `TOKENIZ
 
 **Updates** work the same way — `npm install -g tokenizor-mcp` replaces the binary. If the binary is locked (active session), it stages a `.pending` update that applies on next launch.
 
-**Auto-init** runs after every install/update: detects Claude Code, Codex, and Gemini CLI, registers the MCP server, installs hooks, and auto-allows all Tokenizor tools.
+**Auto-init** runs after every install/update: detects Claude Code, Codex, and Gemini CLI, registers the MCP server, installs hooks, and auto-allows all Tokenizor tools. Other MCP clients (VS Code extensions, JetBrains plugins, custom agents) can connect via manual stdio configuration.
 
 If your platform isn't listed, build from source instead.
 
@@ -260,6 +261,38 @@ tokenizor-mcp init --client gemini
 ```
 
 You should see `tokenizor — Ready` with 24 tools listed. If the server shows `DISCONNECTED`, check that the binary exists at `~/.tokenizor/bin/tokenizor-mcp` (or `tokenizor-mcp.exe` on Windows).
+
+### VS Code Extensions (Kilo Code, Roo Code, Cline, etc.)
+
+Any VS Code extension with MCP support can use Tokenizor. It's not auto-detected — configure it manually through the extension's MCP settings.
+
+**Kilo Code** example (sidebar → gear icon → MCP Servers, or `.kilocode/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "tokenizor": {
+      "command": "C:\\Users\\<you>\\.tokenizor\\bin\\tokenizor-mcp.exe",
+      "args": [],
+      "disabled": false,
+      "alwaysAllow": [
+        "health", "get_repo_map", "explore", "get_file_content",
+        "get_file_context", "get_symbol", "get_symbol_context",
+        "search_symbols", "search_text", "search_files",
+        "find_references", "find_dependents", "inspect_match",
+        "what_changed", "analyze_file_impact", "diff_symbols",
+        "index_folder", "replace_symbol_body", "edit_within_symbol",
+        "insert_symbol", "delete_symbol", "batch_edit",
+        "batch_rename", "batch_insert"
+      ]
+    }
+  }
+}
+```
+
+On macOS/Linux, use `~/.tokenizor/bin/tokenizor-mcp` (no `.exe`). The `alwaysAllow` list bypasses per-tool approval prompts.
+
+Other VS Code extensions and MCP clients follow a similar pattern — point the MCP stdio transport at the Tokenizor binary with no arguments. The standard MCP handshake handles the rest.
 
 ### Getting the Most Out of Tokenizor
 
