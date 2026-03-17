@@ -1,14 +1,16 @@
 ![SymForge](./symforge-banner.png)
 
+A code-native MCP server that gives AI coding agents structured, symbol-aware access to codebases. Built in Rust with tree-sitter, it replaces raw file scanning with tools that understand code as symbols, references, dependency graphs, and git history — through a single MCP connection.
+
 ```bash
-npm install -g tokenizor-mcp
+npm install -g symforge
 ```
 
 The installer downloads a platform binary, auto-detects CLI agents (Claude Code, Codex, Gemini CLI), registers the MCP server, installs hooks, and auto-allows all tools. Works with any MCP-compatible client — CLI agents, VS Code extensions (Kilo Code, Roo Code, Cline, Continue), JetBrains plugins, and custom agents.
 
-## Why Tokenizor
+## Why SymForge
 
-AI coding agents spend most of their token budget on orientation — reading files, grepping for patterns, figuring out what code is where. Tokenizor replaces that with structured tools that resolve symbols, references, and dependencies server-side.
+AI coding agents spend most of their token budget on orientation — reading files, grepping for patterns, figuring out what code is where. SymForge replaces that with structured tools that resolve symbols, references, and dependencies server-side.
 
 - **Fewer tool calls** — one `get_symbol_context(bundle=true)` returns a symbol's body plus all referenced type definitions, resolved recursively. That's one call instead of reading 3-5 files sequentially.
 - **Lower token cost** — structured responses strip boilerplate, returning only what the agent needs. Measured savings below.
@@ -18,7 +20,7 @@ AI coding agents spend most of their token budget on orientation — reading fil
 
 ## How It Works
 
-Tokenizor maintains a live index of every file in your project. On startup, it parses all source files using tree-sitter grammars (19 source languages), config files using native Rust parsers (5 formats), and extracts symbols (functions, classes, structs, selectors, variables, keys, etc.), their byte ranges, and cross-references between them. This index stays current via a file watcher that re-indexes changed files with debouncing.
+SymForge maintains a live index of every file in your project. On startup, it parses all source files using tree-sitter grammars (19 source languages), config files using native Rust parsers (5 formats), and extracts symbols (functions, classes, structs, selectors, variables, keys, etc.), their byte ranges, and cross-references between them. This index stays current via a file watcher that re-indexes changed files with debouncing.
 
 **Why this is efficient for LLMs:**
 
@@ -31,7 +33,7 @@ Agent: grep for callers (2000 tokens) → finds 3 call sites
 Total: 4 tool calls, ~15,000 tokens consumed
 ```
 
-With Tokenizor:
+With SymForge:
 ```
 Agent: get_symbol_context(name="handler", bundle=true)
 Server: resolves symbol + all referenced types from the index
@@ -44,15 +46,15 @@ The server does the graph traversal, the agent gets a focused answer. The index 
 **Key architectural decisions:**
 - **Symbol-addressed operations** — tools accept symbol names, not file content. The server resolves names to byte ranges via the index, eliminating the need for agents to track positions.
 - **Tree-sitter parsing** — deterministic, incremental parsing across 19 source languages plus native parsers for 5 config formats. Each symbol gets a byte range, line range, and an attached doc comment range.
-- **Persistent snapshots** — the index serializes to `.tokenizor/index.bin` for fast restarts (~88ms for a 326-file project).
+- **Persistent snapshots** — the index serializes to `.symforge/index.bin` for fast restarts (~88ms for a 326-file project).
 - **Daemon mode** — multiple terminal sessions share one index via a local loopback daemon. No redundant re-indexing.
 - **Non-poisoning locks** — all shared state uses `parking_lot::RwLock`, which never poisons. A panicked thread releases its lock instead of crashing the daemon.
 
 ## Token Savings — Measured
 
-Every applicable tool response includes a footer showing estimated tokens saved compared to reading the raw file. These are real measurements from Tokenizor's own codebase (~159 files, ~7500 symbols):
+Every applicable tool response includes a footer showing estimated tokens saved compared to reading the raw file. These are real measurements from SymForge's own codebase (~159 files, ~7500 symbols):
 
-| Operation | Raw file approach | Tokenizor | Savings |
+| Operation | Raw file approach | SymForge | Savings |
 |-----------|------------------|-----------|---------|
 | Understand a 5700-line file's structure | `cat` the file: ~67,000 tokens | `get_file_context(sections=['outline'])`: ~200 tokens | **~66,800 tokens saved (99.7%)** |
 | Read a function + all its type dependencies | Read 3-5 files: ~15,000 tokens | `get_symbol_context(bundle=true)`: ~800 tokens | **~64,000 tokens saved (98.8%)** |
@@ -63,7 +65,7 @@ Every applicable tool response includes a footer showing estimated tokens saved 
 
 Savings scale with file size. On large files (5000+ lines), `get_file_context` routinely saves 50,000-70,000 tokens per call. Over a coding session, cumulative savings typically reach 200,000-400,000 tokens.
 
-Token savings are tracked per-session and reported by the `health` tool. Skeptical? Run a session with Tokenizor, check `health` for cumulative savings, then try the same tasks with raw file reads and compare. The numbers speak for themselves on any codebase.
+Token savings are tracked per-session and reported by the `health` tool. Skeptical? Run a session with SymForge, check `health` for cumulative savings, then try the same tasks with raw file reads and compare. The numbers speak for themselves on any codebase.
 
 ## Tools
 
@@ -91,7 +93,7 @@ Token savings are tracked per-session and reported by the `health` tool. Skeptic
 | Tool | Purpose |
 |------|---------|
 | `search_symbols` | Find symbols by name, filtered by kind/language/path/scope |
-| `search_text` | Full-text search with enclosing symbol context, `group_by` modes, `follow_refs` for inline callers. Auto-corrects double-escaped regex patterns common in LLM tool calls |
+| `search_text` | Full-text search with enclosing symbol context, `group_by` modes, `follow_refs` for inline callers. Set `ranked=true` for semantic re-ranking by caller connectivity, git churn, and symbol kind. Auto-corrects double-escaped regex patterns common in LLM tool calls |
 | `search_files` | Ranked file path discovery. `changed_with=path` for git co-change coupling. `resolve=true` for exact path resolution from partial hints |
 
 ### References and Dependencies
@@ -154,23 +156,23 @@ Agent gets:   "src/auth.rs — replaced fn `validate_token` (342 → 287 bytes)"
 
 | Prompt | Purpose |
 |--------|---------|
-| `tokenizor-review` | Structured code review plan using Tokenizor context surfaces |
-| `tokenizor-architecture` | Architecture mapping plan using repo-level context and cross-reference tools |
-| `tokenizor-triage` | Debugging and failure-triage plan using health, changed files, and local context |
+| `symforge-review` | Structured code review plan using SymForge context surfaces |
+| `symforge-architecture` | Architecture mapping plan using repo-level context and cross-reference tools |
+| `symforge-triage` | Debugging and failure-triage plan using health, changed files, and local context |
 
 ## Resources
 
 Static resources:
-- `tokenizor://repo/health`
-- `tokenizor://repo/outline`
-- `tokenizor://repo/map`
-- `tokenizor://repo/changes/uncommitted`
+- `symforge://repo/health`
+- `symforge://repo/outline`
+- `symforge://repo/map`
+- `symforge://repo/changes/uncommitted`
 
 Resource templates:
-- `tokenizor://file/context?path={path}&max_tokens={max_tokens}`
-- `tokenizor://file/content?path={path}&start_line={start_line}&end_line={end_line}&around_line={around_line}&around_match={around_match}&context_lines={context_lines}&show_line_numbers={show_line_numbers}&header={header}`
-- `tokenizor://symbol/detail?path={path}&name={name}&kind={kind}`
-- `tokenizor://symbol/context?name={name}&file={file}`
+- `symforge://file/context?path={path}&max_tokens={max_tokens}`
+- `symforge://file/content?path={path}&start_line={start_line}&end_line={end_line}&around_line={around_line}&around_match={around_match}&context_lines={context_lines}&show_line_numbers={show_line_numbers}&header={header}`
+- `symforge://symbol/detail?path={path}&name={name}&kind={kind}`
+- `symforge://symbol/context?name={name}&file={file}`
 
 ## Supported Languages
 
@@ -211,14 +213,14 @@ Config files have capability-gated editing: JSON, TOML, and YAML support structu
 **Prebuilt binaries:** Windows x64, Linux x64, macOS arm64, macOS x64
 
 ```bash
-npm install -g tokenizor-mcp
+npm install -g symforge
 ```
 
-The installer downloads the platform binary to `~/.tokenizor/bin/`. Set `TOKENIZOR_HOME` to override.
+The installer downloads the platform binary to `~/.symforge/bin/`. Set `SYMFORGE_HOME` to override.
 
-**Updates** work the same way — `npm install -g tokenizor-mcp` replaces the binary. If the binary is locked (active session), it stages a `.pending` update that applies on next launch.
+**Updates** work the same way — `npm install -g symforge` replaces the binary. If the binary is locked (active session), it stages a `.pending` update that applies on next launch.
 
-**Auto-init** runs after every install/update: detects Claude Code, Codex, and Gemini CLI, registers the MCP server, installs hooks, and auto-allows all Tokenizor tools. Other MCP clients (VS Code extensions, JetBrains plugins, custom agents) can connect via manual stdio configuration.
+**Auto-init** runs after every install/update: detects Claude Code, Codex, and Gemini CLI, registers the MCP server, installs hooks, and auto-allows all SymForge tools. Other MCP clients (VS Code extensions, JetBrains plugins, custom agents) can connect via manual stdio configuration.
 
 If your platform isn't listed, build from source instead.
 
@@ -227,16 +229,17 @@ If your platform isn't listed, build from source instead.
 Auto-configured during install. To re-run manually:
 
 ```bash
-tokenizor-mcp init                  # auto-detect clients
-tokenizor-mcp init --client claude  # Claude Code only
-tokenizor-mcp init --client codex   # Codex only
-tokenizor-mcp init --client gemini  # Gemini CLI only
-tokenizor-mcp init --client all     # all clients
+symforge init                      # auto-detect clients
+symforge init --client claude      # Claude Code only
+symforge init --client codex       # Codex only
+symforge init --client gemini      # Gemini CLI only
+symforge init --client kilo-code   # Kilo Code VS Code extension
+symforge init --client all         # all clients
 ```
 
 ### Claude Code
 
-Updates `~/.claude.json`, `~/.claude/settings.json`, `~/.claude/CLAUDE.md`. Installs MCP server registration, hook entries (`read`, `edit`, `write`, `grep`, `session-start`, `prompt-submit`), guidance block, and auto-allows all 24 Tokenizor tools.
+Updates `~/.claude.json`, `~/.claude/settings.json`, `~/.claude/CLAUDE.md`. Installs MCP server registration, hook entries (`read`, `edit`, `write`, `grep`, `session-start`, `prompt-submit`), guidance block, and auto-allows all 24 SymForge tools.
 
 ### Codex
 
@@ -244,12 +247,12 @@ Updates `~/.codex/config.toml`, `~/.codex/AGENTS.md`. Installs MCP server config
 
 ### Gemini CLI
 
-Updates `~/.gemini/settings.json`, `~/.gemini/GEMINI.md`. Registers the MCP server as a stdio transport with `trust: true` (bypasses per-tool confirmation prompts) and a 120-second timeout. Writes a guidance block to `GEMINI.md` so Gemini knows to prefer Tokenizor tools for codebase navigation.
+Updates `~/.gemini/settings.json`, `~/.gemini/GEMINI.md`. Registers the MCP server as a stdio transport with `trust: true` (bypasses per-tool confirmation prompts) and a 120-second timeout. Writes a guidance block to `GEMINI.md` so Gemini knows to prefer SymForge tools for codebase navigation.
 
 **Manual setup** (if auto-init didn't run or you need to reconfigure):
 
 ```bash
-tokenizor-mcp init --client gemini
+symforge init --client gemini
 ```
 
 **Verify inside Gemini CLI:**
@@ -258,19 +261,25 @@ tokenizor-mcp init --client gemini
 /mcp
 ```
 
-You should see `tokenizor — Ready` with 24 tools listed. If the server shows `DISCONNECTED`, check that the binary exists at `~/.tokenizor/bin/tokenizor-mcp` (or `tokenizor-mcp.exe` on Windows).
+You should see `symforge — Ready` with 24 tools listed. If the server shows `DISCONNECTED`, check that the binary exists at `~/.symforge/bin/symforge` (or `symforge.exe` on Windows).
 
 ### VS Code Extensions (Kilo Code, Roo Code, Cline, etc.)
 
-Any VS Code extension with MCP support can use Tokenizor. It's not auto-detected — configure it manually through the extension's MCP settings.
+Any VS Code extension with MCP support can use SymForge. For **Kilo Code**, auto-init is supported:
 
-**Kilo Code** example (sidebar → gear icon → MCP Servers, or `.kilocode/mcp.json`):
+```bash
+symforge init --client kilo-code
+```
+
+This creates `.kilocode/mcp.json` in your workspace with the full tool allowlist. For other extensions, configure manually through their MCP settings.
+
+**Kilo Code** manual config (sidebar → gear icon → MCP Servers, or `.kilocode/mcp.json`):
 
 ```json
 {
   "mcpServers": {
-    "tokenizor": {
-      "command": "C:\\Users\\<you>\\.tokenizor\\bin\\tokenizor-mcp.exe",
+    "symforge": {
+      "command": "C:\\Users\\<you>\\.symforge\\bin\\symforge.exe",
       "args": [],
       "disabled": false,
       "alwaysAllow": [
@@ -288,21 +297,21 @@ Any VS Code extension with MCP support can use Tokenizor. It's not auto-detected
 }
 ```
 
-On macOS/Linux, use `~/.tokenizor/bin/tokenizor-mcp` (no `.exe`). The `alwaysAllow` list bypasses per-tool approval prompts.
+On macOS/Linux, use `~/.symforge/bin/symforge` (no `.exe`). The `alwaysAllow` list bypasses per-tool approval prompts.
 
-Other VS Code extensions and MCP clients follow a similar pattern — point the MCP stdio transport at the Tokenizor binary with no arguments. The standard MCP handshake handles the rest.
+Other VS Code extensions and MCP clients follow a similar pattern — point the MCP stdio transport at the SymForge binary with no arguments. The standard MCP handshake handles the rest.
 
-### Getting the Most Out of Tokenizor
+### Getting the Most Out of SymForge
 
-The `init` command writes a guidance block to your agent's system file (`CLAUDE.md`, `AGENTS.md`, or `GEMINI.md`), but CLI agents don't always follow it — they tend to fall back to built-in file reads and grep out of habit. For best results, add the following to your global or per-project system file so your agent treats Tokenizor as the primary code navigation layer:
+The `init` command writes a guidance block to your agent's system file (`CLAUDE.md`, `AGENTS.md`, or `GEMINI.md`), but CLI agents don't always follow it — they tend to fall back to built-in file reads and grep out of habit. For best results, add the following to your global or per-project system file so your agent treats SymForge as the primary code navigation layer:
 
 ```markdown
 ## Tooling Preference
 
-When Tokenizor MCP is available, prefer its tools for repository and code
+When SymForge MCP is available, prefer its tools for repository and code
 inspection before falling back to direct file reads.
 
-Use Tokenizor first for:
+Use SymForge first for:
 - symbol discovery
 - text/code search
 - file outlines and context
@@ -340,10 +349,10 @@ Preferred tools for editing:
 - `batch_insert` — insert code before/after multiple symbols across files
 
 Default rule:
-- use Tokenizor to narrow and target code inspection first
+- use SymForge to narrow and target code inspection first
 - use direct file reads only when exact full-file source or surrounding
   context is still required after tool-based narrowing
-- use Tokenizor editing tools (`replace_symbol_body`, `batch_edit`,
+- use SymForge editing tools (`replace_symbol_body`, `batch_edit`,
   `edit_within_symbol`) over text-based find-and-replace whenever
   possible to ensure structural integrity and automatic re-indexing
 
@@ -353,14 +362,14 @@ Direct file reads are still appropriate for:
 - configuration files where exact raw contents are the point of inspection
 
 Do not default to broad raw file reads for source-code inspection when
-Tokenizor can answer the question more directly.
+SymForge can answer the question more directly.
 ```
 
 ## Runtime Model
 
 ### Startup
 
-1. If `TOKENIZOR_AUTO_INDEX` is not `false`, Tokenizor discovers a project root
+1. If `SYMFORGE_AUTO_INDEX` is not `false`, SymForge discovers a project root
 2. Tries to connect to or start a local daemon for shared state across terminals
 3. Falls back to local in-process mode if daemon connection fails
 4. Starts with an empty index if no project root is found
@@ -368,33 +377,36 @@ Tokenizor can answer the question more directly.
 ### Daemon Mode
 
 ```bash
-tokenizor-mcp daemon
+symforge daemon
 ```
 
-The daemon binds to local loopback, tracks projects by canonical root, supports multiple concurrent sessions, and persists metadata (`daemon.port`, `daemon.pid`) under `TOKENIZOR_HOME`.
+The daemon binds to local loopback, tracks projects by canonical root, supports multiple concurrent sessions, and persists metadata (`daemon.port`, `daemon.pid`) under `SYMFORGE_HOME`.
 
 If the daemon becomes unreachable mid-session, the next tool call automatically reconnects or falls back to local in-process mode.
 
 ### Hooks and Sidecar
 
-Claude Code hook integration uses project-local files under `.tokenizor/` (`sidecar.port`, `sidecar.pid`, `sidecar.session`). Hooks intercept read, edit, write, grep, session-start, and prompt-submit events to enrich responses transparently.
+Claude Code hook integration uses project-local files under `.symforge/` (`sidecar.port`, `sidecar.pid`, `sidecar.session`). Hooks intercept read, edit, write, grep, session-start, and prompt-submit events to enrich responses transparently.
 
 ### Persistence
 
-Index snapshots persist at `.tokenizor/index.bin` for fast restarts.
+Index snapshots persist at `.symforge/index.bin` for fast restarts.
 
 ### Parameter Handling
 
-All tool parameters accept both native JSON types and stringified values (`"true"` for booleans, `"5"` for numbers) for compatibility with MCP clients that stringify parameters.
+All tool parameters accept both native JSON types and stringified values for compatibility with MCP clients that stringify parameters:
+- Booleans: `"true"` / `"false"` accepted alongside native `true` / `false`
+- Numbers: `"5"` accepted alongside native `5`
+- Arrays: `"[{\"path\": \"...\"}]"` (stringified JSON array) accepted alongside native arrays — enables batch tools (`get_symbol` targets, `batch_edit` edits, `search_text` terms, etc.) to work with clients like Kilo Code that stringify array parameters
 
 ## Environment Variables
 
 | Variable | Default | Effect |
 |----------|---------|--------|
-| `TOKENIZOR_AUTO_INDEX` | `true` | Enables project discovery and startup indexing |
-| `TOKENIZOR_CB_THRESHOLD` | `0.20` | Parse-failure circuit-breaker threshold (proportion, e.g. 0.20 = 20%) |
-| `TOKENIZOR_SIDECAR_BIND` | `127.0.0.1` | Sidecar bind host for local in-process mode |
-| `TOKENIZOR_HOME` | `~/.tokenizor` | Home directory for daemon metadata and npm-managed binary |
+| `SYMFORGE_AUTO_INDEX` | `true` | Enables project discovery and startup indexing |
+| `SYMFORGE_CB_THRESHOLD` | `0.20` | Parse-failure circuit-breaker threshold (proportion, e.g. 0.20 = 20%) |
+| `SYMFORGE_SIDECAR_BIND` | `127.0.0.1` | Sidecar bind host for local in-process mode |
+| `SYMFORGE_HOME` | `~/.symforge` | Home directory for daemon metadata and npm-managed binary |
 
 ## Build From Source
 
@@ -403,7 +415,7 @@ cargo build --release
 cargo test
 ```
 
-The Cargo package name is `tokenizor_agentic_mcp`.
+The Cargo package name is `symforge`.
 
 ## Developer Setup
 
@@ -426,13 +438,13 @@ python execution/release_ops.py preflight # pre-release checks
 python execution/version_sync.py check    # version consistency
 ```
 
-## Rename: Tokenizor → SymForge
+## How we got here
 
 > **SymForge** — raw source code goes in, structured symbol intelligence comes out.
 
-Planned rebrand from "Tokenizor" to "SymForge." The name captures what the tool actually does: it takes raw source files and *forges* them into a structured symbol graph — parsed, indexed, cross-referenced, and instantly queryable by AI agents.
+This project was originally called "Tokenizor." The rename to SymForge is now complete. The name captures what the tool actually does: it takes raw source files and *forges* them into a structured symbol graph — parsed, indexed, cross-referenced, and instantly queryable by AI agents.
 
-### How we got here
+### The naming journey
 
 The naming process was... thorough. We asked an LLM what it most valued about the tool (symbol-level addressing — "I stop being a text processor and start being a code reasoner"). Then we brainstormed 40+ names and systematically checked every one against npm, GitHub, and the web:
 
@@ -449,23 +461,7 @@ The naming process was... thorough. We asked an LLM what it most valued about th
 
 SymForge survived the gauntlet. It's honest about what the tool does, available everywhere, and doesn't pretend to be a clever acronym.
 
-### Migration scope
-
-- [ ] npm package: `tokenizor-mcp` → `symforge-mcp` (deprecate old)
-- [ ] Binary: `tokenizor-mcp` → `symforge-mcp`
-- [ ] GitHub repo rename
-- [ ] Cargo package: `tokenizor_agentic_mcp` → `symforge_mcp`
-- [ ] Home directory: `~/.tokenizor/` → `~/.symforge/` (with migration fallback)
-- [ ] Project directory: `.tokenizor/` → `.symforge/`
-- [ ] Environment variables: `TOKENIZOR_*` → `SYMFORGE_*`
-- [ ] MCP server name in all client configs: `"tokenizor"` → `"symforge"`
-- [ ] Init scripts, guidance blocks, hook commands
-- [ ] All internal references, docs, tests
-
-### Migration strategy
-
-Ship rename alongside the next feature release as a clean break. Init script should detect and migrate legacy `~/.tokenizor/` paths automatically. Old npm package gets a deprecation notice pointing to `symforge-mcp`.
-
 ## License
 
 MIT
+
