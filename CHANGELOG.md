@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/special-place-administrator/symforge/compare/v1.0.0...v1.1.0) (2026-03-17)
+
+
+### Features
+
+* **index:** Sprint 0 — index freshness guarantee via mtime tracking ([29d60d6](https://github.com/special-place-administrator/symforge/commit/29d60d6fe0e83f3c79856c38796bc02c62f62bea))
+
 ## [1.0.0](https://github.com/special-place-administrator/symforge/compare/v0.33.0...v1.0.0) (2026-03-17)
 
 
