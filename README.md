@@ -1,10 +1,9 @@
-
-  ____                  _____                    
- / ___| _   _ _ __ ___ |  ___|__  _ __ __ _  ___ 
- \___ \| | | | '_ ` _ \| |_ / _ \| '__/ _` |/ _ \
-  ___) | |_| | | | | | |  _| (_) | | | (_| |  __/
- |____/ \__, |_| |_| |_|_|  \___/|_|  \__, |\___|
-        |___/                         |___/      
+#   ____                  _____                    
+#  / ___| _   _ _ __ ___ |  ___|__  _ __ __ _  ___ 
+#  \___ \| | | | '_ ` _ \| |_ / _ \| '__/ _` |/ _ \
+#   ___) | |_| | | | | | |  _| (_) | | | (_| |  __/
+#  |____/ \__, |_| |_| |_|_|  \___/|_|  \__, |\___|
+#         |___/                         |___/       
 
 A code-native MCP server that gives AI coding agents structured, symbol-aware access to codebases. Built in Rust with tree-sitter, it replaces raw file scanning with tools that understand code as symbols, references, dependency graphs, and git history — through a single MCP connection.
 
