@@ -66,7 +66,7 @@ fn make_rust_file(path: &str, fn_name: &str) -> IndexedFile {
 fn build_shared_index(files: Vec<IndexedFile>) -> SharedIndex {
     let shared = LiveIndex::empty();
     {
-        let mut guard = shared.write().expect("lock should not be poisoned");
+        let mut guard = shared.write();
         for file in files {
             let path = file.relative_path.clone();
             guard.add_file(path, file);
@@ -273,7 +273,7 @@ async fn test_shared_index_mutation() {
 
     // Add a new file through the shared Arc<LiveIndex>.
     {
-        let mut guard = index.write().expect("lock should not be poisoned");
+        let mut guard = index.write();
         let new_file = make_rust_file("src/b.rs", "beta");
         guard.add_file("src/b.rs".to_string(), new_file);
     }

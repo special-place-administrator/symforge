@@ -428,6 +428,46 @@ python execution/release_ops.py preflight # pre-release checks
 python execution/version_sync.py check    # version consistency
 ```
 
+## Rename: Tokenizor → SymForge
+
+> **SymForge** — raw source code goes in, structured symbol intelligence comes out.
+
+Planned rebrand from "Tokenizor" to "SymForge." The name captures what the tool actually does: it takes raw source files and *forges* them into a structured symbol graph — parsed, indexed, cross-referenced, and instantly queryable by AI agents.
+
+### How we got here
+
+The naming process was... thorough. We asked an LLM what it most valued about the tool (symbol-level addressing — "I stop being a text processor and start being a code reasoner"). Then we brainstormed 40+ names and systematically checked every one against npm, GitHub, and the web:
+
+- **RUNE** (Reference-Understanding Native Engine) — loved it, then moved on
+- **ATLAS** (Agent Token-saving Live Analysis System) — perfect, until we found MongoDB Atlas, an existing `atlas-mcp-server`, and Scale AI's MCP-Atlas benchmark all squatting the name
+- **Sigil** — taken (ebook editor)
+- **SPARK** — taken (Apache Spark, GitHub Spark)
+- **FORGE** — taken (Atlassian, Laravel, and two AI coding tools)
+- **Symbex** — taken (Simon Willison's Python tool, same AI/LLM space)
+- **Grasp** — taken (graspjs.com + `grasp-mcp` already on npm)
+- **Codegrid** — 5+ existing projects
+- **Lumen, Axiom, Prism, Reflex, Meridian** — all taken
+- **AURA** — nice word, forced acronym ("Agent Unified Reference Architecture" — we could smell our own BS)
+
+SymForge survived the gauntlet. It's honest about what the tool does, available everywhere, and doesn't pretend to be a clever acronym.
+
+### Migration scope
+
+- [ ] npm package: `tokenizor-mcp` → `symforge-mcp` (deprecate old)
+- [ ] Binary: `tokenizor-mcp` → `symforge-mcp`
+- [ ] GitHub repo rename
+- [ ] Cargo package: `tokenizor_agentic_mcp` → `symforge_mcp`
+- [ ] Home directory: `~/.tokenizor/` → `~/.symforge/` (with migration fallback)
+- [ ] Project directory: `.tokenizor/` → `.symforge/`
+- [ ] Environment variables: `TOKENIZOR_*` → `SYMFORGE_*`
+- [ ] MCP server name in all client configs: `"tokenizor"` → `"symforge"`
+- [ ] Init scripts, guidance blocks, hook commands
+- [ ] All internal references, docs, tests
+
+### Migration strategy
+
+Ship rename alongside the next feature release as a clean break. Init script should detect and migrate legacy `~/.tokenizor/` paths automatically. Old npm package gets a deprecation notice pointing to `symforge-mcp`.
+
 ## License
 
 MIT

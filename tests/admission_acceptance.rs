@@ -61,7 +61,7 @@ fn test_admission_tier_acceptance() {
 
     // ── Load index ────────────────────────────────────────────────────────
     let shared = LiveIndex::load(dir.path()).unwrap();
-    let index = shared.read().unwrap();
+    let index = shared.read();
 
     // ── Verify tier counts ────────────────────────────────────────────────
     let (tier1, tier2, tier3) = index.tier_counts();

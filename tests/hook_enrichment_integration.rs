@@ -103,7 +103,7 @@ fn make_rust_file_with_refs(
 fn build_shared_index(files: Vec<IndexedFile>) -> SharedIndex {
     let shared = LiveIndex::empty();
     {
-        let mut guard = shared.write().expect("lock should not be poisoned");
+        let mut guard = shared.write();
         for file in files {
             let path = file.relative_path.clone();
             guard.add_file(path, file);

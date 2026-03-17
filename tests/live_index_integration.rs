@@ -53,7 +53,7 @@ fn test_startup_loads_all_files() {
     );
 
     let shared = LiveIndex::load(dir.path()).unwrap();
-    let index = shared.read().unwrap();
+    let index = shared.read();
 
     assert_eq!(
         index.index_state(),
@@ -112,7 +112,7 @@ fn test_circuit_breaker_trips_on_mass_failure() {
     // trigger real parse failures from file content alone. Circuit breaker logic is
     // covered by unit tests in store.rs (test_cb_trips_above_threshold, etc.).
     let shared = LiveIndex::load(dir.path()).unwrap();
-    let index = shared.read().unwrap();
+    let index = shared.read();
     // With all valid files, circuit breaker should NOT trip.
     assert!(
         matches!(index.index_state(), IndexState::Ready),
@@ -136,7 +136,7 @@ fn test_partial_parse_keeps_symbols() {
     write_file(dir.path(), "mixed.rs", "fn valid() {}\nfn broken(");
 
     let shared = LiveIndex::load(dir.path()).unwrap();
-    let index = shared.read().unwrap();
+    let index = shared.read();
 
     let file = index
         .get_file("mixed.rs")
@@ -178,7 +178,7 @@ fn test_content_bytes_stored_for_all_files() {
     write_file(dir.path(), "b.py", content_b);
 
     let shared = LiveIndex::load(dir.path()).unwrap();
-    let index = shared.read().unwrap();
+    let index = shared.read();
 
     let file_a = index.get_file("a.rs").expect("a.rs should be indexed");
     assert_eq!(
@@ -222,7 +222,7 @@ fn test_symbols_queryable_by_file_path() {
     );
 
     let shared = LiveIndex::load(dir.path()).unwrap();
-    let index = shared.read().unwrap();
+    let index = shared.read();
 
     let symbols = index.symbols_for_file("funcs.rs");
     assert!(
@@ -369,7 +369,7 @@ fn test_load_perf_70_files() {
     let shared = LiveIndex::load(dir.path()).unwrap();
     let elapsed = start.elapsed();
 
-    let index = shared.read().unwrap();
+    let index = shared.read();
     assert_eq!(index.file_count(), 70, "should have indexed 70 files");
     assert!(
         elapsed.as_millis() < 500,
@@ -398,7 +398,7 @@ fn test_load_perf_1000_files() {
     let shared = LiveIndex::load(dir.path()).unwrap();
     let elapsed = start.elapsed();
 
-    let index = shared.read().unwrap();
+    let index = shared.read();
     assert_eq!(index.file_count(), 1000, "should have indexed 1000 files");
     assert!(
         elapsed.as_secs() < 3,
@@ -423,7 +423,7 @@ fn test_auto_index_loads_when_git_present() {
     write_file(dir.path(), "lib.rs", "fn helper() {}");
 
     let shared = LiveIndex::load(dir.path()).unwrap();
-    let index = shared.read().unwrap();
+    let index = shared.read();
 
     assert!(
         index.file_count() > 0,
@@ -445,7 +445,7 @@ fn test_auto_index_loads_when_git_present() {
 #[test]
 fn test_empty_index_when_no_auto_index() {
     let empty = LiveIndex::empty();
-    let index = empty.read().unwrap();
+    let index = empty.read();
 
     assert_eq!(index.file_count(), 0, "empty index should have 0 files");
     assert_eq!(
@@ -508,7 +508,7 @@ fn test_file_outline_format_end_to_end() {
     );
 
     let shared = LiveIndex::load(dir.path()).unwrap();
-    let index = shared.read().unwrap();
+    let index = shared.read();
 
     let result = format::file_outline(&index, "shapes.rs");
 
@@ -546,7 +546,7 @@ fn test_get_symbol_returns_source_body() {
     );
 
     let shared = LiveIndex::load(dir.path()).unwrap();
-    let index = shared.read().unwrap();
+    let index = shared.read();
 
     let result = format::symbol_detail(&index, "math.rs", "add", None);
 
@@ -585,7 +585,7 @@ fn test_search_text_finds_content() {
     );
 
     let shared = LiveIndex::load(dir.path()).unwrap();
-    let index = shared.read().unwrap();
+    let index = shared.read();
 
     let result = format::search_text_result(&index, "const");
 
@@ -620,7 +620,7 @@ fn test_health_report_format() {
     write_file(dir.path(), "b.rs", "fn beta() {}");
 
     let shared = LiveIndex::load(dir.path()).unwrap();
-    let index = shared.read().unwrap();
+    let index = shared.read();
 
     let result = format::health_report(&index);
 
@@ -659,7 +659,7 @@ fn test_index_folder_reload() {
     // Load dir A
     let shared = LiveIndex::load(dir_a.path()).unwrap();
     {
-        let index = shared.read().unwrap();
+        let index = shared.read();
         assert_eq!(index.file_count(), 2, "dir A should have 2 files");
         assert!(
             index.get_file("alpha.rs").is_some(),
@@ -669,13 +669,13 @@ fn test_index_folder_reload() {
 
     // Reload with dir B
     {
-        let mut index = shared.write().unwrap();
+        let mut index = shared.write();
         index.reload(dir_b.path()).unwrap();
     }
 
     // Verify index now contains B's files, not A's
     {
-        let index = shared.read().unwrap();
+        let index = shared.read();
         assert_eq!(
             index.file_count(),
             3,
@@ -710,7 +710,7 @@ fn test_get_file_content_with_line_range() {
     );
 
     let shared = LiveIndex::load(dir.path()).unwrap();
-    let index = shared.read().unwrap();
+    let index = shared.read();
 
     // Request lines 2-3 (1-indexed)
     let result = format::file_content(&index, "lines.rs", Some(2), Some(3));
@@ -746,7 +746,7 @@ fn test_get_file_content_with_numbered_headered_line_range() {
     );
 
     let shared = LiveIndex::load(dir.path()).unwrap();
-    let index = shared.read().unwrap();
+    let index = shared.read();
     let file = index.capture_shared_file("lines.rs").unwrap();
 
     let result = format::file_content_from_indexed_file_with_context(
@@ -773,7 +773,7 @@ fn test_get_file_content_with_around_line() {
     );
 
     let shared = LiveIndex::load(dir.path()).unwrap();
-    let index = shared.read().unwrap();
+    let index = shared.read();
     let file = index.capture_shared_file("lines.rs").unwrap();
 
     let result = format::file_content_from_indexed_file_with_context(
@@ -797,7 +797,7 @@ fn test_get_file_content_with_around_match() {
     );
 
     let shared = LiveIndex::load(dir.path()).unwrap();
-    let index = shared.read().unwrap();
+    let index = shared.read();
     let file = index.capture_shared_file("lines.rs").unwrap();
 
     let result = format::file_content_from_indexed_file_with_context(
@@ -821,7 +821,7 @@ fn test_get_file_content_with_chunked_read() {
     );
 
     let shared = LiveIndex::load(dir.path()).unwrap();
-    let index = shared.read().unwrap();
+    let index = shared.read();
     let file = index.capture_shared_file("lines.rs").unwrap();
 
     let result = format::file_content_from_indexed_file_with_context(
@@ -848,7 +848,7 @@ fn test_get_file_content_with_around_symbol() {
     );
 
     let shared = LiveIndex::load(dir.path()).unwrap();
-    let index = shared.read().unwrap();
+    let index = shared.read();
     let file = index.capture_shared_file("lines.rs").unwrap();
 
     let result = format::file_content_from_indexed_file_with_context(
@@ -883,7 +883,7 @@ fn test_persist_round_trip() {
 
     // Serialize it
     {
-        let guard = shared.read().unwrap();
+        let guard = shared.read();
         persist::serialize_index(&guard, dir.path()).expect("serialize should succeed");
     }
 
@@ -908,7 +908,7 @@ fn test_persist_round_trip() {
     // Convert snapshot back to LiveIndex and wrap in Arc<RwLock>
     let loaded_index = persist::snapshot_to_live_index(snapshot);
     let shared_loaded = tokenizor_agentic_mcp::live_index::SharedIndexHandle::shared(loaded_index);
-    let loaded = shared_loaded.read().unwrap();
+    let loaded = shared_loaded.read();
 
     // Verify file count matches
     assert_eq!(loaded.file_count(), 2, "loaded index should have 2 files");
@@ -966,7 +966,7 @@ fn test_persist_corrupt_fallback() {
     // Verify we can still load a real index after corrupt fallback
     write_file(dir.path(), "a.rs", "fn alpha() {}");
     let shared = LiveIndex::load(dir.path()).unwrap();
-    let index = shared.read().unwrap();
+    let index = shared.read();
     assert_eq!(
         index.file_count(),
         1,

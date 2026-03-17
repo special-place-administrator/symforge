@@ -65,7 +65,7 @@ fn main() {
 }
 "#;
     let (_dir, shared) = build_index(&[("src.rs", content)]);
-    let index = shared.read().unwrap();
+    let index = shared.read();
 
     // find_references_for_name should return the call to process from main
     let refs = index.find_references_for_name("process", None, false);
@@ -98,7 +98,7 @@ def run():
     return path
 "#;
     let (_dir, shared) = build_index(&[("app.py", content)]);
-    let index = shared.read().unwrap();
+    let index = shared.read();
 
     // Verify Import references exist for "os"
     let import_refs = index.find_references_for_name("os", None, true);
@@ -162,7 +162,7 @@ interface Config {
 }
 "#;
     let (_dir, shared) = build_index(&[("lib.ts", content)]);
-    let index = shared.read().unwrap();
+    let index = shared.read();
 
     // "string" is a TypeScript built-in — should be filtered out by default
     let refs = index.find_references_for_name("string", None, false);
@@ -196,7 +196,7 @@ fn build_map() -> Map<String, i32> {
 }
 "#;
     let (_dir, shared) = build_index(&[("src.rs", content)]);
-    let index = shared.read().unwrap();
+    let index = shared.read();
 
     // Searching for "HashMap" should find references via the "Map" alias
     let refs = index.find_references_for_name("HashMap", None, false);
@@ -248,7 +248,7 @@ fn swap<K, V>(k: K, v: V) -> (V, K) {
 }
 "#;
     let (_dir, shared) = build_index(&[("src.rs", content)]);
-    let index = shared.read().unwrap();
+    let index = shared.read();
 
     // Single-letter generic "T" should be filtered by default
     let filtered = index.find_references_for_name("T", None, false);
@@ -280,7 +280,7 @@ fn inner() {
 }
 "#;
     let (_dir, shared) = build_index(&[("src.rs", content)]);
-    let index = shared.read().unwrap();
+    let index = shared.read();
 
     let file_path = index
         .all_files()
@@ -335,7 +335,7 @@ fn caller() {
     let shared = LiveIndex::load(dir.path()).expect("LiveIndex::load failed");
 
     {
-        let index = shared.read().unwrap();
+        let index = shared.read();
         let refs = index.find_references_for_name("original_call", None, false);
         assert!(
             !refs.is_empty(),
@@ -349,7 +349,7 @@ fn caller() {
     // Reload the entire index (full re-parse triggered by file change)
     // This proves XREF-08: after re-parse, reverse_index reflects new references
     {
-        let mut index = shared.write().unwrap();
+        let mut index = shared.write();
         index
             .reload(dir.path())
             .expect("reload should succeed after file change");
@@ -357,7 +357,7 @@ fn caller() {
 
     // After reload: reverse index should reflect new reference
     {
-        let index = shared.read().unwrap();
+        let index = shared.read();
         let old_refs = index.find_references_for_name("original_call", None, false);
         let new_refs = index.find_references_for_name("updated_call", None, false);
 
@@ -394,7 +394,7 @@ fn handle_request() {
 "#;
 
     let (_dir, shared) = build_index(&[("db.rs", db_content), ("handler.rs", handler_content)]);
-    let index = shared.read().unwrap();
+    let index = shared.read();
 
     // Find the actual path key for "db.rs"
     let db_path = index
@@ -435,7 +435,7 @@ fn main() {
 }
 "#;
     let (_dir, shared) = build_index(&[("src.rs", content)]);
-    let index = shared.read().unwrap();
+    let index = shared.read();
 
     let result = format::find_references_result(&index, "process", None);
     // Verify the formatter produces human-readable output (not empty, not error)
@@ -482,7 +482,7 @@ pub fn target_fn() -> i32 {
     write_file(dir.path(), "target.rs", target_content);
 
     let shared = LiveIndex::load(dir.path()).expect("LiveIndex::load failed");
-    let index = shared.read().unwrap();
+    let index = shared.read();
 
     assert_eq!(
         index.file_count(),

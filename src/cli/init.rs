@@ -1,12 +1,13 @@
-//! `tokenizor init` command — client-aware Claude/Codex configuration.
+//! `tokenizor init` command — client-aware Claude/Codex/Gemini/Kilo Code configuration.
 //!
 //! Strategy:
 //! 1. Discover the absolute path of the running tokenizor binary.
-//! 2. Configure Claude, Codex, or both based on the selected client target.
+//! 2. Configure Claude, Codex, Gemini, Kilo Code, or all based on the selected client target.
 //! 3. For Claude, merge tokenizor hook entries into `~/.claude/settings.json`
 //!    and register the MCP server in `~/.claude.json`.
 //! 4. For Codex, register the MCP server in `~/.codex/config.toml`.
-//! 5. Create `.tokenizor/` in the current working directory (runtime needs it).
+//! 5. For Kilo Code, register the MCP server in `.kilocode/mcp.json` (workspace-local).
+//! 6. Create `.tokenizor/` in the current working directory (runtime needs it).
 //!
 //! Identification: any hook entry whose `hooks[].command` contains the substring
 //! `"tokenizor hook"` is considered a tokenizor-owned entry and will be replaced.
@@ -32,10 +33,17 @@ struct InitPaths {
     codex_agents: PathBuf,
     gemini_settings: PathBuf,
     gemini_memory: PathBuf,
+    kilo_vscode_config: PathBuf,
 }
 
 impl InitPaths {
+    #[allow(dead_code)]
+
     fn from_home(home: &std::path::Path) -> Self {
+        Self::from_home_and_working_dir(home, &std::env::current_dir().unwrap_or_default())
+    }
+
+    fn from_home_and_working_dir(home: &std::path::Path, working_dir: &std::path::Path) -> Self {
         Self {
             claude_settings: home.join(".claude").join("settings.json"),
             claude_config: home.join(".claude.json"),
@@ -44,6 +52,7 @@ impl InitPaths {
             codex_agents: home.join(".codex").join("AGENTS.md"),
             gemini_settings: home.join(".gemini").join("settings.json"),
             gemini_memory: home.join(".gemini").join("GEMINI.md"),
+            kilo_vscode_config: working_dir.join(".kilocode").join("mcp.json"),
         }
     }
 }
@@ -70,7 +79,7 @@ pub fn run_init_with_context(
     working_dir: &std::path::Path,
     binary_path: &std::path::Path,
 ) -> anyhow::Result<()> {
-    let paths = InitPaths::from_home(home_dir);
+    let paths = InitPaths::from_home_and_working_dir(home_dir, working_dir);
     let binary_path_str = binary_path.display().to_string();
 
     if matches!(client, InitClient::Claude | InitClient::All) {
@@ -118,6 +127,14 @@ pub fn run_init_with_context(
         eprintln!(
             "Gemini guidance written to {}",
             paths.gemini_memory.display()
+        );
+    }
+
+    if matches!(client, InitClient::KiloCode | InitClient::All) {
+        register_kilo_mcp_server(&paths.kilo_vscode_config, &binary_path_str)?;
+        eprintln!(
+            "Kilo Code MCP server registered in {}",
+            paths.kilo_vscode_config.display()
         );
     }
 
@@ -198,6 +215,24 @@ const TOKENIZOR_TOOL_NAMES: &[&str] = &[
     "mcp__tokenizor__what_changed",
     "mcp__tokenizor__get_co_changes",
     "mcp__tokenizor__diff_symbols",
+];
+
+/// Tool names allowed by default for the Kilo Code VS Code extension.
+///
+/// Kilo Code uses bare tool names (no `mcp__tokenizor__` prefix).
+const KILO_ALWAYS_ALLOW: &[&str] = &[
+    "health",
+    "get_repo_map",
+    "search_symbols",
+    "search_text",
+    "get_file_context",
+    "get_symbol",
+    "get_symbols",
+    "get_symbol_context",
+    "trace_symbol",
+    "find_references",
+    "explore",
+    "get_file_outline",
 ];
 
 fn merge_allowed_tools(settings: &mut Value) {
@@ -506,6 +541,52 @@ pub fn register_gemini_mcp_server(
     let pretty = serde_json::to_string_pretty(&config)?;
     std::fs::write(gemini_settings_path, pretty)
         .with_context(|| format!("writing {}", gemini_settings_path.display()))?;
+    Ok(())
+}
+
+/// Register tokenizor as an MCP server in `.kilocode/mcp.json` (workspace-local).
+///
+/// Kilo Code (VS Code extension) stores MCP servers under `mcpServers` in a JSON
+/// config file. Unlike Claude/Codex/Gemini, this file lives in the project directory
+/// rather than the user's home directory.
+pub fn register_kilo_mcp_server(
+    kilo_config_path: &std::path::Path,
+    binary_path: &str,
+) -> anyhow::Result<()> {
+    if let Some(parent) = kilo_config_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+
+    let mut config: Value = if kilo_config_path.exists() {
+        let raw = std::fs::read_to_string(kilo_config_path)
+            .with_context(|| format!("reading {}", kilo_config_path.display()))?;
+        serde_json::from_str(&raw)
+            .with_context(|| format!("parsing {}", kilo_config_path.display()))?
+    } else {
+        json!({})
+    };
+
+    let command_path = native_command_path(binary_path);
+
+    if !config["mcpServers"].is_object() {
+        config["mcpServers"] = json!({});
+    }
+
+    let always_allow: Vec<Value> = KILO_ALWAYS_ALLOW
+        .iter()
+        .map(|s| Value::String(s.to_string()))
+        .collect();
+
+    config["mcpServers"]["tokenizor"] = json!({
+        "command": command_path,
+        "args": ["--stdio"],
+        "alwaysAllow": always_allow
+    });
+
+    let pretty = serde_json::to_string_pretty(&config)?;
+    std::fs::write(kilo_config_path, pretty)
+        .with_context(|| format!("writing {}", kilo_config_path.display()))?;
     Ok(())
 }
 

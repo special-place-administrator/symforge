@@ -63,7 +63,7 @@ fn test_all_config_types_discovered_and_indexed() {
     );
 
     let shared = LiveIndex::load(dir.path()).unwrap();
-    let index = shared.read().unwrap();
+    let index = shared.read();
 
     assert_eq!(
         index.index_state(),

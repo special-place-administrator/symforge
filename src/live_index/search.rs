@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use globset::{GlobBuilder, GlobMatcher};
 
@@ -445,6 +445,7 @@ pub struct TextSearchOptions {
     pub context: Option<usize>,
     pub case_sensitive: Option<bool>,
     pub whole_word: bool,
+    pub ranked: bool,
 }
 
 impl Default for TextSearchOptions {
@@ -461,6 +462,7 @@ impl Default for TextSearchOptions {
             context: None,
             case_sensitive: None,
             whole_word: false,
+            ranked: false,
         }
     }
 }
@@ -483,6 +485,7 @@ impl TextSearchOptions {
             context: None,
             case_sensitive: None,
             whole_word: false,
+            ranked: false,
         }
     }
 }
@@ -914,6 +917,7 @@ pub fn search_text_with_options(
             search_scope: options.search_scope,
             noise_policy: options.noise_policy,
             context: options.context,
+            ranked: options.ranked,
         };
         &effective_options
     } else {
@@ -1003,6 +1007,61 @@ fn compile_literal_whole_word_matcher(terms: &[String], case_sensitive: bool) ->
         .case_insensitive(!case_sensitive)
         .build()
         .expect("escaped literal whole-word matcher should compile")
+}
+
+/// Returns a 0.0–1.0 priority score based on symbol kind.
+pub(crate) fn symbol_kind_priority(kind: &str) -> f32 {
+    match kind {
+        "function" | "method" | "async_function" | "generator" => 1.0,
+        "class" | "struct" | "enum" | "interface" | "trait" | "union" => 0.8,
+        "impl" | "implementation" => 0.7,
+        "module" | "namespace" => 0.5,
+        "constant" | "const" => 0.4,
+        "variable" | "type" | "type_alias" => 0.3,
+        "key" | "section" | "property" | "field" => 0.2,
+        _ => 0.1,
+    }
+}
+
+/// Compute a semantic importance score for a file's search results.
+/// Combines match count, caller connectivity, and symbol kind.
+fn compute_importance_score(
+    file_matches: &TextFileMatches,
+    match_count_max: usize,
+    reverse_index: &HashMap<String, Vec<super::store::ReferenceLocation>>,
+    churn_score: f32,
+) -> f32 {
+    let match_count_norm = if match_count_max > 0 {
+        file_matches.matches.len() as f32 / match_count_max as f32
+    } else {
+        0.0
+    };
+
+    // Find max caller count among enclosing symbols
+    let max_callers = file_matches
+        .matches
+        .iter()
+        .filter_map(|m| m.enclosing_symbol.as_ref())
+        .map(|sym| {
+            reverse_index
+                .get(&sym.name)
+                .map(|refs| refs.len())
+                .unwrap_or(0)
+        })
+        .max()
+        .unwrap_or(0);
+    let caller_norm = (max_callers as f32 / 20.0).min(1.0);
+
+    // Find max kind priority among enclosing symbols
+    let max_kind = file_matches
+        .matches
+        .iter()
+        .filter_map(|m| m.enclosing_symbol.as_ref())
+        .map(|sym| symbol_kind_priority(&sym.kind))
+        .fold(0.0f32, f32::max);
+
+    // Composite score
+    0.30 * match_count_norm + 0.40 * caller_norm + 0.15 * churn_score + 0.15 * max_kind
 }
 
 fn collect_text_matches<F>(
@@ -1147,6 +1206,20 @@ where
                 callers: None,
             });
         }
+    }
+
+    // Apply semantic re-ranking when requested.
+    if options.ranked {
+        let match_count_max = files.iter().map(|f| f.matches.len()).max().unwrap_or(1);
+        files.sort_by(|a, b| {
+            let score_a =
+                compute_importance_score(a, match_count_max, &index.reverse_index, 0.0);
+            let score_b =
+                compute_importance_score(b, match_count_max, &index.reverse_index, 0.0);
+            score_b
+                .partial_cmp(&score_a)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
     }
 
     TextSearchResult {
@@ -1584,6 +1657,7 @@ mod tests {
             context: None,
             case_sensitive: None,
             whole_word: false,
+            ranked: false,
         };
 
         let result = search_text_with_options(&index, Some("needle"), None, false, &options)
@@ -1621,6 +1695,7 @@ mod tests {
             context: None,
             case_sensitive: None,
             whole_word: false,
+            ranked: false,
         };
 
         let result = search_text_with_options(&index, Some("needle"), None, false, &options)
@@ -2090,6 +2165,121 @@ mod tests {
         assert_eq!(
             NoisePolicy::classify_path("build/other.js", Some(&gi)),
             NoiseClass::Ignored
+        );
+    }
+
+    #[test]
+    fn test_symbol_kind_priority() {
+        assert_eq!(symbol_kind_priority("function"), 1.0);
+        assert_eq!(symbol_kind_priority("method"), 1.0);
+        assert_eq!(symbol_kind_priority("async_function"), 1.0);
+        assert_eq!(symbol_kind_priority("struct"), 0.8);
+        assert_eq!(symbol_kind_priority("class"), 0.8);
+        assert_eq!(symbol_kind_priority("enum"), 0.8);
+        assert_eq!(symbol_kind_priority("trait"), 0.8);
+        assert_eq!(symbol_kind_priority("impl"), 0.7);
+        assert_eq!(symbol_kind_priority("module"), 0.5);
+        assert_eq!(symbol_kind_priority("constant"), 0.4);
+        assert_eq!(symbol_kind_priority("variable"), 0.3);
+        assert_eq!(symbol_kind_priority("key"), 0.2);
+        assert!(symbol_kind_priority("unknown") > 0.0);
+        assert_eq!(symbol_kind_priority("unknown"), 0.1);
+    }
+
+    #[test]
+    fn test_ranked_reorders_by_importance() {
+        use crate::live_index::store::ReferenceLocation;
+
+        // Create two TextFileMatches: one with many callers, one with few.
+        let file_a = TextFileMatches {
+            path: "a.rs".to_string(),
+            matches: vec![
+                TextLineMatch {
+                    line_number: 10,
+                    line: "let x = 1;".to_string(),
+                    enclosing_symbol: Some(EnclosingMatchSymbol {
+                        name: "dead_code_fn".to_string(),
+                        kind: "function".to_string(),
+                        line_range: (1, 20),
+                    }),
+                },
+            ],
+            rendered_lines: None,
+            callers: None,
+        };
+
+        let file_b = TextFileMatches {
+            path: "b.rs".to_string(),
+            matches: vec![
+                TextLineMatch {
+                    line_number: 5,
+                    line: "let y = 2;".to_string(),
+                    enclosing_symbol: Some(EnclosingMatchSymbol {
+                        name: "popular_fn".to_string(),
+                        kind: "function".to_string(),
+                        line_range: (1, 10),
+                    }),
+                },
+            ],
+            rendered_lines: None,
+            callers: None,
+        };
+
+        // Build a reverse index where popular_fn has 20 callers, dead_code_fn has 0.
+        let mut reverse_index: HashMap<String, Vec<ReferenceLocation>> = HashMap::new();
+        let refs: Vec<ReferenceLocation> = (0..20)
+            .map(|i| ReferenceLocation {
+                file_path: format!("caller_{}.rs", i),
+                reference_idx: 0,
+            })
+            .collect();
+        reverse_index.insert("popular_fn".to_string(), refs);
+        // dead_code_fn has no entries in reverse_index.
+
+        let match_count_max = 1;
+
+        let score_a = compute_importance_score(&file_a, match_count_max, &reverse_index, 0.0);
+        let score_b = compute_importance_score(&file_b, match_count_max, &reverse_index, 0.0);
+
+        // file_b (popular_fn) should score higher than file_a (dead_code_fn)
+        assert!(
+            score_b > score_a,
+            "Expected popular_fn score ({}) > dead_code_fn score ({})",
+            score_b,
+            score_a,
+        );
+    }
+
+    #[test]
+    fn test_compute_importance_score_with_churn() {
+        use crate::live_index::store::ReferenceLocation;
+
+        let file = TextFileMatches {
+            path: "c.rs".to_string(),
+            matches: vec![TextLineMatch {
+                line_number: 1,
+                line: "test".to_string(),
+                enclosing_symbol: Some(EnclosingMatchSymbol {
+                    name: "some_fn".to_string(),
+                    kind: "function".to_string(),
+                    line_range: (1, 5),
+                }),
+            }],
+            rendered_lines: None,
+            callers: None,
+        };
+
+        let reverse_index: HashMap<String, Vec<ReferenceLocation>> = HashMap::new();
+
+        let score_no_churn = compute_importance_score(&file, 1, &reverse_index, 0.0);
+        let score_high_churn = compute_importance_score(&file, 1, &reverse_index, 1.0);
+
+        // Higher churn should increase the score.
+        assert!(
+            score_high_churn > score_no_churn,
+            "Expected high churn score ({}) > no churn score ({})",
+            score_high_churn,
+            score_no_churn,
         );
     }
 }

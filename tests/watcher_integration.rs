@@ -86,7 +86,7 @@ async fn test_watcher_detects_modify_and_updates_index() {
 
     // Verify initial state
     {
-        let index = shared.read().unwrap();
+        let index = shared.read();
         let file = index
             .get_file("src/hello.rs")
             .expect("src/hello.rs should be indexed");
@@ -106,7 +106,7 @@ async fn test_watcher_detects_modify_and_updates_index() {
 
     // Verify index reflects the updated symbol
     {
-        let index = shared.read().unwrap();
+        let index = shared.read();
         let file = index
             .get_file("src/hello.rs")
             .expect("src/hello.rs should still be in index");
@@ -139,7 +139,7 @@ async fn test_watcher_indexes_new_file() {
     write_file(dir.path(), "src/existing.rs", "fn existing() {}");
 
     let shared = LiveIndex::load(dir.path()).unwrap();
-    let initial_count = shared.read().unwrap().file_count();
+    let initial_count = shared.read().file_count();
 
     let _watcher_info = spawn_watcher(&dir, &shared).await;
 
@@ -150,7 +150,7 @@ async fn test_watcher_indexes_new_file() {
 
     // Verify the new file is now in the index
     {
-        let index = shared.read().unwrap();
+        let index = shared.read();
         let new_count = index.file_count();
         assert_eq!(
             new_count,
@@ -189,7 +189,7 @@ async fn test_watcher_removes_deleted_file() {
 
     // Verify initial state — to_delete.rs is in the index
     {
-        let index = shared.read().unwrap();
+        let index = shared.read();
         assert_eq!(index.file_count(), 2, "should have 2 files initially");
         assert!(
             index.get_file("src/to_delete.rs").is_some(),
@@ -206,7 +206,7 @@ async fn test_watcher_removes_deleted_file() {
 
     // Verify the file has been removed from the index
     {
-        let index = shared.read().unwrap();
+        let index = shared.read();
         assert!(
             index.get_file("src/to_delete.rs").is_none(),
             "FRSH-05: src/to_delete.rs should be removed from index after deletion"
@@ -245,7 +245,7 @@ async fn test_watcher_hash_skip_on_noop_write() {
 
     // Capture initial symbol names
     let initial_symbols: Vec<String> = {
-        let index = shared.read().unwrap();
+        let index = shared.read();
         let file = index.get_file("src/stable.rs").unwrap();
         file.symbols.iter().map(|s| s.name.clone()).collect()
     };
@@ -261,7 +261,7 @@ async fn test_watcher_hash_skip_on_noop_write() {
     // Symbols should be identical (hash-skip means no re-parse happened,
     // but even if it did, the result should be the same)
     {
-        let index = shared.read().unwrap();
+        let index = shared.read();
         let file = index
             .get_file("src/stable.rs")
             .expect("src/stable.rs should still be indexed after noop write");
@@ -307,7 +307,7 @@ async fn test_watcher_enoent_handled_gracefully() {
     // Verify no panic (if we reach here, no panic occurred)
     // Verify file removed from index
     {
-        let index = shared.read().unwrap();
+        let index = shared.read();
         assert!(
             index.get_file("src/fragile.rs").is_none(),
             "RELY-03: fragile.rs should be removed from index after deletion"
@@ -431,7 +431,7 @@ async fn test_watcher_ignores_non_source_files() {
     write_file(dir.path(), "src/code.rs", "fn main() {}");
 
     let shared = LiveIndex::load(dir.path()).unwrap();
-    let initial_count = shared.read().unwrap().file_count();
+    let initial_count = shared.read().file_count();
 
     let _watcher_info = spawn_watcher(&dir, &shared).await;
 
@@ -443,7 +443,7 @@ async fn test_watcher_ignores_non_source_files() {
 
     // Verify file count unchanged (.txt and .csv not indexed)
     {
-        let index = shared.read().unwrap();
+        let index = shared.read();
         assert_eq!(
             index.file_count(),
             initial_count,

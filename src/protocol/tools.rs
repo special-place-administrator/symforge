@@ -115,6 +115,50 @@ fn lenient_i64<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<i64>
     }
 }
 
+/// Leniently deserialize an `Option<Vec<T>>` — accepts a native JSON array *or*
+/// a stringified JSON array (as sent by some MCP clients like Kilo Code).
+pub(crate) fn lenient_option_vec<'de, D, T>(deserializer: D) -> Result<Option<Vec<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum VecOrStr<T> {
+        Vec(Vec<T>),
+        Str(String),
+        Null,
+    }
+    match VecOrStr::<T>::deserialize(deserializer)? {
+        VecOrStr::Vec(v) => Ok(Some(v)),
+        VecOrStr::Str(s) if s.is_empty() || s == "null" => Ok(None),
+        VecOrStr::Str(s) => serde_json::from_str::<Vec<T>>(&s)
+            .map(Some)
+            .map_err(serde::de::Error::custom),
+        VecOrStr::Null => Ok(None),
+    }
+}
+
+/// Leniently deserialize a `Vec<T>` — accepts a native JSON array *or*
+/// a stringified JSON array (as sent by some MCP clients like Kilo Code).
+pub(crate) fn lenient_vec_required<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum VecOrStr<T> {
+        Vec(Vec<T>),
+        Str(String),
+    }
+    match VecOrStr::<T>::deserialize(deserializer)? {
+        VecOrStr::Vec(v) => Ok(v),
+        VecOrStr::Str(s) => serde_json::from_str::<Vec<T>>(&s)
+            .map_err(serde::de::Error::custom),
+    }
+}
+
 use crate::domain::LanguageId;
 use crate::live_index::{
     IndexedFile, SearchFilesHit, SearchFilesTier, SearchFilesView, search, store::IndexState,
@@ -152,7 +196,7 @@ pub struct GetSymbolInput {
     pub kind: Option<String>,
     /// Optional batch mode: provide multiple targets to retrieve 2+ symbols or code slices in one call.
     /// Each target is a file path + symbol name or byte range. When provided, path/name/kind above are ignored.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_option_vec")]
     pub targets: Option<Vec<SymbolTarget>>,
 }
 
@@ -179,6 +223,7 @@ pub struct SymbolTarget {
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct GetSymbolsInput {
     /// List of symbol or code-slice targets.
+    #[serde(deserialize_with = "lenient_vec_required")]
     pub targets: Vec<SymbolTarget>,
 }
 
@@ -212,6 +257,7 @@ pub struct SearchTextInput {
     /// Search query (case-insensitive substring match unless `regex` is true).
     pub query: Option<String>,
     /// Optional list of terms to match with OR semantics.
+    #[serde(default, deserialize_with = "lenient_option_vec")]
     pub terms: Option<Vec<String>>,
     /// Interpret `query` as a regex pattern instead of a literal substring.
     #[serde(default, deserialize_with = "lenient_bool")]
@@ -254,6 +300,10 @@ pub struct SearchTextInput {
     /// Max number of file matches to enrich with callers when follow_refs=true (default 3).
     #[serde(default, deserialize_with = "lenient_u32")]
     pub follow_refs_limit: Option<u32>,
+    /// When true, re-rank results by semantic importance (caller count, churn, symbol kind)
+    /// rather than simple match count. Default: false.
+    #[serde(default, deserialize_with = "lenient_bool")]
+    pub ranked: Option<bool>,
 }
 
 /// Input for `search_files`.
@@ -461,7 +511,7 @@ pub struct GetFileContextInput {
     #[serde(default, deserialize_with = "lenient_u64")]
     pub max_tokens: Option<u64>,
     /// Optional list of sections to include. Allowed values: "outline", "imports", "consumers", "references", "git". Omit to include all sections.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_option_vec")]
     pub sections: Option<Vec<String>>,
 }
 
@@ -488,7 +538,7 @@ pub struct GetSymbolContextInput {
     /// callers, callees, implementations, type dependencies, git activity.
     /// Valid values: "dependents", "siblings", "implementations", "git".
     /// Omit for default symbol-context mode. Pass empty array for all trace sections.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_option_vec")]
     pub sections: Option<Vec<String>>,
     /// Optional max token budget for bundle mode. When set, truncates the rendered
     /// output at the nearest line boundary before the approximate token budget
@@ -528,6 +578,7 @@ pub struct TraceSymbolInput {
     pub symbol_line: Option<u32>,
     /// Optional list of output sections to include. When omitted, all sections are included.
     /// Valid values: "dependents", "siblings", "implementations", "git".
+    #[serde(default, deserialize_with = "lenient_option_vec")]
     pub sections: Option<Vec<String>>,
     /// Output verbosity: "signature" (name+params+return only, ~80% smaller), "compact" (signature + first doc line), "full" (default — complete body).
     pub verbosity: Option<String>,
@@ -811,6 +862,7 @@ fn search_text_options_from_input(
         context: input.context.map(|context| context as usize),
         case_sensitive: input.case_sensitive,
         whole_word: input.whole_word.unwrap_or(false),
+        ranked: input.ranked.unwrap_or(false),
     })
 }
 
@@ -4730,6 +4782,7 @@ mod tests {
                 group_by: None,
                 follow_refs: None,
                 follow_refs_limit: None,
+                ranked: None,
             }))
             .await;
         assert!(
@@ -4765,6 +4818,7 @@ mod tests {
                 group_by: None,
                 follow_refs: None,
                 follow_refs_limit: None,
+                ranked: None,
             }))
             .await;
         assert!(
@@ -4806,6 +4860,7 @@ mod tests {
                 group_by: None,
                 follow_refs: None,
                 follow_refs_limit: None,
+                ranked: None,
             }))
             .await;
 
@@ -4856,6 +4911,7 @@ mod tests {
                 group_by: None,
                 follow_refs: None,
                 follow_refs_limit: None,
+                ranked: None,
             }))
             .await;
 
@@ -4906,6 +4962,7 @@ mod tests {
                 group_by: None,
                 follow_refs: None,
                 follow_refs_limit: None,
+                ranked: None,
             }))
             .await;
 
@@ -4948,6 +5005,7 @@ mod tests {
                 group_by: None,
                 follow_refs: None,
                 follow_refs_limit: None,
+                ranked: None,
             }))
             .await;
 
@@ -4993,6 +5051,7 @@ mod tests {
                 group_by: None,
                 follow_refs: None,
                 follow_refs_limit: None,
+                ranked: None,
             }))
             .await;
 
@@ -5029,6 +5088,7 @@ mod tests {
                 group_by: None,
                 follow_refs: None,
                 follow_refs_limit: None,
+                ranked: None,
             }))
             .await;
 
@@ -5077,6 +5137,7 @@ mod tests {
                 group_by: None,
                 follow_refs: None,
                 follow_refs_limit: None,
+                ranked: None,
             }))
             .await;
 
@@ -5111,6 +5172,7 @@ mod tests {
                 group_by: None,
                 follow_refs: None,
                 follow_refs_limit: None,
+                ranked: None,
             }))
             .await;
 
@@ -7215,6 +7277,7 @@ mod tests {
                 group_by: None,
                 follow_refs: None,
                 follow_refs_limit: None,
+                ranked: None,
             }))
             .await;
         assert!(
@@ -7252,6 +7315,7 @@ mod tests {
                 group_by: Some("symbol".to_string()),
                 follow_refs: None,
                 follow_refs_limit: None,
+                ranked: None,
             }))
             .await;
         // With group_by: "symbol", should show symbol name and match count
@@ -7290,6 +7354,7 @@ mod tests {
                 group_by: Some("usage".to_string()),
                 follow_refs: None,
                 follow_refs_limit: None,
+                ranked: None,
             }))
             .await;
         // Should exclude the "use" import line
@@ -7362,6 +7427,7 @@ mod tests {
                 group_by: None,
                 follow_refs: Some(true),
                 follow_refs_limit: None,
+                ranked: None,
             }))
             .await;
         // Should show that connect() is called by handler() in src/api.rs
@@ -7402,6 +7468,7 @@ mod tests {
                 group_by: None,
                 follow_refs: Some(true),
                 follow_refs_limit: None,
+                ranked: None,
             }))
             .await;
         // follow_refs ran but found no cross-references — should signal this explicitly
@@ -7993,6 +8060,7 @@ mod tests {
                 group_by: None,
                 follow_refs: None,
                 follow_refs_limit: None,
+                ranked: None,
                 context: None,
                 limit: None,
                 max_per_file: None,
@@ -8325,5 +8393,77 @@ mod tests {
         assert_eq!(normalize_search_text_glob(Some("")), None);
         assert_eq!(normalize_search_text_glob(Some("  ")), None);
         assert_eq!(normalize_search_text_glob(None), None);
+    }
+
+    #[test]
+    fn test_lenient_option_vec_native_array() {
+        use serde::Deserialize;
+        #[derive(Deserialize)]
+        struct T {
+            #[serde(default, deserialize_with = "super::lenient_option_vec")]
+            items: Option<Vec<String>>,
+        }
+        let t: T = serde_json::from_str(r#"{"items": ["a", "b"]}"#).unwrap();
+        assert_eq!(t.items, Some(vec!["a".to_string(), "b".to_string()]));
+    }
+
+    #[test]
+    fn test_lenient_option_vec_stringified_array() {
+        use serde::Deserialize;
+        #[derive(Deserialize)]
+        struct T {
+            #[serde(default, deserialize_with = "super::lenient_option_vec")]
+            items: Option<Vec<String>>,
+        }
+        let t: T = serde_json::from_str(r#"{"items": "[\"a\", \"b\"]"}"#).unwrap();
+        assert_eq!(t.items, Some(vec!["a".to_string(), "b".to_string()]));
+    }
+
+    #[test]
+    fn test_lenient_option_vec_null() {
+        use serde::Deserialize;
+        #[derive(Deserialize)]
+        struct T {
+            #[serde(default, deserialize_with = "super::lenient_option_vec")]
+            items: Option<Vec<String>>,
+        }
+        let t: T = serde_json::from_str(r#"{"items": null}"#).unwrap();
+        assert_eq!(t.items, None);
+    }
+
+    #[test]
+    fn test_lenient_option_vec_empty_string() {
+        use serde::Deserialize;
+        #[derive(Deserialize)]
+        struct T {
+            #[serde(default, deserialize_with = "super::lenient_option_vec")]
+            items: Option<Vec<String>>,
+        }
+        let t: T = serde_json::from_str(r#"{"items": ""}"#).unwrap();
+        assert_eq!(t.items, None);
+    }
+
+    #[test]
+    fn test_lenient_vec_required_native() {
+        use serde::Deserialize;
+        #[derive(Deserialize)]
+        struct T {
+            #[serde(deserialize_with = "super::lenient_vec_required")]
+            items: Vec<String>,
+        }
+        let t: T = serde_json::from_str(r#"{"items": ["x"]}"#).unwrap();
+        assert_eq!(t.items, vec!["x".to_string()]);
+    }
+
+    #[test]
+    fn test_lenient_vec_required_stringified() {
+        use serde::Deserialize;
+        #[derive(Deserialize)]
+        struct T {
+            #[serde(deserialize_with = "super::lenient_vec_required")]
+            items: Vec<String>,
+        }
+        let t: T = serde_json::from_str(r#"{"items": "[\"x\"]"}"#).unwrap();
+        assert_eq!(t.items, vec!["x".to_string()]);
     }
 }

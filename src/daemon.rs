@@ -206,9 +206,11 @@ pub struct DaemonHealth {
 
 #[derive(Clone)]
 struct SessionRuntime {
+    #[allow(dead_code)]
     project_name: String,
     canonical_root: PathBuf,
     index: SharedIndex,
+    #[allow(dead_code)]
     watcher_info: Arc<Mutex<WatcherInfo>>,
     token_stats: Arc<TokenStats>,
     symbol_cache: Arc<RwLock<HashMap<String, Vec<SymbolSnapshot>>>>,

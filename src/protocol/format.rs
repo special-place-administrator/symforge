@@ -813,6 +813,7 @@ pub fn repo_outline(index: &LiveIndex, project_name: &str) -> String {
     repo_outline_view(&view, project_name)
 }
 
+#[allow(dead_code)]
 fn repo_outline_display_labels(
     files: &[RepoOutlineFileView],
 ) -> std::collections::HashMap<String, String> {
