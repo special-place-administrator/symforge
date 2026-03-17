@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.0.0](https://github.com/special-place-administrator/symforge/compare/v0.33.0...v1.0.0) (2026-03-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* rename Tokenizor → SymForge
+
+### Features
+
+* rename Tokenizor → SymForge ([6366cd0](https://github.com/special-place-administrator/symforge/commit/6366cd0c7f51bc496cceb6ae255e22d95f109183))
+
+
+### Bug Fixes
+
+* restore missing [[package]] header in Cargo.lock after rebase conflict resolution ([67d9327](https://github.com/special-place-administrator/symforge/commit/67d932778c02a9899ffec904560868927604d968))
+
 ## [Unreleased]
 
 ### ⚠ BREAKING CHANGES
