@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./symforge-banner.png" alt="SymForge" width="80%">
+  <img src="./symforge-banner.png" alt="SymForge" width="100%">
 </p>
 
 ```bash
