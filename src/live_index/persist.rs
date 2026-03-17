@@ -96,7 +96,7 @@ pub fn serialize_shared_index(
     project_root: &Path,
 ) -> anyhow::Result<()> {
     let snapshot_input = {
-        let guard = shared.read().expect("lock not poisoned");
+        let guard = shared.read();
         capture_snapshot_build_input(&guard)
     };
     serialize_captured_snapshot(snapshot_input, project_root)
@@ -422,7 +422,7 @@ pub async fn background_verify(
 
     // 1. Stat-check all files (fast: just metadata reads)
     let verify_view = {
-        let guard = index.read().expect("lock not poisoned");
+        let guard = index.read();
         capture_verify_view(&guard)
     };
     let stat_result = stat_check_files_from_view(&verify_view, &snapshot_mtimes, &root);
@@ -478,7 +478,7 @@ pub async fn background_verify(
 
     // 4. Spot-verify sample (10%) for content hash mismatches
     let verify_view = {
-        let guard = index.read().expect("lock not poisoned");
+        let guard = index.read();
         capture_verify_view(&guard)
     };
     let spot_mismatches = spot_verify_sample_from_view(&verify_view, &root, 0.10);
@@ -689,14 +689,14 @@ mod tests {
         let shared = crate::live_index::SharedIndexHandle::shared(loaded);
 
         {
-            let guard = shared.read().unwrap();
+            let guard = shared.read();
             assert_eq!(guard.load_source(), IndexLoadSource::SnapshotRestore);
             assert_eq!(guard.snapshot_verify_state(), SnapshotVerifyState::Pending);
         }
 
         background_verify(shared.clone(), tmp.path().to_path_buf(), snapshot_mtimes).await;
 
-        let guard = shared.read().unwrap();
+        let guard = shared.read();
         assert_eq!(guard.load_source(), IndexLoadSource::SnapshotRestore);
         assert_eq!(
             guard.snapshot_verify_state(),

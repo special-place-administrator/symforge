@@ -152,10 +152,7 @@ fn outline_text(
     params: &OutlineParams,
     options: RenderOptions,
 ) -> Result<String, StatusCode> {
-    let guard = state
-        .index
-        .read()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let guard = state.index.read();
 
     // Return 404 for non-indexed files.
     let file = guard.get_file(&params.path).ok_or(StatusCode::NOT_FOUND)?;
@@ -492,10 +489,7 @@ async fn handle_edit_impact(
                     .collect()
             } else {
                 // No pre-update snapshot — populate from current index.
-                let guard = state
-                    .index
-                    .read()
-                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                let guard = state.index.read();
                 if let Some(file) = guard.get_file(path) {
                     file.symbols
                         .iter()
@@ -515,10 +509,7 @@ async fn handle_edit_impact(
 
     // Get file byte_len from index before re-indexing.
     let file_bytes_pre: u64 = {
-        let guard = state
-            .index
-            .read()
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let guard = state.index.read();
         guard.get_file(path).map(|f| f.byte_len).unwrap_or(0)
     };
 
@@ -538,10 +529,7 @@ async fn handle_edit_impact(
         Err(_) => {
             // File not on disk — remove it from the index so stale data is purged.
             let prev_symbol_count = {
-                let guard = state
-                    .index
-                    .read()
-                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                let guard = state.index.read();
                 guard.get_file(path).map(|f| f.symbols.len()).unwrap_or(0)
             };
             state.index.remove_file(path);
@@ -642,10 +630,7 @@ async fn handle_edit_impact(
         let impacted: Vec<&SymbolSnapshot> =
             changed.iter().chain(removed.iter()).copied().collect();
         if !impacted.is_empty() {
-            let guard = state
-                .index
-                .read()
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let guard = state.index.read();
             let mut callers_lines: Vec<String> = Vec::new();
             for sym in &impacted {
                 let callers = guard.find_references_for_name(&sym.name, None, false);
@@ -718,10 +703,7 @@ fn symbol_context_text(
     params: &SymbolContextParams,
     options: RenderOptions,
 ) -> Result<String, StatusCode> {
-    let guard = state
-        .index
-        .read()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let guard = state.index.read();
 
     let raw = if let Some(path) = params.path.as_deref() {
         match guard.find_exact_references_for_symbol(
@@ -834,10 +816,7 @@ pub async fn repo_map_handler(State(state): State<SidecarState>) -> Result<Strin
 }
 
 pub(crate) fn repo_map_text(state: &SidecarState) -> Result<String, StatusCode> {
-    let guard = state
-        .index
-        .read()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let guard = state.index.read();
 
     let total_files = guard.file_count();
     let total_symbols = guard.symbol_count();
@@ -895,10 +874,7 @@ pub(crate) fn repo_map_text(state: &SidecarState) -> Result<String, StatusCode> 
 
     // Key entry points: top-level structs/traits/interfaces/enums in src/ (depth 0, limit 10).
     {
-        let guard = state
-            .index
-            .read()
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let guard = state.index.read();
         let mut entry_points: Vec<(String, String, String)> = Vec::new(); // (kind, name, path)
         for (path, file) in guard.all_files() {
             // Only source code, skip docs/tests/vendor
@@ -1080,10 +1056,7 @@ fn find_prompt_file_hint(
     state: &SidecarState,
     prompt: &str,
 ) -> Result<Option<PromptFileHint>, StatusCode> {
-    let guard = state
-        .index
-        .read()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let guard = state.index.read();
     let prompt_lower = prompt.to_ascii_lowercase();
     let mut module_match: Option<PromptFileHint> = None;
     let mut module_ambiguous = false;
@@ -1197,10 +1170,7 @@ fn find_prompt_qualified_symbol_hint(
     state: &SidecarState,
     prompt: &str,
 ) -> Result<Option<PromptQualifiedSymbolHint>, StatusCode> {
-    let guard = state
-        .index
-        .read()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let guard = state.index.read();
     let mut qualified_symbol_match: Option<PromptQualifiedSymbolHint> = None;
     let mut qualified_symbol_ambiguous = false;
 
@@ -1244,10 +1214,7 @@ fn find_prompt_symbol_hint(
     state: &SidecarState,
     prompt: &str,
 ) -> Result<Option<String>, StatusCode> {
-    let guard = state
-        .index
-        .read()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let guard = state.index.read();
     for token in prompt_tokens(prompt) {
         if token.len() < 3 || token.contains('/') || token.contains('.') {
             continue;
@@ -1871,7 +1838,7 @@ mod tests {
         assert!(result.is_ok(), "should return Ok, got: {result:?}");
 
         // Verify the file was removed from the index.
-        let guard = state.index.read().unwrap();
+        let guard = state.index.read();
         assert!(
             guard.get_file("src/db.rs").is_none(),
             "deleted file should be removed from index"

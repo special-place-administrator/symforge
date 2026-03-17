@@ -2,7 +2,9 @@ use std::collections::{HashMap, HashSet};
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, LockResult, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, Mutex};
+
+use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant, SystemTime};
 
 use rayon::prelude::*;
@@ -371,32 +373,24 @@ impl SharedIndexHandle {
         Arc::new(Self::new(index))
     }
 
-    pub fn read(&self) -> LockResult<RwLockReadGuard<'_, LiveIndex>> {
+    pub fn read(&self) -> RwLockReadGuard<'_, LiveIndex> {
         self.live.read()
     }
 
-    pub fn write(
-        &self,
-    ) -> std::result::Result<
-        SharedIndexWriteGuard<'_>,
-        std::sync::PoisonError<RwLockWriteGuard<'_, LiveIndex>>,
-    > {
-        self.live.write().map(|guard| SharedIndexWriteGuard {
+    pub fn write(&self) -> SharedIndexWriteGuard<'_> {
+        SharedIndexWriteGuard {
             handle: self,
-            guard,
+            guard: self.live.write(),
             dirty: false,
-        })
+        }
     }
 
     pub fn published_state(&self) -> Arc<PublishedIndexState> {
-        self.published_state.read().expect("lock poisoned").clone()
+        self.published_state.read().clone()
     }
 
     pub fn published_repo_outline(&self) -> Arc<RepoOutlineView> {
-        self.published_repo_outline
-            .read()
-            .expect("lock poisoned")
-            .clone()
+        self.published_repo_outline.read().clone()
     }
 
     pub fn reload(&self, root: &Path) -> anyhow::Result<()> {
@@ -404,14 +398,14 @@ impl SharedIndexHandle {
         // Only the final swap acquires the lock, reducing block time from
         // seconds (full I/O) to milliseconds (in-memory index rebuild).
         let data = LiveIndex::build_reload_data(root)?;
-        let mut live = self.live.write().expect("lock poisoned");
+        let mut live = self.live.write();
         live.apply_reload_data(data);
         self.publish_locked(&live);
         Ok(())
     }
 
     pub fn update_file(&self, path: String, file: IndexedFile) {
-        let mut live = self.live.write().expect("lock poisoned");
+        let mut live = self.live.write();
         // Capture pre-update symbols so analyze_file_impact can diff correctly
         // even when the watcher re-indexes before the hook fires.
         if let Some(existing) = live.get_file(&path) {
@@ -425,34 +419,34 @@ impl SharedIndexHandle {
                     byte_range: s.byte_range,
                 })
                 .collect();
-            if let Ok(mut cache) = self.pre_update_symbols.write() {
-                cache.insert(path.clone(), snapshot);
-            }
+            self.pre_update_symbols
+                .write()
+                .insert(path.clone(), snapshot);
         }
         live.update_file(path, file);
         self.publish_locked(&live);
     }
 
     pub fn add_file(&self, path: String, file: IndexedFile) {
-        let mut live = self.live.write().expect("lock poisoned");
+        let mut live = self.live.write();
         live.add_file(path, file);
         self.publish_locked(&live);
     }
 
     pub fn remove_file(&self, path: &str) {
-        let mut live = self.live.write().expect("lock poisoned");
+        let mut live = self.live.write();
         live.remove_file(path);
         self.publish_locked(&live);
     }
 
     pub fn mark_snapshot_verify_running(&self) {
-        let mut live = self.live.write().expect("lock poisoned");
+        let mut live = self.live.write();
         live.mark_snapshot_verify_running();
         self.publish_locked(&live);
     }
 
     pub fn mark_snapshot_verify_completed(&self) {
-        let mut live = self.live.write().expect("lock poisoned");
+        let mut live = self.live.write();
         live.mark_snapshot_verify_completed();
         self.publish_locked(&live);
     }
@@ -461,13 +455,13 @@ impl SharedIndexHandle {
         let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
         let published_state = Arc::new(PublishedIndexState::capture(generation, live));
         let published_repo_outline = Arc::new(live.capture_repo_outline_view());
-        *self.published_state.write().expect("lock poisoned") = published_state;
-        *self.published_repo_outline.write().expect("lock poisoned") = published_repo_outline;
+        *self.published_state.write() = published_state;
+        *self.published_repo_outline.write() = published_repo_outline;
     }
 
     /// Read the current git temporal index (lock-free Arc clone).
     pub fn git_temporal(&self) -> Arc<super::git_temporal::GitTemporalIndex> {
-        self.git_temporal.read().expect("lock poisoned").clone()
+        self.git_temporal.read().clone()
     }
 
     /// Take (consume) the pre-update symbol snapshot for a file, if any.
@@ -476,15 +470,12 @@ impl SharedIndexHandle {
     /// `update_file` call — prevents the watcher race where the index is already
     /// updated to the post-edit state before the hook fires.
     pub fn take_pre_update_symbols(&self, path: &str) -> Option<Vec<PreUpdateSymbol>> {
-        self.pre_update_symbols
-            .write()
-            .ok()
-            .and_then(|mut cache| cache.remove(path))
+        self.pre_update_symbols.write().remove(path)
     }
 
     /// Atomically replace the git temporal index with a new version.
     pub fn update_git_temporal(&self, index: super::git_temporal::GitTemporalIndex) {
-        *self.git_temporal.write().expect("lock poisoned") = Arc::new(index);
+        *self.git_temporal.write() = Arc::new(index);
     }
 }
 
@@ -1404,7 +1395,7 @@ mod tests {
         write_file(tmp.path(), "e.go", "package main\nfunc epsilon() {}");
 
         let shared = LiveIndex::load(tmp.path()).unwrap();
-        let index = shared.read().unwrap();
+        let index = shared.read();
         assert!(
             !index.cb_state.is_tripped(),
             "valid files should not trip circuit breaker"
@@ -1431,7 +1422,7 @@ mod tests {
         write_file(tmp.path(), "z.pl", "sub greet { print \"hi\"; }");
 
         let shared = LiveIndex::load(tmp.path()).unwrap();
-        let index = shared.read().unwrap();
+        let index = shared.read();
         assert!(
             !index.cb_state.is_tripped(),
             "all-parseable files should not trip circuit breaker"
@@ -1446,7 +1437,7 @@ mod tests {
         write_file(tmp.path(), "c.rs", "fn c() {}");
 
         let shared = LiveIndex::load(tmp.path()).unwrap();
-        let index = shared.read().unwrap();
+        let index = shared.read();
         assert_eq!(index.file_count(), 3);
     }
 
@@ -1457,7 +1448,7 @@ mod tests {
         write_file(tmp.path(), "b.rs", "fn baz() {}");
 
         let shared = LiveIndex::load(tmp.path()).unwrap();
-        let index = shared.read().unwrap();
+        let index = shared.read();
         // a.rs: 2 symbols, b.rs: 1 symbol → total 3
         assert_eq!(index.symbol_count(), 3);
     }
@@ -1467,7 +1458,7 @@ mod tests {
     #[test]
     fn test_live_index_empty_has_zero_files() {
         let shared = LiveIndex::empty();
-        let index = shared.read().unwrap();
+        let index = shared.read();
         assert_eq!(index.file_count(), 0);
         assert_eq!(index.load_source(), IndexLoadSource::EmptyBootstrap);
         assert_eq!(
@@ -1480,14 +1471,14 @@ mod tests {
     fn test_shared_index_handle_preserves_read_write_access() {
         let shared = LiveIndex::empty();
         {
-            let mut live = shared.write().expect("lock poisoned");
+            let mut live = shared.write();
             live.add_file(
                 "src/new.rs".to_string(),
                 make_indexed_file_for_mutation("src/new.rs"),
             );
         }
 
-        let index = shared.read().unwrap();
+        let index = shared.read();
         assert!(index.get_file("src/new.rs").is_some());
     }
 
@@ -1532,7 +1523,7 @@ mod tests {
         let shared = LiveIndex::empty();
 
         {
-            let mut live = shared.write().expect("lock poisoned");
+            let mut live = shared.write();
             live.add_file(
                 "src/new.rs".to_string(),
                 make_indexed_file_for_mutation("src/new.rs"),
@@ -1546,7 +1537,7 @@ mod tests {
         assert_eq!(after_add.file_count, 1);
 
         {
-            let mut live = shared.write().expect("lock poisoned");
+            let mut live = shared.write();
             live.remove_file("src/new.rs");
         }
 
@@ -1625,7 +1616,7 @@ mod tests {
         assert_eq!(after_add.files[0].relative_path, "src/main.rs");
 
         {
-            let mut live = shared.write().expect("lock poisoned");
+            let mut live = shared.write();
             live.remove_file("src/main.rs");
         }
         let after_remove = shared.published_repo_outline();
@@ -1637,14 +1628,14 @@ mod tests {
     #[test]
     fn test_live_index_empty_returns_empty_state() {
         let shared = LiveIndex::empty();
-        let index = shared.read().unwrap();
+        let index = shared.read();
         assert_eq!(index.index_state(), IndexState::Empty);
     }
 
     #[test]
     fn test_live_index_empty_is_not_ready() {
         let shared = LiveIndex::empty();
-        let index = shared.read().unwrap();
+        let index = shared.read();
         assert!(!index.is_ready(), "empty index should not be ready");
     }
 
@@ -1656,10 +1647,10 @@ mod tests {
 
         let shared = LiveIndex::empty();
         {
-            let mut index = shared.write().unwrap();
+            let mut index = shared.write();
             index.reload(tmp.path()).expect("reload should succeed");
         }
-        let index = shared.read().unwrap();
+        let index = shared.read();
         assert_eq!(index.file_count(), 2);
         assert!(index.is_ready(), "after reload should be ready");
         assert_eq!(index.index_state(), IndexState::Ready);
@@ -1673,7 +1664,7 @@ mod tests {
     #[test]
     fn test_live_index_reload_invalid_root_returns_error() {
         let shared = LiveIndex::empty();
-        let mut index = shared.write().unwrap();
+        let mut index = shared.write();
         let result = index.reload(Path::new("/nonexistent/path/that/does/not/exist"));
         assert!(
             result.is_err(),
@@ -1686,7 +1677,7 @@ mod tests {
         use std::time::SystemTime;
         let before = SystemTime::now();
         let shared = LiveIndex::empty();
-        let index = shared.read().unwrap();
+        let index = shared.read();
         let after = SystemTime::now();
         let ts = index.loaded_at_system();
         assert!(
@@ -1711,7 +1702,7 @@ mod tests {
             .map(|_| {
                 let shared_clone = Arc::clone(&shared);
                 thread::spawn(move || {
-                    let index = shared_clone.read().unwrap();
+                    let index = shared_clone.read();
                     let _ = index.file_count();
                     let _ = index.symbol_count();
                 })
@@ -1768,7 +1759,7 @@ mod tests {
         write_file(dir.path(), "tests/lib.rs", "fn test_lib() {}");
 
         let shared = LiveIndex::load(dir.path()).expect("LiveIndex::load failed");
-        let index = shared.read().unwrap();
+        let index = shared.read();
 
         assert_eq!(
             index.files_by_basename.get("lib.rs"),
@@ -1797,11 +1788,11 @@ mod tests {
         write_file(dir.path(), "tests/beta.rs", "fn beta() {}");
 
         {
-            let mut index = shared.write().unwrap();
+            let mut index = shared.write();
             index.reload(dir.path()).expect("reload should succeed");
         }
 
-        let index = shared.read().unwrap();
+        let index = shared.read();
         assert!(!index.files_by_basename.contains_key("alpha.rs"));
         assert_eq!(
             index.files_by_basename.get("beta.rs"),

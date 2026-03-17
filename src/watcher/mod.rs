@@ -224,7 +224,7 @@ pub(crate) fn maybe_reindex(
     // 2. Compute hash and check against existing entry (read lock, dropped before parse)
     let new_hash = hash::digest_hex(&bytes);
     {
-        let index = shared.read().unwrap();
+        let index = shared.read();
         if let Some(existing) = index.get_file(relative_path)
             && existing.content_hash == new_hash
         {
@@ -747,7 +747,7 @@ mod tests {
 
         // Confirm the reverse index contains "old_function".
         {
-            let idx = shared.read().unwrap();
+            let idx = shared.read();
             assert!(
                 idx.reverse_index.contains_key("old_function"),
                 "reverse_index should contain 'old_function' after initial parse"
@@ -768,7 +768,7 @@ mod tests {
 
         // Confirm reverse index now has "new_function" and not "old_function".
         {
-            let idx = shared.read().unwrap();
+            let idx = shared.read();
             assert!(
                 idx.reverse_index.contains_key("new_function"),
                 "reverse_index should contain 'new_function' after re-index"

@@ -693,7 +693,7 @@ pub(crate) fn execute_batch_edit(
 
     let mut resolved = Vec::with_capacity(n);
     {
-        let guard = index.read().expect("lock poisoned");
+        let guard = index.read();
         for (i, edit) in edits.iter().enumerate() {
             let file = guard.get_file(&edit.path).ok_or_else(|| {
                 format!(
@@ -768,7 +768,7 @@ pub(crate) fn execute_batch_edit(
 
     for (path, indices) in &by_file {
         let file = {
-            let guard = index.read().expect("lock poisoned");
+            let guard = index.read();
             guard
                 .capture_shared_file(path)
                 .ok_or_else(|| format!("File disappeared: {path}"))?
@@ -973,7 +973,7 @@ pub(crate) fn execute_batch_rename(
 ) -> Result<String, String> {
     // Phase 1: Resolve the definition and find the name within its body.
     let (def_name_range, language) = {
-        let guard = index.read().expect("lock poisoned");
+        let guard = index.read();
         let file = guard
             .get_file(&input.path)
             .ok_or_else(|| format!("File not indexed: {}", input.path))?;
@@ -996,7 +996,7 @@ pub(crate) fn execute_batch_rename(
 
     // Phase 2: Find all references across the project.
     let ref_sites: Vec<(String, (u32, u32))> = {
-        let guard = index.read().expect("lock poisoned");
+        let guard = index.read();
         let refs = guard.find_references_for_name(&input.name, None, false);
         refs.into_iter()
             .map(|(path, rr)| (path.to_string(), rr.byte_range))
@@ -1011,7 +1011,7 @@ pub(crate) fn execute_batch_rename(
     //
     // We collect file content snapshots under the lock, then run the scan outside it.
     let file_contents: Vec<(String, Vec<u8>)> = {
-        let guard = index.read().expect("lock poisoned");
+        let guard = index.read();
         guard
             .files
             .iter()
@@ -1060,7 +1060,7 @@ pub(crate) fn execute_batch_rename(
     // Validate, sort descending, dedup, and check for overlaps.
     for (path, ranges) in by_file.iter_mut() {
         let file = {
-            let guard = index.read().expect("lock poisoned");
+            let guard = index.read();
             guard
                 .capture_shared_file(path)
                 .ok_or_else(|| format!("File disappeared: {path}"))?
@@ -1117,7 +1117,7 @@ pub(crate) fn execute_batch_rename(
     let mut staged: Vec<StagedFile> = Vec::with_capacity(by_file.len());
     for (path, ranges) in &by_file {
         let file = {
-            let guard = index.read().expect("lock poisoned");
+            let guard = index.read();
             guard
                 .capture_shared_file(path)
                 .ok_or_else(|| format!("File disappeared: {path}"))?
@@ -1294,7 +1294,7 @@ pub(crate) fn execute_batch_insert(
 
     for target in &input.targets {
         let file = {
-            let guard = index.read().expect("lock poisoned");
+            let guard = index.read();
             guard
                 .capture_shared_file(&target.path)
                 .ok_or_else(|| format!("File not indexed: {}", target.path))?
@@ -1464,7 +1464,7 @@ pub(crate) fn detect_stale_references(
     if old_signature == new_signature {
         return Vec::new();
     }
-    let guard = index.read().expect("lock poisoned");
+    let guard = index.read();
     let refs = guard.find_references_for_name(name, None, false);
 
     // When we know the parent type, collect the set of files that reference it.
@@ -1937,7 +1937,7 @@ mod tests {
         std::fs::write(&abs_path, content).unwrap();
         let handle = crate::live_index::LiveIndex::empty();
         reindex_after_write(&handle, &abs_path, "src/lib.rs", content, LanguageId::Rust);
-        let guard = handle.read().expect("lock");
+        let guard = handle.read();
         let file = guard.get_file("src/lib.rs");
         assert!(file.is_some());
         let symbols = &file.unwrap().symbols;
@@ -1959,7 +1959,7 @@ mod tests {
         std::fs::write(&abs_path, v2).unwrap();
         reindex_after_write(&handle, &abs_path, "src/lib.rs", v2, LanguageId::Rust);
 
-        let guard = handle.read().expect("lock");
+        let guard = handle.read();
         let file = guard.get_file("src/lib.rs").unwrap();
         assert!(!file.symbols.iter().any(|s| s.name == "alpha"));
         assert!(file.symbols.iter().any(|s| s.name == "beta"));
@@ -1978,7 +1978,7 @@ mod tests {
         let handle = crate::live_index::LiveIndex::empty();
         // Pass the real on-disk bytes as `written` (normal case — no divergence).
         reindex_after_write(&handle, &abs_path, "src/lib.rs", on_disk, LanguageId::Rust);
-        let guard = handle.read().expect("lock");
+        let guard = handle.read();
         let file = guard.get_file("src/lib.rs").unwrap();
         // Index reflects what is on disk.
         assert!(file.symbols.iter().any(|s| s.name == "disk_fn"));
@@ -2001,7 +2001,7 @@ mod tests {
         );
         // Verify old content is in the index.
         {
-            let guard = handle.read().expect("lock");
+            let guard = handle.read();
             let file = guard.get_file("src/lib.rs").unwrap();
             assert!(file.symbols.iter().any(|s| s.name == "old_content_marker"));
         }
@@ -2018,7 +2018,7 @@ mod tests {
         );
 
         // Verify: old symbol gone, new symbol present — index matches disk.
-        let guard = handle.read().expect("lock");
+        let guard = handle.read();
         let file = guard.get_file("src/lib.rs").unwrap();
         assert!(
             !file.symbols.iter().any(|s| s.name == "old_content_marker"),

@@ -8,7 +8,9 @@ pub mod tools;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
+
+use parking_lot::RwLock;
 
 use rmcp::RoleServer;
 use rmcp::handler::server::router::prompt::PromptRouter;
@@ -105,11 +107,11 @@ impl TokenizorServer {
     }
 
     pub(crate) fn capture_repo_root(&self) -> Option<PathBuf> {
-        self.repo_root.read().expect("lock poisoned").clone()
+        self.repo_root.read().clone()
     }
 
     pub(crate) fn set_repo_root(&self, repo_root: Option<PathBuf>) {
-        *self.repo_root.write().expect("lock poisoned") = repo_root;
+        *self.repo_root.write() = repo_root;
     }
 
     /// Record token savings from an MCP tool response so the health counter accumulates.

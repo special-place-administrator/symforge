@@ -1369,7 +1369,7 @@ impl TokenizorServer {
                 return "Error: targets array is empty.".to_string();
             }
             let captured = {
-                let guard = self.index.read().expect("lock poisoned");
+                let guard = self.index.read();
                 loading_guard!(guard);
 
                 targets
@@ -1422,7 +1422,7 @@ impl TokenizorServer {
 
         // Single mode: path + name
         let file = {
-            let guard = self.index.read().expect("lock poisoned");
+            let guard = self.index.read();
             loading_guard!(guard);
             guard.capture_shared_file(&params.0.path)
         };
@@ -1501,7 +1501,7 @@ impl TokenizorServer {
                 let path = params.0.path.as_deref().unwrap_or("");
                 let depth = params.0.depth.unwrap_or(2).min(5);
                 let view = self.index.published_repo_outline();
-                let guard = self.index.read().expect("lock poisoned");
+                let guard = self.index.read();
                 let skipped = guard.skipped_files().to_vec();
                 drop(guard);
                 format::file_tree_view_with_skipped(&view.files, &skipped, path, depth)
@@ -1511,7 +1511,7 @@ impl TokenizorServer {
                 if let Some(result) = self.proxy_tool_call_without_params("get_repo_map").await {
                     return result;
                 }
-                let guard = self.index.read().expect("lock poisoned");
+                let guard = self.index.read();
                 loading_guard!(guard);
                 drop(guard);
 
@@ -1544,7 +1544,7 @@ impl TokenizorServer {
             return result;
         }
         let raw_chars = {
-            let guard = self.index.read().expect("lock poisoned");
+            let guard = self.index.read();
             loading_guard!(guard);
             let raw = guard
                 .capture_shared_file(&params.0.path)
@@ -1610,7 +1610,7 @@ impl TokenizorServer {
                 return result;
             }
             let (view, raw_chars) = {
-                let guard = self.index.read().expect("lock poisoned");
+                let guard = self.index.read();
                 loading_guard!(guard);
                 let raw = guard
                     .capture_shared_file(&path)
@@ -1685,7 +1685,7 @@ impl TokenizorServer {
         // Capture the symbol definition from the index so we can prepend it
         // (the sidecar only returns reference locations, not the definition itself).
         let (symbol_header, raw_chars) = {
-            let guard = self.index.read().expect("lock poisoned");
+            let guard = self.index.read();
             loading_guard!(guard);
 
             let file = file_path_hint.and_then(|p| guard.capture_shared_file(p));
@@ -1772,7 +1772,7 @@ impl TokenizorServer {
             return result;
         }
         {
-            let guard = self.index.read().expect("lock poisoned");
+            let guard = self.index.read();
             loading_guard!(guard);
         }
 
@@ -1849,7 +1849,7 @@ impl TokenizorServer {
             Err(message) => return message,
         };
         let mut result = {
-            let guard = self.index.read().expect("lock poisoned");
+            let guard = self.index.read();
             loading_guard!(guard);
             search::search_symbols_with_options(
                 &guard,
@@ -1904,7 +1904,7 @@ impl TokenizorServer {
             }
         }
         let result = {
-            let guard = self.index.read().expect("lock poisoned");
+            let guard = self.index.read();
             loading_guard!(guard);
             let mut r = search::search_text_with_options(
                 &guard,
@@ -1936,7 +1936,7 @@ impl TokenizorServer {
                 if let Some(ref query) = original_query {
                     if let Some(fixed) = fix_common_double_escapes(query) {
                         let retry_result = {
-                            let guard = self.index.read().expect("lock poisoned");
+                            let guard = self.index.read();
                             loading_guard!(guard);
                             let mut r = search::search_text_with_options(
                                 &guard,
@@ -1983,7 +1983,7 @@ impl TokenizorServer {
         }
 
         let mut trace_view = {
-            let guard = self.index.read().expect("lock poisoned");
+            let guard = self.index.read();
             loading_guard!(guard);
             guard.capture_trace_symbol_view(
                 &params.0.path,
@@ -2052,7 +2052,7 @@ impl TokenizorServer {
         }
 
         let view = {
-            let guard = self.index.read().expect("lock poisoned");
+            let guard = self.index.read();
             loading_guard!(guard);
             guard.capture_inspect_match_view(
                 &params.0.path,
@@ -2082,7 +2082,7 @@ impl TokenizorServer {
                 return "search_files with resolve=true requires a non-empty `query`.".to_string();
             }
             let view = {
-                let guard = self.index.read().expect("lock poisoned");
+                let guard = self.index.read();
                 loading_guard!(guard);
                 guard.capture_resolve_path_view(&params.0.query)
             };
@@ -2154,7 +2154,7 @@ impl TokenizorServer {
         }
 
         let view = {
-            let guard = self.index.read().expect("lock poisoned");
+            let guard = self.index.read();
             loading_guard!(guard);
             guard.capture_search_files_view(
                 &params.0.query,
@@ -2271,14 +2271,14 @@ impl TokenizorServer {
         match mode {
             WhatChangedMode::Timestamp(since_ts) => {
                 let view = {
-                    let guard = self.index.read().expect("lock poisoned");
+                    let guard = self.index.read();
                     loading_guard!(guard);
                     guard.capture_what_changed_timestamp_view()
                 };
                 format::what_changed_timestamp_view(&view, since_ts)
             }
             WhatChangedMode::Uncommitted => {
-                let guard = self.index.read().expect("lock poisoned");
+                let guard = self.index.read();
                 loading_guard!(guard);
                 drop(guard);
 
@@ -2309,7 +2309,7 @@ impl TokenizorServer {
                 }
             }
             WhatChangedMode::GitRef(git_ref) => {
-                let guard = self.index.read().expect("lock poisoned");
+                let guard = self.index.read();
                 loading_guard!(guard);
                 drop(guard);
 
@@ -2358,7 +2358,7 @@ impl TokenizorServer {
             Err(message) => return message,
         };
         let file = {
-            let guard = self.index.read().expect("lock poisoned");
+            let guard = self.index.read();
             loading_guard!(guard);
             guard.capture_shared_file_for_scope(&options.path_scope)
         };
@@ -2427,7 +2427,7 @@ impl TokenizorServer {
                 return result;
             }
             let view = {
-                let guard = self.index.read().expect("lock poisoned");
+                let guard = self.index.read();
                 loading_guard!(guard);
                 guard.capture_find_implementations_view(&input.name, input.direction.as_deref())
             };
@@ -2443,7 +2443,7 @@ impl TokenizorServer {
         let limits =
             format::OutputLimits::new(input.limit.unwrap_or(20), input.max_per_file.unwrap_or(10));
         let result = {
-            let guard = self.index.read().expect("lock poisoned");
+            let guard = self.index.read();
             loading_guard!(guard);
             if let Some(path) = input.path.as_deref() {
                 guard.capture_find_references_view_for_symbol(
@@ -2484,7 +2484,7 @@ impl TokenizorServer {
         }
         let input = &params.0;
         let view = {
-            let guard = self.index.read().expect("lock poisoned");
+            let guard = self.index.read();
             loading_guard!(guard);
             guard.capture_find_dependents_view(&input.path)
         };
@@ -2534,7 +2534,7 @@ impl TokenizorServer {
             return result;
         }
         let limit = params.0.limit.unwrap_or(10) as usize;
-        let guard = self.index.read().expect("lock poisoned");
+        let guard = self.index.read();
         loading_guard!(guard);
 
         let concept = super::explore::match_concept(&params.0.query);
@@ -2868,7 +2868,7 @@ impl TokenizorServer {
 
         // Check index is not loading/empty
         {
-            let guard = self.index.read().expect("lock poisoned");
+            let guard = self.index.read();
             loading_guard!(guard);
         }
 
@@ -2982,7 +2982,7 @@ impl TokenizorServer {
             None => return "Error: no repository root configured.".to_string(),
         };
         let file = {
-            let guard = self.index.read().expect("lock poisoned");
+            let guard = self.index.read();
             loading_guard!(guard);
             guard.capture_shared_file(&params.0.path)
         };
@@ -3089,7 +3089,7 @@ impl TokenizorServer {
             None => return "Error: no repository root configured.".to_string(),
         };
         let file = {
-            let guard = self.index.read().expect("lock poisoned");
+            let guard = self.index.read();
             loading_guard!(guard);
             guard.capture_shared_file(&params.0.path)
         };
@@ -3151,7 +3151,7 @@ impl TokenizorServer {
             None => return "Error: no repository root configured.".to_string(),
         };
         let file = {
-            let guard = self.index.read().expect("lock poisoned");
+            let guard = self.index.read();
             loading_guard!(guard);
             guard.capture_shared_file(&params.0.path)
         };
@@ -3219,7 +3219,7 @@ impl TokenizorServer {
             None => return "Error: no repository root configured.".to_string(),
         };
         let file = {
-            let guard = self.index.read().expect("lock poisoned");
+            let guard = self.index.read();
             loading_guard!(guard);
             guard.capture_shared_file(&params.0.path)
         };
@@ -3321,7 +3321,7 @@ impl TokenizorServer {
             None => return "Error: no repository root configured.".to_string(),
         };
         {
-            let guard = self.index.read().expect("lock poisoned");
+            let guard = self.index.read();
             loading_guard!(guard);
         }
         match edit::execute_batch_edit(&self.index, &repo_root, &params.0.edits, params.0.dry_run) {
@@ -3353,7 +3353,7 @@ impl TokenizorServer {
             None => return "Error: no repository root configured.".to_string(),
         };
         {
-            let guard = self.index.read().expect("lock poisoned");
+            let guard = self.index.read();
             loading_guard!(guard);
         }
         match edit::execute_batch_rename(&self.index, &repo_root, &params.0) {
@@ -3375,7 +3375,7 @@ impl TokenizorServer {
             None => return "Error: no repository root configured.".to_string(),
         };
         {
-            let guard = self.index.read().expect("lock poisoned");
+            let guard = self.index.read();
             loading_guard!(guard);
         }
         match edit::execute_batch_insert(&self.index, &repo_root, &params.0) {
@@ -7577,7 +7577,7 @@ mod tests {
         assert!(on_disk.contains("HELLO"), "disk: {on_disk}");
         assert!(on_disk.contains("world"), "other symbol intact: {on_disk}");
 
-        let guard = server.index.read().unwrap();
+        let guard = server.index.read();
         let file = guard.get_file("src/lib.rs").unwrap();
         assert!(file.symbols.iter().any(|s| s.name == "hello"));
         assert!(file.symbols.iter().any(|s| s.name == "world"));
@@ -7648,7 +7648,7 @@ mod tests {
         assert!(on_disk.contains("hello"), "original intact: {on_disk}");
         assert!(on_disk.contains("world"), "new symbol: {on_disk}");
 
-        let guard = server.index.read().unwrap();
+        let guard = server.index.read();
         let file = guard.get_file("src/lib.rs").unwrap();
         assert!(file.symbols.iter().any(|s| s.name == "world"));
     }
@@ -7694,7 +7694,7 @@ mod tests {
         assert!(!on_disk.contains("hello"), "hello removed: {on_disk}");
         assert!(on_disk.contains("world"), "world intact: {on_disk}");
 
-        let guard = server.index.read().unwrap();
+        let guard = server.index.read();
         let file = guard.get_file("src/lib.rs").unwrap();
         assert!(!file.symbols.iter().any(|s| s.name == "hello"));
         assert!(file.symbols.iter().any(|s| s.name == "world"));
