@@ -4,7 +4,6 @@
 //!  - Accept `State(state): State<SidecarState>` plus optional `Query(params)`.
 //!  - Acquire `state.index.read()`, extract owned data, drop the guard, then return text or Json.
 //!  - Never hold a `RwLockReadGuard` across an `.await` point.
-//!  - On lock poison: return `StatusCode::INTERNAL_SERVER_ERROR`.
 //!  - On file not found: return `StatusCode::NOT_FOUND`.
 
 use axum::{
@@ -446,10 +445,7 @@ async fn handle_new_file_impact(
 
     // Update symbol cache with empty pre-edit snapshot (it's new, no pre-state).
     {
-        let mut cache = state
-            .symbol_cache
-            .write()
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let mut cache = state.symbol_cache.write();
         cache.insert(path.to_string(), Vec::new());
     }
 
@@ -479,10 +475,7 @@ async fn handle_edit_impact(
     // current index to already contain post-edit symbols and yielding a false
     // "no symbol changes detected" result.
     let pre_symbols: Vec<SymbolSnapshot> = {
-        let cache = state
-            .symbol_cache
-            .read()
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let cache = state.symbol_cache.read();
         if let Some(cached) = cache.get(path) {
             cached.clone()
         } else {
@@ -553,7 +546,8 @@ async fn handle_edit_impact(
             };
             state.index.remove_file(path);
             // Also clear the symbol cache entry.
-            if let Ok(mut cache) = state.symbol_cache.write() {
+            {
+                let mut cache = state.symbol_cache.write();
                 cache.remove(path);
             }
             let text = format!(
@@ -619,10 +613,7 @@ async fn handle_edit_impact(
 
     // Update cache with post-edit snapshot.
     {
-        let mut cache = state
-            .symbol_cache
-            .write()
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let mut cache = state.symbol_cache.write();
         cache.insert(path.to_string(), post_symbols.clone());
     }
 
@@ -1528,8 +1519,10 @@ fn prompt_requests_repo_map(prompt: &str) -> bool {
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use std::sync::{Arc, RwLock};
+    use std::sync::Arc;
     use std::time::{Duration, Instant, SystemTime};
+
+    use parking_lot::RwLock;
 
     use crate::domain::{LanguageId, ReferenceKind, ReferenceRecord, SymbolKind, SymbolRecord};
     use crate::live_index::store::{CircuitBreakerState, IndexedFile, LiveIndex, ParseStatus};
@@ -1824,7 +1817,7 @@ mod tests {
 
         // Seed the symbol cache with pre-edit state.
         {
-            let mut cache = state.symbol_cache.write().unwrap();
+            let mut cache = state.symbol_cache.write();
             cache.insert(
                 "src/db.rs".to_string(),
                 vec![SymbolSnapshot {

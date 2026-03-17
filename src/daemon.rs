@@ -5,8 +5,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
-use std::time::SystemTime;
+use std::sync::{Arc, Mutex};
+use parking_lot::RwLock;
+use std::time::{Duration, SystemTime};
 
 use anyhow::Context;
 use axum::extract::{Path as AxumPath, Query, State};
@@ -90,16 +91,48 @@ struct ProjectInstance {
     session_ids: HashSet<String>,
     opened_at: SystemTime,
     activation_state: ActivationState,
+    /// Cached `TokenizorServer` instance — constructed once per project and
+    /// reused for all tool calls, avoiding per-call router/prompt table allocation.
+    server: TokenizorServer,
 }
 
-#[derive(Clone)]
 struct SessionRecord {
     session_id: String,
     project_id: String,
     client_name: String,
     pid: Option<u32>,
     opened_at: SystemTime,
-    last_seen_at: SystemTime,
+    /// Epoch millis stored atomically so heartbeats only need a read lock.
+    last_seen_at: AtomicU64,
+}
+
+impl Clone for SessionRecord {
+    fn clone(&self) -> Self {
+        Self {
+            session_id: self.session_id.clone(),
+            project_id: self.project_id.clone(),
+            client_name: self.client_name.clone(),
+            pid: self.pid,
+            opened_at: self.opened_at,
+            last_seen_at: AtomicU64::new(self.last_seen_at.load(Ordering::Relaxed)),
+        }
+    }
+}
+
+impl SessionRecord {
+    /// Convert the atomic epoch-millis value back to a [`SystemTime`].
+    fn last_seen_at_time(&self) -> SystemTime {
+        let millis = self.last_seen_at.load(Ordering::Relaxed);
+        SystemTime::UNIX_EPOCH + Duration::from_millis(millis)
+    }
+}
+
+/// Current time as milliseconds since the Unix epoch.
+fn now_epoch_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -179,6 +212,8 @@ struct SessionRuntime {
     watcher_info: Arc<Mutex<WatcherInfo>>,
     token_stats: Arc<TokenStats>,
     symbol_cache: Arc<RwLock<HashMap<String, Vec<SymbolSnapshot>>>>,
+    /// Cached `TokenizorServer` clone — cheap because all inner state is `Arc`-wrapped.
+    server: TokenizorServer,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -211,7 +246,7 @@ impl DaemonState {
         let now = SystemTime::now();
 
         let (project_name, canonical_root_text, session_count) = {
-            let mut projects = self.projects.write().expect("lock poisoned");
+            let mut projects = self.projects.write();
             let project = projects.get_mut(project_id).ok_or_else(|| {
                 anyhow::anyhow!(
                     "project {} was removed between check and session registration",
@@ -232,11 +267,10 @@ impl DaemonState {
             client_name: request.client_name.clone(),
             pid: request.pid,
             opened_at: now,
-            last_seen_at: now,
+            last_seen_at: AtomicU64::new(now_epoch_millis()),
         };
         self.sessions
             .write()
-            .expect("lock poisoned")
             .insert(session_id.clone(), session);
 
         Ok(OpenProjectResponse {
@@ -257,7 +291,7 @@ impl DaemonState {
 
         // Fast path: project already loaded — just add session.
         {
-            let projects = self.projects.read().expect("lock poisoned");
+            let projects = self.projects.read();
             if projects.contains_key(&project_id) {
                 drop(projects);
                 return self.register_session_for_existing_project(
@@ -272,7 +306,7 @@ impl DaemonState {
         let new_project = ProjectInstance::load(&canonical_root)?;
 
         let needs_activation = {
-            let mut projects = self.projects.write().expect("lock poisoned");
+            let mut projects = self.projects.write();
             if projects.contains_key(&project_id) {
                 // Another thread won the race — discard our loaded instance.
                 // Instance is Inactive with no spawned tasks, safe to drop.
@@ -286,7 +320,7 @@ impl DaemonState {
 
         // Activate outside the write lock if we inserted.
         if needs_activation {
-            let mut projects = self.projects.write().expect("lock poisoned");
+            let mut projects = self.projects.write();
             if let Some(project) = projects.get_mut(&project_id) {
                 if project.activation_state == ActivationState::Inactive {
                     project.activate();
@@ -301,11 +335,10 @@ impl DaemonState {
     pub fn heartbeat(&self, session_id: &str) -> HeartbeatResponse {
         let known_session = self
             .sessions
-            .write()
-            .expect("lock poisoned")
-            .get_mut(session_id)
+            .read()
+            .get(session_id)
             .map(|session| {
-                session.last_seen_at = SystemTime::now();
+                session.last_seen_at.store(now_epoch_millis(), Ordering::Relaxed);
                 true
             })
             .unwrap_or(false);
@@ -321,13 +354,13 @@ impl DaemonState {
         // We need the project_id from the session first, so peek with a read lock,
         // then acquire projects.write(), then sessions.write() to remove.
         let project_id = {
-            let sessions = self.sessions.read().expect("lock poisoned");
+            let sessions = self.sessions.read();
             sessions.get(session_id)?.project_id.clone()
         };
 
         let mut project_removed = false;
         let remaining_sessions = {
-            let mut projects = self.projects.write().expect("lock poisoned");
+            let mut projects = self.projects.write();
             match projects.get_mut(&project_id) {
                 Some(project) => {
                     project.session_ids.remove(session_id);
@@ -349,7 +382,6 @@ impl DaemonState {
         let session = self
             .sessions
             .write()
-            .expect("lock poisoned")
             .remove(session_id)?;
 
         Some(CloseSessionResponse {
@@ -361,7 +393,7 @@ impl DaemonState {
     }
 
     pub fn list_projects(&self) -> Vec<ProjectSummary> {
-        let projects = self.projects.read().expect("lock poisoned");
+        let projects = self.projects.read();
         let mut summaries: Vec<ProjectSummary> = projects
             .values()
             .map(|project| ProjectSummary {
@@ -377,7 +409,7 @@ impl DaemonState {
     }
 
     pub fn project_health(&self, project_id: &str) -> Option<ProjectHealth> {
-        let projects = self.projects.read().expect("lock poisoned");
+        let projects = self.projects.read();
         let project = projects.get(project_id)?;
         let published = project.index.published_state();
 
@@ -395,12 +427,12 @@ impl DaemonState {
 
     pub fn list_sessions(&self, project_id: &str) -> Option<Vec<SessionSummary>> {
         let session_ids: Vec<String> = {
-            let projects = self.projects.read().expect("lock poisoned");
+            let projects = self.projects.read();
             let project = projects.get(project_id)?;
             project.session_ids.iter().cloned().collect()
         };
 
-        let sessions = self.sessions.read().expect("lock poisoned");
+        let sessions = self.sessions.read();
         let mut summaries: Vec<SessionSummary> = session_ids
             .iter()
             .filter_map(|session_id| sessions.get(session_id))
@@ -410,7 +442,7 @@ impl DaemonState {
                 client_name: session.client_name.clone(),
                 pid: session.pid,
                 opened_at_unix_secs: unix_seconds(session.opened_at),
-                last_seen_at_unix_secs: unix_seconds(session.last_seen_at),
+                last_seen_at_unix_secs: unix_seconds(session.last_seen_at_time()),
             })
             .collect();
         summaries.sort_by(|a, b| a.session_id.cmp(&b.session_id));
@@ -426,7 +458,7 @@ impl DaemonState {
         let target_project_id = project_key(&target_root);
 
         let current_project_id = {
-            let sessions = self.sessions.read().expect("lock poisoned");
+            let sessions = self.sessions.read();
             sessions
                 .get(session_id)
                 .map(|session| session.project_id.clone())
@@ -439,7 +471,7 @@ impl DaemonState {
         // is fully released before we touch sessions.write() below — preventing
         // the lock-order inversion with close_session (sessions → projects).
         let (file_count, symbol_count) = {
-            let mut projects = self.projects.write().expect("lock poisoned");
+            let mut projects = self.projects.write();
 
             if needs_reassign {
                 if !projects.contains_key(&target_project_id) {
@@ -483,11 +515,10 @@ impl DaemonState {
             if let Some(session) = self
                 .sessions
                 .write()
-                .expect("lock poisoned")
                 .get_mut(session_id)
             {
                 session.project_id = target_project_id;
-                session.last_seen_at = SystemTime::now();
+                session.last_seen_at.store(now_epoch_millis(), Ordering::Relaxed);
             }
         }
 
@@ -499,11 +530,11 @@ impl DaemonState {
 
     fn session_runtime(&self, session_id: &str) -> Option<SessionRuntime> {
         let project_id = {
-            let sessions = self.sessions.read().expect("lock poisoned");
+            let sessions = self.sessions.read();
             sessions.get(session_id)?.project_id.clone()
         };
 
-        let projects = self.projects.read().expect("lock poisoned");
+        let projects = self.projects.read();
         let project = projects.get(&project_id)?;
         Some(SessionRuntime {
             project_name: project.project_name.clone(),
@@ -512,13 +543,14 @@ impl DaemonState {
             watcher_info: Arc::clone(&project.watcher_info),
             token_stats: Arc::clone(&project.token_stats),
             symbol_cache: Arc::clone(&project.symbol_cache),
+            server: project.server.clone(),
         })
     }
 
     pub fn health(&self) -> DaemonHealth {
         DaemonHealth {
-            project_count: self.projects.read().expect("lock poisoned").len(),
-            session_count: self.sessions.read().expect("lock poisoned").len(),
+            project_count: self.projects.read().len(),
+            session_count: self.sessions.read().len(),
             daemon_version: self.identity.version.clone(),
             executable_path: self.identity.executable_path.clone(),
         }
@@ -937,6 +969,15 @@ impl ProjectInstance {
             )
         })?;
         let watcher_info = Arc::new(Mutex::new(WatcherInfo::default()));
+        let token_stats = TokenStats::new();
+
+        let server = TokenizorServer::new(
+            Arc::clone(&index),
+            project_name.clone(),
+            Arc::clone(&watcher_info),
+            Some(canonical_root.to_path_buf()),
+            Some(Arc::clone(&token_stats)),
+        );
 
         Ok(Self {
             project_id: project_key(canonical_root),
@@ -945,11 +986,12 @@ impl ProjectInstance {
             index,
             watcher_info,
             watcher_task: None,
-            token_stats: TokenStats::new(),
+            token_stats,
             symbol_cache: Arc::new(RwLock::new(HashMap::new())),
             session_ids: HashSet::new(),
             opened_at: SystemTime::now(),
             activation_state: ActivationState::Inactive,
+            server,
         })
     }
 
@@ -1001,6 +1043,16 @@ impl ProjectInstance {
             .unwrap_or("project")
             .to_string();
         self.project_id = project_key(canonical_root);
+
+        // Rebuild cached server so it picks up the new project name / root.
+        // The index Arc is the same handle, so the server sees updated data.
+        self.server = TokenizorServer::new(
+            Arc::clone(&self.index),
+            self.project_name.clone(),
+            Arc::clone(&self.watcher_info),
+            Some(canonical_root.to_path_buf()),
+            Some(Arc::clone(&self.token_stats)),
+        );
 
         // Refresh git temporal data after reload.
         live_index::git_temporal::spawn_git_temporal_computation(
@@ -1217,7 +1269,7 @@ async fn call_tool_handler(
         )
     })?;
 
-    // Tool handlers acquire std::sync::RwLock on the shared index, which
+    // Tool handlers acquire parking_lot::RwLock on the shared index, which
     // blocks the OS thread. Running them directly on the async runtime starves
     // tokio worker threads under concurrent load (10+ subagents).
     //
@@ -1371,13 +1423,9 @@ async fn execute_tool_call(
 ) -> anyhow::Result<String> {
     runtime.token_stats.record_tool_call(tool_name);
 
-    let server = TokenizorServer::new(
-        Arc::clone(&runtime.index),
-        runtime.project_name,
-        Arc::clone(&runtime.watcher_info),
-        Some(runtime.canonical_root),
-        Some(Arc::clone(&runtime.token_stats)),
-    );
+    // Use the cached server from ProjectInstance (cloned cheaply via Arc internals)
+    // instead of constructing a new TokenizorServer per tool call.
+    let server = runtime.server;
 
     match tool_name {
         // Backward-compat alias: get_file_outline → get_file_context with sections=['outline']
@@ -2620,7 +2668,7 @@ mod tests {
         );
 
         let project_id = &projects[0].project_id;
-        let projects_lock = state.projects.read().expect("lock poisoned");
+        let projects_lock = state.projects.read();
         let instance = projects_lock.get(project_id).expect("project must exist");
         assert_eq!(
             instance.activation_state,
@@ -2784,7 +2832,7 @@ mod tests {
         );
 
         let project_id = &projects[0].project_id;
-        let projects_lock = state.projects.read().expect("lock poisoned");
+        let projects_lock = state.projects.read();
         let instance = projects_lock.get(project_id).expect("project must exist");
 
         assert_eq!(

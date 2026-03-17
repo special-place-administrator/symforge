@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 
+use anyhow::Result;
+
 use crate::domain::{FileClassification, LanguageId};
-use crate::error::Result;
 
 /// A file found during directory traversal that has a recognized language extension.
 #[derive(Debug, Clone)]

@@ -14,7 +14,6 @@ use crate::domain::{
     FileClassification, FileOutcome, FileProcessingResult, LanguageId, ReferenceRecord,
     SymbolRecord, find_enclosing_symbol,
 };
-use crate::error::Result;
 use crate::{discovery, parsing};
 
 /// Per-file parse status stored in the index.
@@ -400,7 +399,7 @@ impl SharedIndexHandle {
             .clone()
     }
 
-    pub fn reload(&self, root: &Path) -> crate::error::Result<()> {
+    pub fn reload(&self, root: &Path) -> anyhow::Result<()> {
         // Build new index data OUTSIDE the write lock (file I/O + parsing).
         // Only the final swap acquires the lock, reducing block time from
         // seconds (full I/O) to milliseconds (in-memory index rebuild).
@@ -638,7 +637,7 @@ impl LiveIndex {
     ///
     /// This function is **synchronous** — it must complete before the async tokio runtime
     /// needs the index. Rayon handles internal parallelism.
-    pub fn load(root: &Path) -> Result<SharedIndex> {
+    pub fn load(root: &Path) -> anyhow::Result<SharedIndex> {
         let start = Instant::now();
 
         info!("LiveIndex::load starting at {:?}", root);
@@ -929,18 +928,13 @@ impl LiveIndex {
     /// parsing via Rayon. The returned `ReloadData` is applied under the write
     /// lock via `apply_reload_data` — reducing lock hold time from seconds to
     /// milliseconds.
-    pub(crate) fn build_reload_data(root: &Path) -> crate::error::Result<ReloadData> {
-        use crate::error::TokenizorError;
-
+    pub(crate) fn build_reload_data(root: &Path) -> anyhow::Result<ReloadData> {
         let start = Instant::now();
 
         info!("LiveIndex::build_reload_data starting at {:?}", root);
 
         if !root.exists() {
-            return Err(TokenizorError::Discovery(format!(
-                "root path does not exist: {}",
-                root.display()
-            )));
+            anyhow::bail!("discovery error: root path does not exist: {}", root.display());
         }
 
         // 1. Discover all source files
@@ -1047,7 +1041,7 @@ impl LiveIndex {
     /// NOTE: This method does all I/O under `&mut self`. Prefer calling
     /// `build_reload_data` outside the lock and then `apply_reload_data` under
     /// the lock when called via `SharedIndexHandle::reload`.
-    pub fn reload(&mut self, root: &Path) -> crate::error::Result<()> {
+    pub fn reload(&mut self, root: &Path) -> anyhow::Result<()> {
         let data = Self::build_reload_data(root)?;
         self.apply_reload_data(data);
         Ok(())

@@ -10,7 +10,8 @@ pub use server::spawn_sidecar;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
+use parking_lot::RwLock;
 
 use serde::Serialize;
 
@@ -368,8 +369,9 @@ mod tests {
     #[test]
     fn test_sidecar_state_constructs() {
         use crate::live_index::store::{CircuitBreakerState, LiveIndex};
+        use parking_lot::RwLock;
         use std::collections::HashMap;
-        use std::sync::{Arc, RwLock};
+        use std::sync::Arc;
         use std::time::{Duration, Instant, SystemTime};
 
         let index = crate::live_index::SharedIndexHandle::shared(LiveIndex {

@@ -14,7 +14,8 @@
 /// - Never hold RwLockReadGuard across await points — extract into owned values first
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use parking_lot::RwLock;
 
 use axum::http::StatusCode;
 use rmcp::handler::server::wrapper::Parameters;

@@ -255,6 +255,11 @@ fn collect_diff_paths(diff: &git2::Diff<'_>) -> Vec<String> {
 }
 
 /// Format a unix timestamp + offset into ISO-8601 string.
+///
+/// This is hand-rolled to avoid pulling in `chrono` or `time` as a dependency
+/// for a single formatting use case. The date conversion delegates to
+/// [`days_to_ymd`] which implements the Hinnant civil calendar algorithm.
+/// Correctness is covered by unit tests in this module.
 fn format_git_timestamp(secs: i64, offset_minutes: i32) -> String {
     let total_offset_secs = (offset_minutes as i64) * 60;
     let adjusted = secs + total_offset_secs;
@@ -280,6 +285,11 @@ fn format_git_timestamp(secs: i64, offset_minutes: i32) -> String {
 }
 
 /// Convert days since Unix epoch to (year, month, day).
+///
+/// Implements Howard Hinnant's civil calendar algorithm
+/// (<https://howardhinnant.github.io/date_algorithms.html>).
+/// Hand-rolled to avoid a `chrono`/`time` dependency for this single use case.
+/// Correctness is covered by unit tests in this module.
 fn days_to_ymd(days: i64) -> (i64, u32, u32) {
     // Civil calendar algorithm from Howard Hinnant.
     let z = days + 719468;

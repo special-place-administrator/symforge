@@ -2,7 +2,6 @@ pub mod cli;
 pub mod daemon;
 pub mod discovery;
 pub mod domain;
-pub mod error;
 pub mod git;
 pub mod hash;
 pub mod live_index;

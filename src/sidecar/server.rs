@@ -4,7 +4,8 @@
 //! and spawns an axum serve task with graceful shutdown support.
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use parking_lot::RwLock;
 
 use tokio::net::TcpListener;
 use tracing::info;
