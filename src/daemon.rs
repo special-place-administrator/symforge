@@ -444,6 +444,11 @@ impl DaemonState {
             if needs_reassign {
                 if !projects.contains_key(&target_project_id) {
                     let mut project = ProjectInstance::load(&target_root)?;
+                    debug_assert_eq!(
+                        project.activation_state,
+                        ActivationState::Inactive,
+                        "freshly loaded project must be Inactive"
+                    );
                     project.activate();
                     projects.insert(target_project_id.clone(), project);
                 }
@@ -540,7 +545,7 @@ impl DaemonSessionClient {
             .connect_timeout(std::time::Duration::from_secs(5))
             .timeout(std::time::Duration::from_secs(60))
             .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
+            .expect("failed to build reqwest client with timeout — this is a critical invariant");
 
         Self {
             http_client,
@@ -952,11 +957,14 @@ impl ProjectInstance {
     /// Must only be called once, on an `Inactive` instance, after the caller
     /// has committed the instance into the project map under write-lock.
     fn activate(&mut self) {
-        assert_eq!(
-            self.activation_state,
-            ActivationState::Inactive,
-            "activate() called on a project that is not Inactive"
-        );
+        if self.activation_state != ActivationState::Inactive {
+            tracing::error!(
+                project_id = %self.project_id,
+                state = ?self.activation_state,
+                "activate() called on a project that is not Inactive — skipping"
+            );
+            return;
+        }
         self.activation_state = ActivationState::Activating;
 
         self.watcher_task = start_project_watcher(

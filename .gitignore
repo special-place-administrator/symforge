@@ -11,3 +11,6 @@ npm/*.tgz
 spacetime/tokenizor/target/
 __pycache__/
 .worktrees/
+.kilocode/
+# Windows NUL device name — some tools accidentally create a tracked 'nul' file
+nul
