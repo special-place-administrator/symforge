@@ -2,8 +2,8 @@ use std::sync::{Arc, Mutex};
 
 use clap::Parser;
 use rmcp::{serve_server, transport};
-use tokenizor_agentic_mcp::live_index::persist;
-use tokenizor_agentic_mcp::{
+use symforge::live_index::persist;
+use symforge::{
     cli, daemon, discovery, live_index, observability, protocol, sidecar, watcher,
 };
 
@@ -78,8 +78,8 @@ fn run_mcp_server() -> anyhow::Result<()> {
 async fn run_mcp_server_async() -> anyhow::Result<()> {
     observability::init_tracing()?;
 
-    // INFR-02: Auto-index on startup (configurable via TOKENIZOR_AUTO_INDEX)
-    let should_auto_index = std::env::var("TOKENIZOR_AUTO_INDEX")
+    // INFR-02: Auto-index on startup (configurable via SYMFORGE_AUTO_INDEX)
+    let should_auto_index = std::env::var("SYMFORGE_AUTO_INDEX")
         .map(|v| v != "false")
         .unwrap_or(true);
 
@@ -119,7 +119,7 @@ async fn run_remote_mcp_server_async(session: daemon::DaemonSessionClient) -> an
         }
     });
 
-    let server = protocol::TokenizorServer::new_daemon_proxy(session.clone());
+    let server = protocol::SymForgeServer::new_daemon_proxy(session.clone());
     tracing::info!(
         project_id = %session.project_id(),
         session_id = %session.session_id(),
@@ -163,7 +163,7 @@ async fn run_local_mcp_server_async(
                 files = file_count,
                 load_source = ?live.load_source(),
                 snapshot_verify_state = ?live.snapshot_verify_state(),
-                "loaded serialized index from .tokenizor/index.bin"
+                "loaded serialized index from .symforge/index.bin"
             );
             let shared: live_index::SharedIndex = live_index::SharedIndexHandle::shared(live);
 
@@ -227,7 +227,7 @@ async fn run_local_mcp_server_async(
         (index, name, Some(root))
     } else {
         if !should_auto_index {
-            tracing::info!("TOKENIZOR_AUTO_INDEX=false — starting with empty index");
+            tracing::info!("SYMFORGE_AUTO_INDEX=false — starting with empty index");
         } else {
             tracing::info!("no safe project root found — starting with empty index");
         }
@@ -255,7 +255,7 @@ async fn run_local_mcp_server_async(
     // Spawn HTTP sidecar after watcher, before MCP serve.
     // The sidecar shares the same Arc<LiveIndex> so mutations are immediately visible.
     let bind_host =
-        std::env::var("TOKENIZOR_SIDECAR_BIND").unwrap_or_else(|_| "127.0.0.1".to_string());
+        std::env::var("SYMFORGE_SIDECAR_BIND").unwrap_or_else(|_| "127.0.0.1".to_string());
     let sidecar_handle = sidecar::spawn_sidecar(Arc::clone(&index), &bind_host).await?;
     tracing::info!(port = sidecar_handle.port, "HTTP sidecar started");
 
@@ -264,7 +264,7 @@ async fn run_local_mcp_server_async(
     let token_stats = Some(sidecar_handle.token_stats);
 
     // Create MCP server and serve on stdio transport.
-    let server = protocol::TokenizorServer::new(
+    let server = protocol::SymForgeServer::new(
         Arc::clone(&index),
         project_name,
         watcher_info,
@@ -288,7 +288,7 @@ async fn run_local_mcp_server_async(
     // Only serialize when auto-index is enabled (i.e., we have a real project root).
     if let Some(ref root) = watcher_root {
         match persist::serialize_shared_index(&index, root) {
-            Ok(()) => tracing::info!("index serialized to .tokenizor/index.bin"),
+            Ok(()) => tracing::info!("index serialized to .symforge/index.bin"),
             Err(e) => tracing::warn!("failed to serialize index on shutdown: {e}"),
         }
     }
@@ -304,7 +304,7 @@ async fn run_local_mcp_server_async(
 mod tests {
     use super::{StartupIndexLogView, startup_index_log_view};
     use std::time::{Duration, SystemTime};
-    use tokenizor_agentic_mcp::live_index::{
+    use symforge::live_index::{
         IndexLoadSource, PublishedIndexState, PublishedIndexStatus, SnapshotVerifyState,
     };
 

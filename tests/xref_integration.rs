@@ -18,9 +18,9 @@ use std::path::Path;
 use std::time::Instant;
 
 use tempfile::TempDir;
-use tokenizor_agentic_mcp::domain::ReferenceKind;
-use tokenizor_agentic_mcp::live_index::LiveIndex;
-use tokenizor_agentic_mcp::protocol::format;
+use symforge::domain::ReferenceKind;
+use symforge::live_index::LiveIndex;
+use symforge::protocol::format;
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -40,7 +40,7 @@ fn write_file(dir: &Path, name: &str, content: &str) {
 /// Returns the tempdir (to keep it alive) and the shared index.
 fn build_index(
     files: &[(&str, &str)],
-) -> (TempDir, tokenizor_agentic_mcp::live_index::SharedIndex) {
+) -> (TempDir, symforge::live_index::SharedIndex) {
     let dir = TempDir::new().expect("failed to create tempdir");
     for (name, content) in files {
         write_file(dir.path(), name, content);

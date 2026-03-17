@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
-> **IMPORTANT:** Do NOT use Tokenizor MCP's `batch_rename` tool — it is broken on the installed version. Use `replace_symbol_body`, `edit_within_symbol`, and `batch_edit` instead.
+> **IMPORTANT:** Do NOT use SymForge MCP's `batch_rename` tool — it is broken on the installed version. Use `replace_symbol_body`, `edit_within_symbol`, and `batch_edit` instead.
 
 **Goal:** Fix 6 correctness/lifecycle bugs: TOCTOU panic, temp file collision, CRLF preservation, splice overlap validation, SIGTERM handling, and denylist hardening.
 
@@ -1641,22 +1641,22 @@ async fn test_daemon_sigterm_graceful_shutdown() {
             .output()
             .expect("cargo build failed");
         assert!(output.status.success(), "cargo build must succeed");
-        // The binary is at target/debug/tokenizor (or the crate's [[bin]] name)
+        // The binary is at target/debug/SymForge (or the crate's [[bin]] name)
         let mut path = std::env::current_dir().unwrap();
-        path.push("target/debug/tokenizor");
-        // On Windows it would be tokenizor.exe, but this test is #[cfg(unix)]
+        path.push("target/debug/SymForge");
+        // On Windows it would be SymForge.exe, but this test is #[cfg(unix)]
         assert!(path.exists(), "binary not found at {}", path.display());
         path
     };
 
     // Use a temp daemon home to isolate pid/port files
     let daemon_home = tempfile::TempDir::new().unwrap();
-    let daemon_dir = daemon_home.path().join(".tokenizor");
+    let daemon_dir = daemon_home.path().join(".symforge");
     std::fs::create_dir_all(&daemon_dir).unwrap();
 
     let mut child = Command::new(&binary)
         .arg("daemon")
-        .env("TOKENIZOR_DAEMON_HOME", daemon_home.path())
+        .env("SYMFORGE_DAEMON_HOME", daemon_home.path())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -1699,7 +1699,7 @@ async fn test_daemon_sigterm_graceful_shutdown() {
 ```
 
 **Note:** This test builds and launches the real CLI binary, not the test harness.
-If the daemon does not support `TOKENIZOR_DAEMON_HOME` for isolating its state
+If the daemon does not support `SYMFORGE_DAEMON_HOME` for isolating its state
 directory, the test should use the default daemon dir location or adapt accordingly.
 The key assertions are: process exits within timeout AND pid/port files are cleaned up.
 

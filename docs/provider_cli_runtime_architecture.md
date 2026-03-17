@@ -5,7 +5,7 @@ Date: 2026-03-07
 
 ## Purpose
 
-This document takes the verified integration research and turns it into a buildable architecture and source scaffold for Tokenizor.
+This document takes the verified integration research and turns it into a buildable architecture and source scaffold for SymForge.
 
 This is not the final architecture.
 
@@ -13,7 +13,7 @@ It is the current **probable architecture**: the design that best fits the verif
 
 ## Product Position
 
-Tokenizor should become:
+SymForge should become:
 
 - a local code-intelligence runtime
 - a project and workspace registry
@@ -24,7 +24,7 @@ Tokenizor should become:
 
 In short:
 
-**Tokenizor is not just a server process. It is the local code-intelligence substrate that provider CLIs consume.**
+**SymForge is not just a server process. It is the local code-intelligence substrate that provider CLIs consume.**
 
 ## Probable Architecture
 
@@ -32,7 +32,7 @@ In short:
 
 Core local daemon:
 
-- `tokenizord`
+- `SymForged`
 
 Responsibilities:
 
@@ -86,7 +86,7 @@ Responsibilities:
 - install hooks when supported
 - install custom agents/subagents when supported
 - install prompts/commands when supported
-- point all integrations back to the same local Tokenizor runtime
+- point all integrations back to the same local SymForge runtime
 
 ### Layer 4: Repo-local integration assets
 
@@ -102,7 +102,7 @@ Generated or managed per project:
 - `.github/copilot-instructions.md`
 - `.github/agents/*`
 - `.github/hooks/*`
-- `.tokenizor/project.toml`
+- `.symforge/project.toml`
 
 Important:
 
@@ -114,7 +114,7 @@ Important:
 
 ### Problem with pure stdio MCP
 
-If Tokenizor lives only as a stdio MCP process:
+If SymForge lives only as a stdio MCP process:
 
 - indexing state is cold too often
 - project discovery repeats on every session
@@ -201,10 +201,10 @@ Fields:
 
 ### Resolution algorithm
 
-When a provider launches Tokenizor:
+When a provider launches SymForge:
 
 1. use explicit project root if passed
-2. else look for `.tokenizor/project.toml`
+2. else look for `.symforge/project.toml`
 3. else walk upward for `.git`
 4. else treat current directory as unmanaged workspace
 5. map workspace to existing project if remote/root fingerprint matches
@@ -214,7 +214,7 @@ When a provider launches Tokenizor:
 
 - one project can have many workspaces
 - git worktrees should map to one logical project
-- monorepo subtree pinning should be supported through `.tokenizor/project.toml`
+- monorepo subtree pinning should be supported through `.symforge/project.toml`
 
 ## Provider Adapter Strategy
 
@@ -226,7 +226,7 @@ Current strategy:
 - optional project-scoped `.codex/config.toml`
 - repo `AGENTS.md` augmentation
 - repository and user skill installation
-- optional startup helper to verify Tokenizor runtime is reachable
+- optional startup helper to verify SymForge runtime is reachable
 
 Current limitation:
 
@@ -250,7 +250,7 @@ Current strategy:
 - user or project MCP registration
 - optional Claude plugin packaging for bundled distribution
 - `.claude/settings.json` hook installation
-- Tokenizor subagent definitions
+- SymForge subagent definitions
 - slash-command-oriented MCP prompts
 - session-start and prompt-submit context injection
 
@@ -277,7 +277,7 @@ Current strategy:
 - `.github/copilot-instructions.md` and `AGENTS.md`
 - `.github/agents/*`
 - `.github/hooks/*`
-- optional Tokenizor skill pack
+- optional SymForge skill pack
 - optional Copilot plugin package
 
 This is a strong candidate after Claude and Gemini.
@@ -304,19 +304,19 @@ When the model needs to:
 - understand repo structure
 - retrieve exact source spans
 
-it should prefer Tokenizor over naive raw file scanning whenever Tokenizor is ready.
+it should prefer SymForge over naive raw file scanning whenever SymForge is ready.
 
 ### Strong goal for hook-capable clients
 
 Hook-capable clients should:
 
 - inject repo/index context before the model plans
-- bias the agent toward Tokenizor lookup
+- bias the agent toward SymForge lookup
 - optionally warn or steer when the model tries expensive naive grep/read flows first
 
 ### Non-goal
 
-Do not try to force all file edits through Tokenizor.
+Do not try to force all file edits through SymForge.
 
 The native file edit/write tools in each client should remain the primary mutation path.
 
@@ -324,13 +324,13 @@ The native file edit/write tools in each client should remain the primary mutati
 
 ### User-facing binaries
 
-- `tokenizor`
-- `tokenizord`
-- `tokenizor-mcp`
+- `SymForge`
+- `SymForged`
+- `symforge`
 
 ### Responsibilities
 
-`tokenizor`
+`SymForge`
 
 - install
 - integrate with provider CLIs
@@ -339,7 +339,7 @@ The native file edit/write tools in each client should remain the primary mutati
 - migrate
 - runtime status
 
-`tokenizord`
+`SymForged`
 
 - background runtime
 - project registry
@@ -347,10 +347,10 @@ The native file edit/write tools in each client should remain the primary mutati
 - CAS manager
 - indexing coordinator
 
-`tokenizor-mcp`
+`symforge`
 
 - thin MCP transport shim
-- forwards requests to `tokenizord`
+- forwards requests to `SymForged`
 
 ### Why split the binaries
 
@@ -460,12 +460,12 @@ src/
 
 1. provider client launches MCP shim or helper
 2. shim resolves current workspace
-3. shim connects to `tokenizord`
+3. shim connects to `SymForged`
 4. if daemon is absent, start it
 5. daemon verifies SpacetimeDB runtime
 6. daemon loads project and workspace context
 7. daemon returns readiness and context summary
-8. provider session continues with Tokenizor available
+8. provider session continues with SymForge available
 
 ### Steady state
 
@@ -481,18 +481,18 @@ src/
 
 ## Policy Model
 
-Tokenizor should have a provider-agnostic policy engine.
+SymForge should have a provider-agnostic policy engine.
 
 Policy decisions:
 
-- when Tokenizor is ready enough to be preferred
+- when SymForge is ready enough to be preferred
 - whether stale index state should be served, degraded, or blocked
 - whether hooks should warn vs block naive reads
 - what context summary to inject at session start
 
-This policy should live in Tokenizor, not in per-provider assets.
+This policy should live in SymForge, not in per-provider assets.
 
-Provider assets should call back into Tokenizor for decisions whenever possible.
+Provider assets should call back into SymForge for decisions whenever possible.
 
 ## Recommended First Implementation Sequence
 
@@ -500,7 +500,7 @@ Provider assets should call back into Tokenizor for decisions whenever possible.
 
 - document the adapter architecture
 - add provider/domain models for project, workspace, provider binding, and session
-- split `tokenizord` from the MCP shim
+- split `SymForged` from the MCP shim
 
 ### Phase 2
 
@@ -532,15 +532,15 @@ Provider assets should call back into Tokenizor for decisions whenever possible.
 These questions should remain open until the next research or implementation pass:
 
 - whether Codex exposes a public third-party skill packaging format beyond what is visible in current official docs
-- how much provider-specific config Tokenizor should write automatically versus suggest for review
+- how much provider-specific config SymForge should write automatically versus suggest for review
 - whether repo-local generated integration assets should be opt-in or default
-- how aggressively hook-capable clients should steer versus block non-Tokenizor lookups
-- whether `tokenizord` should be single-user and global, or one runtime per project root
+- how aggressively hook-capable clients should steer versus block non-SymForge lookups
+- whether `SymForged` should be single-user and global, or one runtime per project root
 
 ## Working Decision
 
 Unless new evidence contradicts it, the working decision should be:
 
-**Build Tokenizor as a long-lived local runtime with MCP transport and provider-specific adapters.**
+**Build SymForge as a long-lived local runtime with MCP transport and provider-specific adapters.**
 
 That is the most plausible architecture supported by the verified provider surfaces in this pass.

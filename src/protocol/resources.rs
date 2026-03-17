@@ -6,24 +6,24 @@ use rmcp::model::{
     ResourceTemplate,
 };
 
-use super::TokenizorServer;
+use super::SymForgeServer;
 use crate::protocol::tools::{
     GetFileContentInput, GetFileContextInput, GetRepoMapInput, GetSymbolContextInput,
     GetSymbolInput, WhatChangedInput,
 };
 
-pub(crate) const REPO_HEALTH_URI: &str = "tokenizor://repo/health";
-pub(crate) const REPO_OUTLINE_URI: &str = "tokenizor://repo/outline";
-pub(crate) const REPO_MAP_URI: &str = "tokenizor://repo/map";
-pub(crate) const REPO_CHANGES_URI: &str = "tokenizor://repo/changes/uncommitted";
+pub(crate) const REPO_HEALTH_URI: &str = "symforge://repo/health";
+pub(crate) const REPO_OUTLINE_URI: &str = "symforge://repo/outline";
+pub(crate) const REPO_MAP_URI: &str = "symforge://repo/map";
+pub(crate) const REPO_CHANGES_URI: &str = "symforge://repo/changes/uncommitted";
 
 pub(crate) const FILE_CONTEXT_TEMPLATE: &str =
-    "tokenizor://file/context?path={path}&max_tokens={max_tokens}";
-pub(crate) const FILE_CONTENT_TEMPLATE: &str = "tokenizor://file/content?path={path}&start_line={start_line}&end_line={end_line}&around_line={around_line}&around_match={around_match}&context_lines={context_lines}&show_line_numbers={show_line_numbers}&header={header}";
+    "symforge://file/context?path={path}&max_tokens={max_tokens}";
+pub(crate) const FILE_CONTENT_TEMPLATE: &str = "symforge://file/content?path={path}&start_line={start_line}&end_line={end_line}&around_line={around_line}&around_match={around_match}&context_lines={context_lines}&show_line_numbers={show_line_numbers}&header={header}";
 pub(crate) const SYMBOL_DETAIL_TEMPLATE: &str =
-    "tokenizor://symbol/detail?path={path}&name={name}&kind={kind}";
+    "symforge://symbol/detail?path={path}&name={name}&kind={kind}";
 pub(crate) const SYMBOL_CONTEXT_TEMPLATE: &str =
-    "tokenizor://symbol/context?name={name}&file={file}";
+    "symforge://symbol/context?name={name}&file={file}";
 
 enum ResourceRequest {
     RepoHealth,
@@ -55,7 +55,7 @@ enum ResourceRequest {
     },
 }
 
-impl TokenizorServer {
+impl SymForgeServer {
     pub(crate) fn resource_definitions(&self) -> Vec<Resource> {
         vec![
             make_resource(
@@ -262,7 +262,7 @@ pub(crate) fn repo_changes_resource() -> Resource {
 
 pub(crate) fn file_context_resource(path: &str, max_tokens: Option<u64>) -> Resource {
     let uri = build_uri(
-        "tokenizor://file/context",
+        "symforge://file/context",
         &[
             ("path", Some(path.to_string())),
             ("max_tokens", max_tokens.map(|v| v.to_string())),
@@ -298,7 +298,7 @@ fn make_resource_template(
 }
 
 fn build_uri(base: &str, params: &[(&str, Option<String>)]) -> String {
-    let mut url = Url::parse(base).expect("static tokenizor resource URI must parse");
+    let mut url = Url::parse(base).expect("static symforge resource URI must parse");
     {
         let mut query = url.query_pairs_mut();
         for (key, value) in params {
@@ -312,7 +312,7 @@ fn build_uri(base: &str, params: &[(&str, Option<String>)]) -> String {
 
 fn parse_resource_uri(uri: &str) -> Result<ResourceRequest, String> {
     let url = Url::parse(uri).map_err(|error| format!("invalid resource URI: {error}"))?;
-    if url.scheme() != "tokenizor" {
+    if url.scheme() != "symforge" {
         return Err(format!("unsupported resource scheme '{}'", url.scheme()));
     }
 
@@ -347,7 +347,7 @@ fn parse_resource_uri(uri: &str) -> Result<ResourceRequest, String> {
             file: optional_text(&query, "file"),
         }),
         (host, path) => Err(format!(
-            "unsupported Tokenizor resource target '{}{}'",
+            "unsupported SymForge resource target '{}{}'",
             host.unwrap_or("<none>"),
             path
         )),
@@ -395,10 +395,10 @@ mod tests {
 
     use crate::domain::{LanguageId, SymbolKind, SymbolRecord};
     use crate::live_index::store::{CircuitBreakerState, IndexedFile, LiveIndex, ParseStatus};
-    use crate::protocol::TokenizorServer;
+    use crate::protocol::SymForgeServer;
     use crate::watcher::WatcherInfo;
 
-    fn make_server_with_file(path: &str, content: &[u8]) -> TokenizorServer {
+    fn make_server_with_file(path: &str, content: &[u8]) -> SymForgeServer {
         let symbol = SymbolRecord {
             name: "main".to_string(),
             kind: SymbolKind::Function,
@@ -443,7 +443,7 @@ mod tests {
         };
         index.rebuild_reverse_index();
         index.rebuild_path_indices();
-        TokenizorServer::new(
+        SymForgeServer::new(
             crate::live_index::SharedIndexHandle::shared(index),
             "test_project".to_string(),
             Arc::new(Mutex::new(WatcherInfo::default())),
@@ -452,7 +452,7 @@ mod tests {
         )
     }
 
-    fn make_server() -> TokenizorServer {
+    fn make_server() -> SymForgeServer {
         make_server_with_file("src/main.rs", b"fn main() {}")
     }
 
@@ -499,7 +499,7 @@ mod tests {
     async fn test_read_templated_file_context_resource() {
         let server = make_server();
         let uri = build_uri(
-            "tokenizor://file/context",
+            "symforge://file/context",
             &[("path", Some("src/main.rs".to_string()))],
         );
         let result = server.read_resource_uri(&uri).await.expect("read resource");
@@ -514,7 +514,7 @@ mod tests {
     async fn test_read_templated_file_content_resource_with_ordinary_read_flags() {
         let server = make_server();
         let uri = build_uri(
-            "tokenizor://file/content",
+            "symforge://file/content",
             &[
                 ("path", Some("src/main.rs".to_string())),
                 ("show_line_numbers", Some("true".to_string())),
@@ -534,7 +534,7 @@ mod tests {
         let server =
             make_server_with_file("src/main.rs", b"line 1\nline 2\nline 3\nline 4\nline 5");
         let uri = build_uri(
-            "tokenizor://file/content",
+            "symforge://file/content",
             &[
                 ("path", Some("src/main.rs".to_string())),
                 ("around_line", Some("3".to_string())),
@@ -556,7 +556,7 @@ mod tests {
             b"line 1\nTODO first\nline 3\nTODO second\nline 5",
         );
         let uri = build_uri(
-            "tokenizor://file/content",
+            "symforge://file/content",
             &[
                 ("path", Some("src/main.rs".to_string())),
                 ("around_match", Some("todo".to_string())),

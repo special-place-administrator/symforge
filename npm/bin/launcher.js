@@ -22,16 +22,16 @@ function createLauncher(overrides = {}) {
     if (overrides.installDir) {
       return overrides.installDir;
     }
-    if (processMod.env.TOKENIZOR_HOME) {
-      return pathMod.join(processMod.env.TOKENIZOR_HOME, "bin");
+    if (processMod.env.SYMFORGE_HOME) {
+      return pathMod.join(processMod.env.SYMFORGE_HOME, "bin");
     }
-    return pathMod.join(osMod.homedir(), ".tokenizor", "bin");
+    return pathMod.join(osMod.homedir(), ".symforge", "bin");
   }
 
   const ext = processMod.platform === "win32" ? ".exe" : "";
   const installDir = resolveInstallDir();
-  const binPath = pathMod.join(installDir, "tokenizor-mcp" + ext);
-  const pendingPath = pathMod.join(installDir, "tokenizor-mcp.pending" + ext);
+  const binPath = pathMod.join(installDir, "symforge" + ext);
+  const pendingPath = pathMod.join(installDir, "symforge.pending" + ext);
 
   function relayInstallerOutput(output) {
     if (!output) {
@@ -66,7 +66,7 @@ function createLauncher(overrides = {}) {
 
     try {
       fsMod.renameSync(pendingPath, binPath);
-      consoleMod.error("tokenizor-mcp: applied pending update.");
+      consoleMod.error("symforge: applied pending update.");
       return true;
     } catch {
       return false;
@@ -99,7 +99,7 @@ function createLauncher(overrides = {}) {
 
   function runAutoInit() {
     const client = detectClients();
-    consoleMod.error(`tokenizor-mcp: auto-configuring for ${client}...`);
+    consoleMod.error(`symforge: auto-configuring for ${client}...`);
     try {
       const output = execFileSyncFn(binPath, ["init", "--client", client], {
         encoding: "utf8",
@@ -109,7 +109,7 @@ function createLauncher(overrides = {}) {
       relayInstallerOutput(output);
     } catch (error) {
       consoleMod.error(
-        `tokenizor-mcp: auto-init warning: ${error.message}`
+        `symforge: auto-init warning: ${error.message}`
       );
     }
   }
@@ -130,10 +130,10 @@ function createLauncher(overrides = {}) {
     }
 
     if (!hasBinary) {
-      consoleMod.error("tokenizor-mcp binary not found. Running install...");
+      consoleMod.error("symforge binary not found. Running install...");
     } else {
       consoleMod.error(
-        `tokenizor-mcp binary version ${installedVersion || "unknown"} does not match wrapper version ${expectedVersion}. Running install...`
+        `symforge binary version ${installedVersion || "unknown"} does not match wrapper version ${expectedVersion}. Running install...`
       );
     }
 
@@ -141,7 +141,7 @@ function createLauncher(overrides = {}) {
     applyPendingUpdate();
 
     if (!fsMod.existsSync(binPath)) {
-      throw new Error("tokenizor-mcp binary is still missing after install.");
+      throw new Error("symforge binary is still missing after install.");
     }
   }
 

@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use once_cell::sync::Lazy;
 use tempfile::TempDir;
-use tokenizor_agentic_mcp::{
+use symforge::{
     domain::{LanguageId, ReferenceKind, ReferenceRecord, SymbolKind, SymbolRecord},
     live_index::{IndexedFile, LiveIndex, ParseStatus, SharedIndex},
     sidecar::spawn_sidecar,
@@ -67,7 +67,7 @@ fn make_rust_file_with_symbols(path: &str, symbols: Vec<(&str, SymbolKind)>) -> 
     IndexedFile {
         relative_path: path.to_string(),
         language: LanguageId::Rust,
-        classification: tokenizor_agentic_mcp::domain::FileClassification::for_code_path(path),
+        classification: symforge::domain::FileClassification::for_code_path(path),
         content,
         symbols: symbol_records,
         parse_status: ParseStatus::Parsed,

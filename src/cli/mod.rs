@@ -1,9 +1,9 @@
-//! CLI module — clap Parser types and subcommand dispatch for the `tokenizor` binary.
+//! CLI module — clap Parser types and subcommand dispatch for the `symforge` binary.
 //!
 //! Subcommands:
-//!   `tokenizor init`               — configure Claude, Codex, or both
-//!   `tokenizor hook <subcommand>`  — hook scripts called by Claude Code
-//!   `tokenizor daemon`             — shared project/session backend
+//!   `symforge init`               — configure Claude, Codex, or both
+//!   `symforge hook <subcommand>`  — hook scripts called by Claude Code
+//!   `symforge daemon`             — shared project/session backend
 //!
 //! Plan 03 wires these into main.rs and handles the top-level dispatch.
 
@@ -12,11 +12,11 @@ pub mod init;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
-/// Top-level CLI parser for the `tokenizor` binary.
+/// Top-level CLI parser for the `symforge` binary.
 #[derive(Parser)]
 #[command(
-    name = "tokenizor",
-    about = "Tokenizor MCP server and hook system",
+    name = "symforge",
+    about = "SymForge MCP server and hook system",
     version
 )]
 pub struct Cli {
@@ -27,7 +27,7 @@ pub struct Cli {
 /// Top-level subcommands.
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Install Tokenizor integration for Claude, Codex, Gemini, Kilo Code, or all
+    /// Install SymForge integration for Claude, Codex, Gemini, Kilo Code, or all
     Init {
         /// Client to configure
         #[arg(long, value_enum, default_value_t = InitClient::All)]
@@ -42,7 +42,7 @@ pub enum Commands {
     },
 }
 
-/// Supported `tokenizor init` targets.
+/// Supported `symforge init` targets.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum InitClient {
     Claude,
@@ -70,7 +70,7 @@ pub enum HookSubcommand {
     /// UserPromptSubmit hook — injects targeted context from file/symbol hints in the prompt
     #[command(name = "prompt-submit")]
     PromptSubmit,
-    /// PreToolUse hook — suggests Tokenizor alternatives before built-in tools execute
+    /// PreToolUse hook — suggests SymForge alternatives before built-in tools execute
     #[command(name = "pre-tool")]
     PreTool,
 }
@@ -81,7 +81,7 @@ mod tests {
 
     #[test]
     fn test_init_defaults_to_all_clients() {
-        let cli = Cli::parse_from(["tokenizor", "init"]);
+        let cli = Cli::parse_from(["symforge", "init"]);
 
         match cli.command {
             Some(Commands::Init { client }) => assert_eq!(client, InitClient::All),
@@ -91,7 +91,7 @@ mod tests {
 
     #[test]
     fn test_init_accepts_codex_client() {
-        let cli = Cli::parse_from(["tokenizor", "init", "--client", "codex"]);
+        let cli = Cli::parse_from(["symforge", "init", "--client", "codex"]);
 
         match cli.command {
             Some(Commands::Init { client }) => assert_eq!(client, InitClient::Codex),
@@ -101,7 +101,7 @@ mod tests {
 
     #[test]
     fn test_init_accepts_gemini_client() {
-        let cli = Cli::parse_from(["tokenizor", "init", "--client", "gemini"]);
+        let cli = Cli::parse_from(["symforge", "init", "--client", "gemini"]);
 
         match cli.command {
             Some(Commands::Init { client }) => assert_eq!(client, InitClient::Gemini),
@@ -111,7 +111,7 @@ mod tests {
 
     #[test]
     fn test_init_accepts_kilo_code_client() {
-        let cli = Cli::parse_from(["tokenizor", "init", "--client", "kilo-code"]);
+        let cli = Cli::parse_from(["symforge", "init", "--client", "kilo-code"]);
 
         match cli.command {
             Some(Commands::Init { client }) => assert_eq!(client, InitClient::KiloCode),
@@ -121,7 +121,7 @@ mod tests {
 
     #[test]
     fn test_init_accepts_kilo_alias() {
-        let cli = Cli::parse_from(["tokenizor", "init", "--client", "kilo"]);
+        let cli = Cli::parse_from(["symforge", "init", "--client", "kilo"]);
 
         match cli.command {
             Some(Commands::Init { client }) => assert_eq!(client, InitClient::KiloCode),
@@ -131,7 +131,7 @@ mod tests {
 
     #[test]
     fn test_daemon_command_parses() {
-        let cli = Cli::parse_from(["tokenizor", "daemon"]);
+        let cli = Cli::parse_from(["symforge", "daemon"]);
 
         match cli.command {
             Some(Commands::Daemon) => {}
@@ -141,7 +141,7 @@ mod tests {
 
     #[test]
     fn test_hook_prompt_submit_command_parses() {
-        let cli = Cli::parse_from(["tokenizor", "hook", "prompt-submit"]);
+        let cli = Cli::parse_from(["symforge", "hook", "prompt-submit"]);
 
         match cli.command {
             Some(Commands::Hook {
@@ -153,7 +153,7 @@ mod tests {
 
     #[test]
     fn test_hook_pre_tool_command_parses() {
-        let cli = Cli::parse_from(["tokenizor", "hook", "pre-tool"]);
+        let cli = Cli::parse_from(["symforge", "hook", "pre-tool"]);
 
         match cli.command {
             Some(Commands::Hook {

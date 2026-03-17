@@ -71,7 +71,7 @@ function createInstallerForTest({ fsOverrides, execFileSync, sleep, installDir, 
     console: consoleMock,
     packageJson: { version: "0.3.9" },
     installDir,
-    execSync: () => "tokenizor 0.3.8",
+    execSync: () => "symforge 0.3.8",
     execFileSync,
     sleep: sleep || (async () => {}),
     download: async () => Buffer.from("new-binary"),
@@ -80,10 +80,10 @@ function createInstallerForTest({ fsOverrides, execFileSync, sleep, installDir, 
   return { installer, logs, errors };
 }
 
-test("locked Windows binary is replaced after stopping running Tokenizor processes", async () => {
-  const installDir = winPath.join("C:\\Users\\tester", ".tokenizor", "bin");
-  const binPath = winPath.join(installDir, "tokenizor-mcp.exe");
-  const pendingPath = winPath.join(installDir, "tokenizor-mcp.pending.exe");
+test("locked Windows binary is replaced after stopping running SymForge processes", async () => {
+  const installDir = winPath.join("C:\\Users\\tester", ".symforge", "bin");
+  const binPath = winPath.join(installDir, "symforge.exe");
+  const pendingPath = winPath.join(installDir, "symforge.pending.exe");
   const fsOverrides = createFs({
     binPath,
     pendingPath,
@@ -121,15 +121,15 @@ test("locked Windows binary is replaced after stopping running Tokenizor process
     fsOverrides.writes.some((entry) => entry.target === pendingPath),
     false
   );
-  assert.match(logs.join("\n"), /Stopped.*tokenizor-mcp daemon process/);
+  assert.match(logs.join("\n"), /Stopped.*symforge daemon process/);
   assert.match(logs.join("\n"), /Installed:/);
   assert.match(logs.join("\n"), /Auto-configuring/);
 });
 
 test("installer stages a pending binary when the executable is still locked after stopping processes", async () => {
-  const installDir = winPath.join("C:\\Users\\tester", ".tokenizor", "bin");
-  const binPath = winPath.join(installDir, "tokenizor-mcp.exe");
-  const pendingPath = winPath.join(installDir, "tokenizor-mcp.pending.exe");
+  const installDir = winPath.join("C:\\Users\\tester", ".symforge", "bin");
+  const binPath = winPath.join(installDir, "symforge.exe");
+  const pendingPath = winPath.join(installDir, "symforge.pending.exe");
   const fsOverrides = createFs({
     binPath,
     pendingPath,
@@ -154,17 +154,17 @@ test("installer stages a pending binary when the executable is still locked afte
   assert.match(logs.join("\n"), /Update will apply automatically on next launch/);
 });
 
-test("installer honors TOKENIZOR_HOME for binary resolution", () => {
-  const tokenizorHome = winPath.join("D:\\sandbox", "tokenizor-home");
-  const installDir = winPath.join(tokenizorHome, "bin");
-  const binPath = winPath.join(installDir, "tokenizor-mcp.exe");
-  const pendingPath = winPath.join(installDir, "tokenizor-mcp.pending.exe");
+test("installer honors SYMFORGE_HOME for binary resolution", () => {
+  const symforgeHome = winPath.join("D:\\sandbox", "symforge-home");
+  const installDir = winPath.join(symforgeHome, "bin");
+  const binPath = winPath.join(installDir, "symforge.exe");
+  const pendingPath = winPath.join(installDir, "symforge.pending.exe");
   const fsOverrides = createFs({ binPath, pendingPath, installDir });
 
   const { installer } = createInstallerForTest({
     fsOverrides,
     installDir: undefined,
-    env: { TOKENIZOR_HOME: tokenizorHome },
+    env: { SYMFORGE_HOME: symforgeHome },
     execFileSync() {
       return "[]";
     },

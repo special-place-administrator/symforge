@@ -1,4 +1,4 @@
-# Tokenizor — Development Plan
+# SymForge — Development Plan
 
 Current version: v0.23.0 | 24 MCP tools | 91 files indexed | 3115 symbols | 975 tests
 
@@ -15,7 +15,7 @@ Small effort, high value. Can ship together in one release.
 - [ ] **ParseStatus warning banner** — `PartialParse` status not surfaced in tool output. Users see no warning when working with incomplete parse data. Add warning banner to affected tool responses. Files: `src/protocol/format.rs`, `src/protocol/tools.rs`.
 - [ ] **around_line out-of-range error** — `get_file_content` with `around_line=999999` returns silently empty. Return "Line N exceeds file length (M lines)" instead. LLMs retry endlessly on empty responses.
 - [ ] **diff_symbols phantom file count** — Says "2 files changed" but only shows details for 1 when a file changed without symbol boundary modifications. Add "N files changed but no symbol boundaries affected" note.
-- [ ] **get_symbol_context kind labels** — With `verbosity=signature`, callers section labels all symbols as "fn" (e.g. "in fn Result" should be "in type Result", "in fn TokenizorError" should be "in enum TokenizorError").
+- [ ] **get_symbol_context kind labels** — With `verbosity=signature`, callers section labels all symbols as "fn" (e.g. "in fn Result" should be "in type Result", "in fn SymForgeError" should be "in enum SymForgeError").
 - [ ] **analyze_file_impact stale co-changes** — Git temporal data references deleted files from pre-v2 rewrite (e.g. `src/protocol/mcp.rs`). Filter out files that no longer exist in the working tree.
 
 ## Sprint 2: Explore Improvements
@@ -41,9 +41,9 @@ Medium-large effort. Prerequisite for Sprint 4 (session intelligence).
 
 ## Sprint 4: Session Intelligence
 
-Large effort, transformative. Moves Tokenizor from stateless tool to context-aware assistant.
+Large effort, transformative. Moves SymForge from stateless tool to context-aware assistant.
 
-- [ ] **set_focus** — Persistent focus state on `TokenizorServer` (path, symbol, intent). All tools auto-rank by proximity. Auto-set from recent tool calls.
+- [ ] **set_focus** — Persistent focus state on `SymForgeServer` (path, symbol, intent). All tools auto-rank by proximity. Auto-set from recent tool calls.
 - [ ] **Intent-driven prepare** — One call assembles context for a specific task:
   - `intent: "edit"` → bundle + find_references(compact) + git activity
   - `intent: "review"` → diff_symbols + callers + recent commits
@@ -104,7 +104,7 @@ Verify `replace_symbol_body`, `edit_within_symbol`, `delete_symbol` work with co
 
 ### Task 11.8 — PreToolUse Hook Update
 
-Update `is_non_source_path` in `src/cli/hook.rs` to intercept config files once Tokenizor handles them. Currently skips `.md`, `.json`, `.toml` — after this sprint, those should trigger Tokenizor suggestions.
+Update `is_non_source_path` in `src/cli/hook.rs` to intercept config files once SymForge handles them. Currently skips `.md`, `.json`, `.toml` — after this sprint, those should trigger SymForge suggestions.
 
 ### Task 11.9 — Tests
 

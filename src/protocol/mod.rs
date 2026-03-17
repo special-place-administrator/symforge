@@ -36,7 +36,7 @@ use crate::watcher::WatcherInfo;
 /// The `repo_root` field is used by `index_folder` to restart the watcher at a new root.
 /// The `token_stats` field provides live hook token savings to the health tool (AD-4 simpler path).
 #[derive(Clone)]
-pub struct TokenizorServer {
+pub struct SymForgeServer {
     pub(crate) index: SharedIndex,
     pub(crate) tool_router: ToolRouter<Self>,
     pub(crate) prompt_router: PromptRouter<Self>,
@@ -58,7 +58,7 @@ pub struct TokenizorServer {
     pub(crate) daemon_degraded: Arc<AtomicBool>,
 }
 
-impl TokenizorServer {
+impl SymForgeServer {
     /// Create a new server with the given shared index, project name, and watcher state.
     ///
     /// `token_stats` is optional — when `Some`, the health tool will include a token savings
@@ -278,13 +278,13 @@ impl TokenizorServer {
     }
 }
 
-/// Wire `TokenizorServer` as an MCP `ServerHandler`.
+/// Wire `SymForgeServer` as an MCP `ServerHandler`.
 ///
 /// The `#[tool_handler]` macro delegates tool dispatch to `self.tool_router`
 /// and supplies the `call_tool` / `list_tools` implementations automatically.
 #[tool_handler(router = self.tool_router)]
 #[prompt_handler(router = self.prompt_router)]
-impl ServerHandler for TokenizorServer {
+impl ServerHandler for SymForgeServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(
             ServerCapabilities::builder()

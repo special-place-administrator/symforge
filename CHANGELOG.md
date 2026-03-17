@@ -1,12 +1,25 @@
 # Changelog
 
-## [0.33.0](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.32.3...v0.33.0) (2026-03-17)
+## [Unreleased]
+
+### ⚠ BREAKING CHANGES
+
+* **rename:** Tokenizor has been renamed to SymForge. All binaries, env vars, config paths, and npm package names have changed.
+  - Binary: `tokenizor-mcp` → `symforge`
+  - npm: `tokenizor-mcp` → `symforge`
+  - Crate: `tokenizor_agentic_mcp` → `symforge`
+  - Home dir: `~/.tokenizor/` → `~/.symforge/`
+  - Project dir: `.tokenizor/` → `.symforge/`
+  - Env vars: `TOKENIZOR_*` → `SYMFORGE_*`
+  - MCP server name: `tokenizor` → `symforge`
+
+## [0.33.0](https://github.com/special-place-administrator/symforge/compare/v0.32.3...v0.33.0) (2026-03-17)
 
 
 ### Features
 
-* git churn in ranking, expanded guidance blocks, improved tool descriptions ([4cf1e6e](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/4cf1e6e782d79e52554c23aae98590fb5a60feb5))
-* lenient vec deserializer, semantic search ranking, Kilo Code init, SymForge rename plan ([c048274](https://github.com/special-place-administrator/tokenizor_agentic_mcp/commit/c04827422bb02a04ff4222864b0c09ff014ca70d))
+* git churn in ranking, expanded guidance blocks, improved tool descriptions ([4cf1e6e](https://github.com/special-place-administrator/symforge/commit/4cf1e6e782d79e52554c23aae98590fb5a60feb5))
+* lenient vec deserializer, semantic search ranking, Kilo Code init, SymForge rename plan ([c048274](https://github.com/special-place-administrator/symforge/commit/c04827422bb02a04ff4222864b0c09ff014ca70d))
 
 ## [0.32.3](https://github.com/special-place-administrator/tokenizor_agentic_mcp/compare/v0.32.2...v0.32.3) (2026-03-17)
 

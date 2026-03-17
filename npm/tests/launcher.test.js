@@ -70,9 +70,9 @@ function createLauncherForTest({
 }
 
 test("launcher runs installer when installed binary version lags wrapper version", () => {
-  const installDir = winPath.join("C:\\Users\\tester", ".tokenizor", "bin");
-  const binPath = winPath.join(installDir, "tokenizor-mcp.exe");
-  const pendingPath = winPath.join(installDir, "tokenizor-mcp.pending.exe");
+  const installDir = winPath.join("C:\\Users\\tester", ".symforge", "bin");
+  const binPath = winPath.join(installDir, "symforge.exe");
+  const pendingPath = winPath.join(installDir, "symforge.pending.exe");
   const fsOverrides = createFs({ binPath, pendingPath });
   const execCalls = [];
   let versionCalls = 0;
@@ -84,7 +84,7 @@ test("launcher runs installer when installed binary version lags wrapper version
       execCalls.push({ command, args });
       if (command === binPath) {
         versionCalls += 1;
-        return versionCalls === 1 ? "tokenizor 0.3.11" : "tokenizor 0.3.12";
+        return versionCalls === 1 ? "symforge 0.3.11" : "symforge 0.3.12";
       }
       return "";
     },
@@ -101,9 +101,9 @@ test("launcher runs installer when installed binary version lags wrapper version
 });
 
 test("launcher applies pending update before checking installed version", () => {
-  const installDir = winPath.join("C:\\Users\\tester", ".tokenizor", "bin");
-  const binPath = winPath.join(installDir, "tokenizor-mcp.exe");
-  const pendingPath = winPath.join(installDir, "tokenizor-mcp.pending.exe");
+  const installDir = winPath.join("C:\\Users\\tester", ".symforge", "bin");
+  const binPath = winPath.join(installDir, "symforge.exe");
+  const pendingPath = winPath.join(installDir, "symforge.pending.exe");
   const fsOverrides = createFs({
     binPath,
     pendingPath,
@@ -116,7 +116,7 @@ test("launcher applies pending update before checking installed version", () => 
     installDir,
     execFileSync(command) {
       if (command === binPath) {
-        return "tokenizor 0.3.12";
+        return "symforge 0.3.12";
       }
       throw new Error("installer should not run");
     },
@@ -132,16 +132,16 @@ test("launcher applies pending update before checking installed version", () => 
   assert.match(errors.join("\n"), /applied pending update/);
 });
 
-test("launcher honors TOKENIZOR_HOME for binary resolution", () => {
-  const installDir = winPath.join("D:\\sandbox", "tokenizor-home", "bin");
-  const binPath = winPath.join(installDir, "tokenizor-mcp.exe");
-  const pendingPath = winPath.join(installDir, "tokenizor-mcp.pending.exe");
+test("launcher honors SYMFORGE_HOME for binary resolution", () => {
+  const installDir = winPath.join("D:\\sandbox", "symforge-home", "bin");
+  const binPath = winPath.join(installDir, "symforge.exe");
+  const pendingPath = winPath.join(installDir, "symforge.pending.exe");
   const fsOverrides = createFs({ binPath, pendingPath, hasBinary: false, hasPending: false });
 
   const { launcher } = createLauncherForTest({
     fsOverrides,
     installDir: undefined,
-    env: { TOKENIZOR_HOME: winPath.join("D:\\sandbox", "tokenizor-home") },
+    env: { SYMFORGE_HOME: winPath.join("D:\\sandbox", "symforge-home") },
     execFileSync() {
       return "";
     },
@@ -155,9 +155,9 @@ test("launcher honors TOKENIZOR_HOME for binary resolution", () => {
 });
 
 test("launcher relays installer stdout to stderr so MCP stdout stays clean", () => {
-  const installDir = winPath.join("C:\\Users\\tester", ".tokenizor", "bin");
-  const binPath = winPath.join(installDir, "tokenizor-mcp.exe");
-  const pendingPath = winPath.join(installDir, "tokenizor-mcp.pending.exe");
+  const installDir = winPath.join("C:\\Users\\tester", ".symforge", "bin");
+  const binPath = winPath.join(installDir, "symforge.exe");
+  const pendingPath = winPath.join(installDir, "symforge.pending.exe");
   const fsOverrides = createFs({ binPath, pendingPath });
 
   const { launcher, logs, errors } = createLauncherForTest({
@@ -165,9 +165,9 @@ test("launcher relays installer stdout to stderr so MCP stdout stays clean", () 
     installDir,
     execFileSync(command) {
       if (command === binPath) {
-        return "tokenizor 0.3.11";
+        return "symforge 0.3.11";
       }
-      return "Downloading tokenizor-mcp v0.3.12...\nInstalled: C:\\Users\\tester\\.tokenizor\\bin\\tokenizor-mcp.exe\n";
+      return "Downloading symforge v0.3.12...\nInstalled: C:\\Users\\tester\\.symforge\\bin\\symforge.exe\n";
     },
     spawnSync() {
       return { status: 0 };
@@ -178,6 +178,6 @@ test("launcher relays installer stdout to stderr so MCP stdout stays clean", () 
 
   assert.equal(status, 0);
   assert.equal(logs.length, 0);
-  assert.match(errors.join("\n"), /Downloading tokenizor-mcp v0.3.12/);
+  assert.match(errors.join("\n"), /Downloading symforge v0.3.12/);
   assert.match(errors.join("\n"), /Installed:/);
 });

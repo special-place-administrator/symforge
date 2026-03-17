@@ -1,4 +1,4 @@
-//! HTTP endpoint handlers for the tokenizor sidecar.
+//! HTTP endpoint handlers for the symforge sidecar.
 //!
 //! All handlers follow this contract:
 //!  - Accept `State(state): State<SidecarState>` plus optional `Query(params)`.

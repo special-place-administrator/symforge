@@ -1,7 +1,7 @@
 # Parallelism & Concurrency Review
 
 **Date:** 2026-03-15
-**Focus:** Why parallel subagents stall when using Tokenizor MCP simultaneously
+**Focus:** Why parallel subagents stall when using SymForge MCP simultaneously
 
 ---
 
@@ -17,7 +17,7 @@ Agent 4 (stdio) ─┘      ├─ Governor (8 permits, write gate)
                          └─ Watcher (tokio::spawn, no spawn_blocking)
 ```
 
-Each agent runs its own `tokenizor` stdio process, but all proxy to **one shared daemon**. The daemon has a **single governor** controlling all concurrent tool executions across all agents.
+Each agent runs its own `SymForge` stdio process, but all proxy to **one shared daemon**. The daemon has a **single governor** controlling all concurrent tool executions across all agents.
 
 ---
 

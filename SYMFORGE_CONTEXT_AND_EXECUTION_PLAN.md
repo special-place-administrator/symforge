@@ -1,8 +1,8 @@
-# Tokenizor Context And Execution Plan
+# SymForge Context And Execution Plan
 
 Status: research-backed execution document
 Date: 2026-03-11
-Audience: AI coding agents and maintainers working on `tokenizor_agentic_mcp`
+Audience: AI coding agents and maintainers working on `symforge`
 
 ## Purpose
 
@@ -10,14 +10,14 @@ This document turns product intent into an implementation-grade backlog.
 
 It is intended to serve two roles at the same time:
 
-- context document: explains what Tokenizor is trying to become, what constraints matter, and what tradeoffs are acceptable
+- context document: explains what SymForge is trying to become, what constraints matter, and what tradeoffs are acceptable
 - planning document: gives a dependency-ordered execution plan that an AI coding agent can follow
 
-The target is not "make Tokenizor somewhat nicer."
+The target is not "make SymForge somewhat nicer."
 
 The target is:
 
-- make Tokenizor the default code exploration surface for AI agents
+- make SymForge the default code exploration surface for AI agents
 - make it good enough to replace most `rg` usage for code search
 - make it good enough to replace most `Get-Content` usage for code reading
 - stay code-first for semantic intelligence while adding a bounded non-binary text reading/search lane where it materially improves usability
@@ -25,7 +25,7 @@ The target is:
 This is intentionally opinionated. It is based on:
 
 - direct usage of the MCP tools on a real Rust workspace
-- direct usage of the MCP tools on the Tokenizor repo itself
+- direct usage of the MCP tools on the SymForge repo itself
 - review of the current README and planning docs
 - inspection of the current implementation in the query, protocol, sidecar, and hook layers
 
@@ -75,7 +75,7 @@ If the plan and the context ever seem to conflict:
 
 ## Primary Success Principle
 
-The main goal is to make Tokenizor better than it is today without breaking what already works.
+The main goal is to make SymForge better than it is today without breaking what already works.
 
 That means:
 
@@ -165,7 +165,7 @@ An agent should be able to answer these questions without reaching for shell too
 6. Hide generated and irrelevant noise unless I explicitly ask for it.
 7. Give me the result in a format that is immediately usable by a model.
 
-If Tokenizor cannot do those seven things smoothly, agents will continue falling back to `rg` and `Get-Content`.
+If SymForge cannot do those seven things smoothly, agents will continue falling back to `rg` and `Get-Content`.
 
 ## Code-First, Not Code-Only
 
@@ -179,7 +179,7 @@ The correct target is:
 - non-binary text files get path discovery, plain-text search, and reliable file reading through a lighter secondary lane
 - binary files remain out of scope or explicitly unsupported
 
-This keeps Tokenizor code-centric where it matters while still allowing true shell replacement for reading text files.
+This keeps SymForge code-centric where it matters while still allowing true shell replacement for reading text files.
 
 It does not require treating every text file as a first-class semantic or always-hot in-memory object.
 
@@ -249,7 +249,7 @@ The incorrect strategy is:
 - proliferate tools without strengthening the core query path
 - regress determinism or latency while chasing features
 
-If a change makes Tokenizor materially more useful while preserving or improving reliability, it is a good change even if it does not fully achieve the final replacement vision yet.
+If a change makes SymForge materially more useful while preserving or improving reliability, it is a good change even if it does not fully achieve the final replacement vision yet.
 
 If a structural replacement produces a better overall system, that replacement is valid and should not be blocked just because the old foundation was "working."
 
@@ -259,7 +259,7 @@ These are the highest-value blockers between the current product and the stated 
 
 ### Blocker 1: No file/path search primitive
 
-I still need `rg --files` because Tokenizor does not give me a first-class way to resolve paths.
+I still need `rg --files` because SymForge does not give me a first-class way to resolve paths.
 
 Typical agent questions:
 
@@ -291,11 +291,11 @@ If I cannot scope search, I will keep using `rg`.
 
 ### Blocker 3: `find_references` is too name-driven
 
-`find_references(name="new")` on the Tokenizor repo produced massive noisy output.
+`find_references(name="new")` on the SymForge repo produced massive noisy output.
 
 That is expected. A name-only query cannot replace structural navigation for common symbols.
 
-Tokenizor needs exact-symbol reference lookup, not just bare-name lookup.
+SymForge needs exact-symbol reference lookup, not just bare-name lookup.
 
 ### Blocker 4: `get_file_content` is too raw
 
@@ -333,7 +333,7 @@ The ideal agent loop is:
 3. inspect enclosing symbol
 4. inspect exact references
 
-Tokenizor has most of the pieces, but not the shortest route through them.
+SymForge has most of the pieces, but not the shortest route through them.
 
 ## Current Code Observations
 
@@ -724,7 +724,7 @@ This is effectively a stronger, tool-grade evolution of `get_file_context`.
 
 ## Workstream G: Agent Adoption and Client Maximization
 
-Goal: make agents actually choose Tokenizor more often.
+Goal: make agents actually choose SymForge more often.
 
 ### Deliverables
 
@@ -743,7 +743,7 @@ Goal: make agents actually choose Tokenizor more often.
 
 ### Acceptance criteria
 
-- the recommended prompt flow for exploration uses Tokenizor tools first
+- the recommended prompt flow for exploration uses SymForge tools first
 - new tools are discoverable from MCP prompts/resources, not only from README text
 
 ### Likely files to modify
@@ -857,7 +857,7 @@ This reduces churn for existing clients while still materially improving capabil
 
 ## Tool Routing Guidance
 
-If Tokenizor is meant to replace shell exploration, an agent should not have to invent its own tool-selection strategy every session.
+If SymForge is meant to replace shell exploration, an agent should not have to invent its own tool-selection strategy every session.
 
 The product should define the optimal routing rules.
 
@@ -1560,7 +1560,7 @@ If an implementation agent has to optimize for only a few things, optimize for t
 
 ### Goal 1: Path Discovery
 
-Tokenizor must be able to replace most `rg --files` style path lookup for relevant project text files, while still ranking code first for semantic workflows.
+SymForge must be able to replace most `rg --files` style path lookup for relevant project text files, while still ranking code first for semantic workflows.
 
 Minimum useful outcome:
 
@@ -1570,7 +1570,7 @@ Minimum useful outcome:
 
 ### Goal 2: Scoped Search
 
-Tokenizor must be able to replace a large share of targeted `rg` queries for code, and eventually plain-text project search for non-binary files.
+SymForge must be able to replace a large share of targeted `rg` queries for code, and eventually plain-text project search for non-binary files.
 
 Minimum useful outcome:
 
@@ -1582,7 +1582,7 @@ Minimum useful outcome:
 
 ### Goal 3: Exact Reference Navigation
 
-Tokenizor must stop relying on name-only reference lookup for ambiguous symbols.
+SymForge must stop relying on name-only reference lookup for ambiguous symbols.
 
 Minimum useful outcome:
 
@@ -1592,7 +1592,7 @@ Minimum useful outcome:
 
 ### Goal 4: Read Surface Parity
 
-Tokenizor must be able to replace a large share of `Get-Content` style reading, which means it cannot stay source-only forever.
+SymForge must be able to replace a large share of `Get-Content` style reading, which means it cannot stay source-only forever.
 
 Minimum useful outcome:
 
@@ -2178,7 +2178,7 @@ This is the short, practical backlog I would hand to an execution agent.
 
 ## Definition Of Success
 
-Tokenizor is succeeding when the normal agent loop becomes:
+SymForge is succeeding when the normal agent loop becomes:
 
 1. `search_files`
 2. `search_text` or `search_symbols` with scope
@@ -2211,4 +2211,4 @@ Recommended first implementation slice:
 - Phase 2
 - the line-numbered subset of Phase 3
 
-That slice alone would materially change how often Tokenizor gets chosen over shell.
+That slice alone would materially change how often SymForge gets chosen over shell.

@@ -138,20 +138,20 @@ jobs:
         include:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact: tokenizor-mcp-windows-x64.exe
-            binary: target/x86_64-pc-windows-msvc/release/tokenizor_agentic_mcp.exe
+            artifact: symforge-windows-x64.exe
+            binary: target/x86_64-pc-windows-msvc/release/symforge.exe
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact: tokenizor-mcp-linux-x64
-            binary: target/x86_64-unknown-linux-gnu/release/tokenizor_agentic_mcp
+            artifact: symforge-linux-x64
+            binary: target/x86_64-unknown-linux-gnu/release/symforge
           - os: macos-latest
             target: aarch64-apple-darwin
-            artifact: tokenizor-mcp-macos-arm64
-            binary: target/aarch64-apple-darwin/release/tokenizor_agentic_mcp
+            artifact: symforge-macos-arm64
+            binary: target/aarch64-apple-darwin/release/symforge
           - os: macos-latest
             target: x86_64-apple-darwin
-            artifact: tokenizor-mcp-macos-x64
-            binary: target/x86_64-apple-darwin/release/tokenizor_agentic_mcp
+            artifact: symforge-macos-x64
+            binary: target/x86_64-apple-darwin/release/symforge
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -218,7 +218,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: npm-package
-          path: npm/tokenizor-mcp-${{ needs.prepare-release.outputs.version }}.tgz
+          path: npm/symforge-${{ needs.prepare-release.outputs.version }}.tgz
           if-no-files-found: error
 
   upload-release-assets:
@@ -240,6 +240,18 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
         run: gh release upload "${{ needs.prepare-release.outputs.tag_name }}" artifacts/* --clobber
+
+  cargo-publish:
+    needs: [prepare-release]
+    if: needs.prepare-release.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Publish to crates.io
+        run: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
   npm-publish:
     needs:
@@ -264,11 +276,11 @@ jobs:
       - name: Verify npm package artifact
         shell: bash
         run: |
-          TAR_PATH="./dist/tokenizor-mcp-${{ needs.prepare-release.outputs.version }}.tgz"
+          TAR_PATH="./dist/symforge-${{ needs.prepare-release.outputs.version }}.tgz"
           test -f "$TAR_PATH"
           ls -l "$TAR_PATH"
 
       - name: Publish to npm
-        run: npm publish "./dist/tokenizor-mcp-${{ needs.prepare-release.outputs.version }}.tgz" --access public
+        run: npm publish "./dist/symforge-${{ needs.prepare-release.outputs.version }}.tgz" --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -11,7 +11,7 @@
 ///   FA-08: Angular control flow extracted via text scanning
 ///   FA-09: Plain HTML produces no Angular noise
 ///   FA-10: All existing tests unchanged (regression)
-use tokenizor_agentic_mcp::{
+use symforge::{
     domain::{FileOutcome, LanguageId, SymbolKind},
     parsing::{
         config_extractors::{EditCapability, edit_capability_for_language},

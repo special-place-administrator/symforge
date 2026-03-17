@@ -1,16 +1,17 @@
-//! `tokenizor init` command — client-aware Claude/Codex/Gemini/Kilo Code configuration.
+//! `symforge init` command — client-aware Claude/Codex/Gemini/Kilo Code configuration.
 //!
 //! Strategy:
-//! 1. Discover the absolute path of the running tokenizor binary.
+//! 1. Discover the absolute path of the running symforge binary.
 //! 2. Configure Claude, Codex, Gemini, Kilo Code, or all based on the selected client target.
-//! 3. For Claude, merge tokenizor hook entries into `~/.claude/settings.json`
+//! 3. For Claude, merge symforge hook entries into `~/.claude/settings.json`
 //!    and register the MCP server in `~/.claude.json`.
 //! 4. For Codex, register the MCP server in `~/.codex/config.toml`.
 //! 5. For Kilo Code, register the MCP server in `.kilocode/mcp.json` (workspace-local).
-//! 6. Create `.tokenizor/` in the current working directory (runtime needs it).
+//! 6. Create `.symforge/` in the current working directory (runtime needs it).
 //!
 //! Identification: any hook entry whose `hooks[].command` contains the substring
-//! `"tokenizor hook"` is considered a tokenizor-owned entry and will be replaced.
+//! `"symforge hook"` or `"tokenizor hook"` (legacy) is considered a symforge-owned
+//! entry and will be replaced.
 
 use std::path::PathBuf;
 
@@ -59,10 +60,13 @@ impl InitPaths {
 
 const CODEX_STARTUP_TIMEOUT_SEC: i64 = 30;
 const CODEX_TOOL_TIMEOUT_SEC: i64 = 120;
-const TOKENIZOR_GUIDANCE_START: &str = "<!-- TOKENIZOR START -->";
-const TOKENIZOR_GUIDANCE_END: &str = "<!-- TOKENIZOR END -->";
+const SYMFORGE_GUIDANCE_START: &str = "<!-- SYMFORGE START -->";
+const SYMFORGE_GUIDANCE_END: &str = "<!-- SYMFORGE END -->";
+/// Legacy marker strings for backward-compatible detection during upsert.
+const LEGACY_GUIDANCE_START: &str = "<!-- TOKENIZOR START -->";
+const LEGACY_GUIDANCE_END: &str = "<!-- TOKENIZOR END -->";
 
-/// Entry point called by main.rs for `tokenizor init`.
+/// Entry point called by main.rs for `symforge init`.
 pub fn run_init(client: InitClient) -> anyhow::Result<()> {
     let home = dirs::home_dir().context("cannot determine home directory")?;
     let working_dir =
@@ -72,7 +76,7 @@ pub fn run_init(client: InitClient) -> anyhow::Result<()> {
     run_init_with_context(client, &home, &working_dir, &binary_path)
 }
 
-/// Testable core for `tokenizor init` with injected paths.
+/// Testable core for `symforge init` with injected paths.
 pub fn run_init_with_context(
     client: InitClient,
     home_dir: &std::path::Path,
@@ -138,20 +142,20 @@ pub fn run_init_with_context(
         );
     }
 
-    std::fs::create_dir_all(working_dir.join(".tokenizor"))
-        .with_context(|| format!("creating {}", working_dir.join(".tokenizor").display()))?;
+    std::fs::create_dir_all(working_dir.join(".symforge"))
+        .with_context(|| format!("creating {}", working_dir.join(".symforge").display()))?;
 
-    eprintln!("tokenizor init complete");
+    eprintln!("symforge init complete");
 
     Ok(())
 }
 
-/// Merge tokenizor hook entries into `settings_path`, creating it if necessary.
+/// Merge symforge hook entries into `settings_path`, creating it if necessary.
 ///
 /// This is the testable core of `run_init`. Integration tests can pass a temp-dir path
 /// instead of the real `~/.claude/settings.json`.
 ///
-/// `binary_path` is the absolute path of the tokenizor binary.
+/// `binary_path` is the absolute path of the symforge binary.
 pub fn merge_hooks_into_settings(
     settings_path: &std::path::Path,
     binary_path: &std::path::Path,
@@ -176,7 +180,7 @@ pub fn merge_hooks_into_settings(
     let binary_str = binary_path.display().to_string().replace('\\', "/");
 
     // Merge hooks in-place.
-    merge_tokenizor_hooks(&mut settings, &binary_str);
+    merge_symforge_hooks(&mut settings, &binary_str);
 
     // Write back.
     let pretty = serde_json::to_string_pretty(&settings)?;
@@ -190,44 +194,44 @@ pub fn merge_hooks_into_settings(
 // Tool name constants
 // ---------------------------------------------------------------------------
 
-const TOKENIZOR_TOOL_NAMES: &[&str] = &[
-    "mcp__tokenizor__health",
-    "mcp__tokenizor__index_folder",
-    "mcp__tokenizor__get_file_outline",
-    "mcp__tokenizor__get_file_content",
-    "mcp__tokenizor__get_file_tree",
-    "mcp__tokenizor__get_symbol",
-    "mcp__tokenizor__get_symbols",
-    "mcp__tokenizor__get_repo_outline",
-    "mcp__tokenizor__get_repo_map",
-    "mcp__tokenizor__get_file_context",
-    "mcp__tokenizor__get_symbol_context",
-    "mcp__tokenizor__get_context_bundle",
-    "mcp__tokenizor__search_symbols",
-    "mcp__tokenizor__search_text",
-    "mcp__tokenizor__search_files",
-    "mcp__tokenizor__resolve_path",
-    "mcp__tokenizor__find_references",
-    "mcp__tokenizor__find_dependents",
-    "mcp__tokenizor__find_implementations",
-    "mcp__tokenizor__inspect_match",
-    "mcp__tokenizor__analyze_file_impact",
-    "mcp__tokenizor__what_changed",
-    "mcp__tokenizor__get_co_changes",
-    "mcp__tokenizor__diff_symbols",
-    "mcp__tokenizor__explore",
-    "mcp__tokenizor__replace_symbol_body",
-    "mcp__tokenizor__edit_within_symbol",
-    "mcp__tokenizor__insert_symbol",
-    "mcp__tokenizor__delete_symbol",
-    "mcp__tokenizor__batch_edit",
-    "mcp__tokenizor__batch_insert",
-    "mcp__tokenizor__batch_rename",
+const SYMFORGE_TOOL_NAMES: &[&str] = &[
+    "mcp__symforge__health",
+    "mcp__symforge__index_folder",
+    "mcp__symforge__get_file_outline",
+    "mcp__symforge__get_file_content",
+    "mcp__symforge__get_file_tree",
+    "mcp__symforge__get_symbol",
+    "mcp__symforge__get_symbols",
+    "mcp__symforge__get_repo_outline",
+    "mcp__symforge__get_repo_map",
+    "mcp__symforge__get_file_context",
+    "mcp__symforge__get_symbol_context",
+    "mcp__symforge__get_context_bundle",
+    "mcp__symforge__search_symbols",
+    "mcp__symforge__search_text",
+    "mcp__symforge__search_files",
+    "mcp__symforge__resolve_path",
+    "mcp__symforge__find_references",
+    "mcp__symforge__find_dependents",
+    "mcp__symforge__find_implementations",
+    "mcp__symforge__inspect_match",
+    "mcp__symforge__analyze_file_impact",
+    "mcp__symforge__what_changed",
+    "mcp__symforge__get_co_changes",
+    "mcp__symforge__diff_symbols",
+    "mcp__symforge__explore",
+    "mcp__symforge__replace_symbol_body",
+    "mcp__symforge__edit_within_symbol",
+    "mcp__symforge__insert_symbol",
+    "mcp__symforge__delete_symbol",
+    "mcp__symforge__batch_edit",
+    "mcp__symforge__batch_insert",
+    "mcp__symforge__batch_rename",
 ];
 
 /// Tool names allowed by default for the Kilo Code VS Code extension.
 ///
-/// Kilo Code uses bare tool names (no `mcp__tokenizor__` prefix).
+/// Kilo Code uses bare tool names (no `mcp__symforge__` prefix).
 const KILO_ALWAYS_ALLOW: &[&str] = &[
     "health",
     "get_repo_map",
@@ -255,7 +259,7 @@ fn merge_allowed_tools(settings: &mut Value) {
         settings["allowedTools"] = json!([]);
     }
     let allowed = settings["allowedTools"].as_array_mut().expect("is array");
-    for tool_name in TOKENIZOR_TOOL_NAMES {
+    for tool_name in SYMFORGE_TOOL_NAMES {
         let val = Value::String(tool_name.to_string());
         if !allowed.contains(&val) {
             allowed.push(val);
@@ -267,17 +271,17 @@ fn merge_allowed_tools(settings: &mut Value) {
 // Core merge logic (pub for unit testing)
 // ---------------------------------------------------------------------------
 
-/// Merge tokenizor hook entries into an existing `settings` Value in-place.
+/// Merge symforge hook entries into an existing `settings` Value in-place.
 ///
-/// `binary_path` is the absolute path of the tokenizor binary (already
+/// `binary_path` is the absolute path of the symforge binary (already
 /// normalised to forward-slash on Windows).
-pub fn merge_tokenizor_hooks(settings: &mut Value, binary_path: &str) {
+pub fn merge_symforge_hooks(settings: &mut Value, binary_path: &str) {
     // Ensure `hooks` key is an object.
     if !settings["hooks"].is_object() {
         settings["hooks"] = json!({});
     }
 
-    // Build fresh tokenizor entries.
+    // Build fresh symforge entries.
     let post_tool_use_entries = build_post_tool_use_entries(binary_path);
     let pre_tool_use_entries = build_pre_tool_use_entries(binary_path);
     let session_start_entries = build_session_start_entries(binary_path);
@@ -347,17 +351,20 @@ fn build_user_prompt_submit_entries(binary_path: &str) -> Vec<Value> {
 // Merge helpers
 // ---------------------------------------------------------------------------
 
-/// Returns `true` if a hook entry array contains a tokenizor hook command.
+/// Returns `true` if a hook entry array contains a symforge or legacy tokenizor hook command.
 ///
-/// The binary may be named `tokenizor` or `tokenizor-mcp` (with optional `.exe`),
-/// so we check for "tokenizor" anywhere in the command AND " hook" as the
-/// subcommand indicator.
-fn is_tokenizor_entry(entry: &Value) -> bool {
+/// The binary may be named `symforge`, `symforge.exe`, or legacy `tokenizor`/`tokenizor-mcp`
+/// (with optional `.exe`), so we check for "symforge" OR "tokenizor" anywhere in the command
+/// AND " hook" as the subcommand indicator.
+fn is_symforge_entry(entry: &Value) -> bool {
     if let Some(hooks) = entry["hooks"].as_array() {
         hooks.iter().any(|h| {
             h["command"]
                 .as_str()
-                .map(|cmd| cmd.contains("tokenizor") && cmd.contains(" hook"))
+                .map(|cmd| {
+                    (cmd.contains("symforge") || cmd.contains("tokenizor"))
+                        && cmd.contains(" hook")
+                })
                 .unwrap_or(false)
         })
     } else {
@@ -367,7 +374,7 @@ fn is_tokenizor_entry(entry: &Value) -> bool {
 
 /// Merge `new_entries` into the `event_key` array of the hooks object.
 ///
-/// Existing tokenizor entries (identified by `is_tokenizor_entry`) are filtered
+/// Existing symforge/tokenizor entries (identified by `is_symforge_entry`) are filtered
 /// out before appending the fresh entries, which achieves idempotency.
 fn merge_event_entries(
     hooks: &mut serde_json::Map<String, Value>,
@@ -380,19 +387,19 @@ fn merge_event_entries(
         .cloned()
         .unwrap_or_default();
 
-    // Keep only non-tokenizor entries.
+    // Keep only non-symforge entries.
     let mut retained: Vec<Value> = existing
         .into_iter()
-        .filter(|e| !is_tokenizor_entry(e))
+        .filter(|e| !is_symforge_entry(e))
         .collect();
 
-    // Append fresh tokenizor entries at the end.
+    // Append fresh symforge entries at the end.
     retained.extend(new_entries);
 
     hooks.insert(event_key.to_string(), Value::Array(retained));
 }
 
-/// Register tokenizor as an MCP server in `~/.claude.json` using the absolute binary path.
+/// Register symforge as an MCP server in `~/.claude.json` using the absolute binary path.
 ///
 /// This ensures Claude Code launches the native binary directly — no shell, no .cmd wrapper,
 /// no Node.js intermediary. Works on all platforms.
@@ -412,11 +419,11 @@ pub fn register_mcp_server(
     // Use backslashes on Windows for the command path (Claude Code spawns natively, not via shell).
     let command_path = native_command_path(binary_path);
 
-    // Ensure mcpServers exists and set tokenizor entry.
+    // Ensure mcpServers exists and set symforge entry.
     if !config["mcpServers"].is_object() {
         config["mcpServers"] = json!({});
     }
-    config["mcpServers"]["tokenizor"] = json!({
+    config["mcpServers"]["symforge"] = json!({
         "type": "stdio",
         "command": command_path,
         "args": [],
@@ -430,10 +437,10 @@ pub fn register_mcp_server(
     Ok(())
 }
 
-/// Register tokenizor as an MCP server in `~/.codex/config.toml`.
+/// Register symforge as an MCP server in `~/.codex/config.toml`.
 ///
 /// Codex stores MCP servers under `[mcp_servers.<name>]` tables in TOML.
-/// We update only the `tokenizor` entry and preserve the rest of the file.
+/// We update only the `symforge` entry and preserve the rest of the file.
 pub fn register_codex_mcp_server(
     codex_config_path: &std::path::Path,
     binary_path: &str,
@@ -457,7 +464,7 @@ pub fn register_codex_mcp_server(
             .with_context(|| format!("parsing {}", codex_config_path.display()))?
     };
 
-    merge_tokenizor_codex_server(&mut config, binary_path);
+    merge_symforge_codex_server(&mut config, binary_path);
 
     std::fs::write(codex_config_path, config.to_string())
         .with_context(|| format!("writing {}", codex_config_path.display()))?;
@@ -465,7 +472,7 @@ pub fn register_codex_mcp_server(
     Ok(())
 }
 
-fn merge_tokenizor_codex_server(config: &mut DocumentMut, binary_path: &str) {
+fn merge_symforge_codex_server(config: &mut DocumentMut, binary_path: &str) {
     if !config.as_table().contains_key("mcp_servers") || !config["mcp_servers"].is_table() {
         config["mcp_servers"] = Item::Table(Table::new());
     }
@@ -474,27 +481,27 @@ fn merge_tokenizor_codex_server(config: &mut DocumentMut, binary_path: &str) {
         .as_table_mut()
         .expect("mcp_servers must be a table");
 
-    if !mcp_servers.contains_key("tokenizor") || !mcp_servers["tokenizor"].is_table() {
-        mcp_servers.insert("tokenizor", Item::Table(Table::new()));
+    if !mcp_servers.contains_key("symforge") || !mcp_servers["symforge"].is_table() {
+        mcp_servers.insert("symforge", Item::Table(Table::new()));
     }
 
-    let tokenizor = mcp_servers["tokenizor"]
+    let symforge = mcp_servers["symforge"]
         .as_table_mut()
-        .expect("tokenizor server entry must be a table");
+        .expect("symforge server entry must be a table");
 
-    tokenizor["command"] = value(native_command_path(binary_path));
-    tokenizor["startup_timeout_sec"] = value(CODEX_STARTUP_TIMEOUT_SEC);
-    tokenizor["tool_timeout_sec"] = value(CODEX_TOOL_TIMEOUT_SEC);
+    symforge["command"] = value(native_command_path(binary_path));
+    symforge["startup_timeout_sec"] = value(CODEX_STARTUP_TIMEOUT_SEC);
+    symforge["tool_timeout_sec"] = value(CODEX_TOOL_TIMEOUT_SEC);
 
     let mut allow_array = Array::new();
-    for tool_name in TOKENIZOR_TOOL_NAMES {
+    for tool_name in SYMFORGE_TOOL_NAMES {
         // Codex uses plain tool names without mcp__ prefix
         let short_name = tool_name
-            .strip_prefix("mcp__tokenizor__")
+            .strip_prefix("mcp__symforge__")
             .unwrap_or(tool_name);
         allow_array.push(short_name);
     }
-    tokenizor["allowed_tools"] = value(allow_array);
+    symforge["allowed_tools"] = value(allow_array);
 
     merge_codex_project_doc_fallbacks(config);
 }
@@ -519,10 +526,10 @@ fn merge_codex_project_doc_fallbacks(config: &mut DocumentMut) {
     }
 }
 
-/// Register tokenizor as an MCP server in `~/.gemini/settings.json`.
+/// Register symforge as an MCP server in `~/.gemini/settings.json`.
 ///
 /// Gemini CLI stores MCP servers under `mcpServers` in a JSON settings file.
-/// We update only the `tokenizor` entry and preserve the rest of the file.
+/// We update only the `symforge` entry and preserve the rest of the file.
 pub fn register_gemini_mcp_server(
     gemini_settings_path: &std::path::Path,
     binary_path: &str,
@@ -546,7 +553,7 @@ pub fn register_gemini_mcp_server(
     if !config["mcpServers"].is_object() {
         config["mcpServers"] = json!({});
     }
-    config["mcpServers"]["tokenizor"] = json!({
+    config["mcpServers"]["symforge"] = json!({
         "command": command_path,
         "args": [],
         "timeout": 120000,
@@ -559,7 +566,7 @@ pub fn register_gemini_mcp_server(
     Ok(())
 }
 
-/// Register tokenizor as an MCP server in `.kilocode/mcp.json` (workspace-local).
+/// Register symforge as an MCP server in `.kilocode/mcp.json` (workspace-local).
 ///
 /// Kilo Code (VS Code extension) stores MCP servers under `mcpServers` in a JSON
 /// config file. Unlike Claude/Codex/Gemini, this file lives in the project directory
@@ -593,7 +600,7 @@ pub fn register_kilo_mcp_server(
         .map(|s| Value::String(s.to_string()))
         .collect();
 
-    config["mcpServers"]["tokenizor"] = json!({
+    config["mcpServers"]["symforge"] = json!({
         "command": command_path,
         "args": ["--stdio"],
         "alwaysAllow": always_allow
@@ -624,10 +631,23 @@ fn upsert_guidance_markdown(path: &std::path::Path, guidance_block: &str) -> any
 }
 
 fn upsert_markdown_block(existing: &str, guidance_block: &str) -> String {
-    if let Some(start) = existing.find(TOKENIZOR_GUIDANCE_START)
-        && let Some(end_marker_start) = existing[start..].find(TOKENIZOR_GUIDANCE_END)
+    // Try new marker first, then fall back to legacy marker for backward compat.
+    if let Some(start) = existing.find(SYMFORGE_GUIDANCE_START)
+        && let Some(end_marker_start) = existing[start..].find(SYMFORGE_GUIDANCE_END)
     {
-        let end = start + end_marker_start + TOKENIZOR_GUIDANCE_END.len();
+        let end = start + end_marker_start + SYMFORGE_GUIDANCE_END.len();
+        let mut merged = String::new();
+        merged.push_str(&existing[..start]);
+        merged.push_str(guidance_block);
+        merged.push_str(&existing[end..]);
+        return merged;
+    }
+
+    // Backward compat: detect and replace legacy TOKENIZOR markers.
+    if let Some(start) = existing.find(LEGACY_GUIDANCE_START)
+        && let Some(end_marker_start) = existing[start..].find(LEGACY_GUIDANCE_END)
+    {
+        let end = start + end_marker_start + LEGACY_GUIDANCE_END.len();
         let mut merged = String::new();
         merged.push_str(&existing[..start]);
         merged.push_str(guidance_block);
@@ -648,10 +668,10 @@ fn upsert_markdown_block(existing: &str, guidance_block: &str) -> String {
 
 fn claude_guidance_block() -> String {
     format!(
-        "{TOKENIZOR_GUIDANCE_START}\n\
-## Tokenizor MCP — Code Intelligence\n\
+        "{SYMFORGE_GUIDANCE_START}\n\
+## SymForge MCP — Code Intelligence\n\
 \n\
-Tokenizor MCP is installed and active. It provides indexed code search, symbol extraction, and structural analysis that is faster and more token-efficient than raw file operations.\n\
+SymForge MCP is installed and active. It provides indexed code search, symbol extraction, and structural analysis that is faster and more token-efficient than raw file operations.\n\
 \n\
 ### Decision Rules\n\
 \n\
@@ -676,17 +696,17 @@ Tokenizor MCP is installed and active. It provides indexed code search, symbol e
 ### When to use raw file reads instead\n\
 - Reading non-code files (docs, configs) where exact wording matters\n\
 - When you need the full file content including whitespace and formatting\n\
-- When Tokenizor tools return an error or the file isn't indexed\n\
-{TOKENIZOR_GUIDANCE_END}"
+- When SymForge tools return an error or the file isn't indexed\n\
+{SYMFORGE_GUIDANCE_END}"
     )
 }
 
 fn codex_guidance_block() -> String {
     format!(
-        "{TOKENIZOR_GUIDANCE_START}\n\
-## Tokenizor MCP — Code Intelligence\n\
+        "{SYMFORGE_GUIDANCE_START}\n\
+## SymForge MCP — Code Intelligence\n\
 \n\
-Tokenizor MCP is installed and active. It provides indexed code search, symbol extraction, and structural analysis that is faster and more token-efficient than raw file operations.\n\
+SymForge MCP is installed and active. It provides indexed code search, symbol extraction, and structural analysis that is faster and more token-efficient than raw file operations.\n\
 \n\
 ### Decision Rules\n\
 \n\
@@ -711,19 +731,19 @@ Tokenizor MCP is installed and active. It provides indexed code search, symbol e
 ### When to use raw file reads instead\n\
 - Reading non-code files (docs, configs) where exact wording matters\n\
 - When you need the full file content including whitespace and formatting\n\
-- When Tokenizor tools return an error or the file isn't indexed\n\
+- When SymForge tools return an error or the file isn't indexed\n\
 \n\
-Codex is configured to read `CLAUDE.md` project guidance too, so treat project Tokenizor instructions there as authoritative when `AGENTS.md` is absent.\n\
-{TOKENIZOR_GUIDANCE_END}"
+Codex is configured to read `CLAUDE.md` project guidance too, so treat project SymForge instructions there as authoritative when `AGENTS.md` is absent.\n\
+{SYMFORGE_GUIDANCE_END}"
     )
 }
 
 fn gemini_guidance_block() -> String {
     format!(
-        "{TOKENIZOR_GUIDANCE_START}\n\
-## Tokenizor MCP — Code Intelligence\n\
+        "{SYMFORGE_GUIDANCE_START}\n\
+## SymForge MCP — Code Intelligence\n\
 \n\
-Tokenizor MCP is installed and active. It provides indexed code search, symbol extraction, and structural analysis that is faster and more token-efficient than raw file operations.\n\
+SymForge MCP is installed and active. It provides indexed code search, symbol extraction, and structural analysis that is faster and more token-efficient than raw file operations.\n\
 \n\
 ### Decision Rules\n\
 \n\
@@ -748,12 +768,12 @@ Tokenizor MCP is installed and active. It provides indexed code search, symbol e
 ### When to use raw file reads instead\n\
 - Reading non-code files (docs, configs) where exact wording matters\n\
 - When you need the full file content including whitespace and formatting\n\
-- When Tokenizor tools return an error or the file isn't indexed\n\
-{TOKENIZOR_GUIDANCE_END}"
+- When SymForge tools return an error or the file isn't indexed\n\
+{SYMFORGE_GUIDANCE_END}"
     )
 }
 
-/// Returns the binary path of the currently running tokenizor executable.
+/// Returns the binary path of the currently running symforge executable.
 fn discover_binary_path() -> PathBuf {
     match std::env::current_exe() {
         Ok(path) => {
@@ -764,14 +784,14 @@ fn discover_binary_path() -> PathBuf {
             if is_npx_cache || is_node_modules || s.ends_with(".cmd") {
                 eprintln!(
                     "warning: binary is inside node_modules or npx cache ({s}); \
-                     updates will fail on Windows. Run: npm install -g tokenizor-mcp && tokenizor-mcp init --client all"
+                     updates will fail on Windows. Run: npm install -g symforge && symforge init --client all"
                 );
             }
             path
         }
         Err(e) => {
-            eprintln!("warning: could not determine tokenizor binary path: {e}");
-            PathBuf::from("tokenizor")
+            eprintln!("warning: could not determine symforge binary path: {e}");
+            PathBuf::from("symforge")
         }
     }
 }
@@ -793,11 +813,11 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    const FAKE_BINARY: &str = "/usr/local/bin/tokenizor";
+    const FAKE_BINARY: &str = "/usr/local/bin/symforge";
 
     fn run_merge(initial: Value) -> Value {
         let mut settings = initial;
-        merge_tokenizor_hooks(&mut settings, FAKE_BINARY);
+        merge_symforge_hooks(&mut settings, FAKE_BINARY);
         settings
     }
 
@@ -834,17 +854,17 @@ mod tests {
         let entry = &post[0];
         let cmd = entry["hooks"][0]["command"].as_str().unwrap();
         assert_eq!(
-            cmd, "/usr/local/bin/tokenizor hook",
+            cmd, "/usr/local/bin/symforge hook",
             "Single PostToolUse hook command must have no subcommand suffix"
         );
 
         let session = &result["hooks"]["SessionStart"][0];
         let session_cmd = session["hooks"][0]["command"].as_str().unwrap();
-        assert_eq!(session_cmd, "/usr/local/bin/tokenizor hook session-start");
+        assert_eq!(session_cmd, "/usr/local/bin/symforge hook session-start");
 
         let prompt = &result["hooks"]["UserPromptSubmit"][0];
         let prompt_cmd = prompt["hooks"][0]["command"].as_str().unwrap();
-        assert_eq!(prompt_cmd, "/usr/local/bin/tokenizor hook prompt-submit");
+        assert_eq!(prompt_cmd, "/usr/local/bin/symforge hook prompt-submit");
     }
 
     #[test]
@@ -879,18 +899,18 @@ mod tests {
             .as_array()
             .expect("PostToolUse must be an array");
 
-        // 1 existing + 1 tokenizor = 2 total.
+        // 1 existing + 1 symforge = 2 total.
         assert_eq!(
             post.len(),
             2,
-            "existing hook + 1 tokenizor hook = 2 entries; got {post:?}"
+            "existing hook + 1 symforge hook = 2 entries; got {post:?}"
         );
 
-        // The first entry is the preserved non-tokenizor hook.
+        // The first entry is the preserved non-symforge hook.
         let first_cmd = post[0]["hooks"][0]["command"].as_str().unwrap();
         assert_eq!(
             first_cmd, "/some/other/hook bash",
-            "non-tokenizor hook must be preserved"
+            "non-symforge hook must be preserved"
         );
     }
 
@@ -898,7 +918,7 @@ mod tests {
 
     #[test]
     fn test_init_migrates_old_three_entry_format() {
-        // Old 3-entry format from Phase 5.
+        // Old 3-entry format from Phase 5 (legacy tokenizor binary name).
         let old_binary = "/usr/local/bin/tokenizor";
         let initial = json!({
             "hooks": {
@@ -931,7 +951,7 @@ mod tests {
 
         let cmd = post[0]["hooks"][0]["command"].as_str().unwrap();
         assert_eq!(
-            cmd, "/usr/local/bin/tokenizor hook",
+            cmd, "/usr/local/bin/symforge hook",
             "migrated entry must use new no-subcommand command format"
         );
 
@@ -947,10 +967,10 @@ mod tests {
     #[test]
     fn test_init_idempotent() {
         let mut settings = json!({});
-        merge_tokenizor_hooks(&mut settings, FAKE_BINARY);
+        merge_symforge_hooks(&mut settings, FAKE_BINARY);
         let after_first = settings.clone();
 
-        merge_tokenizor_hooks(&mut settings, FAKE_BINARY);
+        merge_symforge_hooks(&mut settings, FAKE_BINARY);
         let after_second = settings.clone();
 
         assert_eq!(
@@ -962,24 +982,24 @@ mod tests {
     #[test]
     fn test_init_idempotent_entry_count() {
         let mut settings = json!({});
-        merge_tokenizor_hooks(&mut settings, FAKE_BINARY);
+        merge_symforge_hooks(&mut settings, FAKE_BINARY);
         let count_first = settings["hooks"]["PostToolUse"].as_array().unwrap().len();
 
-        merge_tokenizor_hooks(&mut settings, FAKE_BINARY);
+        merge_symforge_hooks(&mut settings, FAKE_BINARY);
         let count_second = settings["hooks"]["PostToolUse"].as_array().unwrap().len();
 
         assert_eq!(
             count_first, count_second,
-            "second merge must not add duplicate tokenizor entries"
+            "second merge must not add duplicate symforge entries"
         );
     }
 
-    // --- test_init_replaces_stale_tokenizor_entries ---
+    // --- test_init_replaces_stale_symforge_entries ---
 
     #[test]
-    fn test_init_replaces_stale_tokenizor_entries() {
-        let old_binary = "/old/path/to/tokenizor";
-        let new_binary = "/new/path/to/tokenizor";
+    fn test_init_replaces_stale_symforge_entries() {
+        let old_binary = "/old/path/to/symforge";
+        let new_binary = "/new/path/to/symforge";
 
         // Set up settings with the old binary path.
         let initial = json!({
@@ -994,7 +1014,7 @@ mod tests {
         });
 
         let mut settings = initial;
-        merge_tokenizor_hooks(&mut settings, new_binary);
+        merge_symforge_hooks(&mut settings, new_binary);
 
         let post = settings["hooks"]["PostToolUse"].as_array().unwrap();
 
@@ -1007,7 +1027,7 @@ mod tests {
         });
         assert!(
             !has_old,
-            "stale tokenizor entry with old binary path must be removed"
+            "stale symforge entry with old binary path must be removed"
         );
 
         // New entry must be present.
@@ -1019,64 +1039,76 @@ mod tests {
         });
         assert!(
             has_new,
-            "new tokenizor entry with new binary path must be present"
+            "new symforge entry with new binary path must be present"
         );
     }
 
-    // --- is_tokenizor_entry ---
+    // --- is_symforge_entry ---
 
     #[test]
-    fn test_is_tokenizor_entry_detects_tokenizor_command() {
+    fn test_is_symforge_entry_detects_symforge_command() {
+        let entry = json!({
+            "matcher": "Read",
+            "hooks": [{"type": "command", "command": "/path/symforge hook read"}]
+        });
+        assert!(is_symforge_entry(&entry));
+    }
+
+    #[test]
+    fn test_is_symforge_entry_detects_legacy_tokenizor_command() {
         let entry = json!({
             "matcher": "Read",
             "hooks": [{"type": "command", "command": "/path/tokenizor hook read"}]
         });
-        assert!(is_tokenizor_entry(&entry));
+        assert!(
+            is_symforge_entry(&entry),
+            "must detect legacy tokenizor hook command for backward compat"
+        );
     }
 
     #[test]
-    fn test_is_tokenizor_entry_detects_tokenizor_mcp_binary() {
+    fn test_is_symforge_entry_detects_legacy_tokenizor_mcp_binary() {
         let entry = json!({
             "matcher": "Read|Edit|Write|Grep",
             "hooks": [{"type": "command", "command": "C:/Users/user/node_modules/tokenizor-mcp/bin/tokenizor-mcp.exe hook"}]
         });
         assert!(
-            is_tokenizor_entry(&entry),
-            "must detect tokenizor-mcp.exe binary name"
+            is_symforge_entry(&entry),
+            "must detect legacy tokenizor-mcp.exe binary name"
         );
     }
 
     #[test]
-    fn test_is_tokenizor_entry_ignores_non_tokenizor() {
+    fn test_is_symforge_entry_ignores_non_symforge() {
         let entry = json!({
             "matcher": "Bash",
             "hooks": [{"type": "command", "command": "/some/other/script bash"}]
         });
-        assert!(!is_tokenizor_entry(&entry));
+        assert!(!is_symforge_entry(&entry));
     }
 
     #[test]
     fn test_merge_adds_allowed_tools() {
         let mut settings = json!({});
-        merge_tokenizor_hooks(&mut settings, "/usr/bin/tokenizor-mcp");
+        merge_symforge_hooks(&mut settings, "/usr/bin/symforge");
         let allowed = settings["allowedTools"]
             .as_array()
             .expect("allowedTools should be array");
         assert!(
             allowed
                 .iter()
-                .any(|v| v.as_str() == Some("mcp__tokenizor__search_symbols")),
+                .any(|v| v.as_str() == Some("mcp__symforge__search_symbols")),
             "should include search_symbols, got: {allowed:?}"
         );
         assert!(
             allowed
                 .iter()
-                .any(|v| v.as_str() == Some("mcp__tokenizor__get_symbol")),
+                .any(|v| v.as_str() == Some("mcp__symforge__get_symbol")),
             "should include get_symbol"
         );
         let first_len = allowed.len();
         // Should not duplicate on re-run
-        merge_tokenizor_hooks(&mut settings, "/usr/bin/tokenizor-mcp");
+        merge_symforge_hooks(&mut settings, "/usr/bin/symforge");
         let allowed2 = settings["allowedTools"].as_array().unwrap();
         assert_eq!(first_len, allowed2.len(), "should not duplicate entries");
     }
@@ -1085,7 +1117,7 @@ mod tests {
     fn test_codex_registration_includes_allow_list() {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("config.toml");
-        register_codex_mcp_server(&config_path, "/usr/bin/tokenizor-mcp").unwrap();
+        register_codex_mcp_server(&config_path, "/usr/bin/symforge").unwrap();
         let content = std::fs::read_to_string(&config_path).unwrap();
         assert!(
             content.contains("search_symbols"),
@@ -1097,23 +1129,23 @@ mod tests {
     fn test_gemini_registration_creates_config() {
         let dir = tempfile::tempdir().unwrap();
         let settings_path = dir.path().join("settings.json");
-        register_gemini_mcp_server(&settings_path, "/usr/bin/tokenizor-mcp").unwrap();
+        register_gemini_mcp_server(&settings_path, "/usr/bin/symforge").unwrap();
         let content = std::fs::read_to_string(&settings_path).unwrap();
         let config: Value = serde_json::from_str(&content).unwrap();
-        assert!(config["mcpServers"]["tokenizor"]["command"].is_string());
+        assert!(config["mcpServers"]["symforge"]["command"].is_string());
     }
 
     #[test]
     fn test_gemini_registration_includes_trust() {
         let dir = tempfile::tempdir().unwrap();
         let settings_path = dir.path().join("settings.json");
-        register_gemini_mcp_server(&settings_path, "/usr/bin/tokenizor-mcp").unwrap();
+        register_gemini_mcp_server(&settings_path, "/usr/bin/symforge").unwrap();
         let content = std::fs::read_to_string(&settings_path).unwrap();
         let config: Value = serde_json::from_str(&content).unwrap();
         assert_eq!(
-            config["mcpServers"]["tokenizor"]["trust"],
+            config["mcpServers"]["symforge"]["trust"],
             json!(true),
-            "tokenizor server must have trust: true"
+            "symforge server must have trust: true"
         );
     }
 
@@ -1121,11 +1153,11 @@ mod tests {
     fn test_gemini_registration_timeout_in_milliseconds() {
         let dir = tempfile::tempdir().unwrap();
         let settings_path = dir.path().join("settings.json");
-        register_gemini_mcp_server(&settings_path, "/usr/bin/tokenizor-mcp").unwrap();
+        register_gemini_mcp_server(&settings_path, "/usr/bin/symforge").unwrap();
         let content = std::fs::read_to_string(&settings_path).unwrap();
         let config: Value = serde_json::from_str(&content).unwrap();
         assert_eq!(
-            config["mcpServers"]["tokenizor"]["timeout"],
+            config["mcpServers"]["symforge"]["timeout"],
             json!(120000),
             "timeout must be in milliseconds (120000ms = 2 minutes)"
         );
@@ -1135,7 +1167,7 @@ mod tests {
     fn test_gemini_registration_no_allowed_tools_key() {
         let dir = tempfile::tempdir().unwrap();
         let settings_path = dir.path().join("settings.json");
-        register_gemini_mcp_server(&settings_path, "/usr/bin/tokenizor-mcp").unwrap();
+        register_gemini_mcp_server(&settings_path, "/usr/bin/symforge").unwrap();
         let content = std::fs::read_to_string(&settings_path).unwrap();
         let config: Value = serde_json::from_str(&content).unwrap();
         assert!(
@@ -1148,9 +1180,9 @@ mod tests {
     fn test_gemini_registration_idempotent() {
         let dir = tempfile::tempdir().unwrap();
         let settings_path = dir.path().join("settings.json");
-        register_gemini_mcp_server(&settings_path, "/usr/bin/tokenizor-mcp").unwrap();
+        register_gemini_mcp_server(&settings_path, "/usr/bin/symforge").unwrap();
         let first = std::fs::read_to_string(&settings_path).unwrap();
-        register_gemini_mcp_server(&settings_path, "/usr/bin/tokenizor-mcp").unwrap();
+        register_gemini_mcp_server(&settings_path, "/usr/bin/symforge").unwrap();
         let second = std::fs::read_to_string(&settings_path).unwrap();
         assert_eq!(
             first, second,

@@ -1,4 +1,4 @@
-# Tokenizor MCP Feature Feasibility Analysis
+# SymForge MCP Feature Feasibility Analysis
 **Date**: 2026-03-17  
 **Scope**: 3 features for Kilo Code compatibility and search quality
 
@@ -23,7 +23,7 @@ One synergy: If Feature 1 (Lenient Vec) ships first, Feature 2's new `ranked` pa
 ## Feature 1: Lenient Vec Deserializer (Kilo Compatibility Fix)
 
 ### Problem
-MCP clients like Kilo Code stringify JSON arrays when passing tool parameters. Tokenizor's serde deserialization rejects these with "expected a sequence". This breaks all batch/array tools (get_symbol targets, batch_edit, batch_insert, search_text terms, get_file_context sections, get_symbol_context sections).
+MCP clients like Kilo Code stringify JSON arrays when passing tool parameters. SymForge's serde deserialization rejects these with "expected a sequence". This breaks all batch/array tools (get_symbol targets, batch_edit, batch_insert, search_text terms, get_file_context sections, get_symbol_context sections).
 
 ### Affected Files and Symbols
 
@@ -258,7 +258,7 @@ pub ranked: Option<bool>,
 ## Feature 3: Kilo Code Auto-Detection in Init
 
 ### Problem
-`tokenizor-mcp init` auto-detects Claude Code, Codex, and Gemini CLI but not Kilo Code (VS Code extension) or its CLI (@kilocode/cli). Users must manually configure.
+`symforge init` auto-detects Claude Code, Codex, and Gemini CLI but not Kilo Code (VS Code extension) or its CLI (@kilocode/cli). Users must manually configure.
 
 ### Affected Files and Symbols
 
@@ -278,8 +278,8 @@ pub ranked: Option<bool>,
 ```json
 {
   "mcpServers": {
-    "tokenizor": {
-      "command": "tokenizor-mcp",
+    "SymForge": {
+      "command": "symforge",
       "args": ["--stdio"],
       "alwaysAllow": ["health", "get_repo_map", "search_symbols", "..."]
     }
@@ -291,9 +291,9 @@ pub ranked: Option<bool>,
 ```json
 {
   "mcp": {
-    "tokenizor": {
+    "SymForge": {
       "type": "local",
-      "command": ["tokenizor-mcp", "--stdio"]
+      "command": ["symforge", "--stdio"]
     }
   }
 }
@@ -304,7 +304,7 @@ pub ranked: Option<bool>,
 1. **Two `InitClient` variants** — config formats differ significantly (workspace-local vs user-global, different JSON schemas)
 2. **VS Code extension config is workspace-local** — new pattern since all existing clients (Claude, Codex, Gemini) write to `$HOME`
 3. **No guidance file write** — Kilo Code doesn't have a `CLAUDE.md`-equivalent convention
-4. **Follow existing registration patterns** — read-or-create JSON, upsert `tokenizor` entry, write pretty-printed
+4. **Follow existing registration patterns** — read-or-create JSON, upsert `SymForge` entry, write pretty-printed
 
 ### Effort Estimate
 

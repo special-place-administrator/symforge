@@ -1,6 +1,6 @@
 //! Port and PID file management for the HTTP sidecar.
 //!
-//! All files live under `.tokenizor/` in the current working directory.
+//! All files live under `.symforge/` in the current working directory.
 //! The hook binary reads `sidecar.port` to locate the running sidecar.
 
 use std::io::{self, Write};
@@ -8,14 +8,14 @@ use std::net::TcpStream;
 use std::path::PathBuf;
 use std::time::Duration;
 
-const DIR_NAME: &str = ".tokenizor";
+const DIR_NAME: &str = ".symforge";
 const PORT_FILE: &str = "sidecar.port";
 const PID_FILE: &str = "sidecar.pid";
 const SESSION_FILE: &str = "sidecar.session";
 
-/// Ensure `.tokenizor/` exists in the current working directory.
+/// Ensure `.symforge/` exists in the current working directory.
 /// Creates the directory if it doesn't exist. Returns its path.
-pub fn ensure_tokenizor_dir() -> io::Result<PathBuf> {
+pub fn ensure_symforge_dir() -> io::Result<PathBuf> {
     let dir = PathBuf::from(DIR_NAME);
     if !dir.exists() {
         std::fs::create_dir_all(&dir)?;
@@ -23,32 +23,32 @@ pub fn ensure_tokenizor_dir() -> io::Result<PathBuf> {
     Ok(dir)
 }
 
-/// Write the sidecar port to `.tokenizor/sidecar.port`.
+/// Write the sidecar port to `.symforge/sidecar.port`.
 ///
 /// The file contains ONLY the port number as ASCII digits, no trailing newline.
 /// This is the convention the hook binary relies on.
 pub fn write_port_file(port: u16) -> io::Result<()> {
-    let dir = ensure_tokenizor_dir()?;
+    let dir = ensure_symforge_dir()?;
     let path = dir.join(PORT_FILE);
     let mut file = std::fs::File::create(&path)?;
     write!(file, "{port}")?;
     Ok(())
 }
 
-/// Write the sidecar PID to `.tokenizor/sidecar.pid`.
+/// Write the sidecar PID to `.symforge/sidecar.pid`.
 ///
 /// The file contains ONLY the PID as ASCII digits, no trailing newline.
 pub fn write_pid_file(pid: u32) -> io::Result<()> {
-    let dir = ensure_tokenizor_dir()?;
+    let dir = ensure_symforge_dir()?;
     let path = dir.join(PID_FILE);
     let mut file = std::fs::File::create(&path)?;
     write!(file, "{pid}")?;
     Ok(())
 }
 
-/// Write the daemon/session proxy identifier to `.tokenizor/sidecar.session`.
+/// Write the daemon/session proxy identifier to `.symforge/sidecar.session`.
 pub fn write_session_file(session_id: &str) -> io::Result<()> {
-    let dir = ensure_tokenizor_dir()?;
+    let dir = ensure_symforge_dir()?;
     let path = dir.join(SESSION_FILE);
     let mut file = std::fs::File::create(&path)?;
     write!(file, "{session_id}")?;
@@ -61,7 +61,7 @@ pub fn cleanup_session_file() {
     let _ = std::fs::remove_file(dir.join(SESSION_FILE));
 }
 
-/// Read and parse the port from `.tokenizor/sidecar.port`.
+/// Read and parse the port from `.symforge/sidecar.port`.
 ///
 /// Returns an error if the file doesn't exist or contains invalid data.
 pub fn read_port() -> io::Result<u16> {
@@ -222,22 +222,22 @@ mod tests {
     }
 
     #[test]
-    fn test_ensure_tokenizor_dir_creates_directory() {
+    fn test_ensure_symforge_dir_creates_directory() {
         with_temp_dir(|| {
-            let dir = ensure_tokenizor_dir().expect("ensure_tokenizor_dir should succeed");
+            let dir = ensure_symforge_dir().expect("ensure_symforge_dir should succeed");
             assert!(
                 dir.exists(),
-                ".tokenizor directory should exist after ensure_tokenizor_dir"
+                ".symforge directory should exist after ensure_symforge_dir"
             );
             assert!(dir.is_dir(), "path should be a directory");
         });
     }
 
     #[test]
-    fn test_ensure_tokenizor_dir_idempotent() {
+    fn test_ensure_symforge_dir_idempotent() {
         with_temp_dir(|| {
-            ensure_tokenizor_dir().expect("first call should succeed");
-            ensure_tokenizor_dir().expect("second call should also succeed (idempotent)");
+            ensure_symforge_dir().expect("first call should succeed");
+            ensure_symforge_dir().expect("second call should also succeed (idempotent)");
         });
     }
 

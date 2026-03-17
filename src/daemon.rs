@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 
 use crate::live_index::{self, SharedIndex};
-use crate::protocol::TokenizorServer;
+use crate::protocol::SymForgeServer;
 use crate::protocol::edit::{
     BatchEditInput, BatchInsertInput, BatchRenameInput, DeleteSymbolInput, EditWithinSymbolInput,
     InsertSymbolInput, ReplaceSymbolBodyInput,
@@ -34,7 +34,7 @@ use crate::protocol::tools::{
 use crate::sidecar::{SidecarState, SymbolSnapshot, TokenStats};
 use crate::watcher::{self, WatcherInfo};
 
-const DAEMON_DIR_NAME: &str = ".tokenizor";
+const DAEMON_DIR_NAME: &str = ".symforge";
 const DAEMON_PORT_FILE: &str = "daemon.port";
 const DAEMON_PID_FILE: &str = "daemon.pid";
 const DAEMON_START_LOCK_FILE: &str = "daemon.starting";
@@ -91,9 +91,9 @@ struct ProjectInstance {
     session_ids: HashSet<String>,
     opened_at: SystemTime,
     activation_state: ActivationState,
-    /// Cached `TokenizorServer` instance — constructed once per project and
+    /// Cached `SymForgeServer` instance — constructed once per project and
     /// reused for all tool calls, avoiding per-call router/prompt table allocation.
-    server: TokenizorServer,
+    server: SymForgeServer,
 }
 
 struct SessionRecord {
@@ -214,8 +214,8 @@ struct SessionRuntime {
     watcher_info: Arc<Mutex<WatcherInfo>>,
     token_stats: Arc<TokenStats>,
     symbol_cache: Arc<RwLock<HashMap<String, Vec<SymbolSnapshot>>>>,
-    /// Cached `TokenizorServer` clone — cheap because all inner state is `Arc`-wrapped.
-    server: TokenizorServer,
+    /// Cached `SymForgeServer` clone — cheap because all inner state is `Arc`-wrapped.
+    server: SymForgeServer,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -786,7 +786,7 @@ async fn daemon_port_if_compatible(identity: &DaemonIdentity) -> anyhow::Result<
                 expected_version = %identity.version,
                 recorded_executable = %health.executable_path,
                 expected_executable = %identity.executable_path,
-                "recorded tokenizor daemon is incompatible with the current executable"
+                "recorded symforge daemon is incompatible with the current executable"
             );
             Ok(None)
         }
@@ -802,7 +802,7 @@ async fn wait_for_daemon_ready(identity: &DaemonIdentity) -> anyhow::Result<u16>
         }
 
         if tokio::time::Instant::now() >= deadline {
-            anyhow::bail!("timed out waiting for tokenizor daemon to become ready");
+            anyhow::bail!("timed out waiting for symforge daemon to become ready");
         }
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -846,7 +846,7 @@ async fn stop_incompatible_recorded_daemon(identity: &DaemonIdentity) -> anyhow:
         if let Err(error) = terminate_process(pid) {
             tracing::warn!(
                 pid,
-                "failed to terminate incompatible tokenizor daemon automatically: {error}"
+                "failed to terminate incompatible symforge daemon automatically: {error}"
             );
         }
         wait_for_daemon_unhealthy(port).await;
@@ -901,7 +901,7 @@ fn try_acquire_start_lock() -> anyhow::Result<Option<DaemonStartLock>> {
 }
 
 fn spawn_daemon_process() -> anyhow::Result<()> {
-    let current_exe = std::env::current_exe().context("locating current tokenizor executable")?;
+    let current_exe = std::env::current_exe().context("locating current symforge executable")?;
     let mut command = std::process::Command::new(current_exe);
     command
         .arg("daemon")
@@ -920,7 +920,7 @@ fn spawn_daemon_process() -> anyhow::Result<()> {
 
     command
         .spawn()
-        .context("spawning detached tokenizor daemon")?;
+        .context("spawning detached symforge daemon")?;
     Ok(())
 }
 
@@ -973,7 +973,7 @@ impl ProjectInstance {
         let watcher_info = Arc::new(Mutex::new(WatcherInfo::default()));
         let token_stats = TokenStats::new();
 
-        let server = TokenizorServer::new(
+        let server = SymForgeServer::new(
             Arc::clone(&index),
             project_name.clone(),
             Arc::clone(&watcher_info),
@@ -1048,7 +1048,7 @@ impl ProjectInstance {
 
         // Rebuild cached server so it picks up the new project name / root.
         // The index Arc is the same handle, so the server sees updated data.
-        self.server = TokenizorServer::new(
+        self.server = SymForgeServer::new(
             Arc::clone(&self.index),
             self.project_name.clone(),
             Arc::clone(&self.watcher_info),
@@ -1137,7 +1137,7 @@ pub fn build_router(state: SharedDaemonState) -> Router {
 
 pub async fn spawn_daemon(bind_host: &str) -> anyhow::Result<DaemonHandle> {
     let resolved_host =
-        std::env::var("TOKENIZOR_DAEMON_BIND").unwrap_or_else(|_| bind_host.to_string());
+        std::env::var("SYMFORGE_DAEMON_BIND").unwrap_or_else(|_| bind_host.to_string());
     cleanup_daemon_files();
 
     let listener = TcpListener::bind(format!("{resolved_host}:0")).await?;
@@ -1426,7 +1426,7 @@ async fn execute_tool_call(
     runtime.token_stats.record_tool_call(tool_name);
 
     // Use the cached server from ProjectInstance (cloned cheaply via Arc internals)
-    // instead of constructing a new TokenizorServer per tool call.
+    // instead of constructing a new SymForgeServer per tool call.
     let server = runtime.server;
 
     match tool_name {
@@ -1679,7 +1679,7 @@ fn normalized_path_string(path: &Path) -> String {
 }
 
 fn daemon_dir() -> io::Result<PathBuf> {
-    if let Some(explicit_home) = std::env::var_os("TOKENIZOR_HOME") {
+    if let Some(explicit_home) = std::env::var_os("SYMFORGE_HOME") {
         let dir = PathBuf::from(explicit_home);
         std::fs::create_dir_all(&dir)?;
         return Ok(dir);
@@ -1885,7 +1885,7 @@ mod tests {
 
     #[test]
     fn test_open_same_root_reuses_project_instance() {
-        let project = project_dir("tokenizor-daemon-a");
+        let project = project_dir("symforge-daemon-a");
         let state = DaemonState::new();
 
         let first = state
@@ -1913,8 +1913,8 @@ mod tests {
 
     #[test]
     fn test_open_distinct_roots_creates_distinct_projects() {
-        let project_a = project_dir("tokenizor-daemon-b");
-        let project_b = project_dir("tokenizor-daemon-c");
+        let project_a = project_dir("symforge-daemon-b");
+        let project_b = project_dir("symforge-daemon-c");
         let state = DaemonState::new();
 
         let first = state
@@ -1939,7 +1939,7 @@ mod tests {
 
     #[test]
     fn test_close_session_removes_project_when_last_session_leaves() {
-        let project = project_dir("tokenizor-daemon-d");
+        let project = project_dir("symforge-daemon-d");
         let state = DaemonState::new();
 
         let first = state
@@ -1974,7 +1974,7 @@ mod tests {
 
     #[test]
     fn test_heartbeat_updates_known_session() {
-        let project = project_dir("tokenizor-daemon-e");
+        let project = project_dir("symforge-daemon-e");
         let state = DaemonState::new();
 
         let opened = state
@@ -1994,7 +1994,7 @@ mod tests {
 
     #[test]
     fn test_project_health_and_sessions_expose_instance_metadata() {
-        let project = project_dir("tokenizor-daemon-f");
+        let project = project_dir("symforge-daemon-f");
         let state = DaemonState::new();
 
         let first = state
@@ -2043,8 +2043,8 @@ mod tests {
     async fn test_spawn_daemon_serves_project_and_session_endpoints() {
         let _env_lock = env_lock().await;
         let daemon_home = TempDir::new().expect("daemon home");
-        let _env_guard = EnvVarGuard::set("TOKENIZOR_HOME", daemon_home.path());
-        let project = project_dir("tokenizor-daemon-http");
+        let _env_guard = EnvVarGuard::set("SYMFORGE_HOME", daemon_home.path());
+        let project = project_dir("symforge-daemon-http");
 
         let handle = spawn_daemon("127.0.0.1").await.expect("spawn daemon");
         let client = reqwest::Client::new();
@@ -2176,8 +2176,8 @@ mod tests {
     async fn test_daemon_executes_session_scoped_tool_calls() {
         let _env_lock = env_lock().await;
         let daemon_home = TempDir::new().expect("daemon home");
-        let _env_guard = EnvVarGuard::set("TOKENIZOR_HOME", daemon_home.path());
-        let project = project_dir("tokenizor-daemon-tool");
+        let _env_guard = EnvVarGuard::set("SYMFORGE_HOME", daemon_home.path());
+        let project = project_dir("symforge-daemon-tool");
         std::fs::write(project.path().join("src").join("main.rs"), "fn main() {}\n")
             .expect("write source");
 
@@ -2280,7 +2280,7 @@ mod tests {
     async fn test_daemon_port_if_compatible_accepts_matching_identity() {
         let _env_lock = env_lock().await;
         let daemon_home = TempDir::new().expect("daemon home");
-        let _env_guard = EnvVarGuard::set("TOKENIZOR_HOME", daemon_home.path());
+        let _env_guard = EnvVarGuard::set("SYMFORGE_HOME", daemon_home.path());
 
         let health = DaemonState::new().health();
         let (port, shutdown_tx) = spawn_fake_health_server(health).await;
@@ -2301,7 +2301,7 @@ mod tests {
     async fn test_daemon_port_if_compatible_rejects_version_mismatch() {
         let _env_lock = env_lock().await;
         let daemon_home = TempDir::new().expect("daemon home");
-        let _env_guard = EnvVarGuard::set("TOKENIZOR_HOME", daemon_home.path());
+        let _env_guard = EnvVarGuard::set("SYMFORGE_HOME", daemon_home.path());
 
         let health = DaemonHealth {
             project_count: 0,
@@ -2327,7 +2327,7 @@ mod tests {
     async fn test_stop_incompatible_recorded_daemon_cleans_port_file_without_pid() {
         let _env_lock = env_lock().await;
         let daemon_home = TempDir::new().expect("daemon home");
-        let _env_guard = EnvVarGuard::set("TOKENIZOR_HOME", daemon_home.path());
+        let _env_guard = EnvVarGuard::set("SYMFORGE_HOME", daemon_home.path());
 
         let health = DaemonHealth {
             project_count: 0,
@@ -2355,8 +2355,8 @@ mod tests {
     async fn test_daemon_serves_session_scoped_repo_map_hook_endpoint() {
         let _env_lock = env_lock().await;
         let daemon_home = TempDir::new().expect("daemon home");
-        let _env_guard = EnvVarGuard::set("TOKENIZOR_HOME", daemon_home.path());
-        let project = project_dir("tokenizor-daemon-hook");
+        let _env_guard = EnvVarGuard::set("SYMFORGE_HOME", daemon_home.path());
+        let project = project_dir("symforge-daemon-hook");
         std::fs::write(project.path().join("src").join("main.rs"), "fn main() {}\n")
             .expect("write source");
 
@@ -2409,8 +2409,8 @@ mod tests {
     async fn test_daemon_serves_session_scoped_prompt_context_hook_endpoint() {
         let _env_lock = env_lock().await;
         let daemon_home = TempDir::new().expect("daemon home");
-        let _env_guard = EnvVarGuard::set("TOKENIZOR_HOME", daemon_home.path());
-        let project = project_dir("tokenizor-daemon-prompt-hook");
+        let _env_guard = EnvVarGuard::set("SYMFORGE_HOME", daemon_home.path());
+        let project = project_dir("symforge-daemon-prompt-hook");
         std::fs::write(project.path().join("src").join("main.rs"), "fn main() {}\n")
             .expect("write source");
 
@@ -2464,9 +2464,9 @@ mod tests {
     async fn test_index_folder_rebinds_session_to_new_project_root() {
         let _env_lock = env_lock().await;
         let daemon_home = TempDir::new().expect("daemon home");
-        let _env_guard = EnvVarGuard::set("TOKENIZOR_HOME", daemon_home.path());
-        let project_a = project_dir("tokenizor-daemon-a");
-        let project_b = project_dir("tokenizor-daemon-b");
+        let _env_guard = EnvVarGuard::set("SYMFORGE_HOME", daemon_home.path());
+        let project_a = project_dir("symforge-daemon-a");
+        let project_b = project_dir("symforge-daemon-b");
         std::fs::write(
             project_a.path().join("src").join("old.rs"),
             "fn old_fn() {}\n",
@@ -2566,8 +2566,8 @@ mod tests {
     async fn test_analyze_file_impact_uses_session_project_root_not_process_cwd() {
         let _env_lock = env_lock().await;
         let daemon_home = TempDir::new().expect("daemon home");
-        let _env_guard = EnvVarGuard::set("TOKENIZOR_HOME", daemon_home.path());
-        let project = project_dir("tokenizor-daemon-impact-root");
+        let _env_guard = EnvVarGuard::set("SYMFORGE_HOME", daemon_home.path());
+        let project = project_dir("symforge-daemon-impact-root");
         let outside = TempDir::new().expect("outside cwd");
         let source_path = project.path().join("src").join("lib.rs");
         std::fs::write(&source_path, "pub fn old_name() {}\n").expect("write initial source");
@@ -2630,7 +2630,7 @@ mod tests {
     fn test_concurrent_open_same_project_no_panic() {
         use std::sync::{Arc, Barrier};
 
-        let project = project_dir("tokenizor-conc-same");
+        let project = project_dir("symforge-conc-same");
         std::fs::write(project.path().join("src").join("main.rs"), "fn main() {}\n")
             .expect("write source");
         let project_root = project.path().display().to_string();
@@ -2683,13 +2683,13 @@ mod tests {
     fn test_concurrent_open_different_projects() {
         use std::sync::{Arc, Barrier};
 
-        let project_a = project_dir("tokenizor-conc-diff-a");
+        let project_a = project_dir("symforge-conc-diff-a");
         std::fs::write(
             project_a.path().join("src").join("main.rs"),
             "fn main() {}\n",
         )
         .expect("write source a");
-        let project_b = project_dir("tokenizor-conc-diff-b");
+        let project_b = project_dir("symforge-conc-diff-b");
         std::fs::write(
             project_b.path().join("src").join("main.rs"),
             "fn main() {}\n",
@@ -2741,7 +2741,7 @@ mod tests {
     fn test_open_close_race_no_panic() {
         use std::sync::{Arc, Barrier};
 
-        let project = project_dir("tokenizor-conc-race");
+        let project = project_dir("symforge-conc-race");
         std::fs::write(project.path().join("src").join("main.rs"), "fn main() {}\n")
             .expect("write source");
         let project_root = project.path().display().to_string();
@@ -2794,7 +2794,7 @@ mod tests {
     fn test_discarded_instance_no_leaked_tasks() {
         use std::sync::{Arc, Barrier};
 
-        let project = project_dir("tokenizor-conc-3way");
+        let project = project_dir("symforge-conc-3way");
         std::fs::write(project.path().join("src").join("main.rs"), "fn main() {}\n")
             .expect("write source");
         let project_root = project.path().display().to_string();
@@ -2852,7 +2852,7 @@ mod tests {
     async fn test_stale_start_lock_is_removed() {
         let _env_lock = env_lock().await;
         let daemon_home = TempDir::new().expect("daemon home");
-        let _env_guard = EnvVarGuard::set("TOKENIZOR_HOME", daemon_home.path());
+        let _env_guard = EnvVarGuard::set("SYMFORGE_HOME", daemon_home.path());
 
         let lock_path = daemon_home.path().join(DAEMON_START_LOCK_FILE);
 
@@ -2878,7 +2878,7 @@ mod tests {
     async fn test_fresh_start_lock_blocks_acquisition() {
         let _env_lock = env_lock().await;
         let daemon_home = TempDir::new().expect("daemon home");
-        let _env_guard = EnvVarGuard::set("TOKENIZOR_HOME", daemon_home.path());
+        let _env_guard = EnvVarGuard::set("SYMFORGE_HOME", daemon_home.path());
 
         let lock_path = daemon_home.path().join(DAEMON_START_LOCK_FILE);
 
@@ -2911,7 +2911,7 @@ mod tests {
         std::fs::write(&lock_file, "").expect("write lock");
 
         // We can't easily call cleanup_daemon_files directly here without
-        // setting TOKENIZOR_HOME (which needs env serialization), so we
+        // setting SYMFORGE_HOME (which needs env serialization), so we
         // verify the constant is used in the function by checking the file
         // pattern. The real integration is covered by DL1 + DL4 code review.
         // Instead, verify all three constants are distinct and non-empty.

@@ -4,7 +4,7 @@ This repository now uses a GitHub-native release flow built around `release-plea
 
 The intended product behavior is simple:
 
-- users install `tokenizor-mcp`
+- users install `symforge`
 - launches self-heal local binary drift where possible
 - launches do not silently attach to an incompatible old daemon
 - release publishing stays version-aligned across Rust, npm, tags, and GitHub releases
@@ -98,7 +98,7 @@ The release pipeline is only half of the problem. Installed machines also need s
 Current runtime behavior:
 
 1. The npm wrapper launches through `npm/bin/launcher.js`.
-2. On every launch it first tries to apply any staged `tokenizor-mcp.pending` binary.
+2. On every launch it first tries to apply any staged `symforge.pending` binary.
 3. It checks the installed binary version against the wrapper package version.
 4. If the binary is missing or the versions differ, it reruns the installer automatically before spawning the binary.
 5. The Rust stdio client checks the recorded daemon `/health` response before reusing it.
@@ -107,7 +107,7 @@ Current runtime behavior:
 
 That gives the user the commercial-style behavior we want:
 
-- `npm install -g tokenizor-mcp`
+- `npm install -g symforge`
 - run the MCP
 - wrapper and runtime repair ordinary local drift without manual cleanup
 
@@ -191,7 +191,7 @@ It also refuses noncanonical tags so component-prefixed legacy tags cannot silen
 - `execution/version_sync.py`
 - `execution/test_version_sync.py`
 - `npm/bin/launcher.js`
-- `npm/bin/tokenizor-mcp.js`
+- `npm/bin/symforge.js`
 - `src/daemon.rs`
 
 ## Operational Standard

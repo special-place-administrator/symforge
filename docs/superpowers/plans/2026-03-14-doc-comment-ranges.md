@@ -267,7 +267,7 @@ fn test_scan_doc_range_all_adjacent_comments_go_style() {
 
 - [ ] **Step 3: Run tests to verify they fail**
 
-Run: `cargo test -p tokenizor_agentic_mcp --lib -- languages::tests::test_scan_doc_range 2>&1 | head -20`
+Run: `cargo test -p symforge --lib -- languages::tests::test_scan_doc_range 2>&1 | head -20`
 Expected: FAIL — `scan_doc_range` not found
 
 - [ ] **Step 4: Implement `scan_doc_range`**
@@ -339,7 +339,7 @@ pub(super) fn scan_doc_range(
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `cargo test -p tokenizor_agentic_mcp --lib -- languages::tests::test_scan_doc_range -v`
+Run: `cargo test -p symforge --lib -- languages::tests::test_scan_doc_range -v`
 Expected: All 5 new tests PASS
 
 - [ ] **Step 6: Run full test suite**
@@ -727,7 +727,7 @@ fn test_extract_symbols_java_javadoc() {
 
 - [ ] **Step 2: Run the integration tests**
 
-Run: `cargo test -p tokenizor_agentic_mcp --lib -- languages::tests::test_extract_symbols -v`
+Run: `cargo test -p symforge --lib -- languages::tests::test_extract_symbols -v`
 Expected: All 3 new tests PASS
 
 - [ ] **Step 3: Commit**
@@ -1063,7 +1063,7 @@ fn test_build_insert_before_goes_above_doc_comments() {
 
 - [ ] **Step 3: Run the new tests**
 
-Run: `cargo test -p tokenizor_agentic_mcp --lib -- edit::tests::test_build_delete_includes_doc_comments edit::tests::test_build_insert_before_goes_above_doc_comments -v`
+Run: `cargo test -p symforge --lib -- edit::tests::test_build_delete_includes_doc_comments edit::tests::test_build_insert_before_goes_above_doc_comments -v`
 Expected: Both PASS
 
 - [ ] **Step 4: Run full test suite**

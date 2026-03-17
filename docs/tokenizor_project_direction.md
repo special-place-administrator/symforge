@@ -1,11 +1,11 @@
-# Tokenizor Project Direction
+# SymForge Project Direction
 
 Status: working direction baseline  
 Date: 2026-03-07
 
 ## Purpose
 
-This document consolidates the current architectural direction for `tokenizor_agentic_mcp` into one place.
+This document consolidates the current architectural direction for `symforge` into one place.
 
 It is intended to serve as the current baseline:
 
@@ -20,11 +20,11 @@ It is the current best working direction given:
 
 - the original mission of building a Rust-native code-intelligence engine
 - the need for stronger correctness, durability, and recovery
-- the desire to make provider CLIs use Tokenizor frequently instead of only occasionally
+- the desire to make provider CLIs use SymForge frequently instead of only occasionally
 
 ## Core Thesis
 
-Tokenizor should be built as:
+SymForge should be built as:
 
 - a Rust-native code-intelligence engine
 - a coding-first indexing and retrieval engine
@@ -42,9 +42,9 @@ If the engine is strong, multiple integration surfaces become worth building.
 
 ## Product Statement
 
-Tokenizor is not meant to be a random new code tool.
+SymForge is not meant to be a random new code tool.
 
-It is meant to become the proper Rust-native evolution of Tokenizor with:
+It is meant to become the proper Rust-native evolution of SymForge with:
 
 - better byte correctness
 - better recovery
@@ -52,7 +52,7 @@ It is meant to become the proper Rust-native evolution of Tokenizor with:
 - better operational structure
 - better long-term extensibility
 
-It should preserve the useful core of Tokenizor:
+It should preserve the useful core of SymForge:
 
 - indexing repositories
 - symbol extraction
@@ -96,7 +96,7 @@ That leads to two parallel design truths:
 
 ## Working Conclusions
 
-### Conclusion 1: This should remain a Rust-first Tokenizor successor
+### Conclusion 1: This should remain a Rust-first SymForge successor
 
 The project should keep its original center of gravity:
 
@@ -114,7 +114,7 @@ MCP is the universal floor because it is the one integration mechanism that many
 
 But MCP alone is too passive.
 
-If Tokenizor is only exposed as "one more tool":
+If SymForge is only exposed as "one more tool":
 
 - models may ignore it
 - clients may not prefer it
@@ -122,8 +122,8 @@ If Tokenizor is only exposed as "one more tool":
 
 Therefore:
 
-- Tokenizor must support MCP
-- Tokenizor must not stop at MCP
+- SymForge must support MCP
+- SymForge must not stop at MCP
 
 ### Conclusion 3: Skills alone are not the answer
 
@@ -154,7 +154,7 @@ The correct order is:
 
 ### Conclusion 5: Project tracking is required
 
-If Tokenizor is going to act like a local intelligence layer for AI coding CLIs, it must understand:
+If SymForge is going to act like a local intelligence layer for AI coding CLIs, it must understand:
 
 - what project the user is in
 - which local workspace or worktree is active
@@ -163,7 +163,7 @@ If Tokenizor is going to act like a local intelligence layer for AI coding CLIs,
 
 This cannot be delegated to the clients.
 
-It must live inside Tokenizor.
+It must live inside SymForge.
 
 ## Recommended Product Model
 
@@ -184,7 +184,7 @@ The engine does the real work:
 - repair
 - health
 
-This is the true successor to Tokenizor.
+This is the true successor to SymForge.
 
 ### Layer 2: Control plane
 
@@ -206,10 +206,10 @@ Raw bytes should remain in local CAS, not be forced into SpacetimeDB.
 
 MCP remains the universal compatibility layer.
 
-This gives Tokenizor:
+This gives SymForge:
 
 - interoperability across provider CLIs
-- parity with the old Tokenizor idea
+- parity with the old SymForge idea
 - a clean universal tool/resource/prompt surface
 
 ### Layer 4: Provider adapters
@@ -218,32 +218,32 @@ Native provider adapters should be added where clients support them.
 
 These adapters should:
 
-- register Tokenizor automatically
+- register SymForge automatically
 - install provider-specific instruction files
 - install hooks where available
 - install subagents/custom agents where available
 - install prompts/commands where available
 
-The purpose is to make Tokenizor more likely to be used constantly, not just occasionally.
+The purpose is to make SymForge more likely to be used constantly, not just occasionally.
 
 ## Most Plausible Runtime Architecture
 
 The most plausible architecture today is:
 
-- `tokenizord` as a long-lived local runtime
-- `tokenizor-mcp` as a thin MCP shim
+- `SymForged` as a long-lived local runtime
+- `symforge` as a thin MCP shim
 - provider-specific adapters layered on top
 
 ### Why this is probably right
 
-If Tokenizor stays only as a stdio MCP process:
+If SymForge stays only as a stdio MCP process:
 
 - startup is colder than it should be
 - project discovery repeats too often
 - background indexing is awkward
 - provider hooks have nothing stable to talk to
 
-If Tokenizor becomes a long-lived local runtime:
+If SymForge becomes a long-lived local runtime:
 
 - project state can stay warm
 - indexing can continue outside a single session
@@ -254,7 +254,7 @@ If Tokenizor becomes a long-lived local runtime:
 
 The goal is not to replace native file editing tools.
 
-The goal is for AI coding models to prefer Tokenizor for:
+The goal is for AI coding models to prefer SymForge for:
 
 - repo outline
 - file outline
@@ -323,7 +323,7 @@ Both appear worth supporting later through their own adapter layers once the eng
 The following should not drive early architecture:
 
 - exact UI/UX parity with every existing client
-- forcing all edits through Tokenizor
+- forcing all edits through SymForge
 - embedding-first or vector-first design
 - storing all raw file data in SpacetimeDB
 - building plugins before core retrieval parity exists
@@ -335,7 +335,7 @@ The following should not drive early architecture:
 
 Goal:
 
-Build the minimum credible Rust-native Tokenizor successor.
+Build the minimum credible Rust-native SymForge successor.
 
 Needed outcomes:
 
@@ -366,7 +366,7 @@ Needed outcomes:
 - health and readiness reporting
 - resumable background indexing
 
-This is where `tokenizord` becomes justified.
+This is where `SymForged` becomes justified.
 
 ### Phase 3: MCP maturity
 
@@ -386,7 +386,7 @@ Needed outcomes:
 
 Goal:
 
-Make one provider use Tokenizor much more often than plain MCP alone would achieve.
+Make one provider use SymForge much more often than plain MCP alone would achieve.
 
 Recommended first adapter:
 
@@ -400,7 +400,7 @@ Reason:
 
 Goal:
 
-Make Codex consume Tokenizor reliably through the public surfaces available today.
+Make Codex consume SymForge reliably through the public surfaces available today.
 
 Likely scope:
 
@@ -448,7 +448,7 @@ And specifically:
 
 The current working decision should be:
 
-**Build Tokenizor first as the Rust-native successor to Tokenizor, keep MCP as the default universal surface, and design the internals so provider-native adapters can later make Tokenizor a default retrieval plane rather than an occasionally used tool.**
+**Build SymForge first as the Rust-native successor to SymForge, keep MCP as the default universal surface, and design the internals so provider-native adapters can later make SymForge a default retrieval plane rather than an occasionally used tool.**
 
 That is the cleanest balance between:
 

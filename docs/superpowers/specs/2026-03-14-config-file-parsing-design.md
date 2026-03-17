@@ -7,7 +7,7 @@
 
 ## Problem
 
-Tokenizor only indexes source code files (16 languages via tree-sitter). Config and doc files (JSON, TOML, YAML, Markdown, .env) are silently skipped at discovery time. LLMs must fall back to built-in Read/Edit tools for these files, losing all Tokenizor benefits (symbol navigation, structured search, targeted edits, token savings).
+SymForge only indexes source code files (16 languages via tree-sitter). Config and doc files (JSON, TOML, YAML, Markdown, .env) are silently skipped at discovery time. LLMs must fall back to built-in Read/Edit tools for these files, losing all SymForge benefits (symbol navigation, structured search, targeted edits, token savings).
 
 These files are everywhere in every project — `package.json`, `Cargo.toml`, `docker-compose.yaml`, `README.md`, `.env` — and are read/edited constantly during development sessions.
 
@@ -199,7 +199,7 @@ Tools warn when operating on YAML heuristic ranges. For complex YAML structures,
 
 ### PreToolUse Hook Update
 
-After shipping, update `is_non_source_path` in `src/cli/hook.rs` to remove `.json`, `.toml`, `.yaml`, `.yml`, `.md`, `.env` from the skip list so the PreToolUse hook starts suggesting Tokenizor for these files.
+After shipping, update `is_non_source_path` in `src/cli/hook.rs` to remove `.json`, `.toml`, `.yaml`, `.yml`, `.md`, `.env` from the skip list so the PreToolUse hook starts suggesting SymForge for these files.
 
 ## Dependencies
 

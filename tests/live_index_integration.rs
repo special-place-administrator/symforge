@@ -8,8 +8,8 @@
 use std::fs;
 use std::path::Path;
 use tempfile::tempdir;
-use tokenizor_agentic_mcp::live_index::persist;
-use tokenizor_agentic_mcp::live_index::{IndexState, LiveIndex, ParseStatus};
+use symforge::live_index::persist;
+use symforge::live_index::{IndexState, LiveIndex, ParseStatus};
 
 // --------------------------------------------------------------------------
 // Helpers
@@ -261,10 +261,10 @@ fn test_stdout_purity() {
         .to_path_buf();
 
     // The binary is in the same profile directory (debug or release)
-    let binary = exe.join("tokenizor_agentic_mcp.exe");
+    let binary = exe.join("symforge.exe");
     if !binary.exists() {
         // On non-Windows or different naming, try without .exe
-        let binary_unix = exe.join("tokenizor_agentic_mcp");
+        let binary_unix = exe.join("symforge");
         if !binary_unix.exists() {
             // Binary not built yet (CI); skip gracefully but warn
             eprintln!(
@@ -278,13 +278,13 @@ fn test_stdout_purity() {
     let binary_path = if binary.exists() {
         binary
     } else {
-        exe.join("tokenizor_agentic_mcp")
+        exe.join("symforge")
     };
 
     let output = std::process::Command::new(&binary_path)
         .current_dir(dir.path())
         .env("RUST_LOG", "error") // suppress stderr noise in test output
-        .env("TOKENIZOR_AUTO_INDEX", "false") // start with empty index for speed
+        .env("SYMFORGE_AUTO_INDEX", "false") // start with empty index for speed
         .stdin(std::process::Stdio::null()) // EOF on stdin → MCP server exits cleanly
         .output()
         .unwrap_or_else(|e| panic!("failed to run binary at {:?}: {e}", binary_path));
@@ -308,7 +308,7 @@ fn test_stdout_purity() {
 
 #[test]
 fn test_custom_threshold_prevents_trip_at_high_threshold() {
-    use tokenizor_agentic_mcp::live_index::store::CircuitBreakerState;
+    use symforge::live_index::store::CircuitBreakerState;
 
     // 10 files, 3 failures = 30% failure rate
     // With threshold=0.50 (50%), should NOT trip
@@ -327,7 +327,7 @@ fn test_custom_threshold_prevents_trip_at_high_threshold() {
 
 #[test]
 fn test_custom_threshold_trips_at_low_threshold() {
-    use tokenizor_agentic_mcp::live_index::store::CircuitBreakerState;
+    use symforge::live_index::store::CircuitBreakerState;
 
     // 10 files, 2 failures = 20% failure rate
     // With threshold=0.10 (10%), 20% > 10% should trip
@@ -439,7 +439,7 @@ fn test_auto_index_loads_when_git_present() {
 // --------------------------------------------------------------------------
 // Test INFR-02: Empty index when auto-index is skipped
 //
-// LiveIndex::empty() is what main.rs calls when TOKENIZOR_AUTO_INDEX=false.
+// LiveIndex::empty() is what main.rs calls when SYMFORGE_AUTO_INDEX=false.
 // --------------------------------------------------------------------------
 
 #[test]
@@ -498,7 +498,7 @@ fn test_no_v1_tools_in_codebase() {
 
 #[test]
 fn test_file_outline_format_end_to_end() {
-    use tokenizor_agentic_mcp::protocol::format;
+    use symforge::protocol::format;
 
     let dir = tempdir().unwrap();
     write_file(
@@ -536,7 +536,7 @@ fn test_file_outline_format_end_to_end() {
 
 #[test]
 fn test_get_symbol_returns_source_body() {
-    use tokenizor_agentic_mcp::protocol::format;
+    use symforge::protocol::format;
 
     let dir = tempdir().unwrap();
     write_file(
@@ -570,7 +570,7 @@ fn test_get_symbol_returns_source_body() {
 
 #[test]
 fn test_search_text_finds_content() {
-    use tokenizor_agentic_mcp::protocol::format;
+    use symforge::protocol::format;
 
     let dir = tempdir().unwrap();
     write_file(
@@ -613,7 +613,7 @@ fn test_search_text_finds_content() {
 
 #[test]
 fn test_health_report_format() {
-    use tokenizor_agentic_mcp::protocol::format;
+    use symforge::protocol::format;
 
     let dir = tempdir().unwrap();
     write_file(dir.path(), "a.rs", "fn alpha() {}");
@@ -700,7 +700,7 @@ fn test_index_folder_reload() {
 
 #[test]
 fn test_get_file_content_with_line_range() {
-    use tokenizor_agentic_mcp::protocol::format;
+    use symforge::protocol::format;
 
     let dir = tempdir().unwrap();
     write_file(
@@ -735,8 +735,8 @@ fn test_get_file_content_with_line_range() {
 
 #[test]
 fn test_get_file_content_with_numbered_headered_line_range() {
-    use tokenizor_agentic_mcp::live_index::search::ContentContext;
-    use tokenizor_agentic_mcp::protocol::format;
+    use symforge::live_index::search::ContentContext;
+    use symforge::protocol::format;
 
     let dir = tempdir().unwrap();
     write_file(
@@ -762,8 +762,8 @@ fn test_get_file_content_with_numbered_headered_line_range() {
 
 #[test]
 fn test_get_file_content_with_around_line() {
-    use tokenizor_agentic_mcp::live_index::search::ContentContext;
-    use tokenizor_agentic_mcp::protocol::format;
+    use symforge::live_index::search::ContentContext;
+    use symforge::protocol::format;
 
     let dir = tempdir().unwrap();
     write_file(
@@ -786,8 +786,8 @@ fn test_get_file_content_with_around_line() {
 
 #[test]
 fn test_get_file_content_with_around_match() {
-    use tokenizor_agentic_mcp::live_index::search::ContentContext;
-    use tokenizor_agentic_mcp::protocol::format;
+    use symforge::live_index::search::ContentContext;
+    use symforge::protocol::format;
 
     let dir = tempdir().unwrap();
     write_file(
@@ -810,8 +810,8 @@ fn test_get_file_content_with_around_match() {
 
 #[test]
 fn test_get_file_content_with_chunked_read() {
-    use tokenizor_agentic_mcp::live_index::search::ContentContext;
-    use tokenizor_agentic_mcp::protocol::format;
+    use symforge::live_index::search::ContentContext;
+    use symforge::protocol::format;
 
     let dir = tempdir().unwrap();
     write_file(
@@ -837,8 +837,8 @@ fn test_get_file_content_with_chunked_read() {
 
 #[test]
 fn test_get_file_content_with_around_symbol() {
-    use tokenizor_agentic_mcp::live_index::search::ContentContext;
-    use tokenizor_agentic_mcp::protocol::format;
+    use symforge::live_index::search::ContentContext;
+    use symforge::protocol::format;
 
     let dir = tempdir().unwrap();
     write_file(
@@ -907,7 +907,7 @@ fn test_persist_round_trip() {
 
     // Convert snapshot back to LiveIndex and wrap in Arc<RwLock>
     let loaded_index = persist::snapshot_to_live_index(snapshot);
-    let shared_loaded = tokenizor_agentic_mcp::live_index::SharedIndexHandle::shared(loaded_index);
+    let shared_loaded = symforge::live_index::SharedIndexHandle::shared(loaded_index);
     let loaded = shared_loaded.read();
 
     // Verify file count matches
@@ -949,9 +949,9 @@ fn test_persist_corrupt_fallback() {
     let dir = tempdir().unwrap();
 
     // Write garbage bytes where index.bin should be
-    fs::create_dir_all(dir.path().join(".tokenizor")).unwrap();
+    fs::create_dir_all(dir.path().join(".symforge")).unwrap();
     fs::write(
-        dir.path().join(".tokenizor").join("index.bin"),
+        dir.path().join(".symforge").join("index.bin"),
         b"not valid postcard data",
     )
     .unwrap();
@@ -981,7 +981,7 @@ fn test_persist_corrupt_fallback() {
 #[test]
 fn test_persist_version_mismatch() {
     use std::collections::HashMap;
-    use tokenizor_agentic_mcp::live_index::persist::IndexSnapshot;
+    use symforge::live_index::persist::IndexSnapshot;
 
     let dir = tempdir().unwrap();
 
@@ -991,8 +991,8 @@ fn test_persist_version_mismatch() {
         files: HashMap::new(),
     };
     let bytes = postcard::to_stdvec(&future_snapshot).expect("postcard serialize should work");
-    fs::create_dir_all(dir.path().join(".tokenizor")).unwrap();
-    fs::write(dir.path().join(".tokenizor").join("index.bin"), &bytes).unwrap();
+    fs::create_dir_all(dir.path().join(".symforge")).unwrap();
+    fs::write(dir.path().join(".symforge").join("index.bin"), &bytes).unwrap();
 
     // Must return None (version mismatch)
     let result = persist::load_snapshot(dir.path());

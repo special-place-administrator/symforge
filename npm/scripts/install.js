@@ -25,10 +25,10 @@ function createInstaller(overrides = {}) {
     if (overrides.installDir) {
       return overrides.installDir;
     }
-    if (processMod.env.TOKENIZOR_HOME) {
-      return pathMod.join(processMod.env.TOKENIZOR_HOME, "bin");
+    if (processMod.env.SYMFORGE_HOME) {
+      return pathMod.join(processMod.env.SYMFORGE_HOME, "bin");
     }
-    return pathMod.join(osMod.homedir(), ".tokenizor", "bin");
+    return pathMod.join(osMod.homedir(), ".symforge", "bin");
   }
 
   // Binary lives outside node_modules so npm can update the JS wrapper
@@ -39,10 +39,10 @@ function createInstaller(overrides = {}) {
     const platform = processMod.platform;
     const arch = processMod.arch;
 
-    if (platform === "win32" && arch === "x64") return "tokenizor-mcp-windows-x64.exe";
-    if (platform === "darwin" && arch === "arm64") return "tokenizor-mcp-macos-arm64";
-    if (platform === "darwin" && arch === "x64") return "tokenizor-mcp-macos-x64";
-    if (platform === "linux" && arch === "x64") return "tokenizor-mcp-linux-x64";
+    if (platform === "win32" && arch === "x64") return "symforge-windows-x64.exe";
+    if (platform === "darwin" && arch === "arm64") return "symforge-macos-arm64";
+    if (platform === "darwin" && arch === "x64") return "symforge-macos-x64";
+    if (platform === "linux" && arch === "x64") return "symforge-linux-x64";
 
     consoleMod.error(`Unsupported platform: ${platform}-${arch}`);
     consoleMod.error("Build from source: https://github.com/" + REPO);
@@ -55,12 +55,12 @@ function createInstaller(overrides = {}) {
 
   function getBinaryPath() {
     const ext = processMod.platform === "win32" ? ".exe" : "";
-    return pathMod.join(installDir, "tokenizor-mcp" + ext);
+    return pathMod.join(installDir, "symforge" + ext);
   }
 
   function getPendingPath() {
     const ext = processMod.platform === "win32" ? ".exe" : "";
-    return pathMod.join(installDir, "tokenizor-mcp.pending" + ext);
+    return pathMod.join(installDir, "symforge.pending" + ext);
   }
 
   function download(url) {
@@ -69,7 +69,7 @@ function createInstaller(overrides = {}) {
     }
     return new Promise((resolve, reject) => {
       const client = url.startsWith("https") ? https : http;
-      client.get(url, { headers: { "User-Agent": "tokenizor-mcp" } }, (res) => {
+      client.get(url, { headers: { "User-Agent": "symforge" } }, (res) => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           return download(res.headers.location).then(resolve).catch(reject);
         }
@@ -122,9 +122,9 @@ function createInstaller(overrides = {}) {
     // NOTE: PowerShell -and operators must stay on the same line as their
     // operands — semicolons are statement terminators, not line joiners.
     const script = [
-      "$target = [System.IO.Path]::GetFullPath($env:TOKENIZOR_TARGET_BIN)",
+      "$target = [System.IO.Path]::GetFullPath($env:SYMFORGE_TARGET_BIN)",
       "$comparer = [System.StringComparer]::OrdinalIgnoreCase",
-      "$procs = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'tokenizor-mcp.exe' -and $_.ExecutablePath -and $comparer.Equals([System.IO.Path]::GetFullPath($_.ExecutablePath), $target) }",
+      "$procs = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'symforge.exe' -and $_.ExecutablePath -and $comparer.Equals([System.IO.Path]::GetFullPath($_.ExecutablePath), $target) }",
       "$ids = @($procs | ForEach-Object { [int]$_.ProcessId })",
       "if ($ids.Count -gt 0) { Stop-Process -Id $ids -Force -ErrorAction SilentlyContinue; $ids | ConvertTo-Json -Compress }",
     ].join("; ");
@@ -135,7 +135,7 @@ function createInstaller(overrides = {}) {
         ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
         {
           encoding: "utf8",
-          env: { ...processMod.env, TOKENIZOR_TARGET_BIN: binPath },
+          env: { ...processMod.env, SYMFORGE_TARGET_BIN: binPath },
         }
       ).trim();
 
@@ -146,14 +146,14 @@ function createInstaller(overrides = {}) {
       return Array.isArray(parsed) ? parsed : [parsed];
     } catch (error) {
       consoleMod.log(
-        `Failed to stop running Tokenizor processes automatically: ${error.message}`
+        `Failed to stop running SymForge processes automatically: ${error.message}`
       );
       return [];
     }
   }
 
   /**
-   * Stop tokenizor-mcp *daemon* processes (the background server), but leave
+   * Stop symforge *daemon* processes (the background server), but leave
    * the stdio MCP process alive — it may be actively serving Claude Code.
    *
    * Daemons are identifiable because they were launched with the `daemon` arg,
@@ -164,12 +164,12 @@ function createInstaller(overrides = {}) {
    */
   function stopDaemonProcesses() {
     if (processMod.platform === "win32") {
-      // Match tokenizor-mcp.exe processes whose CommandLine contains " daemon"
+      // Match symforge.exe processes whose CommandLine contains " daemon"
       // This avoids killing the MCP stdio process that Claude Code is using.
       // NOTE: PowerShell -and operators must stay on the same line as their
       // operands — semicolons are statement terminators, not line joiners.
       const script = [
-        "$procs = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'tokenizor-mcp.exe' -and $_.CommandLine -and $_.CommandLine -match '\\bdaemon\\b' }",
+        "$procs = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'symforge.exe' -and $_.CommandLine -and $_.CommandLine -match '\\bdaemon\\b' }",
         "$ids = @($procs | ForEach-Object { [int]$_.ProcessId })",
         "if ($ids.Count -gt 0) { Stop-Process -Id $ids -Force -ErrorAction SilentlyContinue; $ids | ConvertTo-Json -Compress }",
       ].join("; ");
@@ -194,7 +194,7 @@ function createInstaller(overrides = {}) {
 
     // Unix: kill only daemon processes (best-effort)
     try {
-      execSyncFn("pkill -f 'tokenizor-mcp daemon' 2>/dev/null || true", {
+      execSyncFn("pkill -f 'symforge daemon' 2>/dev/null || true", {
         encoding: "utf8",
       });
     } catch {
@@ -232,7 +232,7 @@ function createInstaller(overrides = {}) {
       const stoppedProcessIds = stopRunningWindowsProcesses(binPath);
       if (stoppedProcessIds.length > 0) {
         consoleMod.log(
-          `Stopping ${stoppedProcessIds.length} running Tokenizor process(es) so the update can be applied...`
+          `Stopping ${stoppedProcessIds.length} running SymForge process(es) so the update can be applied...`
         );
         const installedAfterStop = await retryInstallAfterStop(binPath, pendingPath, data);
         if (installedAfterStop) {
@@ -250,7 +250,7 @@ function createInstaller(overrides = {}) {
 
   /**
    * Detect which CLI agents are installed and return the appropriate
-   * `--client` flag value for `tokenizor-mcp init`.
+   * `--client` flag value for `symforge init`.
    */
   function detectClients() {
     const clients = [];
@@ -281,7 +281,7 @@ function createInstaller(overrides = {}) {
   }
 
   /**
-   * Run `tokenizor-mcp init` after successful install to configure
+   * Run `symforge init` after successful install to configure
    * hooks and MCP server registration for detected CLI agents.
    */
   function runAutoInit(binPath) {
@@ -300,7 +300,7 @@ function createInstaller(overrides = {}) {
       }
     } catch (error) {
       consoleMod.log(
-        `Auto-init warning: ${error.message}\nYou can run manually: tokenizor-mcp init --client all`
+        `Auto-init warning: ${error.message}\nYou can run manually: symforge init --client all`
       );
     }
   }
@@ -315,13 +315,13 @@ function createInstaller(overrides = {}) {
       const installed = getInstalledVersion(binPath);
       if (installed === version) {
         removePendingIfPresent(pendingPath);
-        consoleMod.log(`tokenizor-mcp v${version} already installed at ${binPath}`);
+        consoleMod.log(`symforge v${version} already installed at ${binPath}`);
         // Still run init to ensure config is up to date
         runAutoInit(binPath);
         return;
       }
       consoleMod.log(
-        `tokenizor-mcp v${installed || "unknown"} found, updating to v${version}...`
+        `symforge v${installed || "unknown"} found, updating to v${version}...`
       );
     }
 
@@ -333,7 +333,7 @@ function createInstaller(overrides = {}) {
     const stoppedPids = stopDaemonProcesses();
     if (stoppedPids.length > 0) {
       consoleMod.log(
-        `Stopped ${stoppedPids.length} tokenizor-mcp daemon process(es) for update`
+        `Stopped ${stoppedPids.length} symforge daemon process(es) for update`
       );
       // Brief pause to let OS release file handles
       await sleep(500);
@@ -343,7 +343,7 @@ function createInstaller(overrides = {}) {
     const url = `https://github.com/${REPO}/releases/download/v${version}/${artifact}`;
 
     consoleMod.log(
-      `Downloading tokenizor-mcp v${version} for ${processMod.platform}-${processMod.arch}...`
+      `Downloading symforge v${version} for ${processMod.platform}-${processMod.arch}...`
     );
     consoleMod.log(`  ${url}`);
 

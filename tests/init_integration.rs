@@ -1,14 +1,14 @@
-/// Integration tests for `tokenizor init` — proves idempotent hook installation.
+/// Integration tests for `symforge init` — proves idempotent hook installation.
 ///
 /// Tests use a temporary directory in place of `~/.claude/settings.json` via the
 /// `merge_hooks_into_settings(settings_path, binary_path)` public function.
 use tempfile::TempDir;
-use tokenizor_agentic_mcp::cli::InitClient;
-use tokenizor_agentic_mcp::cli::init::{
+use symforge::cli::InitClient;
+use symforge::cli::init::{
     merge_hooks_into_settings, register_codex_mcp_server, run_init_with_context,
 };
 
-const FAKE_BINARY: &str = "/usr/local/bin/tokenizor";
+const FAKE_BINARY: &str = "/usr/local/bin/symforge";
 
 fn fake_binary_path() -> std::path::PathBuf {
     std::path::PathBuf::from(FAKE_BINARY)
@@ -67,8 +67,8 @@ fn test_init_writes_hooks() {
 
     for cmd in &all_commands {
         assert!(
-            cmd.contains("tokenizor hook"),
-            "command must contain 'tokenizor hook': {cmd}"
+            cmd.contains("symforge hook"),
+            "command must contain 'symforge hook': {cmd}"
         );
         assert!(
             cmd.contains(FAKE_BINARY),
@@ -125,7 +125,7 @@ fn test_init_idempotent() {
 }
 
 // ---------------------------------------------------------------------------
-// test_init_preserves_other_hooks: non-tokenizor hooks are preserved
+// test_init_preserves_other_hooks: non-symforge hooks are preserved
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -133,7 +133,7 @@ fn test_init_preserves_other_hooks() {
     let dir = TempDir::new().unwrap();
     let settings_path = dir.path().join("settings.json");
 
-    // Start with an existing non-tokenizor hook.
+    // Start with an existing non-symforge hook.
     let initial = serde_json::json!({
         "hooks": {
             "PostToolUse": [
@@ -157,14 +157,14 @@ fn test_init_preserves_other_hooks() {
         .as_array()
         .expect("PostToolUse must be an array");
 
-    // 1 existing + 1 tokenizor = 2 total.
+    // 1 existing + 1 symforge = 2 total.
     assert_eq!(
         post.len(),
         2,
-        "existing hook + 1 tokenizor hook = 2 entries"
+        "existing hook + 1 symforge hook = 2 entries"
     );
 
-    // Non-tokenizor hook must still be present.
+    // Non-symforge hook must still be present.
     let has_bash_hook = post.iter().any(|e| {
         e["hooks"][0]["command"]
             .as_str()
@@ -173,7 +173,7 @@ fn test_init_preserves_other_hooks() {
     });
     assert!(
         has_bash_hook,
-        "non-tokenizor hook must be preserved after merge"
+        "non-symforge hook must be preserved after merge"
     );
 }
 
@@ -185,15 +185,15 @@ fn test_init_preserves_other_hooks() {
 fn test_init_registers_mcp_server() {
     let dir = TempDir::new().unwrap();
     let claude_json_path = dir.path().join(".claude.json");
-    let binary_path = "/usr/local/bin/tokenizor";
+    let binary_path = "/usr/local/bin/symforge";
 
-    tokenizor_agentic_mcp::cli::init::register_mcp_server(&claude_json_path, binary_path)
+    symforge::cli::init::register_mcp_server(&claude_json_path, binary_path)
         .expect("register_mcp_server must succeed");
 
     let raw = std::fs::read_to_string(&claude_json_path).unwrap();
     let config: serde_json::Value = serde_json::from_str(&raw).unwrap();
 
-    let tok = &config["mcpServers"]["tokenizor"];
+    let tok = &config["mcpServers"]["symforge"];
     assert_eq!(tok["type"], "stdio");
     // On Windows, forward slashes are converted to backslashes for native process spawning.
     let expected_command = if cfg!(windows) {
@@ -208,12 +208,12 @@ fn test_init_registers_mcp_server() {
 fn test_init_mcp_registration_idempotent() {
     let dir = TempDir::new().unwrap();
     let claude_json_path = dir.path().join(".claude.json");
-    let binary_path = "/usr/local/bin/tokenizor";
+    let binary_path = "/usr/local/bin/symforge";
 
-    tokenizor_agentic_mcp::cli::init::register_mcp_server(&claude_json_path, binary_path).unwrap();
+    symforge::cli::init::register_mcp_server(&claude_json_path, binary_path).unwrap();
     let first = std::fs::read_to_string(&claude_json_path).unwrap();
 
-    tokenizor_agentic_mcp::cli::init::register_mcp_server(&claude_json_path, binary_path).unwrap();
+    symforge::cli::init::register_mcp_server(&claude_json_path, binary_path).unwrap();
     let second = std::fs::read_to_string(&claude_json_path).unwrap();
 
     assert_eq!(first, second, "register_mcp_server must be idempotent");
@@ -236,9 +236,9 @@ fn test_init_mcp_registration_preserves_other_servers() {
     )
     .unwrap();
 
-    tokenizor_agentic_mcp::cli::init::register_mcp_server(
+    symforge::cli::init::register_mcp_server(
         &claude_json_path,
-        "/usr/local/bin/tokenizor",
+        "/usr/local/bin/symforge",
     )
     .unwrap();
 
@@ -250,8 +250,8 @@ fn test_init_mcp_registration_preserves_other_servers() {
         "other MCP server must be preserved"
     );
     assert!(
-        config["mcpServers"]["tokenizor"].is_object(),
-        "tokenizor must be added"
+        config["mcpServers"]["symforge"].is_object(),
+        "symforge must be added"
     );
 }
 
@@ -259,7 +259,7 @@ fn test_init_mcp_registration_preserves_other_servers() {
 fn test_init_registers_codex_mcp_server() {
     let dir = TempDir::new().unwrap();
     let codex_config_path = dir.path().join(".codex").join("config.toml");
-    let binary_path = r"C:\Users\user\.tokenizor\bin\tokenizor-mcp.exe";
+    let binary_path = r"C:\Users\user\.symforge\bin\symforge.exe";
 
     register_codex_mcp_server(&codex_config_path, binary_path)
         .expect("register_codex_mcp_server must succeed");
@@ -267,8 +267,8 @@ fn test_init_registers_codex_mcp_server() {
     let raw = std::fs::read_to_string(&codex_config_path).unwrap();
 
     assert!(
-        raw.contains("[mcp_servers.tokenizor]"),
-        "config must contain a tokenizor MCP table: {raw}"
+        raw.contains("[mcp_servers.symforge]"),
+        "config must contain a symforge MCP table: {raw}"
     );
     assert!(
         raw.contains(binary_path),
@@ -296,7 +296,7 @@ fn test_init_registers_codex_mcp_server() {
 fn test_init_codex_registration_idempotent() {
     let dir = TempDir::new().unwrap();
     let codex_config_path = dir.path().join(".codex").join("config.toml");
-    let binary_path = r"C:\Users\user\.tokenizor\bin\tokenizor-mcp.exe";
+    let binary_path = r"C:\Users\user\.symforge\bin\symforge.exe";
 
     register_codex_mcp_server(&codex_config_path, binary_path).unwrap();
     let first = std::fs::read_to_string(&codex_config_path).unwrap();
@@ -330,7 +330,7 @@ command = "other.exe"
 
     register_codex_mcp_server(
         &codex_config_path,
-        r"C:\Users\user\.tokenizor\bin\tokenizor-mcp.exe",
+        r"C:\Users\user\.symforge\bin\symforge.exe",
     )
     .unwrap();
 
@@ -353,7 +353,7 @@ command = "other.exe"
     );
     assert!(
         raw.contains("CLAUDE.md"),
-        "Tokenizor should merge CLAUDE.md into project doc fallbacks"
+        "SymForge should merge CLAUDE.md into project doc fallbacks"
     );
 }
 
@@ -387,7 +387,7 @@ fn test_run_init_codex_only_updates_codex_files() {
         "Claude memory file must not be created for codex-only init"
     );
     assert!(
-        cwd.path().join(".tokenizor").exists(),
+        cwd.path().join(".symforge").exists(),
         "runtime directory must still be created"
     );
 }
@@ -455,7 +455,7 @@ fn test_run_init_all_updates_both_clients() {
 }
 
 #[test]
-fn test_run_init_codex_writes_tokenizor_agents_guidance() {
+fn test_run_init_codex_writes_symforge_agents_guidance() {
     let home = TempDir::new().unwrap();
     let cwd = TempDir::new().unwrap();
     let binary_path = std::path::PathBuf::from(FAKE_BINARY);
@@ -468,11 +468,11 @@ fn test_run_init_codex_writes_tokenizor_agents_guidance() {
 
     assert!(
         raw.contains("TOKENIZOR START"),
-        "Codex AGENTS guidance must include a Tokenizor marker block: {raw}"
+        "Codex AGENTS guidance must include a SymForge marker block: {raw}"
     );
     assert!(
-        raw.contains("Prefer the Tokenizor MCP"),
-        "Codex AGENTS guidance must teach Codex to use Tokenizor: {raw}"
+        raw.contains("Prefer the SymForge MCP"),
+        "Codex AGENTS guidance must teach Codex to use SymForge: {raw}"
     );
 }
 
@@ -502,7 +502,7 @@ fn test_run_init_codex_preserves_existing_agents_content_and_is_idempotent() {
 }
 
 #[test]
-fn test_run_init_claude_writes_tokenizor_memory_guidance() {
+fn test_run_init_claude_writes_symforge_memory_guidance() {
     let home = TempDir::new().unwrap();
     let cwd = TempDir::new().unwrap();
     let binary_path = std::path::PathBuf::from(FAKE_BINARY);
@@ -515,11 +515,11 @@ fn test_run_init_claude_writes_tokenizor_memory_guidance() {
 
     assert!(
         raw.contains("TOKENIZOR START"),
-        "Claude memory guidance must include a Tokenizor marker block: {raw}"
+        "Claude memory guidance must include a SymForge marker block: {raw}"
     );
     assert!(
-        raw.contains("Prefer the Tokenizor MCP"),
-        "Claude memory guidance must teach Claude to use Tokenizor: {raw}"
+        raw.contains("Prefer the SymForge MCP"),
+        "Claude memory guidance must teach Claude to use SymForge: {raw}"
     );
 }
 

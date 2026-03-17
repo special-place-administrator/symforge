@@ -8,7 +8,7 @@ Full-codebase review, not scoped to a PR or sprint. Findings ranked by user afte
 |----|---------|----------|--------|----------|--------|
 | CR1 | `find_qualified_usages` panics on non-ASCII UTF-8 source (byte-index slicing into `&str`) | **P0** | NEW | `src/protocol/edit.rs:1523-1730` | Add non-ASCII test, fix byte-walking to respect char boundaries |
 | CR2 | `LiveIndex::load` circuit-breaker nondeterminism — `par_iter` ordering affects which files survive tripping | **P0** | NEW | `src/live_index/store.rs:594-827` | Collect all results first, evaluate breaker holistically, then decide |
-| CR3 | Error type inconsistency — edit operations return `Result<_, String>` instead of `TokenizorError` | **P1** | NEW | `src/protocol/edit.rs` (multiple fns) | Add `EditError` variant or use `TokenizorError` consistently |
+| CR3 | Error type inconsistency — edit operations return `Result<_, String>` instead of `SymForgeError` | **P1** | NEW | `src/protocol/edit.rs` (multiple fns) | Add `EditError` variant or use `SymForgeError` consistently |
 | CR4 | `open_project_session` activation-race fragility — double write-lock window between insert and activate | **P1** | VERIFY vs C6 fix | `src/daemon.rs:250-298` | Audit post-C6 branch; may already be mitigated by ActivationState enum |
 | CR5 | `line_byte_offset` in `find_qualified_usages` assumes LF-only — works for CRLF but drifts on bare `\r` | **P1** | NEW | `src/protocol/edit.rs:1536` | Add comment or defensive test for mixed-ending edge case |
 | CR6 | Same-path concurrent `atomic_write_file` — no test coverage | **P1** | NEW | `src/protocol/edit.rs:134-150` | Add test: two threads writing same path concurrently |

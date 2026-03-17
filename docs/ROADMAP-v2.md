@@ -1,4 +1,4 @@
-# Tokenizor v2 — Full Rewrite Roadmap
+# SymForge v2 — Full Rewrite Roadmap
 
 > **Vision**: A Rust-native MCP server that keeps the entire project live in memory,
 > parasitically integrates with the coding CLI's native tools via hooks, and delivers
@@ -323,16 +323,16 @@ get_context_bundle returns a complete, compact context package in one call.
 **Tasks**:
 1. Define a compact text format for each tool:
    ```
-   src/protocol/mcp.rs:264-267 (struct TokenizorServer)
-   pub struct TokenizorServer {
+   src/protocol/mcp.rs:264-267 (struct SymForgeServer)
+   pub struct SymForgeServer {
        tool_router: ToolRouter<Self>,
        application: ApplicationContext,
    }
 
    Referenced by: (3 sites)
-     src/protocol/mcp.rs:271    impl TokenizorServer { fn new(...)
-     src/main.rs:45             let server = TokenizorServer::new(app);
-     tests/integration.rs:12    let server = TokenizorServer::new(test_app);
+     src/protocol/mcp.rs:271    impl SymForgeServer { fn new(...)
+     src/main.rs:45             let server = SymForgeServer::new(app);
+     tests/integration.rs:12    let server = SymForgeServer::new(test_app);
 
    [indexed 0.3s ago | 1,847 tokens saved vs full file read]
    ```
@@ -355,7 +355,7 @@ get_context_bundle returns a complete, compact context package in one call.
 
 **Tasks**:
 1. Design hook ↔ MCP server communication:
-   - Option A: hooks call MCP tools via a lightweight CLI (`tokenizor-query`)
+   - Option A: hooks call MCP tools via a lightweight CLI (`SymForge-query`)
    - Option B: hooks communicate via a Unix socket / named pipe to the MCP process
    - Option C: hooks read a memory-mapped file that LiveIndex maintains
    - **Decision needed**: evaluate latency requirements (hooks must respond in <100ms)
@@ -388,7 +388,7 @@ get_context_bundle returns a complete, compact context package in one call.
 5. **SessionStart** — on first tool call of a session:
    - Generate compact repo map (~500 tokens): file count, top-level module structure,
      key entry points, total symbol count
-   - List available tokenizor tools with brief descriptions
+   - List available SymForge tools with brief descriptions
 
 **Acceptance**: Every Read of an indexed source file includes an appended symbol outline.
 Every Edit includes an impact analysis. Grep results include structural context.
@@ -484,7 +484,7 @@ Each language needs: symbol extraction + reference extraction + tests.
 
 ### Token Savings (measured, not estimated)
 
-| Scenario | Without Tokenizor | With Tokenizor v2 | Target Savings |
+| Scenario | Without SymForge | With SymForge v2 | Target Savings |
 |----------|-------------------|-------------------|----------------|
 | Explore unfamiliar codebase (10 files) | ~30,000 tokens | ~2,000 (repo map + outlines) | >90% |
 | Understand a function + its callers | ~25,000 tokens | ~2,500 (get_context_bundle) | >85% |
@@ -557,7 +557,7 @@ Phase 4.x (all independent, can run after Milestone 1):
 ### Q1: Hook ↔ MCP Server Communication — DECIDED: HTTP Sidecar
 
 The MCP server spawns a tiny HTTP server on `127.0.0.1:0` (random free port) alongside
-the stdio MCP handler using `axum` + `tokio::spawn`. Port written to `.tokenizor/sidecar.port`.
+the stdio MCP handler using `axum` + `tokio::spawn`. Port written to `.symforge/sidecar.port`.
 
 Hook scripts: read port file → `urllib.request.urlopen("http://localhost:{port}/outline?file=...")`
 → format response as `additionalContext` JSON → print to stdout.
@@ -567,7 +567,7 @@ Sidecar endpoints share the same `Arc<LiveIndex>` as MCP tools. Zero data duplic
 **Latency budget**: Python spawn (~40ms) + HTTP localhost (~10ms) + LiveIndex query (<1ms) = **~50-80ms**.
 Claude Code hook timeout is 600s. Hooks are synchronous (blocking) so Claude sees context immediately.
 
-For static data (session-start repo map): write `repo-outline.json` to `.tokenizor/derived/`.
+For static data (session-start repo map): write `repo-outline.json` to `.symforge/derived/`.
 SessionStart hook reads file directly, no HTTP needed.
 
 **New dependency**: `axum` (lightweight, already uses tokio).
@@ -575,15 +575,15 @@ SessionStart hook reads file directly, no HTTP needed.
 ### Q2: Repo Auto-Detection — DECIDED: Auto-Index on Startup
 
 Auto-index the working directory if `.git` exists. Write port file + repo map on completion.
-Config option `TOKENIZOR_AUTO_INDEX=false` to disable.
+Config option `SYMFORGE_AUTO_INDEX=false` to disable.
 
 ### Q3: Multi-Repo — DECIDED: Single Repo for v2
 
 One LiveIndex per MCP server process. Multi-repo is a v3 concern.
 
-### Q4: Hook Installation — DECIDED: `tokenizor init` Command
+### Q4: Hook Installation — DECIDED: `SymForge init` Command
 
-A `tokenizor init` subcommand writes PostToolUse hook entries into the project's
+A `SymForge init` subcommand writes PostToolUse hook entries into the project's
 `.claude/hooks.json` (creating it if needed). Hooks point to Python scripts bundled
 with the npm package or installed alongside the binary.
 

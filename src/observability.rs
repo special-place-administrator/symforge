@@ -19,7 +19,7 @@ pub fn init_tracing() -> Result<()> {
     tracing::info!(
         pid = std::process::id(),
         version = env!("CARGO_PKG_VERSION"),
-        "tokenizor tracing initialized"
+        "symforge tracing initialized"
     );
 
     Ok(())

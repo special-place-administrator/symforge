@@ -108,7 +108,7 @@ on `self.projects` RwLock:
 ### Problem
 
 `atomic_write_file` (edit.rs:52-57) uses deterministic temp name
-`path.with_extension("tokenizor_tmp")`. Two concurrent edits to the same file
+`path.with_extension("SYMFORGE_tmp")`. Two concurrent edits to the same file
 both write to the same temp path — race condition causes data loss.
 
 ### Design

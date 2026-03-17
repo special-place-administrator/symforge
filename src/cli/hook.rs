@@ -1,4 +1,4 @@
-//! Hook binary logic — reads `.tokenizor/sidecar.port`, calls sidecar over sync HTTP,
+//! Hook binary logic — reads `.symforge/sidecar.port`, calls sidecar over sync HTTP,
 //! and outputs a single JSON line to stdout.
 //!
 //! Design constraints (HOOK-10):
@@ -14,8 +14,8 @@ use std::time::Duration;
 
 use crate::cli::HookSubcommand;
 
-const PORT_FILE: &str = ".tokenizor/sidecar.port";
-const SESSION_FILE: &str = ".tokenizor/sidecar.session";
+const PORT_FILE: &str = ".symforge/sidecar.port";
+const SESSION_FILE: &str = ".symforge/sidecar.session";
 /// Hard HTTP timeout — leaves margin within HOOK-03's 100 ms total budget.
 const HTTP_TIMEOUT: Duration = Duration::from_millis(50);
 
@@ -47,13 +47,13 @@ pub(crate) struct HookToolInput {
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Entry point called by main.rs for `tokenizor hook [subcommand]`.
+/// Entry point called by main.rs for `symforge hook [subcommand]`.
 ///
 /// When `subcommand` is `None`, reads stdin JSON to determine the tool_name and
 /// routes to the correct sidecar endpoint (Phase 6 stdin-routing mode).
 ///
 /// When `subcommand` is `Some`, uses the subcommand directly (backward-compat
-/// for manual testing: `tokenizor hook read`, `tokenizor hook edit`, etc.).
+/// for manual testing: `symforge hook read`, `symforge hook edit`, etc.).
 ///
 /// Never returns an error — failures produce the fail-open empty JSON.
 pub fn run_hook(subcommand: Option<&HookSubcommand>) -> anyhow::Result<()> {
@@ -180,7 +180,7 @@ pub fn event_name_for(subcommand: &HookSubcommand) -> &'static str {
 /// no suggestion applies (e.g. non-source files, unknown tools).
 ///
 /// This is the core of the PreToolUse interception: it tells the model which
-/// Tokenizor tool to use instead of the built-in tool it's about to call.
+/// SymForge tool to use instead of the built-in tool it's about to call.
 fn pre_tool_suggestion(input: &HookInput) -> String {
     let tool = input.tool_name.as_deref().unwrap_or("");
     let file_path = input
@@ -195,22 +195,22 @@ fn pre_tool_suggestion(input: &HookInput) -> String {
     }
 
     match tool {
-        "Grep" => "Tokenizor MCP is connected. Prefer search_text (full-text with symbol context) or search_symbols (by name/kind) over Grep for source code searches.".to_string(),
-        "Read" => "Tokenizor MCP is connected. Prefer get_file_context (outline + imports + consumers) or get_symbol/get_symbol_context (targeted symbol lookup) over Read for source code inspection.".to_string(),
-        "Glob" => "Tokenizor MCP is connected. Prefer search_files (ranked path discovery) or get_repo_map (repository overview) over Glob for finding source files.".to_string(),
-        "Edit" => "Tokenizor MCP is connected. Prefer replace_symbol_body, edit_within_symbol, or batch_edit over Edit for source code modifications — they resolve by symbol name, auto-indent, and re-index atomically.".to_string(),
+        "Grep" => "SymForge MCP is connected. Prefer search_text (full-text with symbol context) or search_symbols (by name/kind) over Grep for source code searches.".to_string(),
+        "Read" => "SymForge MCP is connected. Prefer get_file_context (outline + imports + consumers) or get_symbol/get_symbol_context (targeted symbol lookup) over Read for source code inspection.".to_string(),
+        "Glob" => "SymForge MCP is connected. Prefer search_files (ranked path discovery) or get_repo_map (repository overview) over Glob for finding source files.".to_string(),
+        "Edit" => "SymForge MCP is connected. Prefer replace_symbol_body, edit_within_symbol, or batch_edit over Edit for source code modifications — they resolve by symbol name, auto-indent, and re-index atomically.".to_string(),
         _ => String::new(),
     }
 }
 
 /// Returns true for paths that are clearly non-source (docs, configs, etc.)
-/// where direct file reads are appropriate and Tokenizor shouldn't intercept.
+/// where direct file reads are appropriate and SymForge shouldn't intercept.
 fn is_non_source_path(path: &str) -> bool {
     let p = path.replace('\\', "/").to_lowercase();
 
     // Non-source file extensions
-    // Config files now handled by Tokenizor (.md, .json, .toml, .yaml, .yml, .env)
-    // are intentionally NOT in this list — PreToolUse hook should suggest Tokenizor for them.
+    // Config files now handled by SymForge (.md, .json, .toml, .yaml, .yml, .env)
+    // are intentionally NOT in this list — PreToolUse hook should suggest SymForge for them.
     let non_source_exts = [
         ".txt",
         ".xml",
@@ -361,7 +361,7 @@ fn extract_file_path(input: &HookInput, cwd: &str) -> String {
     }
 }
 
-/// Read `.tokenizor/sidecar.port` from the current working directory.
+/// Read `.symforge/sidecar.port` from the current working directory.
 fn read_port_file() -> std::io::Result<u16> {
     let contents = std::fs::read_to_string(PORT_FILE)?;
     contents
@@ -839,8 +839,8 @@ mod tests {
     }
 
     #[test]
-    fn test_pre_tool_suggestion_read_markdown_suggests_tokenizor() {
-        // Markdown is now handled by Tokenizor — should suggest
+    fn test_pre_tool_suggestion_read_markdown_suggests_symforge() {
+        // Markdown is now handled by SymForge — should suggest
         let input = HookInput {
             tool_name: Some("Read".to_string()),
             tool_input: Some(HookToolInput {
@@ -850,7 +850,7 @@ mod tests {
             ..Default::default()
         };
         let s = pre_tool_suggestion(&input);
-        assert!(!s.is_empty(), "should suggest Tokenizor for .md files");
+        assert!(!s.is_empty(), "should suggest SymForge for .md files");
         assert!(s.contains("get_file_context"));
     }
 
@@ -907,7 +907,7 @@ mod tests {
 
     #[test]
     fn test_is_non_source_path_allows_config_files() {
-        // Config files are now handled by Tokenizor — should NOT be skipped
+        // Config files are now handled by SymForge — should NOT be skipped
         assert!(!is_non_source_path("package.json"));
         assert!(!is_non_source_path("Cargo.toml"));
         assert!(!is_non_source_path("README.md"));

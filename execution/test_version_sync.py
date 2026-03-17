@@ -21,12 +21,12 @@ class VersionSyncTests(unittest.TestCase):
             encoding="utf-8",
         )
         (root / "Cargo.toml").write_text(
-            '[package]\nname = "tokenizor_agentic_mcp"\nversion = "0.3.12"\n\n'
+            '[package]\nname = "symforge"\nversion = "0.3.12"\n\n'
             '[dependencies]\nserde = { version = "1.0", features = ["derive"] }\n',
             encoding="utf-8",
         )
         (root / "npm" / "package.json").write_text(
-            json.dumps({"name": "tokenizor-mcp", "version": "0.3.12"}, indent=2) + "\n",
+            json.dumps({"name": "symforge", "version": "0.3.12"}, indent=2) + "\n",
             encoding="utf-8",
         )
         return root
@@ -38,7 +38,7 @@ class VersionSyncTests(unittest.TestCase):
     def test_check_versions_reports_manifest_and_tag_drift(self) -> None:
         root = self.make_repo()
         (root / "npm" / "package.json").write_text(
-            json.dumps({"name": "tokenizor-mcp", "version": "0.3.11"}, indent=2) + "\n",
+            json.dumps({"name": "symforge", "version": "0.3.11"}, indent=2) + "\n",
             encoding="utf-8",
         )
 
@@ -56,10 +56,10 @@ class VersionSyncTests(unittest.TestCase):
     def test_check_versions_rejects_noncanonical_tag_shape(self) -> None:
         root = self.make_repo()
 
-        problems = version_sync.check_versions(root, tag="tokenizor_agentic_mcp-v0.3.12")
+        problems = version_sync.check_versions(root, tag="symforge-v0.3.12")
 
         self.assertIn(
-            "canonical release tags must use plain vX.Y.Z format, got 'tokenizor_agentic_mcp-v0.3.12'.",
+            "canonical release tags must use plain vX.Y.Z format, got 'symforge-v0.3.12'.",
             problems,
         )
 

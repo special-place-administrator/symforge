@@ -15,7 +15,7 @@ use std::fs;
 use std::path::Path;
 
 use tempfile::tempdir;
-use tokenizor_agentic_mcp::{
+use symforge::{
     domain::{FileOutcome, LanguageId, SymbolKind},
     live_index::{IndexState, LiveIndex},
     parsing::{
@@ -36,7 +36,7 @@ fn write_file(dir: &Path, name: &str, content: &str) {
     fs::write(path, content).unwrap();
 }
 
-fn has_symbol(symbols: &[tokenizor_agentic_mcp::domain::SymbolRecord], name: &str) -> bool {
+fn has_symbol(symbols: &[symforge::domain::SymbolRecord], name: &str) -> bool {
     symbols.iter().any(|s| s.name == name)
 }
 

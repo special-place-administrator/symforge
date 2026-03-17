@@ -5,9 +5,9 @@ Date: 2026-03-06
 
 ## Purpose
 
-`tokenizor_agentic_mcp` is a Rust-native, coding-first MCP server for repository indexing, retrieval, orchestration, and repair.
+`symforge` is a Rust-native, coding-first MCP server for repository indexing, retrieval, orchestration, and repair.
 
-It is not a carbon copy of Tokenizor. The design should optimize for:
+It is not a carbon copy of SymForge. The design should optimize for:
 - speed
 - robustness
 - idempotency
@@ -124,7 +124,7 @@ Why:
 Suggested layout:
 
 ```text
-.tokenizor/
+.symforge/
   blobs/
     sha256/
       ab/
@@ -525,7 +525,7 @@ And it avoids:
 
 ## Final Recommendation
 
-Build Tokenizor as a Rust-first MCP platform with:
+Build SymForge as a Rust-first MCP platform with:
 - SpacetimeDB for durable structured state
 - local byte-exact CAS for raw content
 - tree-sitter extraction with verification before commit

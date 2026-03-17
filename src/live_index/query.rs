@@ -1555,7 +1555,7 @@ impl LiveIndex {
         // Also check the reverse index for the target name, but scoped to
         // dependent files only.  This catches references that
         // find_dependents_for_file returned under a different symbol name
-        // (e.g. it returned `Result` refs but skipped the `TokenizorError` import).
+        // (e.g. it returned `Result` refs but skipped the `SymForgeError` import).
         for (ref_path, ref_record) in self.find_references_for_name(target_name, kind_filter, false)
         {
             if ref_path == path || !dependent_paths.contains(ref_path) {

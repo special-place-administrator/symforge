@@ -4,7 +4,7 @@
   "packages": {
     ".": {
       "release-type": "rust",
-      "package-name": "tokenizor_agentic_mcp",
+      "package-name": "symforge",
       "include-v-in-tag": true,
       "changelog-path": "CHANGELOG.md",
       "extra-files": [

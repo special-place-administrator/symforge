@@ -1,5 +1,5 @@
-use tokenizor_agentic_mcp::domain::{FileOutcome, LanguageId, SymbolKind};
-use tokenizor_agentic_mcp::parsing::process_file;
+use symforge::domain::{FileOutcome, LanguageId, SymbolKind};
+use symforge::parsing::process_file;
 use tree_sitter::Parser;
 
 #[test]

@@ -5,7 +5,7 @@ Date: 2026-03-07
 
 ## Purpose
 
-This document captures the current, externally verified integration surfaces for AI provider CLIs that are relevant to Tokenizor.
+This document captures the current, externally verified integration surfaces for AI provider CLIs that are relevant to SymForge.
 
 The goal is not to prove a final architecture. The goal is to remove hand-waving and constrain the design to what the clients actually expose today.
 
@@ -21,7 +21,7 @@ These are the practical targets because they are coding-oriented, local-first en
 
 ## Design Question
 
-Tokenizor should not be "just another MCP server" that the model might occasionally use.
+SymForge should not be "just another MCP server" that the model might occasionally use.
 
 It should become a durable local code-intelligence runtime that provider CLIs can consume through the deepest supported integration surface:
 
@@ -30,7 +30,7 @@ It should become a durable local code-intelligence runtime that provider CLIs ca
 
 The central architectural question is:
 
-How do we make Tokenizor get used continuously for lookup, search, repo understanding, and verified retrieval, instead of waiting for the model to discover it by chance?
+How do we make SymForge get used continuously for lookup, search, repo understanding, and verified retrieval, instead of waiting for the model to discover it by chance?
 
 ## Research Summary
 
@@ -44,11 +44,11 @@ Therefore:
 
 - a plain MCP-only strategy is too weak
 - a plugin-only strategy is impossible across providers
-- the most plausible cross-provider architecture is a local Tokenizor runtime plus provider-specific adapters
+- the most plausible cross-provider architecture is a local SymForge runtime plus provider-specific adapters
 
 ### What "constant usage" can realistically mean
 
-Tokenizor should become the default path for:
+SymForge should become the default path for:
 
 - repository outline
 - symbol search
@@ -59,7 +59,7 @@ Tokenizor should become the default path for:
 
 It does **not** need to replace the client's native edit/write tools.
 
-Trying to make every model edit files through Tokenizor is the wrong optimization target. The right target is to make models consult Tokenizor before they search or reason about code.
+Trying to make every model edit files through SymForge is the wrong optimization target. The right target is to make models consult SymForge before they search or reason about code.
 
 ## Verified Provider Surfaces
 
@@ -123,7 +123,7 @@ Verified in this pass:
 Implication:
 
 - Claude Code is the strongest immediate native integration target.
-- Tokenizor can inject context automatically, bias tool selection, expose MCP prompts as slash commands, and provide dedicated analysis subagents.
+- SymForge can inject context automatically, bias tool selection, expose MCP prompts as slash commands, and provide dedicated analysis subagents.
 - Claude is the best first provider for near-"always on" behavior.
 
 Most useful levers:
@@ -133,7 +133,7 @@ Most useful levers:
 - `SessionStart` context injection
 - `UserPromptSubmit` context refresh
 - `PreToolUse` steering before naive read/grep workflows
-- Tokenizor-focused subagents
+- SymForge-focused subagents
 - MCP prompts as slash commands
 
 ### Gemini CLI
@@ -152,7 +152,7 @@ Verified in this pass:
 Implication:
 
 - Gemini is the best target for a packaged native distribution.
-- Tokenizor should ship an official Gemini extension.
+- SymForge should ship an official Gemini extension.
 - Gemini can support both "discoverable MCP" and "bundled workflow behavior" from the same install unit.
 
 Most useful levers:
@@ -181,14 +181,14 @@ Verified in this pass:
 Implication:
 
 - Copilot CLI is more extensible than a plain MCP-only client.
-- Tokenizor can be integrated through MCP plus repo instructions plus custom agents plus hooks plus skills.
+- SymForge can be integrated through MCP plus repo instructions plus custom agents plus hooks plus skills.
 - This makes Copilot a serious second-wave target, even if the initial product focus remains Codex and Claude.
 
 Most useful levers:
 
 - global MCP registration
 - repo custom instructions and `AGENTS.md`
-- Tokenizor-specific custom agent profiles
+- SymForge-specific custom agent profiles
 - hook-based context injection and steering
 - skill bundles
 - plugin packaging once the adapter matures
@@ -223,7 +223,7 @@ Most useful levers:
 
 Description:
 
-- Ship Tokenizor as a standard MCP server
+- Ship SymForge as a standard MCP server
 - Tell users to add it to their provider CLI
 - Hope the model learns to use it
 
@@ -269,11 +269,11 @@ Assessment:
 - useful baseline
 - still insufficient alone
 
-### Theory C: Local Tokenizor runtime plus provider adapters
+### Theory C: Local SymForge runtime plus provider adapters
 
 Description:
 
-- Tokenizor runs as a local service/runtime
+- SymForge runs as a local service/runtime
 - provider-specific adapters register MCP and native integrations
 - adapters inject context, prompts, hooks, agents, and commands where supported
 
@@ -299,8 +299,8 @@ Assessment:
 
 Description:
 
-- users invoke `tokenizor codex`, `tokenizor claude`, `tokenizor gemini`, etc.
-- Tokenizor starts the client with injected config and environment
+- users invoke `SymForge codex`, `SymForge claude`, `SymForge gemini`, etc.
+- SymForge starts the client with injected config and environment
 
 Advantages:
 
@@ -343,14 +343,14 @@ Assessment:
 
 The most plausible position after this research pass is:
 
-- Tokenizor should be a local runtime first
+- SymForge should be a local runtime first
 - MCP remains mandatory, but only as one transport surface
 - provider-native adapters should be first-class product components
 - project instruction/context files remain important, but only as one control layer
 
 In short:
 
-**Tokenizor should become a local code-intelligence platform with MCP transport and provider-native adapters, not just an MCP server binary.**
+**SymForge should become a local code-intelligence platform with MCP transport and provider-native adapters, not just an MCP server binary.**
 
 ## Provider Priority Recommendation
 
@@ -390,7 +390,7 @@ Reason:
 
 ### Constraint 1: No universal plugin model
 
-We cannot design once and assume every provider will load a "Tokenizor plugin" the same way.
+We cannot design once and assume every provider will load a "SymForge plugin" the same way.
 
 ### Constraint 2: MCP remains the universal minimum
 
@@ -411,18 +411,18 @@ Claude, Gemini, Copilot, and Q expose hook surfaces that can bias or block naive
 
 Codex currently appears to rely more on layered instructions, MCP, skills, and custom client surfaces than on a public hook system.
 
-### Constraint 5: Project tracking must live in Tokenizor, not in the client
+### Constraint 5: Project tracking must live in SymForge, not in the client
 
 Clients differ too much.
 
-Project identity, workspace tracking, index state, and retrieval policy should live inside Tokenizor itself.
+Project identity, workspace tracking, index state, and retrieval policy should live inside SymForge itself.
 
 ## Recommended Research Follow-ups
 
 Still worth deeper verification later:
 
 - whether Codex will expose a broader public plugin or hook surface in future official docs
-- how far Codex app-server can realistically serve as a Tokenizor-aware custom client surface without overreaching the current product scope
+- how far Codex app-server can realistically serve as a SymForge-aware custom client surface without overreaching the current product scope
 - exact GitHub Copilot CLI plugin distribution story beyond skills/agents/hooks
 - Amazon Q file layout and packaging conventions for team-shared agent bundles
 - security/trust prompts and approval models for provider-installed hooks

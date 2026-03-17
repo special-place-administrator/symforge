@@ -1,4 +1,4 @@
-# Tokenizor Agentic MCP — Full Code Review
+# SymForge Agentic MCP — Full Code Review
 
 **Date:** 2026-03-15
 **Scope:** Entire codebase (src/, tests/, npm/)
@@ -34,7 +34,7 @@
 const output = execSyncFn(`"${binPath}" --version`, { ... });
 ```
 
-`execSync` with a string argument runs through the shell. If `TOKENIZOR_HOME` or the resolved `binPath` contains shell metacharacters (e.g. `$(evil)`), arbitrary commands execute. The launcher correctly uses `execFileSync` — the install script should too.
+`execSync` with a string argument runs through the shell. If `SYMFORGE_HOME` or the resolved `binPath` contains shell metacharacters (e.g. `$(evil)`), arbitrary commands execute. The launcher correctly uses `execFileSync` — the install script should too.
 
 **Fix:** Replace with `execFileSyncFn(binPath, ["--version"], ...)`.
 
@@ -45,7 +45,7 @@ const output = execSyncFn(`"${binPath}" --version`, { ... });
 ### I1. Fixed temp filename in `atomic_write_file` — collision + crash leak
 **File:** `src/protocol/edit.rs:32-37` | **Confidence: 80**
 
-Uses a fixed `.tokenizor_tmp` extension. Concurrent edits to same-basename files can collide. Crash between `write` and `rename` leaves orphan temp files.
+Uses a fixed `.SYMFORGE_tmp` extension. Concurrent edits to same-basename files can collide. Crash between `write` and `rename` leaves orphan temp files.
 
 **Fix:** Append a random suffix or thread ID to the temp filename.
 
@@ -167,7 +167,7 @@ Asserts `filtered.len() < 10` but never asserts `unfiltered.len() > filtered.len
 
 - **Python docstrings** (`python.rs:4`): Uses `NO_DOC_SPEC`, so Python triple-quote docstrings are never captured. This is a known limitation of the `DocCommentSpec` mechanism.
 - **Angular text offset** (`html.rs:169-225`): `offset += line.len() + 1` overshoots by 1 for non-newline-terminated final lines in text nodes.
-- **Sidecar port collision** (`sidecar/port_file.rs`): TCP-connect stale check would falsely accept a non-tokenizor process reusing the port.
+- **Sidecar port collision** (`sidecar/port_file.rs`): TCP-connect stale check would falsely accept a non-SymForge process reusing the port.
 
 ---
 

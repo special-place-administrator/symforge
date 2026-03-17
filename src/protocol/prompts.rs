@@ -4,7 +4,7 @@ use rmcp::{prompt, prompt_router};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::TokenizorServer;
+use super::SymForgeServer;
 use crate::protocol::resources::{
     file_context_resource, repo_changes_resource, repo_health_resource, repo_map_resource,
     repo_outline_resource,
@@ -28,10 +28,10 @@ pub struct FailureTriagePromptInput {
 }
 
 #[prompt_router(vis = "pub(crate)")]
-impl TokenizorServer {
+impl SymForgeServer {
     #[prompt(
-        name = "tokenizor-review",
-        description = "Generate a code review plan using Tokenizor context surfaces."
+        name = "symforge-review",
+        description = "Generate a code review plan using SymForge context surfaces."
     )]
     pub(crate) async fn code_review_prompt(
         &self,
@@ -54,12 +54,12 @@ impl TokenizorServer {
         }
 
         GetPromptResult::new(messages)
-            .with_description("Review code using Tokenizor resources and targeted tools.")
+            .with_description("Review code using SymForge resources and targeted tools.")
     }
 
     #[prompt(
-        name = "tokenizor-architecture",
-        description = "Generate an architecture mapping plan using Tokenizor repo context."
+        name = "symforge-architecture",
+        description = "Generate an architecture mapping plan using SymForge repo context."
     )]
     pub(crate) async fn architecture_map_prompt(
         &self,
@@ -83,13 +83,13 @@ impl TokenizorServer {
         }
 
         GetPromptResult::new(messages).with_description(
-            "Map repository architecture using Tokenizor resources and cross-reference tools.",
+            "Map repository architecture using SymForge resources and cross-reference tools.",
         )
     }
 
     #[prompt(
-        name = "tokenizor-triage",
-        description = "Generate a debugging and failure-triage plan using Tokenizor state."
+        name = "symforge-triage",
+        description = "Generate a debugging and failure-triage plan using SymForge state."
     )]
     pub(crate) async fn failure_triage_prompt(
         &self,
@@ -113,7 +113,7 @@ impl TokenizorServer {
         }
 
         GetPromptResult::new(messages).with_description(
-            "Triage failures using Tokenizor runtime health, changed files, and local context.",
+            "Triage failures using SymForge runtime health, changed files, and local context.",
         )
     }
 }
@@ -130,7 +130,7 @@ fn build_code_review_instructions(project_name: &str, input: &CodeReviewPromptIn
     if let Some(focus) = input.focus.as_deref() {
         text.push_str(&format!(" Pay special attention to: {focus}."));
     }
-    text.push_str(" Use Tokenizor resources for orientation, then use targeted tools for proof.");
+    text.push_str(" Use SymForge resources for orientation, then use targeted tools for proof.");
     text
 }
 
@@ -171,7 +171,7 @@ mod tests {
 
     use crate::protocol::resources::REPO_HEALTH_URI;
 
-    fn make_server() -> TokenizorServer {
+    fn make_server() -> SymForgeServer {
         let index = LiveIndex {
             files: HashMap::new(),
             loaded_at: Instant::now(),
@@ -189,7 +189,7 @@ mod tests {
             skipped_files: Vec::new(),
         };
 
-        TokenizorServer::new(
+        SymForgeServer::new(
             crate::live_index::SharedIndexHandle::shared(index),
             "prompt_project".to_string(),
             Arc::new(Mutex::new(WatcherInfo::default())),
@@ -203,9 +203,9 @@ mod tests {
         let server = make_server();
         let prompts = server.prompt_router.list_all();
         let names: Vec<&str> = prompts.iter().map(|prompt| prompt.name.as_str()).collect();
-        assert!(names.contains(&"tokenizor-review"));
-        assert!(names.contains(&"tokenizor-architecture"));
-        assert!(names.contains(&"tokenizor-triage"));
+        assert!(names.contains(&"symforge-review"));
+        assert!(names.contains(&"symforge-architecture"));
+        assert!(names.contains(&"symforge-triage"));
     }
 
     #[tokio::test]
@@ -224,15 +224,15 @@ mod tests {
                 rmcp::model::PromptMessageContent::ResourceLink { link }
                     if link.uri == REPO_HEALTH_URI
             )),
-            "tokenizor-review prompt should link repo health"
+            "symforge-review prompt should link repo health"
         );
         assert!(
             result.messages.iter().any(|message| matches!(
                 &message.content,
                 rmcp::model::PromptMessageContent::ResourceLink { link }
-                    if link.uri.contains("tokenizor://file/context")
+                    if link.uri.contains("symforge://file/context")
             )),
-            "tokenizor-review prompt should link file context"
+            "symforge-review prompt should link file context"
         );
     }
 }

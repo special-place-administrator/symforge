@@ -151,9 +151,9 @@ impl CircuitBreakerState {
         }
     }
 
-    /// Create using the `TOKENIZOR_CB_THRESHOLD` env var, defaulting to 0.20.
+    /// Create using the `SYMFORGE_CB_THRESHOLD` env var, defaulting to 0.20.
     pub fn from_env() -> Self {
-        let threshold = std::env::var("TOKENIZOR_CB_THRESHOLD")
+        let threshold = std::env::var("SYMFORGE_CB_THRESHOLD")
             .ok()
             .and_then(|v| v.parse::<f64>().ok())
             .unwrap_or(0.20);
@@ -868,7 +868,7 @@ impl LiveIndex {
 
     /// Create an empty `SharedIndex` with no files loaded.
     ///
-    /// Used when `TOKENIZOR_AUTO_INDEX=false`. The caller must call `reload()` to populate it.
+    /// Used when `SYMFORGE_AUTO_INDEX=false`. The caller must call `reload()` to populate it.
     /// Returns `IndexState::Empty` and `is_ready() == false` until reloaded.
     pub fn empty() -> SharedIndex {
         let index = LiveIndex {

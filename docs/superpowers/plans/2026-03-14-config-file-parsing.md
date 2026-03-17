@@ -211,7 +211,7 @@ use crate::domain::{LanguageId, SymbolRecord};
 /// Edit safety level for config file types.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EditCapability {
-    /// Read/search/navigation only, no edits via Tokenizor.
+    /// Read/search/navigation only, no edits via SymForge.
     IndexOnly,
     /// edit_within_symbol (scoped find-replace) is safe.
     TextEditSafe,
@@ -1127,7 +1127,7 @@ fn test_is_non_source_path_allows_config_files() {
 
 ```bash
 git add src/cli/hook.rs
-git commit -m "feat: PreToolUse hook now intercepts config files for Tokenizor"
+git commit -m "feat: PreToolUse hook now intercepts config files for SymForge"
 ```
 
 ---

@@ -404,9 +404,9 @@ async fn test_explore_concept_plus_remainder() {
 #[tokio::test]
 async fn test_explore_exact_concept_no_remainder() {
     // Query is exactly a concept key — no remainder, no module boosting
-    let content = b"pub enum TokenizorError {}\n";
+    let content = b"pub enum SymForgeError {}\n";
     let sym = SymbolRecord {
-        name: "TokenizorError".to_string(),
+        name: "SymForgeError".to_string(),
         kind: SymbolKind::Enum,
         depth: 0,
         sort_order: 0,
@@ -425,7 +425,7 @@ async fn test_explore_exact_concept_no_remainder() {
         .await;
     // Should use concept queries (symbol_queries includes "Error")
     assert!(
-        result.contains("TokenizorError"),
+        result.contains("SymForgeError"),
         "exact concept match should find error-related symbols: {result}"
     );
 }

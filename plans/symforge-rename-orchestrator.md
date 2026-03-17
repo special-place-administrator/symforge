@@ -2,9 +2,9 @@
 
 ## Objective
 
-Rename "Tokenizor" / "tokenizor" to "SymForge" / "symforge" across the entire codebase. This is a coordinated rename — every reference must be updated in one pass. After this task completes, the project should build, test, and run entirely under the new name with zero references to the old name (except migration/backward-compat logic).
+Rename "SymForge" / "SymForge" to "SymForge" / "symforge" across the entire codebase. This is a coordinated rename — every reference must be updated in one pass. After this task completes, the project should build, test, and run entirely under the new name with zero references to the old name (except migration/backward-compat logic).
 
-**Use Tokenizor MCP tools** (search_text, search_symbols, get_symbol, batch_rename, batch_edit, replace_symbol_body, etc.) for all codebase navigation and editing. Only fall back to raw file reads when necessary.
+**Use SymForge MCP tools** (search_text, search_symbols, get_symbol, batch_rename, batch_edit, replace_symbol_body, etc.) for all codebase navigation and editing. Only fall back to raw file reads when necessary.
 
 ---
 
@@ -18,21 +18,21 @@ Rename "Tokenizor" / "tokenizor" to "SymForge" / "symforge" across the entire co
 ### 1b. npm/package.json
 - `"name"` → `"symforge"`
 - `"description"` → update to reference SymForge
-- Binary entry: `"tokenizor-mcp"` → `"symforge"` (the `"bin"` field)
-- Update any install scripts that reference `tokenizor-mcp`
+- Binary entry: `"symforge"` → `"symforge"` (the `"bin"` field)
+- Update any install scripts that reference `symforge`
 
 ### 1c. npm/bin/ scripts
-- Rename `tokenizor-mcp` → `symforge` in any launcher scripts
+- Rename `symforge` → `symforge` in any launcher scripts
 - Update internal references to the binary name
 
 ### 1d. npm/scripts/install.js
-- `tokenizor-mcp` → `symforge` (binary name)
-- `tokenizor` → `symforge` (directory/path references)
-- `.tokenizor` → `.symforge` (home directory)
-- `TOKENIZOR_HOME` → `SYMFORGE_HOME`
+- `symforge` → `symforge` (binary name)
+- `SymForge` → `symforge` (directory/path references)
+- `.symforge` → `.symforge` (home directory)
+- `SYMFORGE_HOME` → `SYMFORGE_HOME`
 
 ### 1e. .github/.release-please-manifest.json
-- Update component name if it references tokenizor
+- Update component name if it references SymForge
 
 ### 1f. Cargo.lock
 - Will auto-update after `cargo check` — do NOT manually edit
@@ -43,50 +43,50 @@ Rename "Tokenizor" / "tokenizor" to "SymForge" / "symforge" across the entire co
 
 ### 2a. src/ — all Rust source files
 Search for and replace:
-- `TOKENIZOR_AUTO_INDEX` → `SYMFORGE_AUTO_INDEX`
-- `TOKENIZOR_CB_THRESHOLD` → `SYMFORGE_CB_THRESHOLD`
-- `TOKENIZOR_SIDECAR_BIND` → `SYMFORGE_SIDECAR_BIND`
-- `TOKENIZOR_HOME` → `SYMFORGE_HOME`
-- `".tokenizor"` (directory name) → `".symforge"`
-- `tokenizor-mcp` (binary name in strings) → `symforge`
-- `tokenizor_agentic_mcp` (crate name) → `symforge`
+- `SYMFORGE_AUTO_INDEX` → `SYMFORGE_AUTO_INDEX`
+- `SYMFORGE_CB_THRESHOLD` → `SYMFORGE_CB_THRESHOLD`
+- `SYMFORGE_SIDECAR_BIND` → `SYMFORGE_SIDECAR_BIND`
+- `SYMFORGE_HOME` → `SYMFORGE_HOME`
+- `".symforge"` (directory name) → `".symforge"`
+- `symforge` (binary name in strings) → `symforge`
+- `symforge` (crate name) → `symforge`
 
 ### 2b. Backward compatibility / migration
 In `src/discovery/mod.rs` or wherever project root discovery happens, add fallback logic:
-- Check for `.symforge/` first, fall back to `.tokenizor/` if it exists
-- Log a deprecation warning when falling back to `.tokenizor/`
+- Check for `.symforge/` first, fall back to `.symforge/` if it exists
+- Log a deprecation warning when falling back to `.symforge/`
 
 In `src/cli/init.rs` or the npm install script:
-- If `~/.tokenizor/` exists and `~/.symforge/` does not, copy/migrate the contents
-- Or at minimum, symlink `~/.symforge` → `~/.tokenizor` on first run
+- If `~/.symforge/` exists and `~/.symforge/` does not, copy/migrate the contents
+- Or at minimum, symlink `~/.symforge` → `~/.symforge` on first run
 
 ---
 
 ## Phase 3: MCP Server Identity
 
 ### 3a. Protocol — server name
-In `src/protocol/mod.rs`, update `ServerInfo` / server name from "tokenizor" to "symforge".
+In `src/protocol/mod.rs`, update `ServerInfo` / server name from "SymForge" to "symforge".
 
 ### 3b. Init scripts — all client registrations
 In `src/cli/init.rs`:
-- `"tokenizor"` MCP server name → `"symforge"` in all JSON/TOML configs
-- `mcpServers.tokenizor` → `mcpServers.symforge`
-- `mcp_servers.tokenizor` → `mcp_servers.symforge` (Codex TOML)
-- `mcp.tokenizor` → `mcp.symforge` (Kilo CLI)
-- Hook commands: `tokenizor-mcp.exe` → `symforge.exe` (or `symforge` on Unix)
-- `TOKENIZOR_TOOL_NAMES` constant → `SYMFORGE_TOOL_NAMES` (and update all `mcp__tokenizor__` prefixes to `mcp__symforge__`)
+- `"SymForge"` MCP server name → `"symforge"` in all JSON/TOML configs
+- `mcpServers.symforge` → `mcpServers.symforge`
+- `mcp_servers.symforge` → `mcp_servers.symforge` (Codex TOML)
+- `mcp.symforge` → `mcp.symforge` (Kilo CLI)
+- Hook commands: `symforge.exe` → `symforge.exe` (or `symforge` on Unix)
+- `SYMFORGE_TOOL_NAMES` constant → `SYMFORGE_TOOL_NAMES` (and update all `mcp__SYMFORGE__` prefixes to `mcp__symforge__`)
 - `KILO_ALWAYS_ALLOW` — tool names stay the same (no prefix), but verify
 
 ### 3c. Guidance blocks
 In `src/cli/init.rs` — `claude_guidance_block()`, `codex_guidance_block()`, `gemini_guidance_block()`:
-- Replace all "Tokenizor" → "SymForge"
-- Replace all "tokenizor" → "symforge"
+- Replace all "SymForge" → "SymForge"
+- Replace all "SymForge" → "symforge"
 
 ### 3d. Hook detection
-In `src/cli/init.rs` — `is_tokenizor_entry()`:
+In `src/cli/init.rs` — `is_SYMFORGE_entry()`:
 - Rename to `is_symforge_entry()`
-- Also detect legacy "tokenizor" entries for migration
-- Update `TOKENIZOR_GUIDANCE_START` / `TOKENIZOR_GUIDANCE_END` markers → `SYMFORGE_GUIDANCE_START` / `SYMFORGE_GUIDANCE_END`
+- Also detect legacy "SymForge" entries for migration
+- Update `SYMFORGE_GUIDANCE_START` / `SYMFORGE_GUIDANCE_END` markers → `SYMFORGE_GUIDANCE_START` / `SYMFORGE_GUIDANCE_END`
 
 ---
 
@@ -94,34 +94,34 @@ In `src/cli/init.rs` — `is_tokenizor_entry()`:
 
 ### 4a. Sidecar port files
 In `src/sidecar/port_file.rs`:
-- `.tokenizor/sidecar.port` → `.symforge/sidecar.port`
-- `.tokenizor/sidecar.pid` → `.symforge/sidecar.pid`
-- `.tokenizor/sidecar.session` → `.symforge/sidecar.session`
-- `ensure_tokenizor_dir()` → `ensure_symforge_dir()`
+- `.symforge/sidecar.port` → `.symforge/sidecar.port`
+- `.symforge/sidecar.pid` → `.symforge/sidecar.pid`
+- `.symforge/sidecar.session` → `.symforge/sidecar.session`
+- `ensure_SYMFORGE_dir()` → `ensure_symforge_dir()`
 
 ### 4b. Daemon metadata
 In `src/daemon.rs`:
-- `tokenizor` daemon directory references → `symforge`
+- `SymForge` daemon directory references → `symforge`
 - PID/port files under `SYMFORGE_HOME`
 
 ### 4c. Index persistence
 In `src/live_index/persist.rs`:
-- `.tokenizor/index.bin` → `.symforge/index.bin`
+- `.symforge/index.bin` → `.symforge/index.bin`
 
 ---
 
 ## Phase 5: Documentation
 
 ### 5a. README.md
-- Title: `# Tokenizor MCP` → `# SymForge`
-- All body text: "Tokenizor" → "SymForge", "tokenizor" → "symforge"
-- Install command: `npm install -g tokenizor-mcp` → `npm install -g symforge`
-- Binary references: `tokenizor-mcp` → `symforge`
-- Environment variables table: update all `TOKENIZOR_*` → `SYMFORGE_*`
-- Home directory: `~/.tokenizor` → `~/.symforge`
-- Project directory: `.tokenizor/` → `.symforge/`
-- Cargo package name: `tokenizor_agentic_mcp` → `symforge`
-- Remove or update the "Rename: Tokenizor → SymForge" section (it's now done)
+- Title: `# SymForge MCP` → `# SymForge`
+- All body text: "SymForge" → "SymForge", "SymForge" → "symforge"
+- Install command: `npm install -g symforge` → `npm install -g symforge`
+- Binary references: `symforge` → `symforge`
+- Environment variables table: update all `SYMFORGE_*` → `SYMFORGE_*`
+- Home directory: `~/.symforge` → `~/.symforge`
+- Project directory: `.symforge/` → `.symforge/`
+- Cargo package name: `symforge` → `symforge`
+- Remove or update the "Rename: SymForge → SymForge" section (it's now done)
 - Keep the "How we got here" naming story — it's good content
 
 ### 5b. CHANGELOG.md
@@ -129,20 +129,20 @@ In `src/live_index/persist.rs`:
 - Don't rewrite historical entries
 
 ### 5c. All docs/ files
-- Search and replace "Tokenizor" → "SymForge" and "tokenizor" → "symforge"
-- Be careful with historical references in planning docs — add "[formerly Tokenizor]" where appropriate
+- Search and replace "SymForge" → "SymForge" and "SymForge" → "symforge"
+- Be careful with historical references in planning docs — add "[formerly SymForge]" where appropriate
 
 ### 5d. tests/manual/
-- Update any test plans referencing tokenizor
+- Update any test plans referencing SymForge
 
 ---
 
 ## Phase 6: Tests
 
 ### 6a. Unit tests in src/
-- All string literals referencing "tokenizor" → "symforge"
-- Test function names containing "tokenizor" → "symforge"
-- Constants like `FAKE_BINARY` that reference tokenizor paths
+- All string literals referencing "SymForge" → "symforge"
+- Test function names containing "SymForge" → "symforge"
+- Constants like `FAKE_BINARY` that reference SymForge paths
 
 ### 6b. Integration tests in tests/
 - Same string literal and path updates
@@ -162,22 +162,22 @@ Run these in order. ALL must pass before the task is complete:
 cargo check
 
 # 2. No warnings about the rename (pre-existing warnings OK)
-cargo check 2>&1 | grep -i tokenizor  # should return nothing
+cargo check 2>&1 | grep -i SymForge  # should return nothing
 
 # 3. Unit tests pass
 cargo test --lib
 
-# 4. No remaining "tokenizor" references in source (except migration/compat)
-grep -r "tokenizor" src/ --include="*.rs" | grep -v "migration\|compat\|legacy\|fallback\|formerly\|TOKENIZOR_GUIDANCE_START\|TOKENIZOR_GUIDANCE_END\|is_tokenizor_entry\|is_symforge_entry"
+# 4. No remaining "SymForge" references in source (except migration/compat)
+grep -r "SymForge" src/ --include="*.rs" | grep -v "migration\|compat\|legacy\|fallback\|formerly\|SYMFORGE_GUIDANCE_START\|SYMFORGE_GUIDANCE_END\|is_SYMFORGE_entry\|is_symforge_entry"
 
 # 5. No remaining references in npm/
-grep -r "tokenizor" npm/ --include="*.js" --include="*.json" | grep -v "migration\|compat\|legacy"
+grep -r "SymForge" npm/ --include="*.js" --include="*.json" | grep -v "migration\|compat\|legacy"
 
 # 6. Build release binary
 cargo build --release
 ```
 
-The grep in step 4 may have legitimate hits for backward-compat code that detects old `.tokenizor/` paths — that's expected. Everything else should be clean.
+The grep in step 4 may have legitimate hits for backward-compat code that detects old `.symforge/` paths — that's expected. Everything else should be clean.
 
 ---
 
@@ -185,10 +185,10 @@ The grep in step 4 may have legitimate hits for backward-compat code that detect
 
 These steps happen AFTER the code rename is committed and verified:
 
-1. **GitHub repo rename**: Settings → General → `tokenizor_agentic_mcp` → `symforge`
+1. **GitHub repo rename**: Settings → General → `symforge` → `symforge`
 2. **Update local git remote**: `git remote set-url origin https://github.com/special-place-administrator/symforge.git`
 3. **Push**: `git push origin main`
-4. **npm deprecate**: `npm deprecate tokenizor-mcp "Renamed to symforge. Install with: npm install -g symforge"`
+4. **npm deprecate**: `npm deprecate symforge "Renamed to symforge. Install with: npm install -g symforge"`
 5. **Verify npm**: `npm view symforge` should show the new package
 
 **DO NOT** perform Phase 8. Stop after Phase 7 verification and report results. The human will handle the git/npm rename manually.
@@ -199,10 +199,10 @@ These steps happen AFTER the code rename is committed and verified:
 
 - **Do NOT rename the GitHub repo** — the human handles that
 - **Do NOT push to remote** — the human handles that
-- **DO preserve backward compatibility** for `.tokenizor/` → `.symforge/` migration
+- **DO preserve backward compatibility** for `.symforge/` → `.symforge/` migration
 - **DO keep** the naming story in README ("How we got here" section)
 - **DO update** the "How we got here" section to say the rename is complete
-- **Commit message format**: `feat!: rename Tokenizor → SymForge` (breaking change)
+- **Commit message format**: `feat!: rename SymForge → SymForge` (breaking change)
 - This is a **single coordinated commit** — all changes in one commit, not split across phases
 
 ---

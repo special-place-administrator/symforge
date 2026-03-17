@@ -5,7 +5,7 @@
 // in Phase 2 when the new response format is defined.
 #![cfg(feature = "v1")]
 
-use tokenizor_agentic_mcp::domain::{
+use symforge::domain::{
     BatchRetrievalRequest, BatchRetrievalResponseData, BatchRetrievalResultItem, CodeSliceRequest,
     FileOutcomeStatus, FileOutlineResponse, GetSymbolsResponse, IndexRunStatus, LanguageId,
     NextAction, OutlineSymbol, Provenance, RepoOutlineCoverage, RepoOutlineEntry,
@@ -129,7 +129,7 @@ fn test_result_envelope_is_constructable_with_generic_data() {
 
 #[test]
 fn test_search_result_item_includes_all_provenance_fields() {
-    use tokenizor_agentic_mcp::domain::LanguageId;
+    use symforge::domain::LanguageId;
 
     let item = SearchResultItem {
         relative_path: "src/main.rs".to_string(),

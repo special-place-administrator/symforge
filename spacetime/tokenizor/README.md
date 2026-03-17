@@ -1,6 +1,6 @@
 # SpacetimeDB Module Scaffold
 
-This directory is the expected local module path for the Tokenizor SpacetimeDB control plane.
+This directory is the expected local module path for the SymForge SpacetimeDB control plane.
 
 Current status:
 
@@ -10,6 +10,6 @@ Current status:
 
 Planned responsibility for this path:
 
-- hold the Tokenizor SpacetimeDB schema/module source
+- hold the SymForge SpacetimeDB schema/module source
 - support local `init` and future `migrate` workflows
 - anchor schema versioning alongside the MCP server

@@ -172,7 +172,7 @@ use crate::sidecar::handlers::{
 };
 use crate::sidecar::{SidecarState, TokenStats};
 
-use super::TokenizorServer;
+use super::SymForgeServer;
 
 // ─── Input parameter structs ────────────────────────────────────────────────
 
@@ -1340,7 +1340,7 @@ fn validate_chunk_mode(input: &GetFileContentInput) -> Result<search::FileConten
     ))
 }
 
-fn sidecar_state_for_server(server: &TokenizorServer) -> SidecarState {
+fn sidecar_state_for_server(server: &SymForgeServer) -> SidecarState {
     SidecarState {
         index: Arc::clone(&server.index),
         token_stats: server.token_stats.clone().unwrap_or_else(TokenStats::new),
@@ -1402,7 +1402,7 @@ fn loading_guard_message_from_published(
 }
 
 #[tool_router(vis = "pub(crate)")]
-impl TokenizorServer {
+impl SymForgeServer {
     /// Look up symbol(s) by file path and name. Single mode: provide path + name for one symbol.
     /// Batch mode: provide targets[] array for multiple symbols or code slices in one call.
     /// NOT for finding symbols by name (use search_symbols first).
@@ -2236,9 +2236,9 @@ impl TokenizorServer {
     }
 
     /// Diagnostic: index status, file/symbol counts, load time, watcher state, token savings,
-    /// git temporal status. Always responds even during loading. Use to verify Tokenizor is working.
+    /// git temporal status. Always responds even during loading. Use to verify SymForge is working.
     #[tool(
-        description = "Diagnostic: index status, file/symbol counts, load time, watcher state, token savings, git temporal status. Always responds even during loading. Use to verify Tokenizor is working."
+        description = "Diagnostic: index status, file/symbol counts, load time, watcher state, token savings, git temporal status. Always responds even during loading. Use to verify SymForge is working."
     )]
     pub(crate) async fn health(&self) -> String {
         if let Some(result) = self.proxy_tool_call_without_params("health").await {
@@ -3025,7 +3025,7 @@ impl TokenizorServer {
             };
             if !allowed {
                 return Some(format!(
-                    "{tool_name}: This file type ({language}) does not support structural edits via Tokenizor. Use edit_within_symbol for scoped text replacements, or the built-in Edit tool for raw text edits."
+                    "{tool_name}: This file type ({language}) does not support structural edits via SymForge. Use edit_within_symbol for scoped text replacements, or the built-in Edit tool for raw text edits."
                 ));
             }
         }
@@ -3478,7 +3478,7 @@ mod tests {
 
     use crate::domain::{LanguageId, ReferenceKind, ReferenceRecord, SymbolKind, SymbolRecord};
     use crate::live_index::store::{CircuitBreakerState, IndexedFile, LiveIndex, ParseStatus};
-    use crate::protocol::TokenizorServer;
+    use crate::protocol::SymForgeServer;
     use rmcp::handler::server::wrapper::Parameters;
     use tempfile::TempDir;
 
@@ -3618,12 +3618,12 @@ mod tests {
         }
     }
 
-    fn make_server_with_root(index: LiveIndex, repo_root: Option<PathBuf>) -> TokenizorServer {
+    fn make_server_with_root(index: LiveIndex, repo_root: Option<PathBuf>) -> SymForgeServer {
         use crate::watcher::WatcherInfo;
         use std::sync::Mutex;
         let shared = crate::live_index::SharedIndexHandle::shared(index);
         let watcher_info = Arc::new(Mutex::new(WatcherInfo::default()));
-        TokenizorServer::new(
+        SymForgeServer::new(
             shared,
             "test_project".to_string(),
             watcher_info,
@@ -3632,7 +3632,7 @@ mod tests {
         )
     }
 
-    fn make_server(index: LiveIndex) -> TokenizorServer {
+    fn make_server(index: LiveIndex) -> SymForgeServer {
         make_server_with_root(index, None)
     }
 
@@ -3704,9 +3704,9 @@ mod tests {
         run_git(dir.path(), &["init", "-q"]);
         run_git(
             dir.path(),
-            &["config", "user.email", "tokenizor-tests@example.com"],
+            &["config", "user.email", "symforge-tests@example.com"],
         );
-        run_git(dir.path(), &["config", "user.name", "Tokenizor Tests"]);
+        run_git(dir.path(), &["config", "user.name", "SymForge Tests"]);
         dir
     }
 
@@ -3834,7 +3834,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_repo_map_full_proxies_to_daemon_session() {
         let daemon_home = TempDir::new().expect("daemon home");
-        let _env_guard = EnvVarGuard::set_path("TOKENIZOR_HOME", daemon_home.path());
+        let _env_guard = EnvVarGuard::set_path("SYMFORGE_HOME", daemon_home.path());
         let project = TempDir::new().expect("project dir");
         fs::create_dir_all(project.path().join("src")).expect("src dir");
         fs::write(project.path().join("src").join("main.rs"), "fn main() {}\n")
@@ -3866,7 +3866,7 @@ mod tests {
             opened.session_id,
             opened.project_name,
         );
-        let server = TokenizorServer::new_daemon_proxy(daemon_client);
+        let server = SymForgeServer::new_daemon_proxy(daemon_client);
 
         let result = server
             .get_repo_map(Parameters(super::GetRepoMapInput {
@@ -6518,9 +6518,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_explore_exact_concept_no_remainder() {
-        let content = b"pub enum TokenizorError {}\n";
+        let content = b"pub enum SymForgeError {}\n";
         let sym = SymbolRecord {
-            name: "TokenizorError".to_string(),
+            name: "SymForgeError".to_string(),
             kind: SymbolKind::Enum,
             depth: 0,
             sort_order: 0,
@@ -6539,7 +6539,7 @@ mod tests {
             }))
             .await;
         assert!(
-            result.contains("TokenizorError"),
+            result.contains("SymForgeError"),
             "exact concept should find error symbols: {result}"
         );
     }
@@ -7628,7 +7628,7 @@ mod tests {
     // ─── Edit tool integration tests ─────────────────────────────────────────
 
     /// Helper: write a file to disk and build a server with it indexed.
-    fn setup_edit_test(original: &[u8]) -> (TempDir, TokenizorServer, PathBuf) {
+    fn setup_edit_test(original: &[u8]) -> (TempDir, SymForgeServer, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
         let src_dir = dir.path().join("src");
         std::fs::create_dir_all(&src_dir).unwrap();
@@ -7788,7 +7788,7 @@ mod tests {
     #[test]
     fn test_check_edit_capability_blocks_structural_for_frontend() {
         // replace_symbol_body requires StructuralEditSafe; Html is TextEditSafe → blocked
-        let warning = TokenizorServer::check_edit_capability(
+        let warning = SymForgeServer::check_edit_capability(
             &crate::domain::LanguageId::Html,
             crate::parsing::config_extractors::EditCapability::StructuralEditSafe,
             "replace_symbol_body",
@@ -7808,7 +7808,7 @@ mod tests {
     #[test]
     fn test_check_edit_capability_allows_text_edit_for_frontend() {
         // edit_within_symbol requires TextEditSafe; Css is TextEditSafe → allowed
-        let warning = TokenizorServer::check_edit_capability(
+        let warning = SymForgeServer::check_edit_capability(
             &crate::domain::LanguageId::Css,
             crate::parsing::config_extractors::EditCapability::TextEditSafe,
             "edit_within_symbol",

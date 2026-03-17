@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # ============================================================================
-# Tokenizor MCP — Developer Setup
+# SymForge — Developer Setup
 # ============================================================================
 # Usage: bash scripts/setup.sh [--client claude|codex|all] [--skip-build]
 #
 # This script is for local developer setup only.
-# It builds the current binary and runs `tokenizor init` for the selected client.
+# It builds the current binary and runs `symforge init` for the selected client.
 # Release and publish operations are handled separately by:
 #   python execution/release_ops.py guide
 # ============================================================================
@@ -66,7 +66,7 @@ case "$(uname -s)" in
     *) BIN_EXT="" ;;
 esac
 
-RELEASE_BINARY="target/release/tokenizor_agentic_mcp${BIN_EXT}"
+RELEASE_BINARY="target/release/symforge${BIN_EXT}"
 
 step "Checking Rust toolchain"
 if command -v rustc >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1; then
@@ -77,7 +77,7 @@ else
 fi
 
 if [[ "$SKIP_BUILD" != true ]]; then
-    step "Building Tokenizor (release mode)"
+    step "Building SymForge (release mode)"
     cargo build --release
 else
     info "Skipping build because --skip-build was provided."
@@ -91,7 +91,7 @@ fi
 BINARY_ABS_PATH="$(cd "$(dirname "$RELEASE_BINARY")" && pwd)/$(basename "$RELEASE_BINARY")"
 ok "Binary: $BINARY_ABS_PATH"
 
-step "Running tokenizor init"
+step "Running symforge init"
 "$RELEASE_BINARY" init --client "$CLIENT"
 
 echo ""

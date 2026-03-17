@@ -206,15 +206,15 @@ fn test_gitignore_vendor_classified_as_noise() {
     fs::write(dir.path().join("src/main.rs"), "fn main() {}").unwrap();
 
     // Load gitignore and classify
-    let gi = tokenizor::discovery::load_gitignore(dir.path()).unwrap();
-    let policy = tokenizor::live_index::search::NoisePolicy::hide_classified_noise();
+    let gi = SymForge::discovery::load_gitignore(dir.path()).unwrap();
+    let policy = SymForge::live_index::search::NoisePolicy::hide_classified_noise();
     assert_eq!(
         policy.classify_path("vendor/lib.js", Some(&gi)),
-        tokenizor::live_index::search::NoiseClass::Vendor,
+        SymForge::live_index::search::NoiseClass::Vendor,
     );
     assert_eq!(
         policy.classify_path("src/main.rs", Some(&gi)),
-        tokenizor::live_index::search::NoiseClass::None,
+        SymForge::live_index::search::NoiseClass::None,
     );
 }
 
@@ -225,12 +225,12 @@ fn test_gitignore_negation_exempts_file() {
     fs::create_dir_all(dir.path().join("vendor")).unwrap();
     fs::write(dir.path().join("vendor/important.js"), "// keep").unwrap();
 
-    let gi = tokenizor::discovery::load_gitignore(dir.path()).unwrap();
-    let policy = tokenizor::live_index::search::NoisePolicy::hide_classified_noise();
+    let gi = SymForge::discovery::load_gitignore(dir.path()).unwrap();
+    let policy = SymForge::live_index::search::NoisePolicy::hide_classified_noise();
     // Negated file should NOT be classified as noise
     assert_eq!(
         policy.classify_path("vendor/important.js", Some(&gi)),
-        tokenizor::live_index::search::NoiseClass::None,
+        SymForge::live_index::search::NoiseClass::None,
     );
 }
 ```
@@ -907,7 +907,7 @@ Unchanged shows symbol count + suggestion to use what_changed."
 
 - [ ] **Step 1: Find signature rendering**
 
-Search for the signature formatting logic. Use Tokenizor:
+Search for the signature formatting logic. Use SymForge:
 ```
 search_text(query="verbosity.*signature", glob="src/protocol/format.rs")
 ```

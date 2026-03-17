@@ -2,12 +2,12 @@
 setlocal
 
 :: ============================================================================
-:: Tokenizor MCP - Developer Setup
+:: SymForge — Developer Setup
 :: ============================================================================
 :: Usage: setup.bat [--client claude|codex|all] [--skip-build]
 ::
 :: This script is for local developer setup only.
-:: It builds the current binary and runs `tokenizor init` for the selected client.
+:: It builds the current binary and runs `symforge init` for the selected client.
 :: Release and publish operations are handled separately by:
 ::   python execution\release_ops.py guide
 :: ============================================================================
@@ -51,7 +51,7 @@ set "PROJECT_ROOT=%~dp0"
 if "%PROJECT_ROOT:~-1%"=="\" set "PROJECT_ROOT=%PROJECT_ROOT:~0,-1%"
 cd /d "%PROJECT_ROOT%"
 
-set "BINARY=target\release\tokenizor_agentic_mcp.exe"
+set "BINARY=target\release\symforge.exe"
 
 echo.
 echo ==^> Checking Rust toolchain
@@ -64,7 +64,7 @@ for /f "delims=" %%v in ('rustc --version') do echo [OK]    Rust: %%v
 
 if "%SKIP_BUILD%"=="0" (
     echo.
-    echo ==^> Building Tokenizor (release mode)
+    echo ==^> Building SymForge (release mode)
     cargo build --release
     if errorlevel 1 (
         echo [ERROR] Build failed
@@ -83,10 +83,10 @@ for %%F in ("%BINARY%") do set "BINARY_ABS=%%~fF"
 echo [OK]    Binary: %BINARY_ABS%
 
 echo.
-echo ==^> Running tokenizor init
+echo ==^> Running symforge init
 "%BINARY_ABS%" init --client %CLIENT%
 if errorlevel 1 (
-    echo [ERROR] tokenizor init failed
+    echo [ERROR] symforge init failed
     exit /b 1
 )
 

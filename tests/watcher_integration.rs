@@ -21,8 +21,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tempfile::TempDir;
-use tokenizor_agentic_mcp::live_index::LiveIndex;
-use tokenizor_agentic_mcp::watcher::{WatcherInfo, WatcherState, run_watcher};
+use symforge::live_index::LiveIndex;
+use symforge::watcher::{WatcherInfo, WatcherState, run_watcher};
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -42,7 +42,7 @@ fn write_file(dir: &Path, name: &str, content: &str) {
 /// Returns the Arc<Mutex<WatcherInfo>> so tests can inspect watcher state.
 async fn spawn_watcher(
     dir: &TempDir,
-    shared: &tokenizor_agentic_mcp::live_index::SharedIndex,
+    shared: &symforge::live_index::SharedIndex,
 ) -> Arc<Mutex<WatcherInfo>> {
     let watcher_info = Arc::new(Mutex::new(WatcherInfo::default()));
     let root = dir.path().to_path_buf();
@@ -337,8 +337,8 @@ async fn test_watcher_enoent_handled_gracefully() {
 #[test]
 fn test_single_file_reparse_under_50ms() {
     use std::time::Instant;
-    use tokenizor_agentic_mcp::domain::LanguageId;
-    use tokenizor_agentic_mcp::parsing;
+    use symforge::domain::LanguageId;
+    use symforge::parsing;
 
     // A moderate Rust function (~20 lines)
     let source = r#"

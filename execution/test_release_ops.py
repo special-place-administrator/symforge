@@ -13,7 +13,7 @@ class ReleaseOpsTests(unittest.TestCase):
 
     def test_normalize_release_tag_rejects_noncanonical_shape(self) -> None:
         with self.assertRaises(release_ops.ReleaseOpsError):
-            release_ops.normalize_release_tag("tokenizor_agentic_mcp-v0.3.12")
+            release_ops.normalize_release_tag("symforge-v0.3.12")
 
     def test_normalize_release_tag_rejects_blank_input(self) -> None:
         with self.assertRaises(release_ops.ReleaseOpsError):
@@ -29,15 +29,15 @@ class ReleaseOpsTests(unittest.TestCase):
     def test_parse_github_repo_slug_supports_https_and_ssh(self) -> None:
         self.assertEqual(
             release_ops.parse_github_repo_slug(
-                "https://github.com/special-place-administrator/tokenizor_agentic_mcp.git"
+                "https://github.com/special-place-administrator/symforge.git"
             ),
-            "special-place-administrator/tokenizor_agentic_mcp",
+            "special-place-administrator/symforge",
         )
         self.assertEqual(
             release_ops.parse_github_repo_slug(
-                "git@github.com:special-place-administrator/tokenizor_agentic_mcp.git"
+                "git@github.com:special-place-administrator/symforge.git"
             ),
-            "special-place-administrator/tokenizor_agentic_mcp",
+            "special-place-administrator/symforge",
         )
 
     def test_resolve_executable_prefers_shutil_lookup(self) -> None:

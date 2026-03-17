@@ -9,7 +9,7 @@ Validated against Angular 21 template features and PrimeNG 21 theming direction;
 
 ## Problem
 
-Tokenizor indexes 16 source languages and 5 config formats, but does not support frontend asset files: `.html` (Angular templates), `.css`, and `.scss`. These are core to Angular/PrimeNG development — Angular templates contain component structure and control flow, CSS/SCSS contain theming via design tokens and custom properties. Without indexing, LLMs fall back to raw file reads for all frontend styling and template work.
+SymForge indexes 16 source languages and 5 config formats, but does not support frontend asset files: `.html` (Angular templates), `.css`, and `.scss`. These are core to Angular/PrimeNG development — Angular templates contain component structure and control flow, CSS/SCSS contain theming via design tokens and custom properties. Without indexing, LLMs fall back to raw file reads for all frontend styling and template work.
 
 ## Goal
 

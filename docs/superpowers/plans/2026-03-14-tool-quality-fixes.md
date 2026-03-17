@@ -326,7 +326,7 @@ fn test_build_insert_before_double_newline_without_doc_comments() {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cargo test -p tokenizor_agentic_mcp --lib -- edit::tests::test_build_insert_before_double_newline -v`
+Run: `cargo test -p symforge --lib -- edit::tests::test_build_insert_before_double_newline -v`
 Expected: FAIL — currently uses `\n` not `\n\n`
 
 - [ ] **Step 3: Implement the conditional separator**

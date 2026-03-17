@@ -20,7 +20,7 @@ use crate::live_index::store::{
 
 const CURRENT_VERSION: u32 = 3;
 const INDEX_FILENAME: &str = "index.bin";
-const TOKENIZOR_DIR: &str = ".tokenizor";
+const SYMFORGE_DIR: &str = ".symforge";
 
 // ── Snapshot types ────────────────────────────────────────────────────────────
 
@@ -66,7 +66,7 @@ pub struct StatCheckResult {
 
 // ── Public API ─────────────────────────────────────────────────────────────────
 
-/// Serialize `index` to `.tokenizor/index.bin` inside `project_root`.
+/// Serialize `index` to `.symforge/index.bin` inside `project_root`.
 ///
 /// Uses an atomic write pattern (write to tmp, then rename) so a crash during
 /// write never leaves a partially-written file.
@@ -106,8 +106,8 @@ fn write_snapshot(snapshot: IndexSnapshot, project_root: &Path) -> anyhow::Resul
     // Serialize with postcard
     let bytes = postcard::to_stdvec(&snapshot)?;
 
-    // Ensure .tokenizor directory exists
-    let dir = project_root.join(TOKENIZOR_DIR);
+    // Ensure .symforge directory exists
+    let dir = project_root.join(SYMFORGE_DIR);
     std::fs::create_dir_all(&dir)?;
 
     // Atomic write: tmp file then rename
@@ -120,20 +120,20 @@ fn write_snapshot(snapshot: IndexSnapshot, project_root: &Path) -> anyhow::Resul
     info!(
         bytes = bytes.len(),
         files = snapshot.files.len(),
-        "index serialized to .tokenizor/index.bin"
+        "index serialized to .symforge/index.bin"
     );
 
     Ok(())
 }
 
-/// Load an `IndexSnapshot` from `.tokenizor/index.bin`.
+/// Load an `IndexSnapshot` from `.symforge/index.bin`.
 ///
 /// Returns `None` (not panic) on:
 /// - file not found (first run or crash)
 /// - version mismatch (schema upgrade)
 /// - corrupt / truncated bytes
 pub fn load_snapshot(project_root: &Path) -> Option<IndexSnapshot> {
-    let path = project_root.join(TOKENIZOR_DIR).join(INDEX_FILENAME);
+    let path = project_root.join(SYMFORGE_DIR).join(INDEX_FILENAME);
 
     let bytes = match std::fs::read(&path) {
         Ok(b) => b,
@@ -888,7 +888,7 @@ mod tests {
             files: HashMap::new(),
         };
         let bytes = postcard::to_stdvec(&snapshot).unwrap();
-        let dir = tmp.path().join(".tokenizor");
+        let dir = tmp.path().join(".symforge");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("index.bin"), &bytes).unwrap();
 
@@ -902,7 +902,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
 
         // Write random garbage
-        let dir = tmp.path().join(".tokenizor");
+        let dir = tmp.path().join(".symforge");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("index.bin"),
@@ -925,7 +925,7 @@ mod tests {
         let index = make_live_index_with_files(vec![("a.rs", b"fn foo() {}")]);
         serialize_index(&index, tmp.path()).expect("serialize should succeed");
 
-        let bin_path = tmp.path().join(".tokenizor").join("index.bin");
+        let bin_path = tmp.path().join(".symforge").join("index.bin");
         let full_bytes = std::fs::read(&bin_path).unwrap();
         let truncated = &full_bytes[..full_bytes.len() / 2];
         std::fs::write(&bin_path, truncated).unwrap();
@@ -940,7 +940,7 @@ mod tests {
     #[test]
     fn test_missing_file_returns_none() {
         let tmp = TempDir::new().unwrap();
-        // No .tokenizor/index.bin exists
+        // No .symforge/index.bin exists
         let result = load_snapshot(tmp.path());
         assert!(result.is_none(), "missing file must return None");
     }
@@ -1185,15 +1185,15 @@ mod tests {
     // ── Snapshot atomicity test ───────────────────────────────────────────────
 
     #[test]
-    fn test_serialize_creates_tokenizor_dir() {
+    fn test_serialize_creates_symforge_dir() {
         let tmp = TempDir::new().unwrap();
         let index = make_live_index_with_files(vec![("src/lib.rs", b"fn lib() {}")]);
 
         serialize_index(&index, tmp.path()).expect("serialize should succeed");
 
         assert!(
-            tmp.path().join(".tokenizor").join("index.bin").exists(),
-            ".tokenizor/index.bin should be created"
+            tmp.path().join(".symforge").join("index.bin").exists(),
+            ".symforge/index.bin should be created"
         );
     }
 
@@ -1206,8 +1206,8 @@ mod tests {
         serialize_index(&index, tmp.path()).expect("first serialize should succeed");
         serialize_index(&index, tmp.path()).expect("second serialize should succeed");
 
-        assert!(tmp.path().join(".tokenizor").join("index.bin").exists());
+        assert!(tmp.path().join(".symforge").join("index.bin").exists());
         // No tmp file should remain
-        assert!(!tmp.path().join(".tokenizor").join("index.bin.tmp").exists());
+        assert!(!tmp.path().join(".symforge").join("index.bin.tmp").exists());
     }
 }

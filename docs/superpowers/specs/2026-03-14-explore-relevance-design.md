@@ -5,7 +5,7 @@
 The `explore` tool is the entry point for codebase discovery but the weakest tool in the suite. Two independent reviews (both 8.5/10) identified it as the biggest improvement opportunity.
 
 Specific failures:
-- "error handling" returns `stopDaemonProcesses` (npm script) and `getInstalledVersion`, misses `src/error.rs` and `TokenizorError`
+- "error handling" returns `stopDaemonProcesses` (npm script) and `getInstalledVersion`, misses `src/error.rs` and `SymForgeError`
 - "file watcher debounce" returns `OutputLimits` (output formatting struct), misses `BurstTracker` and `WatcherInfo`
 - The tool finds code that *contains* patterns (try/catch, unwrap), not code *about* the concept
 

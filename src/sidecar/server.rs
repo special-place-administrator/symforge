@@ -15,7 +15,7 @@ use crate::live_index::store::SharedIndex;
 
 /// Spawn the HTTP sidecar.
 ///
-/// 1. Reads `TOKENIZOR_SIDECAR_BIND` env var (default `"127.0.0.1"`).
+/// 1. Reads `SYMFORGE_SIDECAR_BIND` env var (default `"127.0.0.1"`).
 /// 2. Calls `port_file::check_stale(bind_host)` to clean up any stale files.
 /// 3. Binds `TcpListener::bind("{bind_host}:0")` (OS assigns the port).
 /// 4. Writes port and PID files via `port_file`.
@@ -27,7 +27,7 @@ use crate::live_index::store::SharedIndex;
 pub async fn spawn_sidecar(index: SharedIndex, bind_host: &str) -> anyhow::Result<SidecarHandle> {
     // Allow overriding bind host via env var.
     let resolved_host =
-        std::env::var("TOKENIZOR_SIDECAR_BIND").unwrap_or_else(|_| bind_host.to_string());
+        std::env::var("SYMFORGE_SIDECAR_BIND").unwrap_or_else(|_| bind_host.to_string());
 
     // Clean up stale files from a previous crashed sidecar.
     port_file::check_stale(&resolved_host);

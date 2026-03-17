@@ -597,7 +597,7 @@ fn truncate_message(msg: &str, max_len: usize) -> String {
 // strings into `compute_from_log`. Compiled only in test builds.
 
 #[cfg(test)]
-const COMMIT_DELIMITER: &str = "TOKENIZOR_GIT_TEMPORAL_DELIM";
+const COMMIT_DELIMITER: &str = "SYMFORGE_GIT_TEMPORAL_DELIM";
 
 #[cfg(test)]
 fn parse_git_log(raw: &str, now_unix: u64) -> Vec<ParsedCommit> {

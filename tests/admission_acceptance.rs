@@ -8,7 +8,7 @@
 use std::fs;
 use std::path::Path;
 use tempfile::tempdir;
-use tokenizor_agentic_mcp::live_index::LiveIndex;
+use symforge::live_index::LiveIndex;
 
 // ---------------------------------------------------------------------------
 // Helper
@@ -122,7 +122,7 @@ fn test_admission_tier_acceptance() {
     }
 
     // ── Verify skip reasons ───────────────────────────────────────────────
-    use tokenizor_agentic_mcp::domain::index::SkipReason;
+    use symforge::domain::index::SkipReason;
 
     // A denylisted extension
     let ckpt = index
@@ -172,8 +172,8 @@ fn test_admission_tier_acceptance() {
 /// files in tests.
 #[test]
 fn test_admission_tier3_classify_direct() {
-    use tokenizor_agentic_mcp::discovery::classify_admission;
-    use tokenizor_agentic_mcp::domain::index::{AdmissionTier, SkipReason};
+    use symforge::discovery::classify_admission;
+    use symforge::domain::index::{AdmissionTier, SkipReason};
 
     // Plain text file, but size exceeds 100 MB ceiling → HardSkip
     let decision = classify_admission(Path::new("huge.log"), 150 * 1024 * 1024, None);

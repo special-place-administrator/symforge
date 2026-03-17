@@ -7,7 +7,7 @@
 
 ## What We're Building
 
-Add edit tools to Tokenizor that accept **symbol addresses** instead of requiring the LLM to read file contents. The index resolves positions server-side. The LLM names the target symbol and provides new content — never reads the raw file.
+Add edit tools to SymForge that accept **symbol addresses** instead of requiring the LLM to read file contents. The index resolves positions server-side. The LLM names the target symbol and provides new content — never reads the raw file.
 
 ### Tools (Tier 1 — Single-file)
 - **replace_symbol_body** — Replace a symbol's entire body by name + path
@@ -53,7 +53,7 @@ Add edit tools to Tokenizor that accept **symbol addresses** instead of requirin
 - Sidecar state: `sidecar_state_for_server(self)` for handlers that need the sidecar
 - Mutation tools exist: `analyze_file_impact` reads from disk + calls `update_file()`
 - `loading_guard!` macro checks index is loaded before proceeding
-- Daemon registration: tools auto-discovered via the `#[tool]` macro on `TokenizorServer` impl
+- Daemon registration: tools auto-discovered via the `#[tool]` macro on `SymForgeServer` impl
 
 ### Symbol Disambiguation
 - `resolve_symbol_selector()` in `query.rs:314-348` — resolves name+kind+line to exact symbol

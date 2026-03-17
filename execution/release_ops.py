@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Operator entrypoints for Tokenizor release and publish workflow."""
+"""Operator entrypoints for SymForge release and publish workflow."""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ def normalize_release_tag(tag: str) -> str:
 
 
 def guide_text() -> str:
-    return """Tokenizor release operator guide
+    return """SymForge release operator guide
 
 Fresh terminal commands:
   python execution/release_ops.py status
@@ -325,7 +325,7 @@ def cmd_rebuild(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Canonical operator commands for Tokenizor release and publish workflow."
+        description="Canonical operator commands for SymForge release and publish workflow."
     )
     parser.add_argument(
         "--root",

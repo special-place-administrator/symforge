@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This repository is `tokenizor_agentic_mcp`.
+This repository is `symforge`.
 
 It is a Rust-native, coding-first MCP project for code indexing, retrieval, and recovery.
 
@@ -209,9 +209,9 @@ As of 2026-03-06:
 
 ## Tooling Preference
 
-When Tokenizor MCP is available, prefer its tools for repository and code inspection before falling back to direct file reads.
+When SymForge MCP is available, prefer its tools for repository and code inspection before falling back to direct file reads.
 
-Use Tokenizor first for:
+Use SymForge first for:
 - symbol discovery
 - text/code search
 - file outlines
@@ -228,11 +228,11 @@ Preferred tools:
 - `get_symbols`
 
 Default rule:
-- use Tokenizor to narrow and target code inspection first
+- use SymForge to narrow and target code inspection first
 - use direct file reads only when exact full-file source or surrounding context is still required after tool-based narrowing
 
 Direct file reads are still appropriate for:
 - exact document text in `docs/` or planning artifacts when literal wording matters
 - configuration files where exact raw contents are the point of inspection
 
-Do not default to broad raw file reads for source-code inspection when Tokenizor can answer the question more directly.
+Do not default to broad raw file reads for source-code inspection when SymForge can answer the question more directly.

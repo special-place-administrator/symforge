@@ -1,21 +1,21 @@
-# LLM Tool Preference Strategy: Making Tokenizor the Path of Least Resistance
+# LLM Tool Preference Strategy: Making SymForge the Path of Least Resistance
 
 **Date**: 2026-03-17  
-**Goal**: When users install Tokenizor MCP, every LLM client — Claude, Codex, Gemini, Kilo Code, Windsurf, Cursor, etc. — should **naturally prefer** Tokenizor tools over raw file reads, with zero ongoing configuration required after initial `tokenizor init`.
+**Goal**: When users install SymForge MCP, every LLM client — Claude, Codex, Gemini, Kilo Code, Windsurf, Cursor, etc. — should **naturally prefer** SymForge tools over raw file reads, with zero ongoing configuration required after initial `SymForge init`.
 
 ---
 
 ## Executive Summary
 
-Tokenizor already has strong foundations for tool preference steering. The current system uses 5 complementary vectors:
+SymForge already has strong foundations for tool preference steering. The current system uses 5 complementary vectors:
 
 1. **Tool descriptions** with "NOT for X" anti-patterns and "Start here" directives
 2. **Init guidance blocks** written to `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`
-3. **Hook enrichment** that intercepts `Read`/`Grep`/`Edit`/`Glob` and suggests Tokenizor alternatives
+3. **Hook enrichment** that intercepts `Read`/`Grep`/`Edit`/`Glob` and suggests SymForge alternatives
 4. **`alwaysAllow`** lists for frictionless tool invocation
 5. **Token savings footers** appended to tool responses
 
-However, there are significant gaps. This strategy identifies concrete improvements across all 5 vectors plus new vectors to establish Tokenizor as the **default code inspection tool** regardless of which LLM client is being used.
+However, there are significant gaps. This strategy identifies concrete improvements across all 5 vectors plus new vectors to establish SymForge as the **default code inspection tool** regardless of which LLM client is being used.
 
 ---
 
@@ -39,7 +39,7 @@ However, there are significant gaps. This strategy identifies concrete improveme
 | Tool descriptions don't mention token savings or efficiency | LLMs don't know the cost benefit | **Critical** |
 | Guidance blocks are too brief — 3 bullet points | Doesn't give enough behavioral rules | **Critical** |
 | No Kilo Code init support | Kilo is a growing client, completely unsupported | **High** |
-| Edit tools missing from `TOKENIZOR_TOOL_NAMES` | `replace_symbol_body`, `edit_within_symbol`, etc. require manual approval | **High** |
+| Edit tools missing from `SYMFORGE_TOOL_NAMES` | `replace_symbol_body`, `edit_within_symbol`, etc. require manual approval | **High** |
 | Hook enrichment is Claude-only | Codex, Gemini, Kilo get no interception | **Medium** |
 | No "tool routing guide" in tool descriptions | LLMs don't know which tool to pick for what task | **Medium** |
 | `get_file_content` description doesn't strongly discourage full-file reads | LLMs still default to reading entire files | **Medium** |
@@ -136,8 +136,8 @@ Similarly for `search_text`:
 The guidance blocks written to `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, and `~/.gemini/GEMINI.md` are minimal — just 3-4 bullet points:
 
 ```markdown
-## Tokenizor MCP
-- Prefer the Tokenizor MCP for codebase navigation when the `tokenizor` server is connected.
+## SymForge MCP
+- Prefer the SymForge MCP for codebase navigation when the `SymForge` server is connected.
 - Start with `get_repo_map`, `get_repo_outline`, `get_file_context`, or `get_symbol_context` before broad raw file scans.
 - Use `analyze_file_impact` after edits and `what_changed` when resuming work.
 ```
@@ -149,10 +149,10 @@ The guidance should be assertive but not annoying. The key insight: **LLMs follo
 **Proposed expanded guidance block** (shared across all clients, customized where needed):
 
 ```markdown
-## Tokenizor MCP
+## SymForge MCP
 
-When Tokenizor MCP is connected, use it as your PRIMARY tool for all code navigation and inspection.
-Tokenizor tools are typically 60-90% more token-efficient than raw file reads.
+When SymForge MCP is connected, use it as your PRIMARY tool for all code navigation and inspection.
+SymForge tools are typically 60-90% more token-efficient than raw file reads.
 
 ### Decision rules:
 
@@ -171,7 +171,7 @@ Tokenizor tools are typically 60-90% more token-efficient than raw file reads.
 ### When raw file reads are still appropriate:
 - Documentation files (README, docs/) where exact wording matters
 - Configuration files (Cargo.toml, package.json) where raw content is the goal
-- Non-source files that Tokenizor doesn't index
+- Non-source files that SymForge doesn't index
 
 ### Edit tools (when available):
 - `replace_symbol_body` — replace an entire function/class by name (no need to read first)
@@ -196,9 +196,9 @@ Not all clients handle guidance the same way:
 
 ### Recommendation B3: Write Project-Level Guidance Automatically
 
-In addition to global `~/.client/` guidance, `tokenizor init` should detect the project root and write/update a **project-level guidance file** that works across clients.
+In addition to global `~/.client/` guidance, `SymForge init` should detect the project root and write/update a **project-level guidance file** that works across clients.
 
-**Strategy**: Write a `.tokenizor/TOOL_GUIDANCE.md` file and symlink or include it from client-specific rule files.
+**Strategy**: Write a `.symforge/TOOL_GUIDANCE.md` file and symlink or include it from client-specific rule files.
 
 Better yet: write guidance into each client's project-level file format:
 - `.claude/settings.local.json` or project `CLAUDE.md` 
@@ -271,7 +271,7 @@ This is your first session. Recommended workflow:
 
 ### Current State
 
-`TOKENIZOR_TOOL_NAMES` in `init.rs` lists 24 tools for `allowedTools` in Claude settings. These are all read-only tools. Notably **missing** are the edit tools:
+`SYMFORGE_TOOL_NAMES` in `init.rs` lists 24 tools for `allowedTools` in Claude settings. These are all read-only tools. Notably **missing** are the edit tools:
 - `replace_symbol_body`
 - `insert_symbol`
 - `delete_symbol`
@@ -288,16 +288,16 @@ Edit tools should be auto-approved because:
 2. Requiring approval friction makes LLMs prefer the built-in tool
 3. They have safety guarantees (symbol resolution, auto-indentation) the built-in doesn't
 
-**Add to `TOKENIZOR_TOOL_NAMES`**:
+**Add to `SYMFORGE_TOOL_NAMES`**:
 ```rust
-"mcp__tokenizor__replace_symbol_body",
-"mcp__tokenizor__insert_symbol",
-"mcp__tokenizor__delete_symbol",
-"mcp__tokenizor__edit_within_symbol",
-"mcp__tokenizor__batch_edit",
-"mcp__tokenizor__batch_rename",
-"mcp__tokenizor__batch_insert",
-"mcp__tokenizor__explore",
+"mcp__SYMFORGE__replace_symbol_body",
+"mcp__SYMFORGE__insert_symbol",
+"mcp__SYMFORGE__delete_symbol",
+"mcp__SYMFORGE__edit_within_symbol",
+"mcp__SYMFORGE__batch_edit",
+"mcp__SYMFORGE__batch_rename",
+"mcp__SYMFORGE__batch_insert",
+"mcp__SYMFORGE__explore",
 ```
 
 ### Recommendation D2: Client-Specific alwaysAllow
@@ -311,10 +311,10 @@ Different clients handle auto-approval differently:
 
 ### Recommendation D3: Kilo Code Config
 
-For Kilo Code, `tokenizor init --client kilo` should write to the appropriate Kilo Code MCP settings location. Kilo Code reads MCP server config and can have tool-level `alwaysAllow`. The init command should:
+For Kilo Code, `SymForge init --client kilo` should write to the appropriate Kilo Code MCP settings location. Kilo Code reads MCP server config and can have tool-level `alwaysAllow`. The init command should:
 
 1. Register the MCP server in Kilo's MCP settings
-2. Set `alwaysAllow` for all Tokenizor read tools
+2. Set `alwaysAllow` for all SymForge read tools
 3. Write guidance to Kilo's custom instructions location
 
 ---
@@ -349,13 +349,13 @@ Current pre-tool suggestions are informational. They could be more directive:
 
 **Current** (Read):
 ```
-"Tokenizor MCP is connected. Prefer get_file_context (outline + imports + consumers) or 
+"SymForge MCP is connected. Prefer get_file_context (outline + imports + consumers) or 
 get_symbol/get_symbol_context (targeted symbol lookup) over Read for source code inspection."
 ```
 
 **Proposed**:
 ```
-"⚡ Tokenizor can answer this more efficiently:
+"⚡ SymForge can answer this more efficiently:
 • get_file_context(path='...') — 60-90% smaller than reading the full file
 • get_symbol(path='...', name='...') — read just the function you need
 The Read tool will still work, but these save significant tokens."
@@ -363,10 +363,10 @@ The Read tool will still work, but these save significant tokens."
 
 ### Recommendation E3: Post-Tool Enrichment Is Free Reinforcement
 
-After a Read/Grep/Edit, the PostToolUse hook injects Tokenizor context. This is "free" because it doesn't block the user's intent — it adds value on top. The current implementation is already good. One enhancement: add a subtle footer to PostToolUse responses:
+After a Read/Grep/Edit, the PostToolUse hook injects SymForge context. This is "free" because it doesn't block the user's intent — it adds value on top. The current implementation is already good. One enhancement: add a subtle footer to PostToolUse responses:
 
 ```
-"(Enriched by Tokenizor MCP — use get_file_context or search_text directly for faster results)"
+"(Enriched by SymForge MCP — use get_file_context or search_text directly for faster results)"
 ```
 
 ### Recommendation E4: Expand Hook Support Beyond Claude
@@ -375,7 +375,7 @@ For clients that don't support hooks natively, consider alternative approaches:
 
 1. **Tool description self-promotion**: Already covered in Vector A
 2. **Server-sent notifications**: MCP supports notifications — could send usage tips
-3. **Resource-based guidance**: Expose a `tokenizor://guidance/tool-routing` resource that clients can read at session start
+3. **Resource-based guidance**: Expose a `SymForge://guidance/tool-routing` resource that clients can read at session start
 4. **Prompt template integration**: The existing `code_review`, `architecture_map`, and `failure_triage` prompts could include tool routing instructions
 
 ---
@@ -387,15 +387,15 @@ The user specified: "easy adoption, automatic setup, intelligent discovery."
 ### Recommendation F1: Auto-Init on First Tool Call
 
 When the MCP server starts and detects no guidance files exist for the current project:
-1. Auto-create `.tokenizor/` marker directory
+1. Auto-create `.symforge/` marker directory
 2. Write project-level guidance to the detected client's format
-3. Log: "Tokenizor: auto-initialized guidance for [client]. Run `tokenizor init` for full setup."
+3. Log: "SymForge: auto-initialized guidance for [client]. Run `SymForge init` for full setup."
 
-This makes Tokenizor "just work" without requiring `tokenizor init`.
+This makes SymForge "just work" without requiring `SymForge init`.
 
-### Recommendation F2: Multi-Client Detection in `tokenizor init`
+### Recommendation F2: Multi-Client Detection in `SymForge init`
 
-Instead of requiring `--client claude` or `--client codex`, `tokenizor init` should:
+Instead of requiring `--client claude` or `--client codex`, `SymForge init` should:
 
 1. Scan for ALL known client configuration directories:
    - `~/.claude/` → Claude Code
@@ -412,7 +412,7 @@ Instead of requiring `--client claude` or `--client codex`, `tokenizor init` sho
 
 The npm `postinstall` script in `npm/scripts/install.js` should:
 1. Download the binary (already done)
-2. Run `tokenizor init --auto-detect` to configure all found clients
+2. Run `SymForge init --auto-detect` to configure all found clients
 3. Print clear instructions for any clients that need manual config
 
 ---
@@ -423,8 +423,8 @@ The npm `postinstall` script in `npm/scripts/install.js` should:
 
 | Change | Files | Impact |
 |--------|-------|--------|
-| Add edit tools to `TOKENIZOR_TOOL_NAMES` | `src/cli/init.rs` | Eliminates approval friction for edits |
-| Add explore to `TOKENIZOR_TOOL_NAMES` | `src/cli/init.rs` | Explore is a key entry point |
+| Add edit tools to `SYMFORGE_TOOL_NAMES` | `src/cli/init.rs` | Eliminates approval friction for edits |
+| Add explore to `SYMFORGE_TOOL_NAMES` | `src/cli/init.rs` | Explore is a key entry point |
 | Expand guidance blocks from 3 to 9 decision rules | `src/cli/init.rs` | Strongest behavioral influence |
 | Add token efficiency signals to tool descriptions | `src/protocol/tools.rs` | LLMs see this on every tool list |
 | Add "prefer over" to `get_file_content` description | `src/protocol/tools.rs` | Discourages raw file reads |
@@ -436,14 +436,14 @@ The npm `postinstall` script in `npm/scripts/install.js` should:
 | Add Kilo Code init support | `src/cli/init.rs` | Covers a growing client |
 | Add contextual next-step hints to tool responses | `src/protocol/format.rs` | Guides tool chains |
 | Strengthen pre-tool hook suggestions | `src/cli/hook.rs` | More directive interception |
-| Error messages redirect to Tokenizor tools | `src/protocol/tools.rs`, `format.rs` | Catches failure paths |
+| Error messages redirect to SymForge tools | `src/protocol/tools.rs`, `format.rs` | Catches failure paths |
 | Add health quick-start section | `src/protocol/tools.rs` | Onboarding for new sessions |
 
 ### Phase 3: Broad Coverage, Higher Effort
 
 | Change | Files | Impact |
 |--------|-------|--------|
-| Auto-detect all clients in `tokenizor init` | `src/cli/init.rs` | Universal setup |
+| Auto-detect all clients in `SymForge init` | `src/cli/init.rs` | Universal setup |
 | Write project-level guidance per client | `src/cli/init.rs` | Per-project steering |
 | Auto-init on first MCP connection | `src/main.rs` or `src/daemon.rs` | Zero-config experience |
 | npm postinstall auto-init | `npm/scripts/install.js` | Seamless npm adoption |
@@ -453,20 +453,20 @@ The npm `postinstall` script in `npm/scripts/install.js` should:
 
 ## Concrete Code Changes
 
-### Change 1: Update `TOKENIZOR_TOOL_NAMES` in `src/cli/init.rs`
+### Change 1: Update `SYMFORGE_TOOL_NAMES` in `src/cli/init.rs`
 
 Add the missing tools:
 ```rust
-const TOKENIZOR_TOOL_NAMES: &[&str] = &[
+const SYMFORGE_TOOL_NAMES: &[&str] = &[
     // ... existing 24 tools ...
-    "mcp__tokenizor__explore",
-    "mcp__tokenizor__replace_symbol_body",
-    "mcp__tokenizor__insert_symbol",
-    "mcp__tokenizor__delete_symbol",
-    "mcp__tokenizor__edit_within_symbol",
-    "mcp__tokenizor__batch_edit",
-    "mcp__tokenizor__batch_rename",
-    "mcp__tokenizor__batch_insert",
+    "mcp__SYMFORGE__explore",
+    "mcp__SYMFORGE__replace_symbol_body",
+    "mcp__SYMFORGE__insert_symbol",
+    "mcp__SYMFORGE__delete_symbol",
+    "mcp__SYMFORGE__edit_within_symbol",
+    "mcp__SYMFORGE__batch_edit",
+    "mcp__SYMFORGE__batch_rename",
+    "mcp__SYMFORGE__batch_insert",
 ];
 ```
 
@@ -533,7 +533,7 @@ pub fn next_step_hint(tool_name: &str, result: &str) -> String {
 
 3. **Don't make tool descriptions too long**. MCP clients have token budgets for tool listings. Long descriptions may get truncated. Keep descriptions under ~200 words.
 
-4. **Don't require `tokenizor init` for the system to work**. The MCP server should function well without init — init just makes it work *better*.
+4. **Don't require `SymForge init` for the system to work**. The MCP server should function well without init — init just makes it work *better*.
 
 5. **Don't duplicate guidance across tool descriptions and guidance files**. Tool descriptions should focus on "what this tool does" and "when to use it". Guidance files should focus on "overall workflow" and "decision rules".
 
@@ -543,10 +543,10 @@ pub fn next_step_hint(tool_name: &str, result: &str) -> String {
 
 After implementation, measure:
 
-1. **Tool call distribution**: What % of code navigation uses Tokenizor tools vs built-in tools? Target: >80% Tokenizor for source code.
+1. **Tool call distribution**: What % of code navigation uses SymForge tools vs built-in tools? Target: >80% SymForge for source code.
 2. **Token efficiency**: Average tokens consumed per code understanding task. Target: 50% reduction.
-3. **First-session adoption**: Does the LLM use Tokenizor tools in the first 5 tool calls? Target: yes in >90% of sessions.
-4. **Cross-client coverage**: How many clients auto-configure on `tokenizor init`? Target: 5+ clients.
+3. **First-session adoption**: Does the LLM use SymForge tools in the first 5 tool calls? Target: yes in >90% of sessions.
+4. **Cross-client coverage**: How many clients auto-configure on `SymForge init`? Target: 5+ clients.
 
 ---
 
@@ -564,9 +564,9 @@ After implementation, measure:
 | B3 | Write project-level guidance automatically | Init Guidance | Phase 3 |
 | B4 | Assertive but not annoying tone | Init Guidance | Phase 1 |
 | C1 | Add contextual next-step hints to responses | Tool Responses | Phase 2 |
-| C2 | Error messages redirect to Tokenizor tools | Tool Responses | Phase 2 |
+| C2 | Error messages redirect to SymForge tools | Tool Responses | Phase 2 |
 | C3 | Health tool quick-start for new sessions | Tool Responses | Phase 2 |
-| D1 | Add edit tools to `TOKENIZOR_TOOL_NAMES` | alwaysAllow | Phase 1 |
+| D1 | Add edit tools to `SYMFORGE_TOOL_NAMES` | alwaysAllow | Phase 1 |
 | D2 | Client-specific alwaysAllow configuration | alwaysAllow | Phase 2 |
 | D3 | Kilo Code MCP config support | alwaysAllow | Phase 2 |
 | E1 | Hook system is highest-impact — prioritize porting | Hook Enrichment | Phase 2 |
@@ -574,5 +574,5 @@ After implementation, measure:
 | E3 | Add enrichment footer to post-tool responses | Hook Enrichment | Phase 2 |
 | E4 | Alternative approaches for non-hook clients | Hook Enrichment | Phase 3 |
 | F1 | Auto-init on first tool call | Discovery | Phase 3 |
-| F2 | Multi-client detection in `tokenizor init` | Discovery | Phase 3 |
+| F2 | Multi-client detection in `SymForge init` | Discovery | Phase 3 |
 | F3 | npm postinstall auto-init | Discovery | Phase 3 |

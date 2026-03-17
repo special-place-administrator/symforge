@@ -7,7 +7,7 @@ Generated scans, obsolete planning payloads, and stale one-off plan notes were r
 ## Core Product Docs
 
 - [Architecture](architecture.md)
-- [Tokenizor Project Direction](tokenizor_project_direction.md)
+- [SymForge Project Direction](SYMFORGE_project_direction.md)
 - [Roadmap](ROADMAP-v2.md)
 
 ## Research Docs

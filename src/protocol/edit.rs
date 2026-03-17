@@ -131,7 +131,7 @@ pub(crate) fn normalize_line_endings(text: &[u8], target: LineEnding) -> Vec<u8>
 /// Write content to a file atomically: write to a unique temp file in the same directory,
 /// then rename over the target. Using a `NamedTempFile` in the same directory ensures the
 /// rename is within a single filesystem (no cross-device move) and avoids collisions between
-/// concurrent callers that would occur with a fixed `.tokenizor_tmp` extension.
+/// concurrent callers that would occur with a fixed `.symforge_tmp` extension.
 pub(crate) fn atomic_write_file(path: &Path, content: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     let parent = path.parent().ok_or_else(|| {
@@ -1925,7 +1925,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.rs");
         atomic_write_file(&path, b"content").unwrap();
-        let tmp = path.with_extension("tokenizor_tmp");
+        let tmp = path.with_extension("symforge_tmp");
         assert!(!tmp.exists());
     }
 

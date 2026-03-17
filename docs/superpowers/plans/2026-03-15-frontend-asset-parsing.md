@@ -1208,7 +1208,7 @@ In `src/protocol/tools.rs`, add to the existing test module (these test `check_e
     #[test]
     fn test_check_edit_capability_blocks_structural_for_frontend() {
         // replace_symbol_body requires StructuralEditSafe; Html is TextEditSafe → blocked
-        let warning = TokenizorServer::check_edit_capability(
+        let warning = SymForgeServer::check_edit_capability(
             &crate::domain::LanguageId::Html,
             crate::parsing::config_extractors::EditCapability::StructuralEditSafe,
             "replace_symbol_body",
@@ -1220,7 +1220,7 @@ In `src/protocol/tools.rs`, add to the existing test module (these test `check_e
     #[test]
     fn test_check_edit_capability_allows_text_edit_for_frontend() {
         // edit_within_symbol requires TextEditSafe; Css is TextEditSafe → allowed
-        let warning = TokenizorServer::check_edit_capability(
+        let warning = SymForgeServer::check_edit_capability(
             &crate::domain::LanguageId::Css,
             crate::parsing::config_extractors::EditCapability::TextEditSafe,
             "edit_within_symbol",
@@ -1302,7 +1302,7 @@ The updated function:
             };
             if !allowed {
                 return Some(format!(
-                    "{tool_name}: This file type ({language}) does not support structural edits via Tokenizor. Use edit_within_symbol for scoped text replacements, or the built-in Edit tool for raw text edits."
+                    "{tool_name}: This file type ({language}) does not support structural edits via SymForge. Use edit_within_symbol for scoped text replacements, or the built-in Edit tool for raw text edits."
                 ));
             }
         }
@@ -1338,9 +1338,9 @@ Create `tests/frontend_assets.rs`:
 ```rust
 //! Integration tests for HTML/Angular, CSS, and SCSS frontend asset parsing.
 
-use tokenizor_agentic_mcp::domain::{LanguageId, SymbolKind};
-use tokenizor_agentic_mcp::parsing::process_file;
-use tokenizor_agentic_mcp::parsing::config_extractors::{EditCapability, edit_capability_for_language};
+use symforge::domain::{LanguageId, SymbolKind};
+use symforge::parsing::process_file;
+use symforge::parsing::config_extractors::{EditCapability, edit_capability_for_language};
 
 // ─── Indexing acceptance criteria ──────────────────────────────────────
 
@@ -1442,10 +1442,10 @@ fn test_edit_capability_gating_for_frontend() {
 ```
 
 **API visibility resolution:**
-- `process_file` — `pub fn` in `src/parsing/mod.rs`, accessible from integration tests via `tokenizor_agentic_mcp::parsing::process_file`
-- `edit_capability_for_language` — `pub fn` in `src/parsing/config_extractors/mod.rs`, accessible via `tokenizor_agentic_mcp::parsing::config_extractors::edit_capability_for_language`
+- `process_file` — `pub fn` in `src/parsing/mod.rs`, accessible from integration tests via `symforge::parsing::process_file`
+- `edit_capability_for_language` — `pub fn` in `src/parsing/config_extractors/mod.rs`, accessible via `symforge::parsing::config_extractors::edit_capability_for_language`
 - `EditCapability` — `pub enum` in same module, accessible
-- `check_edit_capability` — **private** method on `TokenizorServer`. Tests for this function (replace_symbol_body blocked, edit_within_symbol allowed) are unit tests in `src/protocol/tools.rs` (added in Task 11 Step 1)
+- `check_edit_capability` — **private** method on `SymForgeServer`. Tests for this function (replace_symbol_body blocked, edit_within_symbol allowed) are unit tests in `src/protocol/tools.rs` (added in Task 11 Step 1)
 
 - [ ] **Step 2: Run integration tests**
 

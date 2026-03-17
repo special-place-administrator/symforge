@@ -1,7 +1,7 @@
 # Sprint 16 Smoke Test — Parallelism & Batch Operations
 
-Run this after installing the latest Tokenizor MCP locally.
-Each section can be run independently. All use the tokenizor project itself as the test repo.
+Run this after installing the latest SymForge MCP locally.
+Each section can be run independently. All use the SymForge project itself as the test repo.
 
 ## Prerequisites
 
@@ -9,7 +9,7 @@ Each section can be run independently. All use the tokenizor project itself as t
 # 1. Build and install
 cargo build --release
 # 2. Index the project
-tokenizor index .
+SymForge index .
 # 3. Verify health
 # Use MCP: health()
 ```
@@ -188,7 +188,7 @@ MCP call: edit_within_symbol({ path: "src/domain/index.rs", name: "is_denylisted
 
 Expected:
 - All succeed or cleanly report conflicts
-- No orphan .tokenizor_tmp files in the directory
+- No orphan .SYMFORGE_tmp files in the directory
 - File content is never corrupted
 - Check: ls src/domain/ | grep tmp (should be empty)
 ```

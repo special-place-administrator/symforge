@@ -1,4 +1,4 @@
-# CLAUDE.md — Tokenizor Agentic MCP
+# CLAUDE.md — SymForge
 
 ## Git & GitHub CLI
 
@@ -77,6 +77,6 @@ When merging tools A into B:
 2. Add mode branch in B's handler
 3. Remove `#[tool]` attribute from A (keep the method for internal use)
 4. Add backward-compat alias in `src/daemon.rs` `execute_tool_call`
-5. Remove A from `TOKENIZOR_TOOL_NAMES` in `src/cli/init.rs`
+5. Remove A from `SYMFORGE_TOOL_NAMES` in `src/cli/init.rs`
 6. Update cross-reference descriptions in other tools
 7. Update tests: add new field initializers, add mode-specific tests

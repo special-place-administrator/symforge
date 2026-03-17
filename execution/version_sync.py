@@ -175,7 +175,7 @@ def set_version(root: Path, version: str) -> list[Path]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Check or update Tokenizor release-version metadata."
+        description="Check or update SymForge release-version metadata."
     )
     parser.add_argument(
         "--root",
