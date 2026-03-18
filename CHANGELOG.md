@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.1](https://github.com/special-place-administrator/symforge/compare/v1.2.0...v1.2.1) (2026-03-18)
+
+
+### Bug Fixes
+
+* **kilo:** trigger release for strict-provider compatibility ([a852955](https://github.com/special-place-administrator/symforge/commit/a852955707cc9da1133f9a872d8d7b3b955988e7))
+
 ## [1.2.0](https://github.com/special-place-administrator/symforge/compare/v1.1.0...v1.2.0) (2026-03-18)
 
 
