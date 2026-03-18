@@ -1,12 +1,12 @@
+use symforge::cli::InitClient;
+use symforge::cli::init::{
+    merge_hooks_into_settings, register_codex_mcp_server, run_init_with_context,
+};
 /// Integration tests for `symforge init` — proves idempotent hook installation.
 ///
 /// Tests use a temporary directory in place of `~/.claude/settings.json` via the
 /// `merge_hooks_into_settings(settings_path, binary_path)` public function.
 use tempfile::TempDir;
-use symforge::cli::InitClient;
-use symforge::cli::init::{
-    merge_hooks_into_settings, register_codex_mcp_server, run_init_with_context,
-};
 
 const FAKE_BINARY: &str = "/usr/local/bin/symforge";
 
@@ -158,11 +158,7 @@ fn test_init_preserves_other_hooks() {
         .expect("PostToolUse must be an array");
 
     // 1 existing + 1 symforge = 2 total.
-    assert_eq!(
-        post.len(),
-        2,
-        "existing hook + 1 symforge hook = 2 entries"
-    );
+    assert_eq!(post.len(), 2, "existing hook + 1 symforge hook = 2 entries");
 
     // Non-symforge hook must still be present.
     let has_bash_hook = post.iter().any(|e| {
@@ -182,6 +178,7 @@ fn test_init_preserves_other_hooks() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[test]
 fn test_init_registers_mcp_server() {
     let dir = TempDir::new().unwrap();
     let claude_json_path = dir.path().join(".claude.json");
@@ -194,7 +191,6 @@ fn test_init_registers_mcp_server() {
     let config: serde_json::Value = serde_json::from_str(&raw).unwrap();
 
     let tok = &config["mcpServers"]["symforge"];
-    assert_eq!(tok["type"], "stdio");
     // On Windows, forward slashes are converted to backslashes for native process spawning.
     let expected_command = if cfg!(windows) {
         binary_path.replace('/', "\\")
@@ -202,6 +198,28 @@ fn test_init_registers_mcp_server() {
         binary_path.to_string()
     };
     assert_eq!(tok["command"], expected_command);
+    assert_eq!(tok["disabled"], false, "disabled must be false");
+    assert!(
+        tok["alwaysAllow"].is_array(),
+        "alwaysAllow must be an array"
+    );
+    let always_allow = tok["alwaysAllow"].as_array().unwrap();
+    assert!(
+        always_allow.iter().any(|v| v.as_str() == Some("health")),
+        "alwaysAllow must include health"
+    );
+    assert!(
+        always_allow
+            .iter()
+            .any(|v| v.as_str() == Some("search_symbols")),
+        "alwaysAllow must include search_symbols"
+    );
+    assert!(
+        always_allow
+            .iter()
+            .any(|v| v.as_str() == Some("replace_symbol_body")),
+        "alwaysAllow must include replace_symbol_body"
+    );
 }
 
 #[test]
@@ -236,11 +254,7 @@ fn test_init_mcp_registration_preserves_other_servers() {
     )
     .unwrap();
 
-    symforge::cli::init::register_mcp_server(
-        &claude_json_path,
-        "/usr/local/bin/symforge",
-    )
-    .unwrap();
+    symforge::cli::init::register_mcp_server(&claude_json_path, "/usr/local/bin/symforge").unwrap();
 
     let raw = std::fs::read_to_string(&claude_json_path).unwrap();
     let config: serde_json::Value = serde_json::from_str(&raw).unwrap();
@@ -455,6 +469,7 @@ fn test_run_init_all_updates_both_clients() {
 }
 
 #[test]
+#[test]
 fn test_run_init_codex_writes_symforge_agents_guidance() {
     let home = TempDir::new().unwrap();
     let cwd = TempDir::new().unwrap();
@@ -467,12 +482,16 @@ fn test_run_init_codex_writes_symforge_agents_guidance() {
     let raw = read_text(&agents_path);
 
     assert!(
-        raw.contains("TOKENIZOR START"),
+        raw.contains("SYMFORGE START"),
         "Codex AGENTS guidance must include a SymForge marker block: {raw}"
     );
     assert!(
-        raw.contains("Prefer the SymForge MCP"),
-        "Codex AGENTS guidance must teach Codex to use SymForge: {raw}"
+        raw.contains("SymForge MCP"),
+        "Codex AGENTS guidance must mention SymForge MCP: {raw}"
+    );
+    assert!(
+        raw.contains("get_file_context"),
+        "Codex AGENTS guidance must include tool guidance: {raw}"
     );
 }
 
@@ -502,6 +521,7 @@ fn test_run_init_codex_preserves_existing_agents_content_and_is_idempotent() {
 }
 
 #[test]
+#[test]
 fn test_run_init_claude_writes_symforge_memory_guidance() {
     let home = TempDir::new().unwrap();
     let cwd = TempDir::new().unwrap();
@@ -514,12 +534,20 @@ fn test_run_init_claude_writes_symforge_memory_guidance() {
     let raw = read_text(&memory_path);
 
     assert!(
-        raw.contains("TOKENIZOR START"),
+        raw.contains("SYMFORGE START"),
         "Claude memory guidance must include a SymForge marker block: {raw}"
     );
     assert!(
-        raw.contains("Prefer the SymForge MCP"),
-        "Claude memory guidance must teach Claude to use SymForge: {raw}"
+        raw.contains("SymForge MCP"),
+        "Claude memory guidance must mention SymForge MCP: {raw}"
+    );
+    assert!(
+        raw.contains("get_file_context"),
+        "Claude memory guidance must include tool guidance: {raw}"
+    );
+    assert!(
+        raw.contains("Tooling Preference"),
+        "Claude memory guidance must include the Tooling Preference section: {raw}"
     );
 }
 

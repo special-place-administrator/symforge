@@ -254,6 +254,37 @@ const KILO_ALWAYS_ALLOW: &[&str] = &[
     "batch_rename",
 ];
 
+/// Tool names registered in `alwaysAllow` for the Claude Code MCP entry in `~/.claude.json`.
+///
+/// These are bare tool names (no `mcp__symforge__` prefix) — Claude resolves them
+/// against the declared server namespace automatically.
+const CLAUDE_ALWAYS_ALLOW: &[&str] = &[
+    "health",
+    "get_repo_map",
+    "explore",
+    "get_file_content",
+    "get_file_context",
+    "get_symbol",
+    "get_symbol_context",
+    "search_symbols",
+    "search_text",
+    "search_files",
+    "find_references",
+    "find_dependents",
+    "inspect_match",
+    "what_changed",
+    "analyze_file_impact",
+    "diff_symbols",
+    "index_folder",
+    "replace_symbol_body",
+    "edit_within_symbol",
+    "insert_symbol",
+    "delete_symbol",
+    "batch_edit",
+    "batch_rename",
+    "batch_insert",
+];
+
 fn merge_allowed_tools(settings: &mut Value) {
     if !settings["allowedTools"].is_array() {
         settings["allowedTools"] = json!([]);
@@ -362,8 +393,7 @@ fn is_symforge_entry(entry: &Value) -> bool {
             h["command"]
                 .as_str()
                 .map(|cmd| {
-                    (cmd.contains("symforge") || cmd.contains("tokenizor"))
-                        && cmd.contains(" hook")
+                    (cmd.contains("symforge") || cmd.contains("tokenizor")) && cmd.contains(" hook")
                 })
                 .unwrap_or(false)
         })
@@ -419,15 +449,20 @@ pub fn register_mcp_server(
     // Use backslashes on Windows for the command path (Claude Code spawns natively, not via shell).
     let command_path = native_command_path(binary_path);
 
-    // Ensure mcpServers exists and set symforge entry.
     if !config["mcpServers"].is_object() {
         config["mcpServers"] = json!({});
     }
+
+    let always_allow: Vec<Value> = CLAUDE_ALWAYS_ALLOW
+        .iter()
+        .map(|s| Value::String(s.to_string()))
+        .collect();
+
     config["mcpServers"]["symforge"] = json!({
-        "type": "stdio",
         "command": command_path,
         "args": [],
-        "env": {}
+        "disabled": false,
+        "alwaysAllow": always_allow
     });
 
     let pretty = serde_json::to_string_pretty(&config)?;
@@ -697,6 +732,64 @@ SymForge MCP is installed and active. It provides indexed code search, symbol ex
 - Reading non-code files (docs, configs) where exact wording matters\n\
 - When you need the full file content including whitespace and formatting\n\
 - When SymForge tools return an error or the file isn't indexed\n\
+\n\
+## Tooling Preference\n\
+\n\
+When SymForge MCP is available, prefer its tools for repository and code\n\
+inspection before falling back to direct file reads.\n\
+\n\
+Use SymForge first for:\n\
+- symbol discovery\n\
+- text/code search\n\
+- file outlines and context\n\
+- repository outlines\n\
+- targeted symbol/source retrieval\n\
+- surgical editing (symbol replacements, renames)\n\
+- impact analysis (what changed, what breaks)\n\
+- inspection of implementation code under `src/`, `tests/`, and similar\n\
+  code-bearing directories\n\
+\n\
+Preferred tools for reading:\n\
+- `search_text` — full-text search with enclosing symbol context\n\
+- `search_symbols` — find symbols by name, kind, language, path\n\
+- `search_files` — ranked file path discovery, co-change coupling\n\
+- `get_file_context` — rich file summary with outline, imports, consumers\n\
+- `get_file_content` — read files with line ranges or around a symbol\n\
+- `get_repo_map` — repository overview at adjustable detail levels\n\
+- `get_symbol` — look up symbols by name, batch mode supported\n\
+- `get_symbol_context` — symbol body + callers + callees + type deps\n\
+- `find_references` — call sites, imports, type usages, implementations\n\
+- `find_dependents` — file-level dependency graph\n\
+- `inspect_match` — deep-dive a search match with full symbol context\n\
+- `analyze_file_impact` — re-read file, update index, report impact\n\
+- `what_changed` — files changed since timestamp, ref, or uncommitted\n\
+- `diff_symbols` — symbol-level diff between git refs\n\
+- `explore` — concept-driven exploration across the codebase\n\
+\n\
+Preferred tools for editing:\n\
+- `replace_symbol_body` — replace a symbol's entire definition by name\n\
+- `edit_within_symbol` — scoped find-and-replace within a symbol's range\n\
+- `insert_symbol` — insert code before or after a named symbol\n\
+- `delete_symbol` — remove a symbol and its doc comments by name\n\
+- `batch_edit` — multiple symbol-addressed edits atomically across files\n\
+- `batch_rename` — rename a symbol and update all references project-wide\n\
+- `batch_insert` — insert code before/after multiple symbols across files\n\
+\n\
+Default rule:\n\
+- use SymForge to narrow and target code inspection first\n\
+- use direct file reads only when exact full-file source or surrounding\n\
+  context is still required after tool-based narrowing\n\
+- use SymForge editing tools (`replace_symbol_body`, `batch_edit`,\n\
+  `edit_within_symbol`) over text-based find-and-replace whenever\n\
+  possible to ensure structural integrity and automatic re-indexing\n\
+\n\
+Direct file reads are still appropriate for:\n\
+- exact document text in `docs/` or planning artifacts where literal\n\
+  wording matters\n\
+- configuration files where exact raw contents are the point of inspection\n\
+\n\
+Do not default to broad raw file reads for source-code inspection when\n\
+SymForge can answer the question more directly.\n\
 {SYMFORGE_GUIDANCE_END}"
     )
 }
