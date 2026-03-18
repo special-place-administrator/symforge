@@ -234,7 +234,7 @@ Running `npm install -g symforge` does the following automatically:
 
 Everything is idempotent — re-running install or `symforge init` is safe and updates configs to the latest format without duplicating entries or losing existing settings.
 
-**Updates** work the same way — `npm install -g symforge` replaces the binary. If the binary is locked (active session), it stages a `.pending` update that applies on next launch.
+**Updates** work the same way — `npm install -g symforge` replaces the binary. During update, the installer stops running SymForge processes first so the binary can be replaced in place.
 
 **Auto-init** runs after every install/update: detects Claude Code, Codex, and Gemini CLI, registers the MCP server, installs hooks, and auto-allows all SymForge tools. Other MCP clients (VS Code extensions, JetBrains plugins, custom agents) can connect via manual stdio configuration.
 
@@ -481,5 +481,7 @@ SymForge survived the gauntlet. It's honest about what the tool does, available 
 
 ## License
 
-MIT
+SymForge is licensed under [PolyForm Noncommercial License 1.0.0](./LICENSE). The official license text is also available from the [PolyForm Project](https://polyformproject.org/licenses/noncommercial/1.0.0/).
+
+You may inspect, study, and use the source code for noncommercial purposes, but commercial use is prohibited unless separately licensed.
 
