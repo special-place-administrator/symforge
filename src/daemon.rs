@@ -1,12 +1,12 @@
 //! Shared local daemon for project-aware and session-aware backend state.
 
+use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use parking_lot::RwLock;
 use std::time::{Duration, SystemTime};
 
 use anyhow::Context;
@@ -271,9 +271,7 @@ impl DaemonState {
             opened_at: now,
             last_seen_at: AtomicU64::new(now_epoch_millis()),
         };
-        self.sessions
-            .write()
-            .insert(session_id.clone(), session);
+        self.sessions.write().insert(session_id.clone(), session);
 
         Ok(OpenProjectResponse {
             project_id: project_id.to_string(),
@@ -340,7 +338,9 @@ impl DaemonState {
             .read()
             .get(session_id)
             .map(|session| {
-                session.last_seen_at.store(now_epoch_millis(), Ordering::Relaxed);
+                session
+                    .last_seen_at
+                    .store(now_epoch_millis(), Ordering::Relaxed);
                 true
             })
             .unwrap_or(false);
@@ -381,10 +381,7 @@ impl DaemonState {
         };
 
         // Now remove the session (projects lock fully released).
-        let session = self
-            .sessions
-            .write()
-            .remove(session_id)?;
+        let session = self.sessions.write().remove(session_id)?;
 
         Some(CloseSessionResponse {
             session_id: session.session_id,
@@ -514,13 +511,11 @@ impl DaemonState {
         // Update the session's project association *after* the projects lock is
         // released to maintain lock order (projects before sessions everywhere).
         if needs_reassign {
-            if let Some(session) = self
-                .sessions
-                .write()
-                .get_mut(session_id)
-            {
+            if let Some(session) = self.sessions.write().get_mut(session_id) {
                 session.project_id = target_project_id;
-                session.last_seen_at.store(now_epoch_millis(), Ordering::Relaxed);
+                session
+                    .last_seen_at
+                    .store(now_epoch_millis(), Ordering::Relaxed);
             }
         }
 

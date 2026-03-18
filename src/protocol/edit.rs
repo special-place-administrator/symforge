@@ -219,7 +219,9 @@ pub(crate) fn resolve_or_error(
                     )
                 }
                 crate::live_index::store::ParseStatus::PartialParse { warning } => {
-                    format!(" (file partially parsed with errors: {warning} — some symbols may be missing)")
+                    format!(
+                        " (file partially parsed with errors: {warning} — some symbols may be missing)"
+                    )
                 }
                 _ => String::new(),
             };

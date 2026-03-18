@@ -807,17 +807,19 @@ impl LiveIndex {
         // 4. Parse all admitted files in parallel via Rayon.
         let mut parse_results: Vec<(String, IndexedFile)> = to_parse
             .par_iter()
-            .map(|(relative_path, language, classification, bytes, mtime_secs)| {
-                let result = parsing::process_file_with_classification(
-                    relative_path,
-                    bytes,
-                    language.clone(),
-                    *classification,
-                );
-                let indexed =
-                    IndexedFile::from_parse_result(result, bytes.clone()).with_mtime(*mtime_secs);
-                (relative_path.clone(), indexed)
-            })
+            .map(
+                |(relative_path, language, classification, bytes, mtime_secs)| {
+                    let result = parsing::process_file_with_classification(
+                        relative_path,
+                        bytes,
+                        language.clone(),
+                        *classification,
+                    );
+                    let indexed = IndexedFile::from_parse_result(result, bytes.clone())
+                        .with_mtime(*mtime_secs);
+                    (relative_path.clone(), indexed)
+                },
+            )
             .collect();
 
         // 5. Sort by path for deterministic circuit-breaker evaluation order.
@@ -948,7 +950,10 @@ impl LiveIndex {
         info!("LiveIndex::build_reload_data starting at {:?}", root);
 
         if !root.exists() {
-            anyhow::bail!("discovery error: root path does not exist: {}", root.display());
+            anyhow::bail!(
+                "discovery error: root path does not exist: {}",
+                root.display()
+            );
         }
 
         // 1. Discover all source files
@@ -980,8 +985,7 @@ impl LiveIndex {
                     df.language.clone(),
                     df.classification,
                 );
-                let indexed =
-                    IndexedFile::from_parse_result(result, bytes).with_mtime(mtime_secs);
+                let indexed = IndexedFile::from_parse_result(result, bytes).with_mtime(mtime_secs);
                 Some((df.relative_path.clone(), indexed))
             })
             .collect();

@@ -9,10 +9,11 @@ pub use query::{
     ContextBundleFoundView, ContextBundleReferenceView, ContextBundleSectionView,
     ContextBundleView, DependentFileView, DependentLineView, EnclosingSymbolView, FileContentView,
     FileOutlineView, FindDependentsView, FindImplementationsView, FindReferencesView,
-    GitActivityView, HealthStats, ImplementationEntryView, InspectMatchFoundView, InspectMatchView,
-    ReferenceContextLineView, ReferenceFileView, ReferenceHitView, RepoOutlineFileView,
-    RepoOutlineView, ResolvePathView, SearchFilesHit, SearchFilesTier, SearchFilesView,
-    SiblingSymbolView, SymbolDetailView, TraceSymbolView, TypeDependencyView,
+    GitActivityView, HealthStats, ImplBlockSuggestionView, ImplementationEntryView,
+    InspectMatchFoundView, InspectMatchView, ReferenceContextLineView, ReferenceFileView,
+    ReferenceHitView, RepoOutlineFileView, RepoOutlineView, ResolvePathView, SearchFilesHit,
+    SearchFilesTier, SearchFilesView, SiblingSymbolView, SymbolDetailView, TraceSymbolView,
+    TypeDependencyView,
     WhatChangedTimestampView,
 };
 pub use store::{

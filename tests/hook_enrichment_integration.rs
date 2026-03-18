@@ -18,12 +18,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use once_cell::sync::Lazy;
-use tempfile::TempDir;
 use symforge::{
     domain::{LanguageId, ReferenceKind, ReferenceRecord, SymbolKind, SymbolRecord},
     live_index::{IndexedFile, LiveIndex, ParseStatus, SharedIndex},
     sidecar::spawn_sidecar,
 };
+use tempfile::TempDir;
 use tokio::sync::Mutex;
 
 // ---------------------------------------------------------------------------

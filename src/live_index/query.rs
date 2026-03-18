@@ -794,6 +794,14 @@ pub struct ContextBundleSectionView {
     pub entries: Vec<ContextBundleReferenceView>,
 }
 
+/// Suggested impl block to inspect when a type definition has no direct callers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImplBlockSuggestionView {
+    pub display_name: String,
+    pub file_path: String,
+    pub line_number: u32,
+}
+
 /// A resolved type definition included as a dependency of a context bundle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeDependencyView {
@@ -824,6 +832,8 @@ pub struct ContextBundleFoundView {
     pub type_usages: ContextBundleSectionView,
     /// Resolved type definitions used by this symbol (recursive, depth-limited).
     pub dependencies: Vec<TypeDependencyView>,
+    /// Suggested impl blocks for struct/enum symbols with no direct callers.
+    pub implementation_suggestions: Vec<ImplBlockSuggestionView>,
 }
 
 /// Owned result view for `get_context_bundle`.
@@ -1754,6 +1764,12 @@ impl LiveIndex {
             .into_iter()
             .collect();
         let dependencies = self.resolve_type_dependencies(&type_names, 2);
+        let implementation_suggestions =
+            if matches!(sym_rec.kind, SymbolKind::Struct | SymbolKind::Enum) && callers.is_empty() {
+                self.capture_impl_block_suggestions(name)
+            } else {
+                Vec::new()
+            };
 
         ContextBundleView::Found(ContextBundleFoundView {
             file_path: file.relative_path.clone(),
@@ -1765,6 +1781,7 @@ impl LiveIndex {
             callees: capture_section(&callee_pairs),
             type_usages: capture_section(&type_usages),
             dependencies,
+            implementation_suggestions,
         })
     }
 
@@ -2582,6 +2599,37 @@ impl LiveIndex {
 
         resolved.sort_by(|a, b| a.depth.cmp(&b.depth).then(a.name.cmp(&b.name)));
         resolved
+    }
+
+    fn capture_impl_block_suggestions(&self, type_name: &str) -> Vec<ImplBlockSuggestionView> {
+        let inherent_name = format!("impl {type_name}");
+        let trait_suffix = format!(" for {type_name}");
+        let mut suggestions = Vec::new();
+
+        for file in self.files.values() {
+            for symbol in &file.symbols {
+                if symbol.kind != SymbolKind::Impl {
+                    continue;
+                }
+                let matches = symbol.name == inherent_name || symbol.name.ends_with(&trait_suffix);
+                if !matches {
+                    continue;
+                }
+                suggestions.push(ImplBlockSuggestionView {
+                    display_name: symbol.name.clone(),
+                    file_path: file.relative_path.clone(),
+                    line_number: symbol.line_range.0 + 1,
+                });
+            }
+        }
+
+        suggestions.sort_by(|a, b| {
+            a.file_path
+                .cmp(&b.file_path)
+                .then(a.line_number.cmp(&b.line_number))
+                .then(a.display_name.cmp(&b.display_name))
+        });
+        suggestions
     }
 }
 
@@ -3591,6 +3639,78 @@ mod tests {
         assert_eq!(found.type_usages.total_count, 1);
         assert_eq!(found.type_usages.entries.len(), 1);
         assert_eq!(found.type_usages.entries[0].file_path, "src/service.rs");
+    }
+
+    #[test]
+    fn test_capture_context_bundle_view_collects_impl_block_suggestions_for_zero_caller_struct() {
+        let content = "\
+struct MyActor;
+
+impl MyActor {
+    fn new() -> Self { Self }
+}
+
+impl Actor for MyActor {
+    fn handle(&self) {}
+}
+";
+        let struct_start = content.find("struct MyActor;").unwrap() as u32;
+        let inherent_impl = "impl MyActor {\n    fn new() -> Self { Self }\n}";
+        let trait_impl = "impl Actor for MyActor {\n    fn handle(&self) {}\n}";
+        let inherent_start = content.find(inherent_impl).unwrap() as u32;
+        let trait_start = content.find(trait_impl).unwrap() as u32;
+        let target = make_file_with_refs_and_content(
+            "src/actors.rs",
+            LanguageId::Rust,
+            content,
+            vec![],
+            vec![
+                make_symbol_with_kind_line_and_bytes(
+                    "MyActor",
+                    SymbolKind::Struct,
+                    0,
+                    (struct_start, struct_start + "struct MyActor;".len() as u32),
+                ),
+                make_symbol_with_kind_line_and_bytes(
+                    "impl MyActor",
+                    SymbolKind::Impl,
+                    2,
+                    (inherent_start, inherent_start + inherent_impl.len() as u32),
+                ),
+                make_symbol_with_kind_line_and_bytes(
+                    "impl Actor for MyActor",
+                    SymbolKind::Impl,
+                    6,
+                    (trait_start, trait_start + trait_impl.len() as u32),
+                ),
+            ],
+        );
+        let index = make_index(vec![("src/actors.rs", target)], false);
+
+        let view = index.capture_context_bundle_view("src/actors.rs", "MyActor", Some("struct"), Some(0));
+
+        let ContextBundleView::Found(found) = view else {
+            panic!("expected found view");
+        };
+
+        assert_eq!(found.callers.total_count, 0);
+        assert_eq!(found.implementation_suggestions.len(), 2);
+        assert_eq!(
+            found.implementation_suggestions[0].display_name,
+            "impl MyActor"
+        );
+        assert_eq!(
+            found.implementation_suggestions[0].line_number,
+            3
+        );
+        assert_eq!(
+            found.implementation_suggestions[1].display_name,
+            "impl Actor for MyActor"
+        );
+        assert_eq!(
+            found.implementation_suggestions[1].line_number,
+            7
+        );
     }
 
     #[test]

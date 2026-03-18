@@ -59,7 +59,12 @@ fn find_name(node: &Node, source: &str) -> Option<String> {
     // identifiers in method_declaration nodes (e.g. `async Task Foo(...)` where
     // the first identifier child is `Task`, not `Foo`).
     if let Some(name_node) = node.child_by_field_name("name") {
-        return Some(name_node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+        return Some(
+            name_node
+                .utf8_text(source.as_bytes())
+                .unwrap_or("")
+                .to_string(),
+        );
     }
     find_first_named_child(node, source, &["identifier"])
 }
@@ -165,12 +170,32 @@ public class Svc {
             .collect();
 
         let names: Vec<&str> = methods.iter().map(|s| s.name.as_str()).collect();
-        assert!(names.contains(&"FlushBufferAsync"), "async Task method: got {:?}", names);
-        assert!(names.contains(&"SearchAsync"), "async Task<T> method: got {:?}", names);
-        assert!(names.contains(&"DoWorkAsync"), "async Task no-args method: got {:?}", names);
+        assert!(
+            names.contains(&"FlushBufferAsync"),
+            "async Task method: got {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"SearchAsync"),
+            "async Task<T> method: got {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"DoWorkAsync"),
+            "async Task no-args method: got {:?}",
+            names
+        );
         assert!(names.contains(&"Sync"), "void method: got {:?}", names);
-        assert!(names.contains(&"FireAndForget"), "async void method: got {:?}", names);
-        assert!(!names.contains(&"Task"), "should NOT index 'Task' as a method name: got {:?}", names);
+        assert!(
+            names.contains(&"FireAndForget"),
+            "async void method: got {:?}",
+            names
+        );
+        assert!(
+            !names.contains(&"Task"),
+            "should NOT index 'Task' as a method name: got {:?}",
+            names
+        );
     }
 
     #[test]

@@ -7,11 +7,11 @@ pub mod server;
 pub use governor::RequestGovernor;
 pub use server::spawn_sidecar;
 
+use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use parking_lot::RwLock;
 
 use serde::Serialize;
 

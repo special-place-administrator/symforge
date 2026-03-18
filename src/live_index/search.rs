@@ -2205,34 +2205,30 @@ mod tests {
         // Create two TextFileMatches: one with many callers, one with few.
         let file_a = TextFileMatches {
             path: "a.rs".to_string(),
-            matches: vec![
-                TextLineMatch {
-                    line_number: 10,
-                    line: "let x = 1;".to_string(),
-                    enclosing_symbol: Some(EnclosingMatchSymbol {
-                        name: "dead_code_fn".to_string(),
-                        kind: "function".to_string(),
-                        line_range: (1, 20),
-                    }),
-                },
-            ],
+            matches: vec![TextLineMatch {
+                line_number: 10,
+                line: "let x = 1;".to_string(),
+                enclosing_symbol: Some(EnclosingMatchSymbol {
+                    name: "dead_code_fn".to_string(),
+                    kind: "function".to_string(),
+                    line_range: (1, 20),
+                }),
+            }],
             rendered_lines: None,
             callers: None,
         };
 
         let file_b = TextFileMatches {
             path: "b.rs".to_string(),
-            matches: vec![
-                TextLineMatch {
-                    line_number: 5,
-                    line: "let y = 2;".to_string(),
-                    enclosing_symbol: Some(EnclosingMatchSymbol {
-                        name: "popular_fn".to_string(),
-                        kind: "function".to_string(),
-                        line_range: (1, 10),
-                    }),
-                },
-            ],
+            matches: vec![TextLineMatch {
+                line_number: 5,
+                line: "let y = 2;".to_string(),
+                enclosing_symbol: Some(EnclosingMatchSymbol {
+                    name: "popular_fn".to_string(),
+                    kind: "function".to_string(),
+                    line_range: (1, 10),
+                }),
+            }],
             rendered_lines: None,
             callers: None,
         };

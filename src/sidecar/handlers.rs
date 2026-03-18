@@ -630,7 +630,7 @@ async fn handle_edit_impact(
         let impacted: Vec<&SymbolSnapshot> =
             changed.iter().chain(removed.iter()).copied().collect();
         if !impacted.is_empty() {
-        let guard = state.index.read();
+            let guard = state.index.read();
             let mut callers_lines: Vec<String> = Vec::new();
             for sym in &impacted {
                 let callers = guard.find_references_for_name(&sym.name, None, false);

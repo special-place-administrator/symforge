@@ -7,9 +7,9 @@
 /// INFR-05 (no v1 tools), tool format verification end-to-end, and RELY-04.
 use std::fs;
 use std::path::Path;
-use tempfile::tempdir;
 use symforge::live_index::persist;
 use symforge::live_index::{IndexState, LiveIndex, ParseStatus};
+use tempfile::tempdir;
 
 // --------------------------------------------------------------------------
 // Helpers

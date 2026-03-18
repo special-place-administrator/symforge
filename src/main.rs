@@ -3,9 +3,7 @@ use std::sync::{Arc, Mutex};
 use clap::Parser;
 use rmcp::{serve_server, transport};
 use symforge::live_index::persist;
-use symforge::{
-    cli, daemon, discovery, live_index, observability, protocol, sidecar, watcher,
-};
+use symforge::{cli, daemon, discovery, live_index, observability, protocol, sidecar, watcher};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum StartupIndexLogView {

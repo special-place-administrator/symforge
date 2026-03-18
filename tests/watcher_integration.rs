@@ -20,9 +20,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tempfile::TempDir;
 use symforge::live_index::LiveIndex;
 use symforge::watcher::{WatcherInfo, WatcherState, run_watcher};
+use tempfile::TempDir;
 
 // ---------------------------------------------------------------------------
 // Test helpers

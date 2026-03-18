@@ -17,7 +17,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use once_cell::sync::Lazy;
-use tempfile::TempDir;
 use symforge::{
     cli::HookSubcommand,
     cli::hook::{event_name_for, fail_open_json, run_hook, success_json},
@@ -25,6 +24,7 @@ use symforge::{
     live_index::{IndexedFile, LiveIndex, ParseStatus, SharedIndex},
     sidecar::spawn_sidecar,
 };
+use tempfile::TempDir;
 use tokio::sync::Mutex;
 
 // ---------------------------------------------------------------------------
@@ -524,9 +524,7 @@ async fn test_prompt_context_endpoint_extensionless_path_line_hint_disambiguates
     let src_target = IndexedFile {
         relative_path: "src/db.rs".to_string(),
         language: LanguageId::Rust,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "src/db.rs",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("src/db.rs"),
         content: b"fn connect() {}\nfn connect() {}\n".to_vec(),
         symbols: vec![
             SymbolRecord {
@@ -557,9 +555,7 @@ async fn test_prompt_context_endpoint_extensionless_path_line_hint_disambiguates
     let test_target = IndexedFile {
         relative_path: "tests/db.py".to_string(),
         language: LanguageId::Python,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "tests/db.py",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("tests/db.py"),
         content: b"def connect():\n    pass\n".to_vec(),
         symbols: vec![SymbolRecord {
             name: "connect".to_string(),
@@ -579,9 +575,7 @@ async fn test_prompt_context_endpoint_extensionless_path_line_hint_disambiguates
     let src_dependent = IndexedFile {
         relative_path: "src/service.rs".to_string(),
         language: LanguageId::Rust,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "src/service.rs",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("src/service.rs"),
         content: b"use crate::db::connect;\nfn run() { connect(); }\n".to_vec(),
         symbols: vec![SymbolRecord {
             name: "run".to_string(),
@@ -618,9 +612,7 @@ async fn test_prompt_context_endpoint_extensionless_path_line_hint_disambiguates
     let unrelated = IndexedFile {
         relative_path: "src/other.rs".to_string(),
         language: LanguageId::Rust,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "src/other.rs",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("src/other.rs"),
         content: b"fn run() { connect(); }\n".to_vec(),
         symbols: vec![SymbolRecord {
             name: "run".to_string(),
@@ -685,9 +677,7 @@ async fn test_prompt_context_endpoint_module_alias_line_hint_disambiguates_exact
     let src_target = IndexedFile {
         relative_path: "src/db.rs".to_string(),
         language: LanguageId::Rust,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "src/db.rs",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("src/db.rs"),
         content: b"fn connect() {}\nfn connect() {}\n".to_vec(),
         symbols: vec![
             SymbolRecord {
@@ -718,9 +708,7 @@ async fn test_prompt_context_endpoint_module_alias_line_hint_disambiguates_exact
     let test_target = IndexedFile {
         relative_path: "tests/db.py".to_string(),
         language: LanguageId::Python,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "tests/db.py",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("tests/db.py"),
         content: b"def connect():\n    pass\n".to_vec(),
         symbols: vec![SymbolRecord {
             name: "connect".to_string(),
@@ -740,9 +728,7 @@ async fn test_prompt_context_endpoint_module_alias_line_hint_disambiguates_exact
     let src_dependent = IndexedFile {
         relative_path: "src/service.rs".to_string(),
         language: LanguageId::Rust,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "src/service.rs",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("src/service.rs"),
         content: b"use crate::db::connect;\nfn run() { connect(); }\n".to_vec(),
         symbols: vec![SymbolRecord {
             name: "run".to_string(),
@@ -779,9 +765,7 @@ async fn test_prompt_context_endpoint_module_alias_line_hint_disambiguates_exact
     let unrelated = IndexedFile {
         relative_path: "src/other.rs".to_string(),
         language: LanguageId::Rust,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "src/other.rs",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("src/other.rs"),
         content: b"fn run() { connect(); }\n".to_vec(),
         symbols: vec![SymbolRecord {
             name: "run".to_string(),
@@ -846,9 +830,7 @@ async fn test_prompt_context_endpoint_module_alias_without_line_prefers_exact_fi
     let src_target = IndexedFile {
         relative_path: "src/db.rs".to_string(),
         language: LanguageId::Rust,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "src/db.rs",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("src/db.rs"),
         content: b"fn connect() {}\n".to_vec(),
         symbols: vec![SymbolRecord {
             name: "connect".to_string(),
@@ -868,9 +850,7 @@ async fn test_prompt_context_endpoint_module_alias_without_line_prefers_exact_fi
     let test_target = IndexedFile {
         relative_path: "tests/db.py".to_string(),
         language: LanguageId::Python,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "tests/db.py",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("tests/db.py"),
         content: b"def connect():\n    pass\n".to_vec(),
         symbols: vec![SymbolRecord {
             name: "connect".to_string(),
@@ -890,9 +870,7 @@ async fn test_prompt_context_endpoint_module_alias_without_line_prefers_exact_fi
     let src_dependent = IndexedFile {
         relative_path: "src/service.rs".to_string(),
         language: LanguageId::Rust,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "src/service.rs",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("src/service.rs"),
         content: b"use crate::db::connect;\nfn run() { connect(); }\n".to_vec(),
         symbols: vec![SymbolRecord {
             name: "run".to_string(),
@@ -929,9 +907,7 @@ async fn test_prompt_context_endpoint_module_alias_without_line_prefers_exact_fi
     let unrelated = IndexedFile {
         relative_path: "src/other.rs".to_string(),
         language: LanguageId::Rust,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "src/other.rs",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("src/other.rs"),
         content: b"fn run() { connect(); }\n".to_vec(),
         symbols: vec![SymbolRecord {
             name: "run".to_string(),
@@ -996,9 +972,7 @@ async fn test_prompt_context_endpoint_slash_module_alias_without_line_prefers_ex
     let target = IndexedFile {
         relative_path: "src/utils/index.ts".to_string(),
         language: LanguageId::TypeScript,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "src/utils/index.ts",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("src/utils/index.ts"),
         content: b"export function connect() {}\n".to_vec(),
         symbols: vec![SymbolRecord {
             name: "connect".to_string(),
@@ -1018,9 +992,7 @@ async fn test_prompt_context_endpoint_slash_module_alias_without_line_prefers_ex
     let dependent = IndexedFile {
         relative_path: "src/app.ts".to_string(),
         language: LanguageId::TypeScript,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "src/app.ts",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("src/app.ts"),
         content: b"import { connect } from 'src/utils';\nconnect();\n".to_vec(),
         symbols: vec![SymbolRecord {
             name: "run".to_string(),
@@ -1057,9 +1029,7 @@ async fn test_prompt_context_endpoint_slash_module_alias_without_line_prefers_ex
     let unrelated = IndexedFile {
         relative_path: "src/other.ts".to_string(),
         language: LanguageId::TypeScript,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "src/other.ts",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("src/other.ts"),
         content: b"connect();\n".to_vec(),
         symbols: vec![SymbolRecord {
             name: "run".to_string(),
@@ -1124,9 +1094,7 @@ async fn test_prompt_context_endpoint_slash_module_alias_line_hint_disambiguates
     let target = IndexedFile {
         relative_path: "src/utils/index.ts".to_string(),
         language: LanguageId::TypeScript,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "src/utils/index.ts",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("src/utils/index.ts"),
         content: b"export function connect() {}\n\nexport function connect() {}\n".to_vec(),
         symbols: vec![
             SymbolRecord {
@@ -1157,9 +1125,7 @@ async fn test_prompt_context_endpoint_slash_module_alias_line_hint_disambiguates
     let dependent = IndexedFile {
         relative_path: "src/app.ts".to_string(),
         language: LanguageId::TypeScript,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "src/app.ts",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("src/app.ts"),
         content: b"import { connect } from 'src/utils';\nconnect();\n".to_vec(),
         symbols: vec![SymbolRecord {
             name: "run".to_string(),
@@ -1196,9 +1162,7 @@ async fn test_prompt_context_endpoint_slash_module_alias_line_hint_disambiguates
     let unrelated = IndexedFile {
         relative_path: "src/other.ts".to_string(),
         language: LanguageId::TypeScript,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "src/other.ts",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("src/other.ts"),
         content: b"connect();\n".to_vec(),
         symbols: vec![SymbolRecord {
             name: "run".to_string(),
@@ -1264,9 +1228,7 @@ async fn test_prompt_context_endpoint_qualified_symbol_alias_prefers_exact_selec
     let dependent = IndexedFile {
         relative_path: "src/service.rs".to_string(),
         language: LanguageId::Rust,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "src/service.rs",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("src/service.rs"),
         content: b"use crate::db::connect;\nfn run() { connect(); }\n".to_vec(),
         symbols: vec![SymbolRecord {
             name: "run".to_string(),
@@ -1303,9 +1265,7 @@ async fn test_prompt_context_endpoint_qualified_symbol_alias_prefers_exact_selec
     let unrelated = IndexedFile {
         relative_path: "src/other.rs".to_string(),
         language: LanguageId::Rust,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "src/other.rs",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("src/other.rs"),
         content: b"fn run() { connect(); }\n".to_vec(),
         symbols: vec![SymbolRecord {
             name: "run".to_string(),
@@ -1366,9 +1326,7 @@ async fn test_prompt_context_endpoint_dotted_qualified_symbol_alias_prefers_exac
     let target = IndexedFile {
         relative_path: "pkg/db.py".to_string(),
         language: LanguageId::Python,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "pkg/db.py",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("pkg/db.py"),
         content: b"def connect():\n    pass\n".to_vec(),
         symbols: vec![SymbolRecord {
             name: "connect".to_string(),
@@ -1388,9 +1346,7 @@ async fn test_prompt_context_endpoint_dotted_qualified_symbol_alias_prefers_exac
     let dependent = IndexedFile {
         relative_path: "pkg/service.py".to_string(),
         language: LanguageId::Python,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "pkg/service.py",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("pkg/service.py"),
         content: b"from pkg.db import connect\n\ndef run():\n    connect()\n".to_vec(),
         symbols: vec![SymbolRecord {
             name: "run".to_string(),
@@ -1427,9 +1383,7 @@ async fn test_prompt_context_endpoint_dotted_qualified_symbol_alias_prefers_exac
     let unrelated = IndexedFile {
         relative_path: "pkg/other.py".to_string(),
         language: LanguageId::Python,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "pkg/other.py",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("pkg/other.py"),
         content: b"def run():\n    connect()\n".to_vec(),
         symbols: vec![SymbolRecord {
             name: "run".to_string(),
@@ -1490,9 +1444,7 @@ async fn test_prompt_context_endpoint_slash_qualified_symbol_alias_prefers_exact
     let target = IndexedFile {
         relative_path: "src/utils/index.ts".to_string(),
         language: LanguageId::TypeScript,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "src/utils/index.ts",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("src/utils/index.ts"),
         content: b"export function connect() {}\n".to_vec(),
         symbols: vec![SymbolRecord {
             name: "connect".to_string(),
@@ -1512,9 +1464,7 @@ async fn test_prompt_context_endpoint_slash_qualified_symbol_alias_prefers_exact
     let dependent = IndexedFile {
         relative_path: "src/app.ts".to_string(),
         language: LanguageId::TypeScript,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "src/app.ts",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("src/app.ts"),
         content: b"import { connect } from 'src/utils';\nconnect();\n".to_vec(),
         symbols: vec![SymbolRecord {
             name: "run".to_string(),
@@ -1551,9 +1501,7 @@ async fn test_prompt_context_endpoint_slash_qualified_symbol_alias_prefers_exact
     let unrelated = IndexedFile {
         relative_path: "src/other.ts".to_string(),
         language: LanguageId::TypeScript,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "src/other.ts",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("src/other.ts"),
         content: b"connect();\n".to_vec(),
         symbols: vec![SymbolRecord {
             name: "run".to_string(),
@@ -1615,9 +1563,7 @@ async fn test_prompt_context_endpoint_slash_qualified_symbol_alias_line_hint_dis
     let target = IndexedFile {
         relative_path: "src/utils/index.ts".to_string(),
         language: LanguageId::TypeScript,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "src/utils/index.ts",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("src/utils/index.ts"),
         content: b"export function connect() {}\n\nexport function connect() {}\n".to_vec(),
         symbols: vec![
             SymbolRecord {
@@ -1648,9 +1594,7 @@ async fn test_prompt_context_endpoint_slash_qualified_symbol_alias_line_hint_dis
     let dependent = IndexedFile {
         relative_path: "src/app.ts".to_string(),
         language: LanguageId::TypeScript,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "src/app.ts",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("src/app.ts"),
         content: b"import { connect } from 'src/utils';\nconnect();\n".to_vec(),
         symbols: vec![SymbolRecord {
             name: "run".to_string(),
@@ -1687,9 +1631,7 @@ async fn test_prompt_context_endpoint_slash_qualified_symbol_alias_line_hint_dis
     let unrelated = IndexedFile {
         relative_path: "src/other.ts".to_string(),
         language: LanguageId::TypeScript,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "src/other.ts",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("src/other.ts"),
         content: b"connect();\n".to_vec(),
         symbols: vec![SymbolRecord {
             name: "run".to_string(),
@@ -1755,9 +1697,7 @@ async fn test_prompt_context_endpoint_dotted_qualified_symbol_alias_line_hint_di
     let target = IndexedFile {
         relative_path: "pkg/db.py".to_string(),
         language: LanguageId::Python,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "pkg/db.py",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("pkg/db.py"),
         content: b"def connect():\n    pass\n\ndef connect():\n    pass\n".to_vec(),
         symbols: vec![
             SymbolRecord {
@@ -1788,9 +1728,7 @@ async fn test_prompt_context_endpoint_dotted_qualified_symbol_alias_line_hint_di
     let dependent = IndexedFile {
         relative_path: "pkg/service.py".to_string(),
         language: LanguageId::Python,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "pkg/service.py",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("pkg/service.py"),
         content: b"from pkg.db import connect\n\ndef run():\n    connect()\n".to_vec(),
         symbols: vec![SymbolRecord {
             name: "run".to_string(),
@@ -1827,9 +1765,7 @@ async fn test_prompt_context_endpoint_dotted_qualified_symbol_alias_line_hint_di
     let unrelated = IndexedFile {
         relative_path: "pkg/other.py".to_string(),
         language: LanguageId::Python,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "pkg/other.py",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("pkg/other.py"),
         content: b"def run():\n    connect()\n".to_vec(),
         symbols: vec![SymbolRecord {
             name: "run".to_string(),
@@ -1895,9 +1831,7 @@ async fn test_prompt_context_endpoint_combined_hint_uses_exact_selector() {
     let dependent = IndexedFile {
         relative_path: "src/service.rs".to_string(),
         language: LanguageId::Rust,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "src/service.rs",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("src/service.rs"),
         content: b"use crate::db::connect;\nfn run() { connect(); }\n".to_vec(),
         symbols: vec![SymbolRecord {
             name: "run".to_string(),
@@ -1934,9 +1868,7 @@ async fn test_prompt_context_endpoint_combined_hint_uses_exact_selector() {
     let unrelated = IndexedFile {
         relative_path: "src/other.rs".to_string(),
         language: LanguageId::Rust,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "src/other.rs",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("src/other.rs"),
         content: b"fn run() { connect(); }\n".to_vec(),
         symbols: vec![SymbolRecord {
             name: "run".to_string(),
@@ -1997,9 +1929,7 @@ async fn test_prompt_context_endpoint_line_hint_disambiguates_exact_selector() {
     let target = IndexedFile {
         relative_path: "src/db.rs".to_string(),
         language: LanguageId::Rust,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "src/db.rs",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("src/db.rs"),
         content: b"fn connect() {}\nfn connect() {}\n".to_vec(),
         symbols: vec![
             SymbolRecord {
@@ -2030,9 +1960,7 @@ async fn test_prompt_context_endpoint_line_hint_disambiguates_exact_selector() {
     let dependent = IndexedFile {
         relative_path: "src/service.rs".to_string(),
         language: LanguageId::Rust,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "src/service.rs",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("src/service.rs"),
         content: b"use crate::db::connect;\nfn run() { connect(); }\n".to_vec(),
         symbols: vec![SymbolRecord {
             name: "run".to_string(),
@@ -2103,9 +2031,7 @@ async fn test_prompt_context_endpoint_path_line_hint_disambiguates_exact_selecto
     let target = IndexedFile {
         relative_path: "src/db.rs".to_string(),
         language: LanguageId::Rust,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "src/db.rs",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("src/db.rs"),
         content: b"fn connect() {}\nfn connect() {}\n".to_vec(),
         symbols: vec![
             SymbolRecord {
@@ -2136,9 +2062,7 @@ async fn test_prompt_context_endpoint_path_line_hint_disambiguates_exact_selecto
     let dependent = IndexedFile {
         relative_path: "src/service.rs".to_string(),
         language: LanguageId::Rust,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "src/service.rs",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("src/service.rs"),
         content: b"use crate::db::connect;\nfn run() { connect(); }\n".to_vec(),
         symbols: vec![SymbolRecord {
             name: "run".to_string(),
@@ -2209,9 +2133,7 @@ async fn test_prompt_context_endpoint_basename_line_hint_disambiguates_exact_sel
     let target = IndexedFile {
         relative_path: "src/db.rs".to_string(),
         language: LanguageId::Rust,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "src/db.rs",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("src/db.rs"),
         content: b"fn connect() {}\nfn connect() {}\n".to_vec(),
         symbols: vec![
             SymbolRecord {
@@ -2242,9 +2164,7 @@ async fn test_prompt_context_endpoint_basename_line_hint_disambiguates_exact_sel
     let dependent = IndexedFile {
         relative_path: "src/service.rs".to_string(),
         language: LanguageId::Rust,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "src/service.rs",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("src/service.rs"),
         content: b"use crate::db::connect;\nfn run() { connect(); }\n".to_vec(),
         symbols: vec![SymbolRecord {
             name: "run".to_string(),
@@ -2315,9 +2235,7 @@ async fn test_prompt_context_endpoint_extensionless_alias_line_hint_disambiguate
     let target = IndexedFile {
         relative_path: "src/db.rs".to_string(),
         language: LanguageId::Rust,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "src/db.rs",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("src/db.rs"),
         content: b"fn connect() {}\nfn connect() {}\n".to_vec(),
         symbols: vec![
             SymbolRecord {
@@ -2348,9 +2266,7 @@ async fn test_prompt_context_endpoint_extensionless_alias_line_hint_disambiguate
     let dependent = IndexedFile {
         relative_path: "src/service.rs".to_string(),
         language: LanguageId::Rust,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "src/service.rs",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("src/service.rs"),
         content: b"use crate::db::connect;\nfn run() { connect(); }\n".to_vec(),
         symbols: vec![SymbolRecord {
             name: "run".to_string(),
@@ -2387,9 +2303,7 @@ async fn test_prompt_context_endpoint_extensionless_alias_line_hint_disambiguate
     let unrelated = IndexedFile {
         relative_path: "src/other.rs".to_string(),
         language: LanguageId::Rust,
-        classification: symforge::domain::FileClassification::for_code_path(
-            "src/other.rs",
-        ),
+        classification: symforge::domain::FileClassification::for_code_path("src/other.rs"),
         content: b"fn run() { connect(); }\n".to_vec(),
         symbols: vec![SymbolRecord {
             name: "run".to_string(),

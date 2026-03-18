@@ -37,9 +37,9 @@ use crate::domain::index::{AdmissionTier, SkippedFile};
 use crate::live_index::{
     ContextBundleFoundView, ContextBundleSectionView, ContextBundleView, FileContentView,
     FileOutlineView, FindDependentsView, FindImplementationsView, FindReferencesView, HealthStats,
-    IndexedFile, InspectMatchView, LiveIndex, PublishedIndexState, RepoOutlineFileView,
-    RepoOutlineView, ResolvePathView, SearchFilesTier, SearchFilesView, SymbolDetailView,
-    TypeDependencyView, WhatChangedTimestampView, search,
+    ImplBlockSuggestionView, IndexedFile, InspectMatchView, LiveIndex, PublishedIndexState,
+    RepoOutlineFileView, RepoOutlineView, ResolvePathView, SearchFilesTier, SearchFilesView,
+    SymbolDetailView, TypeDependencyView, WhatChangedTimestampView, search,
 };
 
 /// Format the file outline for a given path.
@@ -2122,6 +2122,14 @@ pub fn context_bundle_result(
 }
 
 pub fn context_bundle_result_view(view: &ContextBundleView, verbosity: &str) -> String {
+    context_bundle_result_view_with_max_tokens(view, verbosity, None)
+}
+
+pub fn context_bundle_result_view_with_max_tokens(
+    view: &ContextBundleView,
+    verbosity: &str,
+    max_tokens: Option<u64>,
+) -> String {
     match view {
         ContextBundleView::FileNotFound { path } => not_found_file(path),
         ContextBundleView::AmbiguousSymbol {
@@ -2141,11 +2149,17 @@ pub fn context_bundle_result_view(view: &ContextBundleView, verbosity: &str) -> 
             symbol_names,
             name,
         } => not_found_symbol_names(relative_path, symbol_names, name),
-        ContextBundleView::Found(view) => render_context_bundle_found(view, verbosity),
+        ContextBundleView::Found(view) => {
+            render_context_bundle_found_with_max_tokens(view, verbosity, max_tokens)
+        }
     }
 }
 
-fn render_context_bundle_found(view: &ContextBundleFoundView, verbosity: &str) -> String {
+fn render_context_bundle_found_with_max_tokens(
+    view: &ContextBundleFoundView,
+    verbosity: &str,
+    max_tokens: Option<u64>,
+) -> String {
     let body = apply_verbosity(&view.body, verbosity);
     let mut output = format!(
         "{}\n[{}, {}:{}-{}, {} bytes]\n",
@@ -2162,39 +2176,36 @@ fn render_context_bundle_found(view: &ContextBundleFoundView, verbosity: &str) -
         "Type usages",
         &view.type_usages,
     ));
-    if !view.dependencies.is_empty() {
-        output.push_str(&format_type_dependencies(&view.dependencies));
+    match max_tokens {
+        Some(max_tokens) => {
+            let max_bytes = (max_tokens as usize).saturating_mul(4);
+            if max_bytes > 0 && output.len() > max_bytes {
+                let mut truncated = truncate_text_at_line_boundary(&output, max_bytes);
+                truncated.push_str(&format_bundle_truncation_notice(max_tokens, None));
+                if !view.implementation_suggestions.is_empty() {
+                    truncated.push_str(&format_impl_block_suggestions(view));
+                }
+                return truncated;
+            }
+
+            let (dep_text, omitted) = format_type_dependencies_with_budget(
+                &view.dependencies,
+                max_bytes,
+                output.len(),
+            );
+            output.push_str(&dep_text);
+            if omitted > 0 {
+                output.push_str(&format_bundle_truncation_notice(max_tokens, Some(omitted)));
+            }
+        }
+        None => {
+            if !view.dependencies.is_empty() {
+                output.push_str(&format_type_dependencies(&view.dependencies));
+            }
+        }
     }
-    // Hint: when a struct/enum has 0 callers, suggest looking at impl blocks instead.
-    let is_struct_like = matches!(
-        view.kind_label.as_str(),
-        "struct" | "enum" | "class" | "interface" | "trait"
-    );
-    if is_struct_like && view.callers.total_count == 0 && view.callees.total_count == 0 {
-        // Extract the type name from the body's first line. Handles:
-        //   "pub struct Foo {" → "Foo"
-        //   "struct Foo<T>" → "Foo"
-        //   "pub(crate) struct Foo" → "Foo"
-        // Falls back to "..." if extraction produces something garbled.
-        let extracted_name = view
-            .body
-            .lines()
-            .next()
-            .and_then(|line| {
-                // Find the keyword (struct/enum/class/trait/interface), take the token after it
-                let words: Vec<&str> = line.split_whitespace().collect();
-                let keyword_pos = words.iter().position(|w| {
-                    matches!(*w, "struct" | "enum" | "class" | "trait" | "interface")
-                })?;
-                words.get(keyword_pos + 1).copied()
-            })
-            .map(|n| n.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_'))
-            .filter(|n| !n.is_empty() && !n.contains('(') && !n.contains('#'))
-            .unwrap_or("...");
-        output.push_str(&format!(
-            "\nTip: This {} has 0 direct callers/callees. Try `get_symbol_context` on its `impl` block or use `find_references(name=\"{}\")` to find usages.\n",
-            view.kind_label, extracted_name
-        ));
+    if !view.implementation_suggestions.is_empty() {
+        output.push_str(&format_impl_block_suggestions(view));
     }
     output
 }
@@ -2225,7 +2236,8 @@ pub fn trace_symbol_result_view(
             name,
         } => not_found_symbol_names(relative_path, symbol_names, name),
         crate::live_index::TraceSymbolView::Found(found) => {
-            let mut output = render_context_bundle_found(&found.context_bundle, verbosity);
+            let mut output =
+                render_context_bundle_found_with_max_tokens(&found.context_bundle, verbosity, None);
 
             if !found.siblings.is_empty() {
                 output.push_str(&format_siblings(&found.siblings, 0));
@@ -2629,23 +2641,122 @@ pub(crate) fn apply_verbosity(body: &str, verbosity: &str) -> String {
 fn format_type_dependencies(deps: &[TypeDependencyView]) -> String {
     let mut output = format!("\nDependencies ({}):", deps.len());
     for dep in deps {
-        let depth_marker = if dep.depth > 0 {
-            format!(" (depth {})", dep.depth)
-        } else {
-            String::new()
-        };
-        output.push_str(&format!(
-            "\n── {} [{}, {}:{}-{}{}] ──\n{}",
-            dep.name,
-            dep.kind_label,
-            dep.file_path,
-            dep.line_range.0 + 1,
-            dep.line_range.1 + 1,
-            depth_marker,
-            dep.body
-        ));
+        output.push_str(&format_type_dependency(dep));
     }
     output
+}
+
+fn format_type_dependencies_with_budget(
+    deps: &[TypeDependencyView],
+    max_bytes: usize,
+    base_len: usize,
+) -> (String, usize) {
+    if deps.is_empty() || max_bytes == 0 {
+        return (String::new(), 0);
+    }
+
+    let mut rendered = String::new();
+    let header = format!("\nDependencies ({}):", deps.len());
+    let mut header_added = false;
+    let mut included = 0usize;
+
+    for dep in deps {
+        let dep_block = format_type_dependency(dep);
+        let header_cost = if header_added { 0 } else { header.len() };
+        if base_len + rendered.len() + header_cost + dep_block.len() > max_bytes {
+            break;
+        }
+        if !header_added {
+            rendered.push_str(&header);
+            header_added = true;
+        }
+        rendered.push_str(&dep_block);
+        included += 1;
+    }
+
+    if included == deps.len() {
+        return (rendered, 0);
+    }
+    if included == 0 {
+        return (String::new(), deps.len());
+    }
+    (rendered, deps.len().saturating_sub(included))
+}
+
+fn format_type_dependency(dep: &TypeDependencyView) -> String {
+    let depth_marker = if dep.depth > 0 {
+        format!(" (depth {})", dep.depth)
+    } else {
+        String::new()
+    };
+    format!(
+        "\n── {} [{}, {}:{}-{}{}] ──\n{}",
+        dep.name,
+        dep.kind_label,
+        dep.file_path,
+        dep.line_range.0 + 1,
+        dep.line_range.1 + 1,
+        depth_marker,
+        dep.body
+    )
+}
+
+fn format_impl_block_suggestions(view: &ContextBundleFoundView) -> String {
+    let is_type_definition = matches!(view.kind_label.as_str(), "struct" | "enum");
+    if !is_type_definition
+        || view.callers.total_count != 0
+        || view.implementation_suggestions.is_empty()
+    {
+        return String::new();
+    }
+
+    let mut output = format!(
+        "\nTip: This {} has 0 direct callers. Try `get_symbol_context` on one of its impl blocks:",
+        view.kind_label
+    );
+    for suggestion in &view.implementation_suggestions {
+        output.push_str(&format_impl_block_suggestion(suggestion));
+    }
+    output.push('\n');
+    output
+}
+
+fn format_impl_block_suggestion(suggestion: &ImplBlockSuggestionView) -> String {
+    format!(
+        "\n- {} ({}:{})",
+        suggestion.display_name, suggestion.file_path, suggestion.line_number
+    )
+}
+
+fn format_bundle_truncation_notice(max_tokens: u64, omitted_dependencies: Option<usize>) -> String {
+    match omitted_dependencies {
+        Some(count) => format!(
+            "\nTruncated at ~{max_tokens} tokens. {count} additional type dependencies not shown.\n"
+        ),
+        None => format!("\nTruncated at ~{max_tokens} tokens.\n"),
+    }
+}
+
+fn truncate_text_at_line_boundary(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text.to_string();
+    }
+
+    let mut last_char_end = 0usize;
+    let mut last_newline_end = None;
+    for (idx, ch) in text.char_indices() {
+        let char_end = idx + ch.len_utf8();
+        if char_end > max_bytes {
+            break;
+        }
+        last_char_end = char_end;
+        if ch == '\n' {
+            last_newline_end = Some(char_end);
+        }
+    }
+
+    let end = last_newline_end.unwrap_or(last_char_end);
+    text[..end].to_string()
 }
 
 /// "Index is loading... try again shortly."
@@ -4668,6 +4779,116 @@ mod tests {
         );
         assert!(result.contains("1"), "got: {result}");
         assert!(result.contains("10"), "got: {result}");
+    }
+
+    #[test]
+    fn test_context_bundle_result_view_suggests_impl_blocks_for_zero_caller_struct() {
+        let empty_section = ContextBundleSectionView {
+            total_count: 0,
+            overflow_count: 0,
+            entries: vec![],
+        };
+        let result = context_bundle_result_view(
+            &ContextBundleView::Found(ContextBundleFoundView {
+                file_path: "src/actors.rs".to_string(),
+                body: "struct MyActor;".to_string(),
+                kind_label: "struct".to_string(),
+                line_range: (0, 0),
+                byte_count: 15,
+                callers: empty_section.clone(),
+                callees: empty_section.clone(),
+                type_usages: empty_section,
+                dependencies: vec![],
+                implementation_suggestions: vec![
+                    ImplBlockSuggestionView {
+                        display_name: "impl MyActor".to_string(),
+                        file_path: "src/actors.rs".to_string(),
+                        line_number: 3,
+                    },
+                    ImplBlockSuggestionView {
+                        display_name: "impl Actor for MyActor".to_string(),
+                        file_path: "src/actors.rs".to_string(),
+                        line_number: 7,
+                    },
+                ],
+            }),
+            "full",
+        );
+
+        assert!(
+            result.contains("0 direct callers"),
+            "missing zero-caller tip: {result}"
+        );
+        assert!(
+            result.contains("impl MyActor (src/actors.rs:3)"),
+            "missing inherent impl suggestion: {result}"
+        );
+        assert!(
+            result.contains("impl Actor for MyActor (src/actors.rs:7)"),
+            "missing trait impl suggestion: {result}"
+        );
+    }
+
+    #[test]
+    fn test_context_bundle_result_view_with_max_tokens_truncates_dependencies_in_priority_order() {
+        let empty_section = ContextBundleSectionView {
+            total_count: 0,
+            overflow_count: 0,
+            entries: vec![],
+        };
+        let result = context_bundle_result_view_with_max_tokens(
+            &ContextBundleView::Found(ContextBundleFoundView {
+                file_path: "src/lib.rs".to_string(),
+                body: "fn plan(alpha: Alpha) -> Output { todo!() }".to_string(),
+                kind_label: "fn".to_string(),
+                line_range: (0, 0),
+                byte_count: 44,
+                callers: empty_section.clone(),
+                callees: empty_section.clone(),
+                type_usages: empty_section,
+                dependencies: vec![
+                    TypeDependencyView {
+                        name: "Alpha".to_string(),
+                        kind_label: "struct".to_string(),
+                        file_path: "src/types.rs".to_string(),
+                        line_range: (10, 12),
+                        body: "struct Alpha {\n    value: i32,\n}\n".to_string(),
+                        depth: 0,
+                    },
+                    TypeDependencyView {
+                        name: "Gamma".to_string(),
+                        kind_label: "struct".to_string(),
+                        file_path: "src/types.rs".to_string(),
+                        line_range: (20, 40),
+                        body: format!(
+                            "struct Gamma {{\n{}\n}}\n",
+                            "    payload: [u8; 64],\n".repeat(10)
+                        ),
+                        depth: 1,
+                    },
+                ],
+                implementation_suggestions: vec![],
+            }),
+            "full",
+            Some(100),
+        );
+
+        assert!(
+            result.contains("── Alpha [struct, src/types.rs:11-13]"),
+            "expected direct dependency to fit the budget: {result}"
+        );
+        assert!(
+            !result.contains("── Gamma [struct, src/types.rs:21-41"),
+            "transitive dependency should be omitted once the budget is exhausted: {result}"
+        );
+        assert!(
+            result.contains("Truncated at ~100 tokens."),
+            "expected truncation footer: {result}"
+        );
+        assert!(
+            result.contains("1 additional type dependencies not shown."),
+            "expected omitted dependency count: {result}"
+        );
     }
 
     // --- format_token_savings tests ---

@@ -292,7 +292,10 @@ pub(crate) fn freshen_file_if_stale(
     // 2. Compare against indexed mtime (read lock, released immediately)
     let indexed_mtime = {
         let index = shared.read();
-        index.get_file(relative_path).map(|f| f.mtime_secs).unwrap_or(u64::MAX)
+        index
+            .get_file(relative_path)
+            .map(|f| f.mtime_secs)
+            .unwrap_or(u64::MAX)
     };
 
     if disk_mtime != 0 && disk_mtime == indexed_mtime {
@@ -501,8 +504,7 @@ pub async fn run_watcher(
                 loop {
                     // Periodic reconciliation sweep (belt-and-suspenders against missed events).
                     if reconcile_interval_secs > 0
-                        && last_reconcile.elapsed()
-                            >= Duration::from_secs(reconcile_interval_secs)
+                        && last_reconcile.elapsed() >= Duration::from_secs(reconcile_interval_secs)
                     {
                         let shared_clone = shared.clone();
                         let root_clone = repo_root.clone();
@@ -569,8 +571,7 @@ pub async fn run_watcher(
                                 let root_clone = repo_root.clone();
                                 let watcher_info_clone = watcher_info.clone();
                                 tokio::task::spawn_blocking(move || {
-                                    let stale =
-                                        reconcile_stale_files(&root_clone, &shared_clone);
+                                    let stale = reconcile_stale_files(&root_clone, &shared_clone);
                                     let mut info = watcher_info_clone.lock().unwrap();
                                     info.overflow_count += 1;
                                     info.last_overflow_at = Some(SystemTime::now());

@@ -1,3 +1,4 @@
+use parking_lot::RwLock;
 /// MCP tool handler methods and their input parameter structs.
 ///
 /// Each handler follows the pattern:
@@ -15,7 +16,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use parking_lot::RwLock;
 
 use axum::http::StatusCode;
 use rmcp::handler::server::wrapper::Parameters;
@@ -154,8 +154,7 @@ where
     }
     match VecOrStr::<T>::deserialize(deserializer)? {
         VecOrStr::Vec(v) => Ok(v),
-        VecOrStr::Str(s) => serde_json::from_str::<Vec<T>>(&s)
-            .map_err(serde::de::Error::custom),
+        VecOrStr::Str(s) => serde_json::from_str::<Vec<T>>(&s).map_err(serde::de::Error::custom),
     }
 }
 
@@ -540,10 +539,10 @@ pub struct GetSymbolContextInput {
     /// Omit for default symbol-context mode. Pass empty array for all trace sections.
     #[serde(default, deserialize_with = "lenient_option_vec")]
     pub sections: Option<Vec<String>>,
-    /// Optional max token budget for bundle mode. When set, truncates the rendered
-    /// output at the nearest line boundary before the approximate token budget
-    /// (~4 chars per token). The full symbol body and sections are rendered first,
-    /// then cut if they exceed the budget.
+    /// Optional max token budget for bundle mode. When set, preserves the main
+    /// symbol body and sections, then includes type dependencies in priority
+    /// order (direct first, then transitive) until the approximate budget
+    /// (~4 chars per token) is exhausted.
     #[serde(default, deserialize_with = "lenient_u64")]
     pub max_tokens: Option<u64>,
 }
@@ -1678,25 +1677,8 @@ impl SymForgeServer {
                 (v, raw)
             };
             let verbosity = params.0.verbosity.as_deref().unwrap_or("full");
-            let mut result = format::context_bundle_result_view(&view, verbosity);
-            // Apply max_tokens truncation if requested.
-            // Truncates the rendered output (not selective dependency omission)
-            // at the nearest line boundary before the approximate token budget.
-            if let Some(max_tokens) = params.0.max_tokens {
-                let max_bytes = (max_tokens as usize) * 4; // ~4 chars per token (conservative)
-                if result.len() > max_bytes {
-                    // Find the last newline before the byte budget to ensure
-                    // we truncate at a clean line boundary (also avoids UTF-8 mid-char panics).
-                    let truncate_at = result[..max_bytes]
-                        .rfind('\n')
-                        .map(|pos| pos + 1)
-                        .unwrap_or(max_bytes.min(result.len()));
-                    result.truncate(truncate_at);
-                    result.push_str(&format!(
-                        "\n... truncated at ~{max_tokens} tokens. Use without max_tokens for full output.\n"
-                    ));
-                }
-            }
+            let result =
+                format::context_bundle_result_view_with_max_tokens(&view, verbosity, params.0.max_tokens);
             let saved = raw_chars.saturating_sub(result.len());
             let footer = format::compact_savings_footer(result.len(), raw_chars);
             self.record_read_savings((saved / 4) as u64);
@@ -1961,7 +1943,10 @@ impl SymForgeServer {
         // LiveIndex read lock to avoid lock ordering issues.
         if options.ranked {
             let git_temporal = self.index.git_temporal();
-            if matches!(git_temporal.state, crate::live_index::git_temporal::GitTemporalState::Ready) {
+            if matches!(
+                git_temporal.state,
+                crate::live_index::git_temporal::GitTemporalState::Ready
+            ) {
                 let churn_map: std::collections::HashMap<String, f32> = git_temporal
                     .files
                     .iter()
@@ -3086,7 +3071,8 @@ impl SymForgeServer {
             .rposition(|&b| b == b'\n')
             .map(|p| p + 1)
             .unwrap_or(0);
-        let line_start = edit::extend_past_orphaned_docs(&file.content, raw_line_start, &sym) as u32;
+        let line_start =
+            edit::extend_past_orphaned_docs(&file.content, raw_line_start, &sym) as u32;
         let indent = edit::detect_indentation(&file.content, sym.byte_range.0);
         let line_ending = edit::detect_line_ending(&file.content);
         let normalized = edit::normalize_line_endings(params.0.new_body.as_bytes(), line_ending);

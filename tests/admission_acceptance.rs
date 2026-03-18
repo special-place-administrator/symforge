@@ -7,8 +7,8 @@
 
 use std::fs;
 use std::path::Path;
-use tempfile::tempdir;
 use symforge::live_index::LiveIndex;
+use tempfile::tempdir;
 
 // ---------------------------------------------------------------------------
 // Helper

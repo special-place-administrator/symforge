@@ -14,7 +14,6 @@
 use std::fs;
 use std::path::Path;
 
-use tempfile::tempdir;
 use symforge::{
     domain::{FileOutcome, LanguageId, SymbolKind},
     live_index::{IndexState, LiveIndex},
@@ -23,6 +22,7 @@ use symforge::{
         process_file,
     },
 };
+use tempfile::tempdir;
 
 // ---------------------------------------------------------------------------
 // Helpers
