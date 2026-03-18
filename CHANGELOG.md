@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/special-place-administrator/symforge/compare/v1.1.0...v1.2.0) (2026-03-18)
+
+
+### Features
+
+* **init:** add alwaysAllow to Claude MCP entry and expand CLAUDE.md guidance ([4ee5f53](https://github.com/special-place-administrator/symforge/commit/4ee5f535546e829850c6136b5785bd56b23c7732))
+
 ## [1.1.0](https://github.com/special-place-administrator/symforge/compare/v1.0.0...v1.1.0) (2026-03-17)
 
 
