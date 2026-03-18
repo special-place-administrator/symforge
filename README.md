@@ -218,6 +218,26 @@ npm install -g symforge
 
 The installer downloads the platform binary to `~/.symforge/bin/`. Set `SYMFORGE_HOME` to override.
 
+### What happens when you install
+
+Running `npm install -g symforge` does the following automatically:
+
+1. **Downloads the npm wrapper** from the registry
+2. **Downloads your platform's pre-built binary** from GitHub releases and places it at `~/.symforge/bin/symforge[.exe]`
+3. **Detects which AI CLI tools you have installed** by checking for `~/.claude`, `~/.codex`, and `~/.gemini` directories
+4. **Runs `symforge init`** on the downloaded binary, which configures each detected client:
+
+   | Client | Files written |
+   |--------|--------------|
+   | **Claude Code** | `~/.claude.json` — MCP server entry with `alwaysAllow` for all 24 tools<br>`~/.claude/settings.json` — hook entries (PostToolUse, PreToolUse, SessionStart, UserPromptSubmit)<br>`~/.claude/CLAUDE.md` — SymForge guidance block (Decision Rules + Tooling Preference) |
+   | **Codex** | `~/.codex/config.toml` — MCP server entry with timeouts and allowed tools<br>`~/.codex/AGENTS.md` — guidance block |
+   | **Gemini CLI** | `~/.gemini/settings.json` — MCP server entry with `trust: true`<br>`~/.gemini/GEMINI.md` — guidance block |
+   | **Kilo Code** | `.kilocode/mcp.json` in the current working directory |
+
+5. **Creates `.symforge/`** in the current working directory (runtime state directory)
+
+Everything is idempotent — re-running install or `symforge init` is safe and updates configs to the latest format without duplicating entries or losing existing settings.
+
 **Updates** work the same way — `npm install -g symforge` replaces the binary. If the binary is locked (active session), it stages a `.pending` update that applies on next launch.
 
 **Auto-init** runs after every install/update: detects Claude Code, Codex, and Gemini CLI, registers the MCP server, installs hooks, and auto-allows all SymForge tools. Other MCP clients (VS Code extensions, JetBrains plugins, custom agents) can connect via manual stdio configuration.
