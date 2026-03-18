@@ -315,6 +315,8 @@ This creates `.kilocode/mcp.json` in your workspace with the full tool allowlist
 
 On macOS/Linux, use `~/.symforge/bin/symforge` (no `.exe`). The `alwaysAllow` list bypasses per-tool approval prompts.
 
+**Kilo / Codex / Gemini schema errors:** if a strict provider shows an error like `Invalid schema for function ... array schema missing items`, the named function usually belongs to a different MCP server in the active client config, not SymForge. Strict providers reject the whole tool list if any loaded MCP server advertises invalid JSON Schema. In Kilo Code, check both workspace and global MCP settings for extra servers such as Claude hook bridges or flow servers, and temporarily disable the server named in the error.
+
 Other VS Code extensions and MCP clients follow a similar pattern — point the MCP stdio transport at the SymForge binary with no arguments. The standard MCP handshake handles the rest.
 
 ### Getting the Most Out of SymForge

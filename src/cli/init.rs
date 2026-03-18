@@ -637,7 +637,8 @@ pub fn register_kilo_mcp_server(
 
     config["mcpServers"]["symforge"] = json!({
         "command": command_path,
-        "args": ["--stdio"],
+        "args": [],
+        "disabled": false,
         "alwaysAllow": always_allow
     });
 

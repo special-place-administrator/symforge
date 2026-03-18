@@ -1,6 +1,7 @@
 use symforge::cli::InitClient;
 use symforge::cli::init::{
-    merge_hooks_into_settings, register_codex_mcp_server, run_init_with_context,
+    merge_hooks_into_settings, register_codex_mcp_server, register_kilo_mcp_server,
+    run_init_with_context,
 };
 /// Integration tests for `symforge init` — proves idempotent hook installation.
 ///
@@ -177,7 +178,6 @@ fn test_init_preserves_other_hooks() {
 // test_init_registers_mcp_server: MCP entry written to claude.json
 // ---------------------------------------------------------------------------
 
-#[test]
 #[test]
 fn test_init_registers_mcp_server() {
     let dir = TempDir::new().unwrap();
@@ -372,6 +372,77 @@ command = "other.exe"
 }
 
 #[test]
+fn test_init_registers_kilo_mcp_server() {
+    let dir = TempDir::new().unwrap();
+    let kilo_config_path = dir.path().join(".kilocode").join("mcp.json");
+    let binary_path = r"C:\\Users\\user\\.symforge\\bin\\symforge.exe";
+
+    register_kilo_mcp_server(&kilo_config_path, binary_path)
+        .expect("register_kilo_mcp_server must succeed");
+
+    let raw = std::fs::read_to_string(&kilo_config_path).unwrap();
+    let config: serde_json::Value = serde_json::from_str(&raw).unwrap();
+
+    let symforge = &config["mcpServers"]["symforge"];
+    assert_eq!(symforge["command"], binary_path);
+    assert_eq!(symforge["disabled"], false, "disabled must be false");
+    assert_eq!(
+        symforge["args"],
+        serde_json::json!([]),
+        "args must be empty"
+    );
+
+    let always_allow = symforge["alwaysAllow"]
+        .as_array()
+        .expect("alwaysAllow must be an array");
+    assert!(
+        always_allow.iter().any(|v| v.as_str() == Some("health")),
+        "alwaysAllow must include health"
+    );
+    assert!(
+        always_allow
+            .iter()
+            .any(|v| v.as_str() == Some("batch_rename")),
+        "alwaysAllow must include batch_rename"
+    );
+}
+
+#[test]
+fn test_init_kilo_registration_preserves_other_servers() {
+    let dir = TempDir::new().unwrap();
+    let kilo_config_path = dir.path().join(".kilocode").join("mcp.json");
+
+    let initial = serde_json::json!({
+        "mcpServers": {
+            "other-server": {
+                "command": "other-binary",
+                "args": ["stdio"]
+            }
+        }
+    });
+    std::fs::create_dir_all(kilo_config_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &kilo_config_path,
+        serde_json::to_string_pretty(&initial).unwrap(),
+    )
+    .unwrap();
+
+    register_kilo_mcp_server(&kilo_config_path, "/usr/local/bin/symforge").unwrap();
+
+    let raw = std::fs::read_to_string(&kilo_config_path).unwrap();
+    let config: serde_json::Value = serde_json::from_str(&raw).unwrap();
+
+    assert!(
+        config["mcpServers"]["other-server"].is_object(),
+        "other MCP servers must be preserved"
+    );
+    assert!(
+        config["mcpServers"]["symforge"].is_object(),
+        "symforge must be added"
+    );
+}
+
+#[test]
 fn test_run_init_codex_only_updates_codex_files() {
     let home = TempDir::new().unwrap();
     let cwd = TempDir::new().unwrap();
@@ -469,7 +540,6 @@ fn test_run_init_all_updates_both_clients() {
 }
 
 #[test]
-#[test]
 fn test_run_init_codex_writes_symforge_agents_guidance() {
     let home = TempDir::new().unwrap();
     let cwd = TempDir::new().unwrap();
@@ -520,7 +590,6 @@ fn test_run_init_codex_preserves_existing_agents_content_and_is_idempotent() {
     assert_eq!(first, second, "Codex AGENTS guidance must be idempotent");
 }
 
-#[test]
 #[test]
 fn test_run_init_claude_writes_symforge_memory_guidance() {
     let home = TempDir::new().unwrap();

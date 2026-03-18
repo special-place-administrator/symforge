@@ -18,7 +18,7 @@ use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::model::{
     GetPromptRequestParams, GetPromptResult, ListPromptsResult, ListResourceTemplatesResult,
     ListResourcesResult, PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResult,
-    ServerCapabilities, ServerInfo,
+    ServerCapabilities, ServerInfo, Tool,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ServerHandler, prompt_handler, tool_handler};
@@ -104,6 +104,15 @@ impl SymForgeServer {
     /// Accessor for tests.
     pub fn index(&self) -> &SharedIndex {
         &self.index
+    }
+
+    /// Return the MCP tool definitions advertised by this server.
+    ///
+    /// This is a read-only view over the generated router metadata so integration
+    /// tests and diagnostics can validate client compatibility without spinning up
+    /// a full stdio transport.
+    pub fn tool_definitions() -> Vec<Tool> {
+        Self::tool_router().list_all()
     }
 
     pub(crate) fn capture_repo_root(&self) -> Option<PathBuf> {
