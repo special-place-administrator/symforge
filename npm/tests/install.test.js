@@ -170,9 +170,47 @@ test("locked Windows binary is replaced after stopping running SymForge processe
     fsOverrides.writes.some((entry) => entry.target === pendingPath),
     false
   );
-  assert.match(logs.join("\n"), /Stopped.*symforge daemon process/);
+  assert.match(logs.join("\n"), /Stopped.*running SymForge process/);
   assert.match(logs.join("\n"), /Installed:/);
   assert.match(logs.join("\n"), /Auto-configuring/);
+});
+
+test("installer pre-stop targets all symforge processes instead of daemon-only command lines", async () => {
+  const installDir = winPath.join("C:\\Users\\tester", ".symforge", "bin");
+  const binPath = winPath.join(installDir, "symforge.exe");
+  const pendingPath = winPath.join(installDir, "symforge.pending.exe");
+  const versionPath = winPath.join(installDir, "symforge.version");
+  const pendingVersionPath = winPath.join(installDir, "symforge.pending.version");
+  const fsOverrides = createFs({
+    binPath,
+    pendingPath,
+    versionPath,
+    pendingVersionPath,
+    installDir,
+  });
+  const execCalls = [];
+  const { installer } = createInstallerForTest({
+    fsOverrides,
+    installDir,
+    execFileSync(command, args, options) {
+      execCalls.push({ command, args, options });
+      if (command === "powershell.exe") {
+        return "[]";
+      }
+      if (args.includes("--version")) {
+        return "symforge 0.3.8";
+      }
+      return "";
+    },
+  });
+
+  await installer.main();
+
+  const firstPowerShellCall = execCalls.find((call) => call.command === "powershell.exe");
+  assert.ok(firstPowerShellCall, "expected a pre-install PowerShell stop call");
+  const commandText = firstPowerShellCall.args.join(" ");
+  assert.match(commandText, /ExecutablePath/);
+  assert.doesNotMatch(commandText, /\\bdaemon\\b/);
 });
 
 test("installer stages a pending binary when the executable is still locked after stopping processes", async () => {

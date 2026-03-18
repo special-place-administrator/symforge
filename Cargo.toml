@@ -3,6 +3,8 @@ name = "symforge"
 version = "1.2.3"
 edition = "2024"
 description = "SymForge — in-memory code intelligence MCP server for Claude Code, Codex, and Gemini CLI"
+license-file = "LICENSE"
+repository = "https://github.com/special-place-administrator/symforge"
 
 [[bin]]
 name = "symforge"

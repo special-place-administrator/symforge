@@ -2,7 +2,7 @@
   "name": "symforge",
   "version": "1.2.3",
   "description": "SymForge — in-memory code intelligence for Claude Code, Codex, and Gemini CLI",
-  "license": "MIT",
+  "license": "SEE LICENSE IN LICENSE",
   "repository": {
     "type": "git",
     "url": "https://github.com/special-place-administrator/symforge"
@@ -16,7 +16,8 @@
   },
   "files": [
     "bin/",
-    "scripts/"
+    "scripts/",
+    "LICENSE"
   ],
   "keywords": [
     "mcp",

@@ -191,48 +191,19 @@ function createInstaller(overrides = {}) {
   }
 
   /**
-   * Stop symforge *daemon* processes (the background server), but leave
-   * the stdio MCP process alive — it may be actively serving Claude Code.
-   *
-   * Daemons are identifiable because they were launched with the `daemon` arg,
-   * visible in the process command line.  On Windows we filter via WMI
-   * CommandLine; on Unix we use `pkill -f`.
+   * Stop all running symforge processes before an update. This includes
+   * active stdio MCP sessions; callers are expected to run updates only when
+   * interrupting those sessions is acceptable.
    *
    * Returns an array of killed PIDs (Windows) or [] (Unix, best-effort).
    */
-  function stopDaemonProcesses() {
+  function stopAllRunningProcesses(binPath) {
     if (processMod.platform === "win32") {
-      // Match symforge.exe processes whose CommandLine contains " daemon"
-      // This avoids killing the MCP stdio process that Claude Code is using.
-      // NOTE: PowerShell -and operators must stay on the same line as their
-      // operands — semicolons are statement terminators, not line joiners.
-      const script = [
-        "$procs = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'symforge.exe' -and $_.CommandLine -and $_.CommandLine -match '\\bdaemon\\b' }",
-        "$ids = @($procs | ForEach-Object { [int]$_.ProcessId })",
-        "if ($ids.Count -gt 0) { Stop-Process -Id $ids -Force -ErrorAction SilentlyContinue; $ids | ConvertTo-Json -Compress }",
-      ].join("; ");
-
-      try {
-        const output = execFileSyncFn(
-          "powershell.exe",
-          ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
-          { encoding: "utf8", env: processMod.env }
-        ).trim();
-
-        if (!output) return [];
-        const parsed = JSON.parse(output);
-        return Array.isArray(parsed) ? parsed : [parsed];
-      } catch (error) {
-        consoleMod.log(
-          `Note: could not stop daemon processes: ${error.message}`
-        );
-        return [];
-      }
+      return stopRunningWindowsProcesses(binPath);
     }
 
-    // Unix: kill only daemon processes (best-effort)
     try {
-      execSyncFn("pkill -f 'symforge daemon' 2>/dev/null || true", {
+      execSyncFn("pkill -x symforge 2>/dev/null || true", {
         encoding: "utf8",
       });
     } catch {
@@ -364,15 +335,12 @@ function createInstaller(overrides = {}) {
       );
     }
 
-    // Stop the background daemon process before install. The daemon holds a
-    // file handle on the binary (Windows), but the MCP stdio process is left
-    // alive so Claude Code keeps working. If the binary is still locked by
-    // the stdio process, the installer will stage to .pending and the
-    // launcher will apply it on next start.
-    const stoppedPids = stopDaemonProcesses();
+    // Stop all running SymForge processes before install so the binary can be
+    // replaced in place, even if a live stdio MCP session is currently using it.
+    const stoppedPids = stopAllRunningProcesses(binPath);
     if (stoppedPids.length > 0) {
       consoleMod.log(
-        `Stopped ${stoppedPids.length} symforge daemon process(es) for update`
+        `Stopped ${stoppedPids.length} running SymForge process(es) for update`
       );
       // Brief pause to let OS release file handles
       await sleep(500);
@@ -431,8 +399,8 @@ function createInstaller(overrides = {}) {
     installDownloadedBinary,
     isLockedError,
     main,
+    stopAllRunningProcesses,
     stopRunningWindowsProcesses,
-    stopDaemonProcesses,
     detectClients,
     runAutoInit,
   };
