@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.2](https://github.com/special-place-administrator/symforge/compare/v1.2.1...v1.2.2) (2026-03-18)
+
+
+### Bug Fixes
+
+* **bundle:** resolve impl suggestions and dependency-aware limits ([d5bfa6a](https://github.com/special-place-administrator/symforge/commit/d5bfa6aa85e3dfd719340301e1eff01d4bb1c069))
+
 ## [1.2.1](https://github.com/special-place-administrator/symforge/compare/v1.2.0...v1.2.1) (2026-03-18)
 
 
