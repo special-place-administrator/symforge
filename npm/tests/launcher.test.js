@@ -5,23 +5,64 @@ const winPath = path.win32;
 
 const { createLauncher } = require("../bin/launcher.js");
 
-function createFs({ binPath, pendingPath, hasBinary = true, hasPending = false }) {
-  let binaryExists = hasBinary;
-  let pendingExists = hasPending;
+function createFs({
+  binPath,
+  pendingPath,
+  versionPath,
+  pendingVersionPath,
+  hasBinary = true,
+  hasPending = false,
+  installedVersion = null,
+  pendingVersion = null,
+}) {
   const renames = [];
+  const writes = [];
+  const files = new Map();
+
+  if (hasBinary) {
+    files.set(binPath, "binary");
+  }
+  if (hasPending) {
+    files.set(pendingPath, "pending-binary");
+  }
+  if (installedVersion) {
+    files.set(versionPath, `${installedVersion}\n`);
+  }
+  if (pendingVersion) {
+    files.set(pendingVersionPath, `${pendingVersion}\n`);
+  }
 
   return {
     renames,
+    writes,
     existsSync(target) {
-      if (target === binPath) return binaryExists;
-      if (target === pendingPath) return pendingExists;
-      return false;
+      return files.has(target);
+    },
+    readFileSync(target, encoding) {
+      if (!files.has(target)) {
+        const error = new Error(`ENOENT: ${target}`);
+        error.code = "ENOENT";
+        throw error;
+      }
+      const value = files.get(target);
+      return encoding ? String(value) : Buffer.from(String(value));
+    },
+    writeFileSync(target, data) {
+      const normalized = Buffer.isBuffer(data) ? data.toString("utf8") : String(data);
+      writes.push({ target, data: normalized });
+      files.set(target, normalized);
     },
     renameSync(from, to) {
       renames.push({ from, to });
-      if (from === pendingPath && to === binPath) {
-        pendingExists = false;
-        binaryExists = true;
+      if (!files.has(from)) {
+        throw new Error("unexpected rename");
+      }
+      if (
+        (from === pendingPath && to === binPath)
+        || (from === pendingVersionPath && to === versionPath)
+      ) {
+        files.set(to, files.get(from));
+        files.delete(from);
         return;
       }
       throw new Error("unexpected rename");
@@ -73,7 +114,9 @@ test("launcher runs installer when installed binary version lags wrapper version
   const installDir = winPath.join("C:\\Users\\tester", ".symforge", "bin");
   const binPath = winPath.join(installDir, "symforge.exe");
   const pendingPath = winPath.join(installDir, "symforge.pending.exe");
-  const fsOverrides = createFs({ binPath, pendingPath });
+  const versionPath = winPath.join(installDir, "symforge.version");
+  const pendingVersionPath = winPath.join(installDir, "symforge.pending.version");
+  const fsOverrides = createFs({ binPath, pendingPath, versionPath, pendingVersionPath });
   const execCalls = [];
   let versionCalls = 0;
 
@@ -104,9 +147,13 @@ test("launcher applies pending update before checking installed version", () => 
   const installDir = winPath.join("C:\\Users\\tester", ".symforge", "bin");
   const binPath = winPath.join(installDir, "symforge.exe");
   const pendingPath = winPath.join(installDir, "symforge.pending.exe");
+  const versionPath = winPath.join(installDir, "symforge.version");
+  const pendingVersionPath = winPath.join(installDir, "symforge.pending.version");
   const fsOverrides = createFs({
     binPath,
     pendingPath,
+    versionPath,
+    pendingVersionPath,
     hasBinary: true,
     hasPending: true,
   });
@@ -136,7 +183,16 @@ test("launcher honors SYMFORGE_HOME for binary resolution", () => {
   const installDir = winPath.join("D:\\sandbox", "symforge-home", "bin");
   const binPath = winPath.join(installDir, "symforge.exe");
   const pendingPath = winPath.join(installDir, "symforge.pending.exe");
-  const fsOverrides = createFs({ binPath, pendingPath, hasBinary: false, hasPending: false });
+  const versionPath = winPath.join(installDir, "symforge.version");
+  const pendingVersionPath = winPath.join(installDir, "symforge.pending.version");
+  const fsOverrides = createFs({
+    binPath,
+    pendingPath,
+    versionPath,
+    pendingVersionPath,
+    hasBinary: false,
+    hasPending: false,
+  });
 
   const { launcher } = createLauncherForTest({
     fsOverrides,
@@ -158,7 +214,9 @@ test("launcher relays installer stdout to stderr so MCP stdout stays clean", () 
   const installDir = winPath.join("C:\\Users\\tester", ".symforge", "bin");
   const binPath = winPath.join(installDir, "symforge.exe");
   const pendingPath = winPath.join(installDir, "symforge.pending.exe");
-  const fsOverrides = createFs({ binPath, pendingPath });
+  const versionPath = winPath.join(installDir, "symforge.version");
+  const pendingVersionPath = winPath.join(installDir, "symforge.pending.version");
+  const fsOverrides = createFs({ binPath, pendingPath, versionPath, pendingVersionPath });
 
   const { launcher, logs, errors } = createLauncherForTest({
     fsOverrides,
@@ -180,4 +238,77 @@ test("launcher relays installer stdout to stderr so MCP stdout stays clean", () 
   assert.equal(logs.length, 0);
   assert.match(errors.join("\n"), /Downloading symforge v0.3.12/);
   assert.match(errors.join("\n"), /Installed:/);
+});
+
+test("launcher trusts recorded version metadata when probing the binary is unavailable", () => {
+  const installDir = winPath.join("C:\\Users\\tester", ".symforge", "bin");
+  const binPath = winPath.join(installDir, "symforge.exe");
+  const pendingPath = winPath.join(installDir, "symforge.pending.exe");
+  const versionPath = winPath.join(installDir, "symforge.version");
+  const pendingVersionPath = winPath.join(installDir, "symforge.pending.version");
+  const fsOverrides = createFs({
+    binPath,
+    pendingPath,
+    versionPath,
+    pendingVersionPath,
+    installedVersion: "0.3.12",
+  });
+  const execCalls = [];
+
+  const { launcher, errors } = createLauncherForTest({
+    fsOverrides,
+    installDir,
+    execFileSync(command) {
+      execCalls.push(command);
+      throw Object.assign(new Error(`spawnSync ${command} EPERM`), { code: "EPERM" });
+    },
+    spawnSync() {
+      return { status: 0 };
+    },
+  });
+
+  const status = launcher.main(["--version"]);
+
+  assert.equal(status, 0);
+  assert.deepEqual(execCalls, []);
+  assert.equal(errors.length, 0);
+});
+
+test("launcher promotes pending version metadata alongside a pending binary", () => {
+  const installDir = winPath.join("C:\\Users\\tester", ".symforge", "bin");
+  const binPath = winPath.join(installDir, "symforge.exe");
+  const pendingPath = winPath.join(installDir, "symforge.pending.exe");
+  const versionPath = winPath.join(installDir, "symforge.version");
+  const pendingVersionPath = winPath.join(installDir, "symforge.pending.version");
+  const fsOverrides = createFs({
+    binPath,
+    pendingPath,
+    versionPath,
+    pendingVersionPath,
+    hasPending: true,
+    pendingVersion: "0.3.12",
+  });
+
+  const { launcher, errors } = createLauncherForTest({
+    fsOverrides,
+    installDir,
+    execFileSync(command) {
+      throw Object.assign(new Error(`spawnSync ${command} EPERM`), { code: "EPERM" });
+    },
+    spawnSync() {
+      return { status: 0 };
+    },
+  });
+
+  const status = launcher.main([]);
+
+  assert.equal(status, 0);
+  assert.deepEqual(
+    fsOverrides.renames,
+    [
+      { from: pendingPath, to: binPath },
+      { from: pendingVersionPath, to: versionPath },
+    ]
+  );
+  assert.match(errors.join("\n"), /applied pending update/);
 });

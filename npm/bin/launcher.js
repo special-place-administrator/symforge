@@ -32,6 +32,8 @@ function createLauncher(overrides = {}) {
   const installDir = resolveInstallDir();
   const binPath = pathMod.join(installDir, "symforge" + ext);
   const pendingPath = pathMod.join(installDir, "symforge.pending" + ext);
+  const versionPath = pathMod.join(installDir, "symforge.version");
+  const pendingVersionPath = pathMod.join(installDir, "symforge.pending.version");
 
   function relayInstallerOutput(output) {
     if (!output) {
@@ -45,15 +47,48 @@ function createLauncher(overrides = {}) {
     }
   }
 
+  function parseVersion(text) {
+    if (!text) {
+      return null;
+    }
+    const match = String(text).match(/(\d+\.\d+\.\d+)/);
+    return match ? match[1] : null;
+  }
+
+  function readRecordedVersion(targetPath) {
+    try {
+      return parseVersion(fsMod.readFileSync(targetPath, "utf8").trim());
+    } catch {
+      return null;
+    }
+  }
+
+  function writeRecordedVersion(targetPath, version) {
+    if (!version) {
+      return;
+    }
+    try {
+      fsMod.writeFileSync(targetPath, `${version}\n`);
+    } catch {
+      // Best-effort metadata only.
+    }
+  }
+
   function getInstalledVersion() {
+    const recordedVersion = readRecordedVersion(versionPath);
+    if (recordedVersion) {
+      return recordedVersion;
+    }
+
     try {
       const output = execFileSyncFn(binPath, ["--version"], {
         encoding: "utf8",
         timeout: 5000,
         env: processMod.env,
       }).trim();
-      const match = output.match(/(\d+\.\d+\.\d+)/);
-      return match ? match[1] : null;
+      const parsedVersion = parseVersion(output);
+      writeRecordedVersion(versionPath, parsedVersion);
+      return parsedVersion;
     } catch {
       return null;
     }
@@ -66,6 +101,11 @@ function createLauncher(overrides = {}) {
 
     try {
       fsMod.renameSync(pendingPath, binPath);
+      if (fsMod.existsSync(pendingVersionPath)) {
+        fsMod.renameSync(pendingVersionPath, versionPath);
+      } else {
+        writeRecordedVersion(versionPath, packageJson.version);
+      }
       consoleMod.error("symforge: applied pending update.");
       return true;
     } catch {

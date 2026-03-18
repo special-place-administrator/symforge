@@ -5,12 +5,37 @@ const winPath = path.win32;
 
 const { createInstaller } = require("../scripts/install.js");
 
-function createFs({ binPath, pendingPath, installDir, binFailuresBeforeSuccess = 0 }) {
+function createFs({
+  binPath,
+  pendingPath,
+  versionPath,
+  pendingVersionPath,
+  installDir,
+  binFailuresBeforeSuccess = 0,
+  hasBinary = true,
+  hasPending = false,
+  installedVersion = null,
+  pendingVersion = null,
+}) {
   let binFailuresRemaining = binFailuresBeforeSuccess;
   const writes = [];
   const chmods = [];
   const mkdirs = [];
   const unlinks = [];
+  const files = new Map();
+
+  if (hasBinary) {
+    files.set(binPath, "existing-binary");
+  }
+  if (hasPending) {
+    files.set(pendingPath, "pending-binary");
+  }
+  if (installedVersion) {
+    files.set(versionPath, `${installedVersion}\n`);
+  }
+  if (pendingVersion) {
+    files.set(pendingVersionPath, `${pendingVersion}\n`);
+  }
 
   return {
     writes,
@@ -18,16 +43,27 @@ function createFs({ binPath, pendingPath, installDir, binFailuresBeforeSuccess =
     mkdirs,
     unlinks,
     existsSync(target) {
-      return target === binPath;
+      return files.has(target);
+    },
+    readFileSync(target, encoding) {
+      if (!files.has(target)) {
+        const error = new Error(`ENOENT: ${target}`);
+        error.code = "ENOENT";
+        throw error;
+      }
+      const value = files.get(target);
+      return encoding ? String(value) : Buffer.from(String(value));
     },
     writeFileSync(target, data) {
-      writes.push({ target, data: Buffer.from(data).toString("utf8") });
+      const normalized = Buffer.isBuffer(data) ? data.toString("utf8") : String(data);
+      writes.push({ target, data: normalized });
       if (target === binPath && binFailuresRemaining > 0) {
         binFailuresRemaining -= 1;
         const error = new Error("binary is busy");
         error.code = "EPERM";
         throw error;
       }
+      files.set(target, normalized);
     },
     chmodSync(target, mode) {
       chmods.push({ target, mode });
@@ -38,12 +74,21 @@ function createFs({ binPath, pendingPath, installDir, binFailuresBeforeSuccess =
     },
     unlinkSync(target) {
       unlinks.push(target);
-      assert.equal(target, pendingPath);
+      files.delete(target);
+      assert.ok(target === pendingPath || target === pendingVersionPath);
     },
   };
 }
 
-function createInstallerForTest({ fsOverrides, execFileSync, sleep, installDir, env = {} }) {
+function createInstallerForTest({
+  fsOverrides,
+  execFileSync,
+  sleep,
+  installDir,
+  env = {},
+  download,
+  packageVersion = "0.3.9",
+}) {
   const logs = [];
   const errors = [];
   const processMock = {
@@ -69,12 +114,12 @@ function createInstallerForTest({ fsOverrides, execFileSync, sleep, installDir, 
     os: { homedir: () => "C:\\Users\\tester" },
     process: processMock,
     console: consoleMock,
-    packageJson: { version: "0.3.9" },
+    packageJson: { version: packageVersion },
     installDir,
     execSync: () => "symforge 0.3.8",
     execFileSync,
     sleep: sleep || (async () => {}),
-    download: async () => Buffer.from("new-binary"),
+    download: download || (async () => Buffer.from("new-binary")),
   });
 
   return { installer, logs, errors };
@@ -84,9 +129,13 @@ test("locked Windows binary is replaced after stopping running SymForge processe
   const installDir = winPath.join("C:\\Users\\tester", ".symforge", "bin");
   const binPath = winPath.join(installDir, "symforge.exe");
   const pendingPath = winPath.join(installDir, "symforge.pending.exe");
+  const versionPath = winPath.join(installDir, "symforge.version");
+  const pendingVersionPath = winPath.join(installDir, "symforge.pending.version");
   const fsOverrides = createFs({
     binPath,
     pendingPath,
+    versionPath,
+    pendingVersionPath,
     installDir,
     binFailuresBeforeSuccess: 1,
   });
@@ -130,9 +179,13 @@ test("installer stages a pending binary when the executable is still locked afte
   const installDir = winPath.join("C:\\Users\\tester", ".symforge", "bin");
   const binPath = winPath.join(installDir, "symforge.exe");
   const pendingPath = winPath.join(installDir, "symforge.pending.exe");
+  const versionPath = winPath.join(installDir, "symforge.version");
+  const pendingVersionPath = winPath.join(installDir, "symforge.pending.version");
   const fsOverrides = createFs({
     binPath,
     pendingPath,
+    versionPath,
+    pendingVersionPath,
     installDir,
     binFailuresBeforeSuccess: 9,
   });
@@ -159,7 +212,15 @@ test("installer honors SYMFORGE_HOME for binary resolution", () => {
   const installDir = winPath.join(symforgeHome, "bin");
   const binPath = winPath.join(installDir, "symforge.exe");
   const pendingPath = winPath.join(installDir, "symforge.pending.exe");
-  const fsOverrides = createFs({ binPath, pendingPath, installDir });
+  const versionPath = winPath.join(installDir, "symforge.version");
+  const pendingVersionPath = winPath.join(installDir, "symforge.pending.version");
+  const fsOverrides = createFs({
+    binPath,
+    pendingPath,
+    versionPath,
+    pendingVersionPath,
+    installDir,
+  });
 
   const { installer } = createInstallerForTest({
     fsOverrides,
@@ -172,4 +233,72 @@ test("installer honors SYMFORGE_HOME for binary resolution", () => {
 
   assert.equal(installer.getBinaryPath(), binPath);
   assert.equal(installer.getPendingPath(), pendingPath);
+});
+
+test("installer records version metadata next to the installed binary", async () => {
+  const installDir = winPath.join("C:\\Users\\tester", ".symforge", "bin");
+  const binPath = winPath.join(installDir, "symforge.exe");
+  const pendingPath = winPath.join(installDir, "symforge.pending.exe");
+  const versionPath = winPath.join(installDir, "symforge.version");
+  const pendingVersionPath = winPath.join(installDir, "symforge.pending.version");
+  const fsOverrides = createFs({
+    binPath,
+    pendingPath,
+    versionPath,
+    pendingVersionPath,
+    installDir,
+    hasBinary: false,
+  });
+  const { installer } = createInstallerForTest({
+    fsOverrides,
+    installDir,
+    execFileSync() {
+      return "[]";
+    },
+  });
+
+  await installer.main();
+
+  assert.equal(
+    fsOverrides.writes.some((entry) => entry.target === versionPath && entry.data.includes("0.3.9")),
+    true
+  );
+  assert.equal(
+    fsOverrides.writes.some((entry) => entry.target === pendingVersionPath),
+    false
+  );
+});
+
+test("installer uses the symforge repo slug in release downloads and fallback instructions", async () => {
+  const installDir = winPath.join("C:\\Users\\tester", ".symforge", "bin");
+  const binPath = winPath.join(installDir, "symforge.exe");
+  const pendingPath = winPath.join(installDir, "symforge.pending.exe");
+  const versionPath = winPath.join(installDir, "symforge.version");
+  const pendingVersionPath = winPath.join(installDir, "symforge.pending.version");
+  const fsOverrides = createFs({
+    binPath,
+    pendingPath,
+    versionPath,
+    pendingVersionPath,
+    installDir,
+    hasBinary: false,
+  });
+  let downloadUrl = null;
+  const { installer, errors } = createInstallerForTest({
+    fsOverrides,
+    installDir,
+    execFileSync() {
+      return "[]";
+    },
+    download: async (url) => {
+      downloadUrl = url;
+      throw new Error("download failed");
+    },
+  });
+
+  await assert.rejects(() => installer.main(), /unexpected exit 1/);
+
+  assert.match(downloadUrl, /github\.com\/special-place-administrator\/symforge\/releases\/download/);
+  assert.match(errors.join("\n"), /git clone https:\/\/github\.com\/special-place-administrator\/symforge/);
+  assert.match(errors.join("\n"), /cd symforge/);
 });

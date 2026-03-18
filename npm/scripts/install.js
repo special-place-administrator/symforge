@@ -8,7 +8,7 @@ const os = require("os");
 const https = require("https");
 const http = require("http");
 
-const REPO = "special-place-administrator/tokenizor_agentic_mcp";
+const REPO = "special-place-administrator/symforge";
 
 function createInstaller(overrides = {}) {
   const fsMod = overrides.fs || fs;
@@ -34,6 +34,8 @@ function createInstaller(overrides = {}) {
   // Binary lives outside node_modules so npm can update the JS wrapper
   // even while the MCP server holds a lock on the running .exe (Windows).
   const installDir = resolveInstallDir();
+  const versionPath = pathMod.join(installDir, "symforge.version");
+  const pendingVersionPath = pathMod.join(installDir, "symforge.pending.version");
 
   function getPlatformArtifact() {
     const platform = processMod.platform;
@@ -63,6 +65,33 @@ function createInstaller(overrides = {}) {
     return pathMod.join(installDir, "symforge.pending" + ext);
   }
 
+  function parseVersion(text) {
+    if (!text) {
+      return null;
+    }
+    const match = String(text).match(/(\d+\.\d+\.\d+)/);
+    return match ? match[1] : null;
+  }
+
+  function readRecordedVersion(targetPath) {
+    try {
+      return parseVersion(fsMod.readFileSync(targetPath, "utf8").trim());
+    } catch {
+      return null;
+    }
+  }
+
+  function writeRecordedVersion(targetPath, version) {
+    if (!version) {
+      return;
+    }
+    try {
+      fsMod.writeFileSync(targetPath, `${version}\n`);
+    } catch {
+      // Best-effort metadata only.
+    }
+  }
+
   function download(url) {
     if (overrides.download) {
       return overrides.download(url);
@@ -85,13 +114,19 @@ function createInstaller(overrides = {}) {
   }
 
   function getInstalledVersion(binPath) {
+    const recordedVersion = readRecordedVersion(versionPath);
+    if (recordedVersion) {
+      return recordedVersion;
+    }
+
     try {
       const output = execFileSyncFn(binPath, ["--version"], {
         encoding: "utf8",
         timeout: 5000,
       }).trim();
-      const match = output.match(/(\d+\.\d+\.\d+)/);
-      return match ? match[1] : null;
+      const parsedVersion = parseVersion(output);
+      writeRecordedVersion(versionPath, parsedVersion);
+      return parsedVersion;
     } catch {
       return null;
     }
@@ -101,16 +136,19 @@ function createInstaller(overrides = {}) {
     return error && (error.code === "EPERM" || error.code === "EBUSY");
   }
 
-  function removePendingIfPresent(pendingPath) {
-    try {
-      fsMod.unlinkSync(pendingPath);
-    } catch {}
+  function removePendingArtifacts(pendingPath) {
+    for (const target of [pendingPath, pendingVersionPath]) {
+      try {
+        fsMod.unlinkSync(target);
+      } catch {}
+    }
   }
 
   function writeInstalledBinary(binPath, pendingPath, data) {
     fsMod.writeFileSync(binPath, data);
     fsMod.chmodSync(binPath, 0o755);
-    removePendingIfPresent(pendingPath);
+    writeRecordedVersion(versionPath, getVersion());
+    removePendingArtifacts(pendingPath);
     consoleMod.log(`Installed: ${binPath}`);
   }
 
@@ -242,6 +280,7 @@ function createInstaller(overrides = {}) {
 
       fsMod.writeFileSync(pendingPath, data);
       fsMod.chmodSync(pendingPath, 0o755);
+      writeRecordedVersion(pendingVersionPath, getVersion());
       consoleMod.log(`Binary is locked (MCP server running). Staged update at: ${pendingPath}`);
       consoleMod.log(`Update will apply automatically on next launch.`);
       return { status: "staged", stoppedProcessIds };
@@ -314,7 +353,7 @@ function createInstaller(overrides = {}) {
     if (fsMod.existsSync(binPath)) {
       const installed = getInstalledVersion(binPath);
       if (installed === version) {
-        removePendingIfPresent(pendingPath);
+        removePendingArtifacts(pendingPath);
         consoleMod.log(`symforge v${version} already installed at ${binPath}`);
         // Still run init to ensure config is up to date
         runAutoInit(binPath);
@@ -379,7 +418,7 @@ function createInstaller(overrides = {}) {
       consoleMod.error("");
       consoleMod.error("You can build from source instead:");
       consoleMod.error("  git clone https://github.com/" + REPO);
-      consoleMod.error("  cd tokenizor_agentic_mcp");
+      consoleMod.error("  cd symforge");
       consoleMod.error("  cargo build --release");
       processMod.exit(1);
     }
