@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.4](https://github.com/special-place-administrator/symforge/compare/v1.2.3...v1.2.4) (2026-03-18)
+
+
+### Bug Fixes
+
+* **release:** add noncommercial licensing and kill-all npm updates ([17354c6](https://github.com/special-place-administrator/symforge/commit/17354c6adba9e75a09bc3929b753881552ec929a))
+
 ## [1.2.3](https://github.com/special-place-administrator/symforge/compare/v1.2.2...v1.2.3) (2026-03-18)
 
 
