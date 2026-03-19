@@ -1539,6 +1539,7 @@ mod tests {
             content_hash: "abc".to_string(),
             references,
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         }
     }
 
@@ -1954,6 +1955,7 @@ mod tests {
                 },
             ],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let unrelated = make_indexed_file(
             "src/other.rs",
@@ -2117,6 +2119,7 @@ mod tests {
                 },
             ],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let unrelated = make_indexed_file(
             "src/other.rs",
@@ -2185,6 +2188,7 @@ mod tests {
                 },
             ],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let unrelated = make_indexed_file(
             "src/other.rs",
@@ -2286,6 +2290,7 @@ mod tests {
                 },
             ],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let state = make_state(vec![("src/db.rs", target), ("src/service.rs", dependent)]);
 
@@ -2375,6 +2380,7 @@ mod tests {
                 },
             ],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let state = make_state(vec![("src/db.rs", target), ("src/service.rs", dependent)]);
 
@@ -2436,6 +2442,7 @@ mod tests {
                 },
             ],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let state = make_state(vec![("src/db.rs", target), ("src/service.rs", dependent)]);
 
@@ -2497,6 +2504,7 @@ mod tests {
                 },
             ],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let unrelated = make_indexed_file(
             "src/other.rs",
@@ -2578,6 +2586,7 @@ mod tests {
                 },
             ],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let unrelated = make_indexed_file(
             "src/other.rs",
@@ -2660,6 +2669,7 @@ mod tests {
                 },
             ],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let unrelated = make_indexed_file(
             "src/other.rs",
@@ -2739,6 +2749,7 @@ mod tests {
                 },
             ],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let unrelated = make_indexed_file(
             "src/other.rs",
@@ -2789,6 +2800,7 @@ mod tests {
             content_hash: "utils-ts".to_string(),
             references: vec![],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let dependent = IndexedFile {
             relative_path: "src/app.ts".to_string(),
@@ -2818,6 +2830,7 @@ mod tests {
                 },
             ],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let unrelated = make_indexed_file(
             "src/other.ts",
@@ -2870,6 +2883,7 @@ mod tests {
             content_hash: "utils-ts-lines".to_string(),
             references: vec![],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let dependent = IndexedFile {
             relative_path: "src/app.ts".to_string(),
@@ -2899,6 +2913,7 @@ mod tests {
                 },
             ],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let unrelated = make_indexed_file(
             "src/other.ts",
@@ -2948,6 +2963,7 @@ mod tests {
             content_hash: "utils-ts".to_string(),
             references: vec![],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let unrelated = make_indexed_file(
             "src/other.ts",
@@ -2993,6 +3009,7 @@ mod tests {
             content_hash: "utils-ts".to_string(),
             references: vec![],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let dependent = IndexedFile {
             relative_path: "src/app.ts".to_string(),
@@ -3022,6 +3039,7 @@ mod tests {
                 },
             ],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let unrelated = make_indexed_file(
             "src/other.ts",
@@ -3088,6 +3106,7 @@ mod tests {
             content_hash: "utils-ts-lines".to_string(),
             references: vec![],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let dependent = IndexedFile {
             relative_path: "src/app.ts".to_string(),
@@ -3117,6 +3136,7 @@ mod tests {
                 },
             ],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let state = make_state(vec![
             ("src/utils/index.ts", target),
@@ -3174,6 +3194,7 @@ mod tests {
                 },
             ],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let unrelated = make_indexed_file(
             "src/other.rs",
@@ -3245,6 +3266,7 @@ mod tests {
                 },
             ],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let unrelated = make_indexed_file(
             "src/other.rs",
@@ -3384,6 +3406,7 @@ mod tests {
             content_hash: "db-py".to_string(),
             references: vec![],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let dependent = IndexedFile {
             relative_path: "pkg/service.py".to_string(),
@@ -3413,6 +3436,7 @@ mod tests {
                 },
             ],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let unrelated = IndexedFile {
             relative_path: "pkg/other.py".to_string(),
@@ -3425,6 +3449,7 @@ mod tests {
             content_hash: "other-py".to_string(),
             references: vec![make_reference("connect", ReferenceKind::Call, 1)],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let state = make_state(vec![
             ("pkg/db.py", target),
@@ -3464,6 +3489,7 @@ mod tests {
             content_hash: "utils-ts".to_string(),
             references: vec![],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let dependent = IndexedFile {
             relative_path: "src/app.ts".to_string(),
@@ -3493,6 +3519,7 @@ mod tests {
                 },
             ],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let unrelated = IndexedFile {
             relative_path: "src/other.ts".to_string(),
@@ -3505,6 +3532,7 @@ mod tests {
             content_hash: "other-ts".to_string(),
             references: vec![make_reference("connect", ReferenceKind::Call, 1)],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let state = make_state(vec![
             ("src/utils/index.ts", target),
@@ -3548,6 +3576,7 @@ mod tests {
             content_hash: "utils-ts-lines".to_string(),
             references: vec![],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let dependent = IndexedFile {
             relative_path: "src/app.ts".to_string(),
@@ -3577,6 +3606,7 @@ mod tests {
                 },
             ],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let unrelated = IndexedFile {
             relative_path: "src/other.ts".to_string(),
@@ -3589,6 +3619,7 @@ mod tests {
             content_hash: "other-ts".to_string(),
             references: vec![make_reference("connect", ReferenceKind::Call, 1)],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let state = make_state(vec![
             ("src/utils/index.ts", target),
@@ -3633,6 +3664,7 @@ mod tests {
             content_hash: "db-py".to_string(),
             references: vec![],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let dependent = IndexedFile {
             relative_path: "pkg/service.py".to_string(),
@@ -3662,6 +3694,7 @@ mod tests {
                 },
             ],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let unrelated = IndexedFile {
             relative_path: "pkg/other.py".to_string(),
@@ -3674,6 +3707,7 @@ mod tests {
             content_hash: "other-py".to_string(),
             references: vec![make_reference("connect", ReferenceKind::Call, 1)],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let state = make_state(vec![
             ("pkg/db.py", target),
@@ -3714,6 +3748,7 @@ mod tests {
             content_hash: "utils-ts".to_string(),
             references: vec![],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let dependent = IndexedFile {
             relative_path: "src/app.ts".to_string(),
@@ -3743,6 +3778,7 @@ mod tests {
                 },
             ],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let unrelated = IndexedFile {
             relative_path: "src/other.ts".to_string(),
@@ -3755,6 +3791,7 @@ mod tests {
             content_hash: "other-ts".to_string(),
             references: vec![make_reference("connect", ReferenceKind::Call, 1)],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let state = make_state(vec![
             ("src/utils/index.ts", target),
@@ -3798,6 +3835,7 @@ mod tests {
             content_hash: "db-py".to_string(),
             references: vec![],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let dependent = IndexedFile {
             relative_path: "pkg/service.py".to_string(),
@@ -3827,6 +3865,7 @@ mod tests {
                 },
             ],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let unrelated = IndexedFile {
             relative_path: "pkg/other.py".to_string(),
@@ -3839,6 +3878,7 @@ mod tests {
             content_hash: "other-py".to_string(),
             references: vec![make_reference("connect", ReferenceKind::Call, 1)],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let state = make_state(vec![
             ("pkg/db.py", target),
@@ -3886,6 +3926,7 @@ mod tests {
             content_hash: "db-py".to_string(),
             references: vec![],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let dependent = IndexedFile {
             relative_path: "pkg/service.py".to_string(),
@@ -3915,6 +3956,7 @@ mod tests {
                 },
             ],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let state = make_state(vec![("pkg/db.py", target), ("pkg/service.py", dependent)]);
 
@@ -3950,6 +3992,7 @@ mod tests {
             content_hash: "utils-ts-lines".to_string(),
             references: vec![],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let dependent = IndexedFile {
             relative_path: "src/app.ts".to_string(),
@@ -3979,6 +4022,7 @@ mod tests {
                 },
             ],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let state = make_state(vec![
             ("src/utils/index.ts", target),
@@ -4174,6 +4218,7 @@ mod tests {
                 },
             ],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let test_dependent = IndexedFile {
             relative_path: "tests/helper.rs".to_string(),
@@ -4203,6 +4248,7 @@ mod tests {
                 },
             ],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let state = make_state(vec![
             ("src/db.rs", src_target),
@@ -4272,6 +4318,7 @@ mod tests {
                 },
             ],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let test_dependent = IndexedFile {
             relative_path: "tests/helper.py".to_string(),
@@ -4301,6 +4348,7 @@ mod tests {
                 },
             ],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let state = make_state(vec![
             ("src/db.rs", src_target),

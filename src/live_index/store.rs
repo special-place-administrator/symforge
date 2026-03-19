@@ -1763,6 +1763,7 @@ mod tests {
             content_hash: "abc123".to_string(),
             references: vec![],
             alias_map: std::collections::HashMap::new(),
+            mtime_secs: 0,
         }
     }
 
@@ -1887,6 +1888,7 @@ mod tests {
             content_hash: "old_hash".to_string(),
             references: vec![],
             alias_map: std::collections::HashMap::new(),
+            mtime_secs: 0,
         };
         index.update_file("src/foo.rs".to_string(), file1);
 
@@ -1901,6 +1903,7 @@ mod tests {
             content_hash: "new_hash".to_string(),
             references: vec![],
             alias_map: std::collections::HashMap::new(),
+            mtime_secs: 0,
         };
         index.update_file("src/foo.rs".to_string(), file2);
 
@@ -2019,6 +2022,7 @@ mod tests {
             content_hash: "abc".to_string(),
             references: refs,
             alias_map: std::collections::HashMap::new(),
+            mtime_secs: 0,
         }
     }
 

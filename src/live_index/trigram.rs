@@ -260,6 +260,7 @@ mod tests {
                 content_hash: "test".to_string(),
                 references: vec![],
                 alias_map: std::collections::HashMap::new(),
+                mtime_secs: 0,
             },
         )
     }

@@ -2054,6 +2054,7 @@ mod tests {
             content_hash: String::new(),
             references: Vec::new(),
             alias_map: std::collections::HashMap::new(),
+            mtime_secs: 0,
         }
     }
 
@@ -2821,6 +2822,7 @@ mod tests {
             content_hash: String::new(),
             references: refs,
             alias_map: std::collections::HashMap::new(),
+            mtime_secs: 0,
         }
     }
 

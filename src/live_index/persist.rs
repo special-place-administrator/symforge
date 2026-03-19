@@ -578,6 +578,7 @@ mod tests {
             content_hash: crate::hash::digest_hex(content),
             references: vec![make_reference("other_func")],
             alias_map,
+            mtime_secs: 0,
         }
     }
 
@@ -798,6 +799,7 @@ mod tests {
                 content_hash: "hash1".to_string(),
                 references: vec![],
                 alias_map: HashMap::new(),
+                mtime_secs: 0,
             }),
         );
 
@@ -817,6 +819,7 @@ mod tests {
                 content_hash: "hash2".to_string(),
                 references: vec![],
                 alias_map: HashMap::new(),
+                mtime_secs: 0,
             }),
         );
 
@@ -836,6 +839,7 @@ mod tests {
                 content_hash: "hash3".to_string(),
                 references: vec![],
                 alias_map: HashMap::new(),
+                mtime_secs: 0,
             }),
         );
 
@@ -969,6 +973,7 @@ mod tests {
                 content_hash: "old_hash".to_string(),
                 references: vec![],
                 alias_map: HashMap::new(),
+                mtime_secs: 0,
             }),
         );
         let trigram_index = crate::live_index::trigram::TrigramIndex::build_from_files(&file_map);
@@ -1029,6 +1034,7 @@ mod tests {
                 content_hash: "hash".to_string(),
                 references: vec![],
                 alias_map: HashMap::new(),
+                mtime_secs: 0,
             }),
         );
         let trigram_index = crate::live_index::trigram::TrigramIndex::build_from_files(&file_map);
@@ -1097,6 +1103,7 @@ mod tests {
                 content_hash: crate::hash::digest_hex(b"fn original() {}"), // stale hash
                 references: vec![],
                 alias_map: HashMap::new(),
+                mtime_secs: 0,
             }),
         );
         let trigram_index = crate::live_index::trigram::TrigramIndex::build_from_files(&file_map);
@@ -1149,6 +1156,7 @@ mod tests {
                 content_hash: hash,
                 references: vec![],
                 alias_map: HashMap::new(),
+                mtime_secs: 0,
             }),
         );
         let trigram_index = crate::live_index::trigram::TrigramIndex::build_from_files(&file_map);
