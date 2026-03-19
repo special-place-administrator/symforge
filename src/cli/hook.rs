@@ -43,6 +43,29 @@ pub(crate) struct HookToolInput {
     pub(crate) path: Option<String>,
 }
 
+/// Workflow buckets used to reason about what SymForge should eventually own
+/// at hook-decision time.
+///
+/// PR 1 only introduces the vocabulary and non-behavioral scaffolding so later
+/// routing work can target stable concepts instead of raw client tool names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HookWorkflow {
+    /// Repo-local source inspection such as reading a code file for orientation.
+    SourceRead,
+    /// Repo-local source search such as Grep over code intent.
+    SourceSearch,
+    /// First-contact project orientation at session start.
+    RepoStart,
+    /// Prompt-time narrowing when a user mentions files, symbols, or paths.
+    PromptContext,
+    /// Post-edit/write impact analysis on a touched file.
+    PostEditImpact,
+    /// Direct source-code mutation intent.
+    CodeEdit,
+    /// Everything intentionally left to fail-open or shell-native handling.
+    PassThrough,
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -183,23 +206,59 @@ pub fn event_name_for(subcommand: &HookSubcommand) -> &'static str {
 /// SymForge tool to use instead of the built-in tool it's about to call.
 fn pre_tool_suggestion(input: &HookInput) -> String {
     let tool = input.tool_name.as_deref().unwrap_or("");
+    match pre_tool_workflow(input) {
+        HookWorkflow::SourceSearch => "SymForge MCP is connected. Prefer search_text (full-text with symbol context) or search_symbols (by name/kind) over Grep for source code searches.".to_string(),
+        HookWorkflow::SourceRead => "SymForge MCP is connected. Prefer get_file_context (outline + imports + consumers) or get_symbol/get_symbol_context (targeted symbol lookup) over Read for source code inspection.".to_string(),
+        HookWorkflow::CodeEdit => "SymForge MCP is connected. Prefer replace_symbol_body, edit_within_symbol, or batch_edit over Edit for source code modifications — they resolve by symbol name, auto-indent, and re-index atomically.".to_string(),
+        HookWorkflow::PassThrough if tool == "Glob" => "SymForge MCP is connected. Prefer search_files (ranked path discovery) or get_repo_map (repository overview) over Glob for finding source files.".to_string(),
+        _ => String::new(),
+    }
+}
+
+/// Classifies the workflow intent behind a pre-tool event.
+///
+/// This helper intentionally preserves current PR 1 behavior:
+/// - source `Read` gets a SymForge suggestion
+/// - non-source `Read` remains pass-through
+/// - `Grep` is treated as source search
+/// - `Edit` is treated as code-edit intent
+/// - everything else remains pass-through for now
+fn pre_tool_workflow(input: &HookInput) -> HookWorkflow {
+    let tool = input.tool_name.as_deref().unwrap_or("");
     let file_path = input
         .tool_input
         .as_ref()
         .and_then(|ti| ti.file_path.as_deref())
         .unwrap_or("");
 
-    // Don't intercept reads of non-source files (docs, configs, etc.)
-    if tool == "Read" && is_non_source_path(file_path) {
-        return String::new();
-    }
-
     match tool {
-        "Grep" => "SymForge MCP is connected. Prefer search_text (full-text with symbol context) or search_symbols (by name/kind) over Grep for source code searches.".to_string(),
-        "Read" => "SymForge MCP is connected. Prefer get_file_context (outline + imports + consumers) or get_symbol/get_symbol_context (targeted symbol lookup) over Read for source code inspection.".to_string(),
-        "Glob" => "SymForge MCP is connected. Prefer search_files (ranked path discovery) or get_repo_map (repository overview) over Glob for finding source files.".to_string(),
-        "Edit" => "SymForge MCP is connected. Prefer replace_symbol_body, edit_within_symbol, or batch_edit over Edit for source code modifications — they resolve by symbol name, auto-indent, and re-index atomically.".to_string(),
-        _ => String::new(),
+        "Read" if !is_non_source_path(file_path) => HookWorkflow::SourceRead,
+        "Grep" => HookWorkflow::SourceSearch,
+        "Edit" => HookWorkflow::CodeEdit,
+        _ => HookWorkflow::PassThrough,
+    }
+}
+
+/// Classifies the workflow intent behind a resolved hook subcommand.
+///
+/// PR 1 does not change endpoint routing with this helper yet; it exists so
+/// later routing work can move from raw tool-name branching to workflow-aware
+/// decisions without redefining the vocabulary.
+fn workflow_for_subcommand(
+    subcommand: Option<&HookSubcommand>,
+    input: &HookInput,
+) -> HookWorkflow {
+    match subcommand {
+        Some(HookSubcommand::Read) if !is_non_source_path(&extract_file_path(input, "")) => {
+            HookWorkflow::SourceRead
+        }
+        Some(HookSubcommand::Read) => HookWorkflow::PassThrough,
+        Some(HookSubcommand::Grep) => HookWorkflow::SourceSearch,
+        Some(HookSubcommand::SessionStart) => HookWorkflow::RepoStart,
+        Some(HookSubcommand::PromptSubmit) => HookWorkflow::PromptContext,
+        Some(HookSubcommand::Edit | HookSubcommand::Write) => HookWorkflow::PostEditImpact,
+        Some(HookSubcommand::PreTool) => pre_tool_workflow(input),
+        None => HookWorkflow::PassThrough,
     }
 }
 
@@ -265,6 +324,7 @@ pub(crate) fn endpoint_for(
     subcommand: Option<&HookSubcommand>,
     input: &HookInput,
 ) -> (&'static str, String) {
+    let _workflow = workflow_for_subcommand(subcommand, input);
     let cwd = input.cwd.as_deref().unwrap_or("");
 
     match subcommand {
@@ -892,6 +952,39 @@ mod tests {
         assert!(
             s.contains("replace_symbol_body"),
             "should suggest replace_symbol_body: {s}"
+        );
+    }
+
+    #[test]
+    fn test_pre_tool_workflow_classifies_source_read() {
+        let input = make_input("Read", Some("/repo/src/lib.rs"), None, "/repo");
+        assert_eq!(pre_tool_workflow(&input), HookWorkflow::SourceRead);
+    }
+
+    #[test]
+    fn test_pre_tool_workflow_leaves_non_source_read_as_passthrough() {
+        let input = make_input("Read", Some("/repo/docs/guide.md"), None, "/repo");
+        assert_eq!(pre_tool_workflow(&input), HookWorkflow::PassThrough);
+    }
+
+    #[test]
+    fn test_workflow_for_subcommand_classifies_repo_start() {
+        let input = HookInput::default();
+        assert_eq!(
+            workflow_for_subcommand(Some(&HookSubcommand::SessionStart), &input),
+            HookWorkflow::RepoStart
+        );
+    }
+
+    #[test]
+    fn test_workflow_for_subcommand_classifies_prompt_context() {
+        let input = HookInput {
+            prompt: Some("read src/lib.rs".to_string()),
+            ..HookInput::default()
+        };
+        assert_eq!(
+            workflow_for_subcommand(Some(&HookSubcommand::PromptSubmit), &input),
+            HookWorkflow::PromptContext
         );
     }
 

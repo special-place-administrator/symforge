@@ -16,6 +16,24 @@ AI coding agents spend most of their token budget on orientation — reading fil
 - **Git intelligence** — churn scores, ownership, and co-change coupling inform which files matter most
 - **Server-side edits** — edit tools modify code by symbol name. The agent sends a name and replacement body; the server resolves byte positions, splices, writes atomically, and re-indexes.
 
+## Workflow Ownership
+
+SymForge is intended to be the primary path for semantic code-inspection workflows:
+
+- **Source-code read and orientation** — file outlines, symbol-aware context, and repo-start overview
+- **Source-code search** — symbol lookup, text search with enclosing context, and dependency tracing
+- **Prompt-context enrichment** — file, symbol, and path-hint resolution for focused context injection
+- **Post-edit impact** — reindexing, affected symbol reporting, and follow-on caller/dependency guidance
+- **Code-review inspection** — changed-file and changed-symbol inspection backed by the index
+
+Shell and raw tools are still the right default for non-semantic workflows:
+
+- **Process control and execution** — builds, tests, package managers, Docker, process inspection
+- **Literal document/config reads** — when exact wording in docs or config files is the point
+- **General system tasks** — filesystem manipulation, environment checks, OS-level diagnostics
+
+SymForge is intentionally moving toward RTK-style path-of-least-resistance adoption for the workflows above, but it is **not** trying to become a generic shell-output summarizer. The product boundary is: let SymForge own semantic code understanding, and let the shell own process/runtime/system work.
+
 ## How It Works
 
 SymForge maintains a live index of every file in your project. On startup, it parses all source files using tree-sitter grammars (19 source languages), config files using native Rust parsers (5 formats), and extracts symbols (functions, classes, structs, selectors, variables, keys, etc.), their byte ranges, and cross-references between them. This index stays current via a file watcher that re-indexes changed files with debouncing.
