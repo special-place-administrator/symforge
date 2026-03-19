@@ -4,6 +4,20 @@ A code-native MCP server that gives AI coding agents structured, symbol-aware ac
 
 Works with any MCP-compatible client — CLI agents (Claude Code, Codex, Gemini CLI), VS Code extensions (Kilo Code, Roo Code, Cline, Continue), JetBrains plugins, and custom agents.
 
+<p align="left">
+  <img alt="Rust native" src="https://img.shields.io/badge/Rust-native-D9652B?style=flat-square&logo=rust" />
+  <img alt="25 tools" src="https://img.shields.io/badge/Tools-25-0A7F5A?style=flat-square" />
+  <img alt="19 source languages" src="https://img.shields.io/badge/Source%20Languages-19-1F6FEB?style=flat-square" />
+  <img alt="5 config formats" src="https://img.shields.io/badge/Config%20Formats-5-6F42C1?style=flat-square" />
+  <img alt="Prompts and resources" src="https://img.shields.io/badge/Prompts%20%26%20Resources-built--in-C69026?style=flat-square" />
+</p>
+
+<p align="left">
+  <img alt="Source workflows owned by SymForge" src="https://img.shields.io/badge/Source%20Reads%20%26%20Search-SymForge%20First-0A7F5A?style=flat-square" />
+  <img alt="Docs and config can stay raw" src="https://img.shields.io/badge/Docs%20%26%20Config-Literal%20Reads%20OK-6E7781?style=flat-square" />
+  <img alt="Kilo is workspace local" src="https://img.shields.io/badge/Kilo%20Code-workspace--local-B54708?style=flat-square" />
+</p>
+
 ## Why SymForge
 
 AI coding agents spend most of their token budget on orientation — reading files, grepping for patterns, figuring out what code is where. SymForge replaces that with structured tools that resolve symbols, references, and dependencies server-side.
@@ -67,6 +81,12 @@ The server does the graph traversal, the agent gets a focused answer. The index 
 ## Token Savings — Measured
 
 Every applicable tool response includes a footer showing estimated tokens saved compared to reading the raw file. These are real measurements from SymForge's own codebase (~159 files, ~7500 symbols):
+
+<p align="left">
+  <img alt="99.7 percent savings" src="https://img.shields.io/badge/Peak%20Savings-99.7%25-0A7F5A?style=flat-square" />
+  <img alt="66800 tokens saved" src="https://img.shields.io/badge/Largest%20Single%20Win-~66%2C800%20tokens-1F6FEB?style=flat-square" />
+  <img alt="Health reports session savings" src="https://img.shields.io/badge/health-session%20metrics%20included-C69026?style=flat-square" />
+</p>
 
 | Operation | Raw file approach | SymForge | Savings |
 |-----------|------------------|-----------|---------|
@@ -232,6 +252,12 @@ Config files have capability-gated editing: JSON, TOML, and YAML support structu
 
 **Prebuilt binaries:** Windows x64, Linux x64, macOS arm64, macOS x64
 
+<p align="left">
+  <img alt="npm install global" src="https://img.shields.io/badge/npm-global%20install-CB3837?style=flat-square&logo=npm" />
+  <img alt="Auto init home scoped clients" src="https://img.shields.io/badge/Auto--Init-Claude%20%7C%20Codex%20%7C%20Gemini-0A7F5A?style=flat-square" />
+  <img alt="Kilo requires workspace init" src="https://img.shields.io/badge/Kilo%20Code-run%20init%20in%20workspace-B54708?style=flat-square" />
+</p>
+
 ```bash
 npm install -g symforge
 ```
@@ -266,6 +292,13 @@ If your platform isn't listed, build from source instead.
 ## Client Setup
 
 Claude Code, Codex, and Gemini CLI are auto-configured during global install when their home directories already exist. To re-run manually:
+
+<p align="left">
+  <img alt="Claude auto configured" src="https://img.shields.io/badge/Claude-auto--configured-7A3EF0?style=flat-square" />
+  <img alt="Codex auto configured" src="https://img.shields.io/badge/Codex-auto--configured-111111?style=flat-square" />
+  <img alt="Gemini auto configured" src="https://img.shields.io/badge/Gemini-auto--configured-1A73E8?style=flat-square" />
+  <img alt="Kilo workspace local" src="https://img.shields.io/badge/Kilo-workspace--local-B54708?style=flat-square" />
+</p>
 
 ```bash
 symforge init                      # auto-detect clients
