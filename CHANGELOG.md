@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.3.0](https://github.com/special-place-administrator/symforge/compare/v1.2.4...v1.3.0) (2026-03-19)
+
+
+### Features
+
+* add match-occurrence retrieval and watcher reconciliation health reporting ([5043a5a](https://github.com/special-place-administrator/symforge/commit/5043a5a64e74d7edc43a6f087572837ae2b7d501))
+
+
+### Bug Fixes
+
+* normalize exact get_file_content paths and backfill mtime_secs in integration fixtures ([fb398b1](https://github.com/special-place-administrator/symforge/commit/fb398b1dcbfdc59055fea328e995bdb1d9ba114c))
+
 ## [1.2.4](https://github.com/special-place-administrator/symforge/compare/v1.2.3...v1.2.4) (2026-03-18)
 
 
