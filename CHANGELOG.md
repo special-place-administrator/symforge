@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.1](https://github.com/special-place-administrator/symforge/compare/v1.3.0...v1.3.1) (2026-03-19)
+
+
+### Bug Fixes
+
+* **init:** canonicalize SymForge Codex guidance and allowlists ([7680757](https://github.com/special-place-administrator/symforge/commit/76807570e24995dfc05ad6df022cbd1fbab25bfa))
+
 ## [1.3.0](https://github.com/special-place-administrator/symforge/compare/v1.2.4...v1.3.0) (2026-03-19)
 
 
