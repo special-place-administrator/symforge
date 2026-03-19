@@ -1272,6 +1272,44 @@ pub fn file_content_view(
     )
 }
 
+pub fn validate_file_syntax_result(path: &str, file: &IndexedFile) -> String {
+    let mut lines = vec![
+        format!("Syntax validation: {path}"),
+        format!("Language: {}", file.language),
+    ];
+
+    match &file.parse_status {
+        crate::live_index::ParseStatus::Parsed => {
+            lines.push("Status: ok".to_string());
+        }
+        crate::live_index::ParseStatus::PartialParse { warning } => {
+            lines.push("Status: partial".to_string());
+            if let Some(diagnostic) = &file.parse_diagnostic {
+                lines.push(format!("Diagnostic: {}", diagnostic.summary()));
+                if let Some((start, end)) = diagnostic.byte_span {
+                    lines.push(format!("Byte span: {start}..{end}"));
+                }
+            } else {
+                lines.push(format!("Diagnostic: {warning}"));
+            }
+        }
+        crate::live_index::ParseStatus::Failed { error } => {
+            lines.push("Status: failed".to_string());
+            if let Some(diagnostic) = &file.parse_diagnostic {
+                lines.push(format!("Diagnostic: {}", diagnostic.summary()));
+                if let Some((start, end)) = diagnostic.byte_span {
+                    lines.push(format!("Byte span: {start}..{end}"));
+                }
+            } else {
+                lines.push(format!("Diagnostic: {error}"));
+            }
+        }
+    }
+
+    lines.push(format!("Symbols extracted: {}", file.symbols.len()));
+    lines.join("\n")
+}
+
 const DEFAULT_AROUND_LINE_CONTEXT_LINES: u32 = 2;
 
 pub(crate) fn render_file_content_bytes(
@@ -3000,6 +3038,7 @@ mod tests {
                 content: content.to_vec(),
                 symbols,
                 parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
                 byte_len: content.len() as u64,
                 content_hash: "test".to_string(),
                 references: vec![],
@@ -4449,6 +4488,7 @@ mod tests {
                 content: content.to_vec(),
                 symbols,
                 parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
                 byte_len: content.len() as u64,
                 content_hash: "test".to_string(),
                 references,
@@ -5331,6 +5371,7 @@ mod tests {
                 content: content.to_vec(),
                 symbols,
                 parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
                 byte_len: content.len() as u64,
                 content_hash: "test".to_string(),
                 references: vec![],

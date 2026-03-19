@@ -406,6 +406,12 @@ pub struct GetFileContentInput {
     pub header: Option<bool>,
 }
 
+/// Input for `validate_file_syntax`.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub(crate) struct ValidateFileSyntaxInput {
+    pub path: String,
+}
+
 /// Input for `find_references`.
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct FindReferencesInput {
@@ -2523,13 +2529,81 @@ impl SymForgeServer {
     }
 
     /// Find all references or implementations for a symbol. Modes: (1) default/references: call sites,
-    /// imports, type usages grouped by file — set compact=true for ~60-75% smaller output. (2) mode='implementations':
-    /// find trait/interface implementors bidirectionally — set direction='trait'/'type'/'auto'.
+    /// Validate a file's syntax and surface parser diagnostics with exact locations when available.
+    /// Best for malformed TOML/JSON/YAML and other config files where you need authoritative parse errors.
+    #[tool(
+        description = "Validate a file's syntax and surface parser diagnostics with exact locations when available. Best for malformed TOML/JSON/YAML and other config files where you need authoritative parse errors. Uses the indexed file when available and falls back to direct parsing from disk when needed."
+    )]
+    pub(crate) async fn validate_file_syntax(
+        &self,
+        params: Parameters<ValidateFileSyntaxInput>,
+    ) -> String {
+        let mut input = params.0;
+        input.path = normalize_exact_path(&input.path);
+
+        if let Some(result) = self.proxy_tool_call("validate_file_syntax", &input).await {
+            return result;
+        }
+
+        let path_scope = search::PathScope::exact(&input.path);
+        freshen_exact_path_for_targeted_retrieval(self, &path_scope);
+
+        let indexed_file = {
+            let guard = self.index.read();
+            loading_guard!(guard);
+            guard.capture_shared_file(&input.path)
+        };
+        if let Some(file) = indexed_file {
+            return format::validate_file_syntax_result(&input.path, file.as_ref());
+        }
+
+        let extension = std::path::Path::new(&input.path)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("");
+        let Some(language) = LanguageId::from_extension(extension) else {
+            return format!(
+                "Syntax validation unavailable for {}: unsupported or unknown file extension.",
+                input.path
+            );
+        };
+
+        let Some(root) = self.capture_repo_root() else {
+            return format::not_found_file(&input.path);
+        };
+        let canon_path = match edit::safe_repo_path(&root, &input.path) {
+            Ok(path) => path,
+            Err(_) => return format::not_found_file(&input.path),
+        };
+        if !canon_path.is_file() {
+            return format::not_found_file(&input.path);
+        }
+
+        let bytes = match std::fs::read(&canon_path) {
+            Ok(bytes) => bytes,
+            Err(e) => return format!("{} [error: could not read file: {e}]", input.path),
+        };
+        let classification = crate::domain::FileClassification::for_code_path(&input.path);
+        let result = crate::parsing::process_file_with_classification(
+            &input.path,
+            &bytes,
+            language,
+            classification,
+        );
+        let file = IndexedFile::from_parse_result(result, bytes);
+        format::validate_file_syntax_result(&input.path, &file)
+    }
+
+
+
+    /// Find all references or implementations for a symbol. Modes: (1) default/references: call sites,
+    /// imports, type usages grouped by file - set compact=true for ~60-75% smaller output. (2) mode='implementations':
+    /// find trait/interface implementors bidirectionally - set direction='trait'/'type'/'auto'.
     /// Use when you need 'who calls this?' or 'who implements this?'
     /// NOT for file-level dependencies (use find_dependents).
     /// NOT for full refactoring context (use get_symbol_context with sections=[...]).
     #[tool(
-        description = "Find all references or implementations for a symbol. Modes: (1) default/references: call sites, imports, type usages grouped by file — set compact=true for ~60-75% smaller output. (2) mode='implementations': find trait/interface implementors bidirectionally — set direction='trait'/'type'/'auto'. Use when you need 'who calls this?' or 'who implements this?' NOT for file-level dependencies (use find_dependents). NOT for full refactoring context (use get_symbol_context with sections=[...])."
+        description = "Find all references or implementations for a symbol. Modes: (1) default/references: call sites, imports, type usages grouped by file - set compact=true for ~60-75% smaller output. (2) mode='implementations': find trait/interface implementors bidirectionally - set direction='trait'/'type'/'auto'. Use when you need 'who calls this?' or 'who implements this?' NOT for file-level dependencies (use find_dependents). NOT for full refactoring context (use get_symbol_context with sections=[...])."
     )]
     pub(crate) async fn find_references(&self, params: Parameters<FindReferencesInput>) -> String {
         let input = &params.0;
@@ -3561,6 +3635,7 @@ mod tests {
                 content: content.to_vec(),
                 symbols,
                 parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
                 byte_len: content.len() as u64,
                 content_hash: "test".to_string(),
                 references: vec![],
@@ -4012,6 +4087,84 @@ mod tests {
         assert!(
             result.contains("src/caller.rs"),
             "file context should include caller file; got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_file_context_shows_parse_diagnostic_for_partial_file() {
+        let (key, mut file) = make_file(
+            "Cargo.toml",
+            b"[package]\nname = \"symforge\"\ninvalid = \"unterminated\n",
+            vec![make_symbol("package", SymbolKind::Key, 1, 1)],
+        );
+        let diagnostic = crate::domain::ParseDiagnostic {
+            parser: "toml_edit".to_string(),
+            message: "missing closing quote".to_string(),
+            line: Some(3),
+            column: Some(11),
+            byte_span: Some((28, 41)),
+            fallback_used: true,
+        };
+        file.language = LanguageId::Toml;
+        file.parse_status = ParseStatus::PartialParse {
+            warning: diagnostic.summary(),
+        };
+        file.parse_diagnostic = Some(diagnostic);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+
+        let result = server
+            .get_file_context(Parameters(super::GetFileContextInput {
+                path: "Cargo.toml".to_string(),
+                max_tokens: None,
+                sections: Some(vec!["outline".to_string()]),
+            }))
+            .await;
+
+        assert!(
+            result.contains("Parse status: partial"),
+            "file context should surface parse status; got: {result}"
+        );
+        assert!(
+            result.contains("Diagnostic: toml_edit: missing closing quote (line 3, column 11) [fallback symbol extraction used]"),
+            "file context should include the structured diagnostic; got: {result}"
+        );
+        assert!(
+            result.contains("Byte span: 28..41"),
+            "file context should include the diagnostic byte span; got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_file_syntax_reports_partial_toml_diagnostics() {
+        let repo = TempDir::new().expect("temp repo");
+        fs::write(
+            repo.path().join("Cargo.toml"),
+            "[package]\nname = \"symforge\"\nversion = \"0.1.0\"\ninvalid = \"unterminated\n",
+        )
+        .expect("write malformed toml");
+        let server = make_server_with_root(make_live_index_empty(), Some(repo.path().to_path_buf()));
+
+        let result = server
+            .validate_file_syntax(Parameters(super::ValidateFileSyntaxInput {
+                path: "Cargo.toml".to_string(),
+            }))
+            .await;
+
+        assert!(
+            result.contains("Status: partial"),
+            "validator should report a partial parse when fallback extraction succeeds; got: {result}"
+        );
+        assert!(
+            result.contains("Diagnostic: toml_edit:"),
+            "validator should show the parser source; got: {result}"
+        );
+        assert!(
+            result.contains("fallback symbol extraction used"),
+            "validator should surface fallback usage; got: {result}"
+        );
+        assert!(
+            !result.contains("Symbols extracted: 0"),
+            "validator should report recovered symbols for malformed TOML; got: {result}"
         );
     }
 

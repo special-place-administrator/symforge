@@ -248,12 +248,46 @@ impl FileClassification {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ParseDiagnostic {
+    pub parser: String,
+    pub message: String,
+    pub line: Option<u32>,
+    pub column: Option<u32>,
+    pub byte_span: Option<(u32, u32)>,
+    pub fallback_used: bool,
+}
+
+impl ParseDiagnostic {
+    pub fn location_display(&self) -> Option<String> {
+        match (self.line, self.column) {
+            (Some(line), Some(column)) => Some(format!("line {line}, column {column}")),
+            (Some(line), None) => Some(format!("line {line}")),
+            (None, Some(column)) => Some(format!("column {column}")),
+            (None, None) => None,
+        }
+    }
+
+    pub fn summary(&self) -> String {
+        let mut summary = format!("{}: {}", self.parser, self.message);
+        if let Some(location) = self.location_display() {
+            summary.push_str(&format!(" ({location})"));
+        }
+        if self.fallback_used {
+            summary.push_str(" [fallback symbol extraction used]");
+        }
+        summary
+    }
+}
+
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileProcessingResult {
     pub relative_path: String,
     pub language: LanguageId,
     pub classification: FileClassification,
     pub outcome: FileOutcome,
+    pub parse_diagnostic: Option<ParseDiagnostic>,
     pub symbols: Vec<SymbolRecord>,
     pub byte_len: u64,
     pub content_hash: String,
@@ -674,6 +708,7 @@ mod tests {
             language: LanguageId::Rust,
             classification: FileClassification::for_code_path("test.rs"),
             outcome: FileOutcome::Processed,
+            parse_diagnostic: None,
             symbols: vec![],
             byte_len: 0,
             content_hash: "abc".to_string(),

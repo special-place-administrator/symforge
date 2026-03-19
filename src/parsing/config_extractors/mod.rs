@@ -10,6 +10,10 @@ use crate::domain::{LanguageId, SymbolRecord};
 // Constants
 // ---------------------------------------------------------------------------
 
+use std::ops::Range;
+
+use crate::domain::ParseDiagnostic;
+
 pub const MAX_DEPTH: u32 = 6;
 pub const MAX_ARRAY_ITEMS: usize = 20;
 
@@ -35,7 +39,8 @@ pub struct ExtractionResult {
 
 pub enum ExtractionOutcome {
     Ok,
-    Failed(String),
+    Partial(ParseDiagnostic),
+    Failed(ParseDiagnostic),
 }
 
 // ---------------------------------------------------------------------------
@@ -98,6 +103,67 @@ pub fn edit_capability_for_language(language: &LanguageId) -> Option<EditCapabil
 // ---------------------------------------------------------------------------
 // Key escaping helpers
 // ---------------------------------------------------------------------------
+
+pub(crate) fn parse_diagnostic(
+    parser: &str,
+    message: impl Into<String>,
+    line: Option<u32>,
+    column: Option<u32>,
+    byte_span: Option<(u32, u32)>,
+    fallback_used: bool,
+) -> ParseDiagnostic {
+    ParseDiagnostic {
+        parser: parser.to_string(),
+        message: message.into(),
+        line,
+        column,
+        byte_span,
+        fallback_used,
+    }
+}
+
+pub(crate) fn parse_diagnostic_from_span(
+    parser: &str,
+    message: impl Into<String>,
+    content: &[u8],
+    span: Option<Range<usize>>,
+    fallback_used: bool,
+) -> ParseDiagnostic {
+    let byte_span = span.map(|range| {
+        let start = range.start.min(content.len());
+        let end = range.end.min(content.len()).max(start);
+        (start as u32, end as u32)
+    });
+    let (line, column) = byte_span
+        .map(|(start, _)| byte_offset_to_line_column(content, start as usize))
+        .map(|(line, column)| (Some(line), Some(column)))
+        .unwrap_or((None, None));
+    parse_diagnostic(parser, message, line, column, byte_span, fallback_used)
+}
+
+pub(crate) fn optional_u32(value: usize) -> Option<u32> {
+    if value == 0 {
+        None
+    } else {
+        u32::try_from(value).ok()
+    }
+}
+
+pub(crate) fn byte_offset_to_line_column(content: &[u8], byte_offset: usize) -> (u32, u32) {
+    let capped = byte_offset.min(content.len());
+    let prefix = &content[..capped];
+    let line = prefix.iter().filter(|&&byte| byte == b'\n').count() as u32 + 1;
+    let line_start = prefix
+        .iter()
+        .rposition(|&byte| byte == b'\n')
+        .map_or(0, |idx| idx + 1);
+    let column = content[line_start..capped]
+        .iter()
+        .filter(|&&byte| byte != b'\r')
+        .count() as u32
+        + 1;
+    (line, column)
+}
 
 /// Escapes a raw key segment:
 /// - `~` → `~0`

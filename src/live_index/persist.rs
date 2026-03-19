@@ -18,7 +18,9 @@ use crate::live_index::store::{
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const CURRENT_VERSION: u32 = 3;
+use crate::domain::ParseDiagnostic;
+
+const CURRENT_VERSION: u32 = 4;
 const INDEX_FILENAME: &str = "index.bin";
 const SYMFORGE_DIR: &str = ".symforge";
 
@@ -43,6 +45,7 @@ pub struct IndexedFileSnapshot {
     pub content: Vec<u8>,
     pub symbols: Vec<SymbolRecord>,
     pub parse_status: ParseStatus,
+    pub parse_diagnostic: Option<ParseDiagnostic>,
     pub byte_len: u64,
     pub content_hash: String,
     pub references: Vec<ReferenceRecord>,
@@ -162,10 +165,6 @@ pub fn load_snapshot(project_root: &Path) -> Option<IndexSnapshot> {
     Some(snapshot)
 }
 
-/// Convert an `IndexSnapshot` into a live `LiveIndex`.
-///
-/// Rebuilds the reverse index and trigram index from the snapshot data.
-/// Sets `loaded_at`, `loaded_at_system`, `is_empty = false`.
 pub fn snapshot_to_live_index(snapshot: IndexSnapshot) -> LiveIndex {
     let mut files: HashMap<String, Arc<IndexedFile>> = HashMap::with_capacity(snapshot.files.len());
 
@@ -177,6 +176,7 @@ pub fn snapshot_to_live_index(snapshot: IndexSnapshot) -> LiveIndex {
             content: snap_file.content,
             symbols: snap_file.symbols,
             parse_status: snap_file.parse_status,
+            parse_diagnostic: snap_file.parse_diagnostic,
             byte_len: snap_file.byte_len,
             content_hash: snap_file.content_hash,
             references: snap_file.references,
@@ -395,6 +395,7 @@ fn build_snapshot(snapshot_input: SnapshotBuildInput, project_root: &Path) -> In
                 content: file.content.clone(),
                 symbols: file.symbols.clone(),
                 parse_status: file.parse_status.clone(),
+                parse_diagnostic: file.parse_diagnostic.clone(),
                 byte_len: file.byte_len,
                 content_hash: file.content_hash.clone(),
                 references: file.references.clone(),
@@ -574,6 +575,7 @@ mod tests {
             content: content.to_vec(),
             symbols: vec![make_symbol("my_func")],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: content.len() as u64,
             content_hash: crate::hash::digest_hex(content),
             references: vec![make_reference("other_func")],
@@ -785,7 +787,23 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mut file_map: HashMap<String, Arc<IndexedFile>> = HashMap::new();
 
-        // Parsed
+        let partial_diagnostic = crate::domain::ParseDiagnostic {
+            parser: "toml_edit".to_string(),
+            message: "missing closing quote".to_string(),
+            line: Some(4),
+            column: Some(17),
+            byte_span: Some((43, 56)),
+            fallback_used: true,
+        };
+        let failed_diagnostic = crate::domain::ParseDiagnostic {
+            parser: "toml_edit".to_string(),
+            message: "invalid table header".to_string(),
+            line: Some(1),
+            column: Some(2),
+            byte_span: Some((0, 8)),
+            fallback_used: false,
+        };
+
         file_map.insert(
             "ok.rs".to_string(),
             Arc::new(IndexedFile {
@@ -795,6 +813,7 @@ mod tests {
                 content: b"fn foo() {}".to_vec(),
                 symbols: vec![],
                 parse_status: ParseStatus::Parsed,
+                parse_diagnostic: None,
                 byte_len: 11,
                 content_hash: "hash1".to_string(),
                 references: vec![],
@@ -803,19 +822,19 @@ mod tests {
             }),
         );
 
-        // PartialParse
         file_map.insert(
-            "partial.rs".to_string(),
+            "partial.toml".to_string(),
             Arc::new(IndexedFile {
-                relative_path: "partial.rs".to_string(),
-                language: LanguageId::Rust,
-                classification: crate::domain::FileClassification::for_code_path("partial.rs"),
-                content: b"fn bad(".to_vec(),
+                relative_path: "partial.toml".to_string(),
+                language: LanguageId::Toml,
+                classification: crate::domain::FileClassification::for_code_path("partial.toml"),
+                content: b"[package]\nname = \"symforge\"\ninvalid = \"unterminated\n".to_vec(),
                 symbols: vec![],
                 parse_status: ParseStatus::PartialParse {
-                    warning: "syntax error".to_string(),
+                    warning: partial_diagnostic.summary(),
                 },
-                byte_len: 7,
+                parse_diagnostic: Some(partial_diagnostic.clone()),
+                byte_len: 52,
                 content_hash: "hash2".to_string(),
                 references: vec![],
                 alias_map: HashMap::new(),
@@ -823,19 +842,19 @@ mod tests {
             }),
         );
 
-        // Failed
         file_map.insert(
-            "fail.rb".to_string(),
+            "fail.toml".to_string(),
             Arc::new(IndexedFile {
-                relative_path: "fail.rb".to_string(),
-                language: LanguageId::Ruby,
-                classification: crate::domain::FileClassification::for_code_path("fail.rb"),
-                content: b"garbage".to_vec(),
+                relative_path: "fail.toml".to_string(),
+                language: LanguageId::Toml,
+                classification: crate::domain::FileClassification::for_code_path("fail.toml"),
+                content: b"[invalid\nno closing".to_vec(),
                 symbols: vec![],
                 parse_status: ParseStatus::Failed {
-                    error: "parse error".to_string(),
+                    error: failed_diagnostic.summary(),
                 },
-                byte_len: 7,
+                parse_diagnostic: Some(failed_diagnostic.clone()),
+                byte_len: 19,
                 content_hash: "hash3".to_string(),
                 references: vec![],
                 alias_map: HashMap::new(),
@@ -871,14 +890,17 @@ mod tests {
             loaded.files.get("ok.rs").unwrap().parse_status,
             ParseStatus::Parsed
         );
+
+        let partial = loaded.files.get("partial.toml").unwrap();
         assert!(matches!(
-            loaded.files.get("partial.rs").unwrap().parse_status,
+            partial.parse_status,
             ParseStatus::PartialParse { .. }
         ));
-        assert!(matches!(
-            loaded.files.get("fail.rb").unwrap().parse_status,
-            ParseStatus::Failed { .. }
-        ));
+        assert_eq!(partial.parse_diagnostic, Some(partial_diagnostic));
+
+        let failed = loaded.files.get("fail.toml").unwrap();
+        assert!(matches!(failed.parse_status, ParseStatus::Failed { .. }));
+        assert_eq!(failed.parse_diagnostic, Some(failed_diagnostic));
     }
 
     // ── Version mismatch / corrupt data tests ─────────────────────────────────
@@ -969,6 +991,7 @@ mod tests {
                 content: b"fn foo() {}".to_vec(),
                 symbols: vec![],
                 parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
                 byte_len: 999, // wrong size — simulates change
                 content_hash: "old_hash".to_string(),
                 references: vec![],
@@ -1030,6 +1053,7 @@ mod tests {
                 content: b"fn ghost() {}".to_vec(),
                 symbols: vec![],
                 parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
                 byte_len: 13,
                 content_hash: "hash".to_string(),
                 references: vec![],
@@ -1099,6 +1123,7 @@ mod tests {
                 content: b"fn original() {}".to_vec(), // old content
                 symbols: vec![],
                 parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
                 byte_len: 16,
                 content_hash: crate::hash::digest_hex(b"fn original() {}"), // stale hash
                 references: vec![],
@@ -1152,6 +1177,7 @@ mod tests {
                 content: content.to_vec(),
                 symbols: vec![],
                 parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
                 byte_len: content.len() as u64,
                 content_hash: hash,
                 references: vec![],

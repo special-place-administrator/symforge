@@ -55,6 +55,7 @@ fn make_rust_file(path: &str, fn_name: &str) -> IndexedFile {
             doc_byte_range: None,
         }],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: content.len() as u64,
         content_hash: "test".to_string(),
         references: vec![],
@@ -548,6 +549,7 @@ async fn test_prompt_context_endpoint_extensionless_path_line_hint_disambiguates
             },
         ],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 31,
         content_hash: "db".to_string(),
         references: vec![],
@@ -569,6 +571,7 @@ async fn test_prompt_context_endpoint_extensionless_path_line_hint_disambiguates
             doc_byte_range: None,
         }],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 24,
         content_hash: "db-py".to_string(),
         references: vec![],
@@ -590,6 +593,7 @@ async fn test_prompt_context_endpoint_extensionless_path_line_hint_disambiguates
             doc_byte_range: None,
         }],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 47,
         content_hash: "service".to_string(),
         references: vec![
@@ -628,6 +632,7 @@ async fn test_prompt_context_endpoint_extensionless_path_line_hint_disambiguates
             doc_byte_range: None,
         }],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 23,
         content_hash: "other".to_string(),
         references: vec![ReferenceRecord {
@@ -705,6 +710,7 @@ async fn test_prompt_context_endpoint_module_alias_line_hint_disambiguates_exact
             },
         ],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 31,
         content_hash: "db".to_string(),
         references: vec![],
@@ -726,6 +732,7 @@ async fn test_prompt_context_endpoint_module_alias_line_hint_disambiguates_exact
             doc_byte_range: None,
         }],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 24,
         content_hash: "db-py".to_string(),
         references: vec![],
@@ -747,6 +754,7 @@ async fn test_prompt_context_endpoint_module_alias_line_hint_disambiguates_exact
             doc_byte_range: None,
         }],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 47,
         content_hash: "service".to_string(),
         references: vec![
@@ -785,6 +793,7 @@ async fn test_prompt_context_endpoint_module_alias_line_hint_disambiguates_exact
             doc_byte_range: None,
         }],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 23,
         content_hash: "other".to_string(),
         references: vec![ReferenceRecord {
@@ -851,6 +860,7 @@ async fn test_prompt_context_endpoint_module_alias_without_line_prefers_exact_fi
             doc_byte_range: None,
         }],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 15,
         content_hash: "db".to_string(),
         references: vec![],
@@ -872,6 +882,7 @@ async fn test_prompt_context_endpoint_module_alias_without_line_prefers_exact_fi
             doc_byte_range: None,
         }],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 24,
         content_hash: "db-py".to_string(),
         references: vec![],
@@ -893,6 +904,7 @@ async fn test_prompt_context_endpoint_module_alias_without_line_prefers_exact_fi
             doc_byte_range: None,
         }],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 47,
         content_hash: "service".to_string(),
         references: vec![
@@ -931,6 +943,7 @@ async fn test_prompt_context_endpoint_module_alias_without_line_prefers_exact_fi
             doc_byte_range: None,
         }],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 23,
         content_hash: "other".to_string(),
         references: vec![ReferenceRecord {
@@ -997,6 +1010,7 @@ async fn test_prompt_context_endpoint_slash_module_alias_without_line_prefers_ex
             doc_byte_range: None,
         }],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 28,
         content_hash: "utils-ts".to_string(),
         references: vec![],
@@ -1018,6 +1032,7 @@ async fn test_prompt_context_endpoint_slash_module_alias_without_line_prefers_ex
             doc_byte_range: None,
         }],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 49,
         content_hash: "app-ts".to_string(),
         references: vec![
@@ -1056,6 +1071,7 @@ async fn test_prompt_context_endpoint_slash_module_alias_without_line_prefers_ex
             doc_byte_range: None,
         }],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 10,
         content_hash: "other-ts".to_string(),
         references: vec![ReferenceRecord {
@@ -1133,6 +1149,7 @@ async fn test_prompt_context_endpoint_slash_module_alias_line_hint_disambiguates
             },
         ],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 57,
         content_hash: "utils-ts-lines".to_string(),
         references: vec![],
@@ -1154,6 +1171,7 @@ async fn test_prompt_context_endpoint_slash_module_alias_line_hint_disambiguates
             doc_byte_range: None,
         }],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 49,
         content_hash: "app-ts".to_string(),
         references: vec![
@@ -1192,6 +1210,7 @@ async fn test_prompt_context_endpoint_slash_module_alias_line_hint_disambiguates
             doc_byte_range: None,
         }],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 10,
         content_hash: "other-ts".to_string(),
         references: vec![ReferenceRecord {
@@ -1259,6 +1278,7 @@ async fn test_prompt_context_endpoint_qualified_symbol_alias_prefers_exact_selec
             doc_byte_range: None,
         }],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 47,
         content_hash: "service".to_string(),
         references: vec![
@@ -1297,6 +1317,7 @@ async fn test_prompt_context_endpoint_qualified_symbol_alias_prefers_exact_selec
             doc_byte_range: None,
         }],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 23,
         content_hash: "other".to_string(),
         references: vec![ReferenceRecord {
@@ -1359,6 +1380,7 @@ async fn test_prompt_context_endpoint_dotted_qualified_symbol_alias_prefers_exac
             doc_byte_range: None,
         }],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 24,
         content_hash: "db-py".to_string(),
         references: vec![],
@@ -1380,6 +1402,7 @@ async fn test_prompt_context_endpoint_dotted_qualified_symbol_alias_prefers_exac
             doc_byte_range: None,
         }],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 54,
         content_hash: "service-py".to_string(),
         references: vec![
@@ -1418,6 +1441,7 @@ async fn test_prompt_context_endpoint_dotted_qualified_symbol_alias_prefers_exac
             doc_byte_range: None,
         }],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 25,
         content_hash: "other-py".to_string(),
         references: vec![ReferenceRecord {
@@ -1480,6 +1504,7 @@ async fn test_prompt_context_endpoint_slash_qualified_symbol_alias_prefers_exact
             doc_byte_range: None,
         }],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 28,
         content_hash: "utils-ts".to_string(),
         references: vec![],
@@ -1501,6 +1526,7 @@ async fn test_prompt_context_endpoint_slash_qualified_symbol_alias_prefers_exact
             doc_byte_range: None,
         }],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 49,
         content_hash: "app-ts".to_string(),
         references: vec![
@@ -1539,6 +1565,7 @@ async fn test_prompt_context_endpoint_slash_qualified_symbol_alias_prefers_exact
             doc_byte_range: None,
         }],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 10,
         content_hash: "other-ts".to_string(),
         references: vec![ReferenceRecord {
@@ -1613,6 +1640,7 @@ async fn test_prompt_context_endpoint_slash_qualified_symbol_alias_line_hint_dis
             },
         ],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 57,
         content_hash: "utils-ts-lines".to_string(),
         references: vec![],
@@ -1634,6 +1662,7 @@ async fn test_prompt_context_endpoint_slash_qualified_symbol_alias_line_hint_dis
             doc_byte_range: None,
         }],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 49,
         content_hash: "app-ts".to_string(),
         references: vec![
@@ -1672,6 +1701,7 @@ async fn test_prompt_context_endpoint_slash_qualified_symbol_alias_line_hint_dis
             doc_byte_range: None,
         }],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 10,
         content_hash: "other-ts".to_string(),
         references: vec![ReferenceRecord {
@@ -1750,6 +1780,7 @@ async fn test_prompt_context_endpoint_dotted_qualified_symbol_alias_line_hint_di
             },
         ],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 49,
         content_hash: "db-py".to_string(),
         references: vec![],
@@ -1771,6 +1802,7 @@ async fn test_prompt_context_endpoint_dotted_qualified_symbol_alias_line_hint_di
             doc_byte_range: None,
         }],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 54,
         content_hash: "service-py".to_string(),
         references: vec![
@@ -1809,6 +1841,7 @@ async fn test_prompt_context_endpoint_dotted_qualified_symbol_alias_line_hint_di
             doc_byte_range: None,
         }],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 25,
         content_hash: "other-py".to_string(),
         references: vec![ReferenceRecord {
@@ -1876,6 +1909,7 @@ async fn test_prompt_context_endpoint_combined_hint_uses_exact_selector() {
             doc_byte_range: None,
         }],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 47,
         content_hash: "service".to_string(),
         references: vec![
@@ -1914,6 +1948,7 @@ async fn test_prompt_context_endpoint_combined_hint_uses_exact_selector() {
             doc_byte_range: None,
         }],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 23,
         content_hash: "other".to_string(),
         references: vec![ReferenceRecord {
@@ -1987,6 +2022,7 @@ async fn test_prompt_context_endpoint_line_hint_disambiguates_exact_selector() {
             },
         ],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 31,
         content_hash: "db".to_string(),
         references: vec![],
@@ -2008,6 +2044,7 @@ async fn test_prompt_context_endpoint_line_hint_disambiguates_exact_selector() {
             doc_byte_range: None,
         }],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 47,
         content_hash: "service".to_string(),
         references: vec![
@@ -2091,6 +2128,7 @@ async fn test_prompt_context_endpoint_path_line_hint_disambiguates_exact_selecto
             },
         ],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 31,
         content_hash: "db".to_string(),
         references: vec![],
@@ -2112,6 +2150,7 @@ async fn test_prompt_context_endpoint_path_line_hint_disambiguates_exact_selecto
             doc_byte_range: None,
         }],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 47,
         content_hash: "service".to_string(),
         references: vec![
@@ -2195,6 +2234,7 @@ async fn test_prompt_context_endpoint_basename_line_hint_disambiguates_exact_sel
             },
         ],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 31,
         content_hash: "db".to_string(),
         references: vec![],
@@ -2216,6 +2256,7 @@ async fn test_prompt_context_endpoint_basename_line_hint_disambiguates_exact_sel
             doc_byte_range: None,
         }],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 47,
         content_hash: "service".to_string(),
         references: vec![
@@ -2299,6 +2340,7 @@ async fn test_prompt_context_endpoint_extensionless_alias_line_hint_disambiguate
             },
         ],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 31,
         content_hash: "db".to_string(),
         references: vec![],
@@ -2320,6 +2362,7 @@ async fn test_prompt_context_endpoint_extensionless_alias_line_hint_disambiguate
             doc_byte_range: None,
         }],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 47,
         content_hash: "service".to_string(),
         references: vec![
@@ -2358,6 +2401,7 @@ async fn test_prompt_context_endpoint_extensionless_alias_line_hint_disambiguate
             doc_byte_range: None,
         }],
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len: 23,
         content_hash: "other".to_string(),
         references: vec![ReferenceRecord {

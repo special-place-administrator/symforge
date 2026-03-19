@@ -1,74 +1,83 @@
 use super::{ConfigExtractor, EditCapability, ExtractionOutcome, ExtractionResult};
 use crate::domain::{SymbolKind, SymbolRecord};
 
+use super::parse_diagnostic;
+
 pub struct EnvExtractor;
 
 impl ConfigExtractor for EnvExtractor {
     fn extract(&self, content: &[u8]) -> ExtractionResult {
-        let text = match std::str::from_utf8(content) {
-            Ok(s) => s,
-            Err(e) => {
-                return ExtractionResult {
-                    symbols: vec![],
-                    outcome: ExtractionOutcome::Failed(format!("Invalid UTF-8: {e}")),
-                };
-            }
-        };
-
-        // Build line-start index table for accurate byte ranges (handles LF and CRLF)
-        let mut line_starts: Vec<u32> = vec![0];
-        for (i, byte) in content.iter().enumerate() {
-            if *byte == b'\n' {
-                line_starts.push((i + 1) as u32);
-            }
-        }
-
-        let mut symbols: Vec<SymbolRecord> = Vec::new();
-        let mut sort_order: u32 = 0;
-
-        for (line_idx, line) in text.lines().enumerate() {
-            let trimmed = line.trim_end();
-
-            // Skip blank lines and comment lines
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                continue;
-            }
-
-            // Must contain '=' to be a valid KEY=value pair
-            let eq_pos = match trimmed.find('=') {
-                Some(pos) => pos,
-                None => continue,
+            let text = match std::str::from_utf8(content) {
+                Ok(s) => s,
+                Err(e) => {
+                    return ExtractionResult {
+                        symbols: vec![],
+                        outcome: ExtractionOutcome::Failed(parse_diagnostic(
+                            "utf-8",
+                            format!("Invalid UTF-8: {e}"),
+                            None,
+                            None,
+                            None,
+                            false,
+                        )),
+                    };
+                }
             };
 
-            // Key is everything before '=', trimmed of surrounding spaces
-            let key = trimmed[..eq_pos].trim();
-            if key.is_empty() {
-                continue;
+            // Build line-start index table for accurate byte ranges (handles LF and CRLF)
+            let mut line_starts: Vec<u32> = vec![0];
+            for (i, byte) in content.iter().enumerate() {
+                if *byte == b'\n' {
+                    line_starts.push((i + 1) as u32);
+                }
             }
 
-            // Compute byte range for this line (excluding line ending)
-            let line_start = line_starts[line_idx];
-            let line_byte_len = trimmed.len() as u32;
-            let line_end = line_start + line_byte_len;
+            let mut symbols: Vec<SymbolRecord> = Vec::new();
+            let mut sort_order: u32 = 0;
 
-            symbols.push(SymbolRecord {
-                name: key.to_string(),
-                kind: SymbolKind::Variable,
-                depth: 0,
-                sort_order,
-                byte_range: (line_start, line_end),
-                line_range: (line_idx as u32, line_idx as u32),
-                doc_byte_range: None,
-            });
+            for (line_idx, line) in text.lines().enumerate() {
+                let trimmed = line.trim_end();
 
-            sort_order += 1;
+                // Skip blank lines and comment lines
+                if trimmed.is_empty() || trimmed.starts_with('#') {
+                    continue;
+                }
+
+                // Must contain '=' to be a valid KEY=value pair
+                let eq_pos = match trimmed.find('=') {
+                    Some(pos) => pos,
+                    None => continue,
+                };
+
+                // Key is everything before '=', trimmed of surrounding spaces
+                let key = trimmed[..eq_pos].trim();
+                if key.is_empty() {
+                    continue;
+                }
+
+                // Compute byte range for this line (excluding line ending)
+                let line_start = line_starts[line_idx];
+                let line_byte_len = trimmed.len() as u32;
+                let line_end = line_start + line_byte_len;
+
+                symbols.push(SymbolRecord {
+                    name: key.to_string(),
+                    kind: SymbolKind::Variable,
+                    depth: 0,
+                    sort_order,
+                    byte_range: (line_start, line_end),
+                    line_range: (line_idx as u32, line_idx as u32),
+                    doc_byte_range: None,
+                });
+
+                sort_order += 1;
+            }
+
+            ExtractionResult {
+                symbols,
+                outcome: ExtractionOutcome::Ok,
+            }
         }
-
-        ExtractionResult {
-            symbols,
-            outcome: ExtractionOutcome::Ok,
-        }
-    }
 
     fn edit_capability(&self) -> EditCapability {
         EditCapability::StructuralEditSafe

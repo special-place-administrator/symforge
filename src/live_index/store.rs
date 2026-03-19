@@ -16,6 +16,7 @@ use crate::domain::{
     FileClassification, FileOutcome, FileProcessingResult, LanguageId, ReferenceRecord,
     SymbolRecord, find_enclosing_symbol,
 };
+use crate::domain::ParseDiagnostic;
 use crate::{discovery, parsing};
 
 /// Per-file parse status stored in the index.
@@ -40,6 +41,7 @@ pub struct IndexedFile {
     /// Symbols extracted by the parser.
     pub symbols: Vec<SymbolRecord>,
     pub parse_status: ParseStatus,
+    pub parse_diagnostic: Option<ParseDiagnostic>,
     pub byte_len: u64,
     pub content_hash: String,
     /// Cross-references extracted by xref::extract_references (Phase 4).
@@ -63,68 +65,64 @@ pub struct ReferenceLocation {
 }
 
 impl IndexedFile {
-    /// Build an `IndexedFile` from a `FileProcessingResult` plus the raw bytes.
-    ///
-    /// Maps `FileOutcome` → `ParseStatus`:
-    /// - `Processed`     → `ParseStatus::Parsed`
-    /// - `PartialParse`  → `ParseStatus::PartialParse` (symbols kept)
-    /// - `Failed`        → `ParseStatus::Failed` (empty symbols, content still stored)
     pub fn from_parse_result(result: FileProcessingResult, content: Vec<u8>) -> Self {
-        let parse_status = match &result.outcome {
-            FileOutcome::Processed => ParseStatus::Parsed,
-            FileOutcome::PartialParse { warning } => ParseStatus::PartialParse {
-                warning: warning.clone(),
-            },
-            FileOutcome::Failed { error } => ParseStatus::Failed {
-                error: error.clone(),
-            },
-        };
+            let parse_status = match &result.outcome {
+                FileOutcome::Processed => ParseStatus::Parsed,
+                FileOutcome::PartialParse { warning } => ParseStatus::PartialParse {
+                    warning: warning.clone(),
+                },
+                FileOutcome::Failed { error } => ParseStatus::Failed {
+                    error: error.clone(),
+                },
+            };
 
-        // Destructure the result so we can consume references while borrowing symbols.
-        let FileProcessingResult {
-            relative_path,
-            language,
-            classification,
-            outcome: _,
-            symbols,
-            byte_len,
-            content_hash,
-            references: raw_references,
-            alias_map,
-        } = result;
+            // Destructure the result so we can consume references while borrowing symbols.
+            let FileProcessingResult {
+                relative_path,
+                language,
+                classification,
+                outcome: _,
+                parse_diagnostic,
+                symbols,
+                byte_len,
+                content_hash,
+                references: raw_references,
+                alias_map,
+            } = result;
 
-        // Build a set of symbol byte ranges so we can filter definition-site hits
-        // (Pitfall 1: a reference whose byte_range exactly matches a symbol's byte_range
-        // is the definition itself — not a usage site).
-        let symbol_byte_ranges: std::collections::HashSet<(u32, u32)> =
-            symbols.iter().map(|s| s.byte_range).collect();
+            // Build a set of symbol byte ranges so we can filter definition-site hits
+            // (Pitfall 1: a reference whose byte_range exactly matches a symbol's byte_range
+            // is the definition itself — not a usage site).
+            let symbol_byte_ranges: std::collections::HashSet<(u32, u32)> =
+                symbols.iter().map(|s| s.byte_range).collect();
 
-        // Assign enclosing_symbol_index for each reference and skip definition sites.
-        let references: Vec<ReferenceRecord> = raw_references
-            .into_iter()
-            .filter(|r| !symbol_byte_ranges.contains(&r.byte_range))
-            .map(|mut r| {
-                if r.enclosing_symbol_index.is_none() {
-                    r.enclosing_symbol_index = find_enclosing_symbol(&symbols, r.line_range.0);
-                }
-                r
-            })
-            .collect();
+            // Assign enclosing_symbol_index for each reference and skip definition sites.
+            let references: Vec<ReferenceRecord> = raw_references
+                .into_iter()
+                .filter(|r| !symbol_byte_ranges.contains(&r.byte_range))
+                .map(|mut r| {
+                    if r.enclosing_symbol_index.is_none() {
+                        r.enclosing_symbol_index = find_enclosing_symbol(&symbols, r.line_range.0);
+                    }
+                    r
+                })
+                .collect();
 
-        IndexedFile {
-            relative_path,
-            language,
-            classification,
-            content,
-            symbols,
-            parse_status,
-            byte_len,
-            content_hash,
-            references,
-            alias_map,
-            mtime_secs: 0,
+            IndexedFile {
+                relative_path,
+                language,
+                classification,
+                content,
+                symbols,
+                parse_status,
+                parse_diagnostic,
+                byte_len,
+                content_hash,
+                references,
+                alias_map,
+                mtime_secs: 0,
+            }
         }
-    }
 
     /// Set the mtime recorded at index time. Call after `from_parse_result` for
     /// callers that have the file metadata available.
@@ -1286,6 +1284,7 @@ mod tests {
             language: LanguageId::Rust,
             classification: crate::domain::FileClassification::for_code_path("test.rs"),
             outcome,
+            parse_diagnostic: None,
             symbols,
             byte_len: 42,
             content_hash: "abc123".to_string(),
@@ -1759,6 +1758,7 @@ mod tests {
             content: b"fn test() {}".to_vec(),
             symbols: vec![dummy_symbol()],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 12,
             content_hash: "abc123".to_string(),
             references: vec![],
@@ -1884,6 +1884,7 @@ mod tests {
             content: b"fn old() {}".to_vec(),
             symbols: vec![],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 11,
             content_hash: "old_hash".to_string(),
             references: vec![],
@@ -1899,6 +1900,7 @@ mod tests {
             content: b"fn new() {}".to_vec(),
             symbols: vec![dummy_symbol()],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 11,
             content_hash: "new_hash".to_string(),
             references: vec![],
@@ -2018,6 +2020,7 @@ mod tests {
             content: b"fn test() {}".to_vec(),
             symbols: vec![],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 12,
             content_hash: "abc".to_string(),
             references: refs,
@@ -2038,6 +2041,7 @@ mod tests {
             language: LanguageId::Rust,
             classification: crate::domain::FileClassification::for_code_path("test.rs"),
             outcome: FileOutcome::Processed,
+            parse_diagnostic: None,
             symbols: vec![],
             byte_len: 0,
             content_hash: "abc".to_string(),

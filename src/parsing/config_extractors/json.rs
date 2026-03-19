@@ -4,58 +4,67 @@ use super::{
 };
 use crate::domain::{SymbolKind, SymbolRecord};
 
+use super::{optional_u32, parse_diagnostic};
+
 pub struct JsonExtractor;
 
 impl ConfigExtractor for JsonExtractor {
     fn extract(&self, content: &[u8]) -> ExtractionResult {
-        let value: serde_json::Value = match serde_json::from_slice(content) {
-            Ok(v) => v,
-            Err(e) => {
-                return ExtractionResult {
-                    symbols: vec![],
-                    outcome: ExtractionOutcome::Failed(e.to_string()),
-                };
-            }
-        };
+            let value: serde_json::Value = match serde_json::from_slice(content) {
+                Ok(v) => v,
+                Err(e) => {
+                    return ExtractionResult {
+                        symbols: vec![],
+                        outcome: ExtractionOutcome::Failed(parse_diagnostic(
+                            "serde_json",
+                            e.to_string(),
+                            optional_u32(e.line()),
+                            optional_u32(e.column()),
+                            None,
+                            false,
+                        )),
+                    };
+                }
+            };
 
-        // Build a line-start offset table for line_range computation.
-        let line_starts = build_line_starts(content);
+            // Build a line-start offset table for line_range computation.
+            let line_starts = build_line_starts(content);
 
-        let mut symbols = Vec::new();
-        let mut sort_order: u32 = 0;
+            let mut symbols = Vec::new();
+            let mut sort_order: u32 = 0;
 
-        // Only walk into the root if it is an object or array.
-        match &value {
-            serde_json::Value::Object(map) => {
-                walk_object(
-                    content,
-                    &line_starts,
-                    map,
-                    "",
-                    0,
-                    &mut symbols,
-                    &mut sort_order,
-                );
+            // Only walk into the root if it is an object or array.
+            match &value {
+                serde_json::Value::Object(map) => {
+                    walk_object(
+                        content,
+                        &line_starts,
+                        map,
+                        "",
+                        0,
+                        &mut symbols,
+                        &mut sort_order,
+                    );
+                }
+                serde_json::Value::Array(arr) => {
+                    walk_array(
+                        content,
+                        &line_starts,
+                        arr,
+                        "",
+                        0,
+                        &mut symbols,
+                        &mut sort_order,
+                    );
+                }
+                _ => {}
             }
-            serde_json::Value::Array(arr) => {
-                walk_array(
-                    content,
-                    &line_starts,
-                    arr,
-                    "",
-                    0,
-                    &mut symbols,
-                    &mut sort_order,
-                );
+
+            ExtractionResult {
+                symbols,
+                outcome: ExtractionOutcome::Ok,
             }
-            _ => {}
         }
-
-        ExtractionResult {
-            symbols,
-            outcome: ExtractionOutcome::Ok,
-        }
-    }
 
     fn edit_capability(&self) -> EditCapability {
         EditCapability::TextEditSafe

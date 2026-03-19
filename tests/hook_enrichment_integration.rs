@@ -71,6 +71,7 @@ fn make_rust_file_with_symbols(path: &str, symbols: Vec<(&str, SymbolKind)>) -> 
         content,
         symbols: symbol_records,
         parse_status: ParseStatus::Parsed,
+        parse_diagnostic: None,
         byte_len,
         content_hash: format!("hash-{}", path),
         references: vec![],

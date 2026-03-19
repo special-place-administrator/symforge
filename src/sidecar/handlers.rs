@@ -147,6 +147,37 @@ fn outline_hook_text(state: &SidecarState, params: &OutlineParams) -> Result<Str
     outline_text(state, params, HOOK_RENDER_OPTIONS)
 }
 
+fn append_parse_status_lines(
+    lines: &mut Vec<String>,
+    file: &crate::live_index::store::IndexedFile,
+) {
+    match &file.parse_status {
+        crate::live_index::store::ParseStatus::Parsed => {}
+        crate::live_index::store::ParseStatus::PartialParse { warning } => {
+            lines.push("Parse status: partial".to_string());
+            if let Some(diagnostic) = &file.parse_diagnostic {
+                lines.push(format!("Diagnostic: {}", diagnostic.summary()));
+                if let Some((start, end)) = diagnostic.byte_span {
+                    lines.push(format!("Byte span: {start}..{end}"));
+                }
+            } else {
+                lines.push(format!("Diagnostic: {warning}"));
+            }
+        }
+        crate::live_index::store::ParseStatus::Failed { error } => {
+            lines.push("Parse status: failed".to_string());
+            if let Some(diagnostic) = &file.parse_diagnostic {
+                lines.push(format!("Diagnostic: {}", diagnostic.summary()));
+                if let Some((start, end)) = diagnostic.byte_span {
+                    lines.push(format!("Byte span: {start}..{end}"));
+                }
+            } else {
+                lines.push(format!("Diagnostic: {error}"));
+            }
+        }
+    }
+}
+
 fn outline_text(
     state: &SidecarState,
     params: &OutlineParams,
@@ -175,6 +206,7 @@ fn outline_text(
         file.symbols.len(),
         language
     ));
+    append_parse_status_lines(&mut lines, file);
 
     if include_section("outline") {
         for sym in &file.symbols {
@@ -1535,6 +1567,7 @@ mod tests {
             content: b"fn test() {}".to_vec(),
             symbols,
             parse_status: status,
+            parse_diagnostic: None,
             byte_len: 12,
             content_hash: "abc".to_string(),
             references,
@@ -1934,6 +1967,7 @@ mod tests {
             content: b"use crate::db::connect;\nfn run() { connect(); }\n".to_vec(),
             symbols: vec![make_symbol("run", SymbolKind::Function, 2, 2)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 46,
             content_hash: "abc".to_string(),
             references: vec![
@@ -2098,6 +2132,7 @@ mod tests {
             content: b"use crate::db::connect;\nfn run() { connect(); }\n".to_vec(),
             symbols: vec![make_symbol("run", SymbolKind::Function, 2, 2)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 46,
             content_hash: "abc".to_string(),
             references: vec![
@@ -2167,6 +2202,7 @@ mod tests {
             content: b"use crate::db::connect;\nfn run() { connect(); }\n".to_vec(),
             symbols: vec![make_symbol("run", SymbolKind::Function, 2, 2)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 46,
             content_hash: "abc".to_string(),
             references: vec![
@@ -2269,6 +2305,7 @@ mod tests {
             content: b"use crate::db::connect;\nfn run() { connect(); }\n".to_vec(),
             symbols: vec![make_symbol("run", SymbolKind::Function, 2, 2)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 46,
             content_hash: "abc".to_string(),
             references: vec![
@@ -2359,6 +2396,7 @@ mod tests {
             content: b"use crate::db::connect;\nfn run() { connect(); }\n".to_vec(),
             symbols: vec![make_symbol("run", SymbolKind::Function, 2, 2)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 46,
             content_hash: "abc".to_string(),
             references: vec![
@@ -2421,6 +2459,7 @@ mod tests {
             content: b"use crate::db::connect;\nfn run() { connect(); }\n".to_vec(),
             symbols: vec![make_symbol("run", SymbolKind::Function, 2, 2)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 46,
             content_hash: "abc".to_string(),
             references: vec![
@@ -2483,6 +2522,7 @@ mod tests {
             content: b"use crate::db::connect;\nfn run() { connect(); }\n".to_vec(),
             symbols: vec![make_symbol("run", SymbolKind::Function, 2, 2)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 46,
             content_hash: "abc".to_string(),
             references: vec![
@@ -2565,6 +2605,7 @@ mod tests {
             content: b"use crate::db::connect;\nfn run() { connect(); }\n".to_vec(),
             symbols: vec![make_symbol("run", SymbolKind::Function, 2, 2)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 46,
             content_hash: "abc".to_string(),
             references: vec![
@@ -2648,6 +2689,7 @@ mod tests {
             content: b"use crate::db::connect;\nfn run() { connect(); }\n".to_vec(),
             symbols: vec![make_symbol("run", SymbolKind::Function, 2, 2)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 46,
             content_hash: "abc".to_string(),
             references: vec![
@@ -2728,6 +2770,7 @@ mod tests {
             content: b"use crate::db::connect;\nfn run() { connect(); }\n".to_vec(),
             symbols: vec![make_symbol("run", SymbolKind::Function, 2, 2)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 46,
             content_hash: "abc".to_string(),
             references: vec![
@@ -2796,6 +2839,7 @@ mod tests {
             content: b"export function connect() {}\n".to_vec(),
             symbols: vec![make_symbol("connect", SymbolKind::Function, 1, 1)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 28,
             content_hash: "utils-ts".to_string(),
             references: vec![],
@@ -2809,6 +2853,7 @@ mod tests {
             content: b"import { connect } from 'src/utils';\nconnect();\n".to_vec(),
             symbols: vec![make_symbol("run", SymbolKind::Function, 2, 2)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 49,
             content_hash: "app-ts".to_string(),
             references: vec![
@@ -2879,6 +2924,7 @@ mod tests {
                 make_symbol("connect", SymbolKind::Function, 3, 3),
             ],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 57,
             content_hash: "utils-ts-lines".to_string(),
             references: vec![],
@@ -2892,6 +2938,7 @@ mod tests {
             content: b"import { connect } from 'src/utils';\nconnect();\n".to_vec(),
             symbols: vec![make_symbol("run", SymbolKind::Function, 2, 2)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 49,
             content_hash: "app-ts".to_string(),
             references: vec![
@@ -2959,6 +3006,7 @@ mod tests {
             content: b"export function connect() {}\n".to_vec(),
             symbols: vec![make_symbol("connect", SymbolKind::Function, 1, 1)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 28,
             content_hash: "utils-ts".to_string(),
             references: vec![],
@@ -3005,6 +3053,7 @@ mod tests {
             content: b"export function connect() {}\n".to_vec(),
             symbols: vec![make_symbol("connect", SymbolKind::Function, 1, 1)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 28,
             content_hash: "utils-ts".to_string(),
             references: vec![],
@@ -3018,6 +3067,7 @@ mod tests {
             content: b"import { connect } from 'src/utils';\nconnect();\n".to_vec(),
             symbols: vec![make_symbol("run", SymbolKind::Function, 2, 2)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 49,
             content_hash: "app-ts".to_string(),
             references: vec![
@@ -3102,6 +3152,7 @@ mod tests {
                 make_symbol("connect", SymbolKind::Function, 3, 3),
             ],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 57,
             content_hash: "utils-ts-lines".to_string(),
             references: vec![],
@@ -3115,6 +3166,7 @@ mod tests {
             content: b"import { connect } from 'src/utils';\nconnect();\n".to_vec(),
             symbols: vec![make_symbol("run", SymbolKind::Function, 2, 2)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 49,
             content_hash: "app-ts".to_string(),
             references: vec![
@@ -3173,6 +3225,7 @@ mod tests {
             content: b"use crate::db::connect;\nfn run() { connect(); }\n".to_vec(),
             symbols: vec![make_symbol("run", SymbolKind::Function, 2, 2)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 46,
             content_hash: "abc".to_string(),
             references: vec![
@@ -3245,6 +3298,7 @@ mod tests {
             content: b"use crate::db::connect;\nfn run() { connect(); }\n".to_vec(),
             symbols: vec![make_symbol("run", SymbolKind::Function, 2, 2)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 46,
             content_hash: "abc".to_string(),
             references: vec![
@@ -3402,6 +3456,7 @@ mod tests {
             content: b"def connect():\n    pass\n".to_vec(),
             symbols: vec![make_symbol("connect", SymbolKind::Function, 1, 1)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 24,
             content_hash: "db-py".to_string(),
             references: vec![],
@@ -3415,6 +3470,7 @@ mod tests {
             content: b"from pkg.db import connect\n\ndef run():\n    connect()\n".to_vec(),
             symbols: vec![make_symbol("run", SymbolKind::Function, 3, 3)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 54,
             content_hash: "service-py".to_string(),
             references: vec![
@@ -3445,6 +3501,7 @@ mod tests {
             content: b"def run():\n    connect()\n".to_vec(),
             symbols: vec![make_symbol("run", SymbolKind::Function, 1, 1)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 25,
             content_hash: "other-py".to_string(),
             references: vec![make_reference("connect", ReferenceKind::Call, 1)],
@@ -3485,6 +3542,7 @@ mod tests {
             content: b"export function connect() {}\n".to_vec(),
             symbols: vec![make_symbol("connect", SymbolKind::Function, 1, 1)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 28,
             content_hash: "utils-ts".to_string(),
             references: vec![],
@@ -3498,6 +3556,7 @@ mod tests {
             content: b"import { connect } from 'src/utils';\nconnect();\n".to_vec(),
             symbols: vec![make_symbol("run", SymbolKind::Function, 2, 2)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 49,
             content_hash: "app-ts".to_string(),
             references: vec![
@@ -3528,6 +3587,7 @@ mod tests {
             content: b"connect();\n".to_vec(),
             symbols: vec![make_symbol("run", SymbolKind::Function, 1, 1)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 10,
             content_hash: "other-ts".to_string(),
             references: vec![make_reference("connect", ReferenceKind::Call, 1)],
@@ -3572,6 +3632,7 @@ mod tests {
                 make_symbol("connect", SymbolKind::Function, 3, 3),
             ],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 57,
             content_hash: "utils-ts-lines".to_string(),
             references: vec![],
@@ -3585,6 +3646,7 @@ mod tests {
             content: b"import { connect } from 'src/utils';\nconnect();\n".to_vec(),
             symbols: vec![make_symbol("run", SymbolKind::Function, 2, 2)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 49,
             content_hash: "app-ts".to_string(),
             references: vec![
@@ -3615,6 +3677,7 @@ mod tests {
             content: b"connect();\n".to_vec(),
             symbols: vec![make_symbol("run", SymbolKind::Function, 1, 1)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 10,
             content_hash: "other-ts".to_string(),
             references: vec![make_reference("connect", ReferenceKind::Call, 1)],
@@ -3660,6 +3723,7 @@ mod tests {
             content: b"def connect():\n    pass\n".to_vec(),
             symbols: vec![make_symbol("connect", SymbolKind::Function, 1, 1)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 24,
             content_hash: "db-py".to_string(),
             references: vec![],
@@ -3673,6 +3737,7 @@ mod tests {
             content: b"from pkg.db import connect\n\ndef run():\n    connect()\n".to_vec(),
             symbols: vec![make_symbol("run", SymbolKind::Function, 3, 3)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 54,
             content_hash: "service-py".to_string(),
             references: vec![
@@ -3703,6 +3768,7 @@ mod tests {
             content: b"def run():\n    connect()\n".to_vec(),
             symbols: vec![make_symbol("run", SymbolKind::Function, 1, 1)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 25,
             content_hash: "other-py".to_string(),
             references: vec![make_reference("connect", ReferenceKind::Call, 1)],
@@ -3744,6 +3810,7 @@ mod tests {
             content: b"export function connect() {}\n".to_vec(),
             symbols: vec![make_symbol("connect", SymbolKind::Function, 1, 1)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 28,
             content_hash: "utils-ts".to_string(),
             references: vec![],
@@ -3757,6 +3824,7 @@ mod tests {
             content: b"import { connect } from 'src/utils';\nconnect();\n".to_vec(),
             symbols: vec![make_symbol("run", SymbolKind::Function, 2, 2)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 49,
             content_hash: "app-ts".to_string(),
             references: vec![
@@ -3787,6 +3855,7 @@ mod tests {
             content: b"connect();\n".to_vec(),
             symbols: vec![make_symbol("run", SymbolKind::Function, 1, 1)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 10,
             content_hash: "other-ts".to_string(),
             references: vec![make_reference("connect", ReferenceKind::Call, 1)],
@@ -3831,6 +3900,7 @@ mod tests {
                 make_symbol("connect", SymbolKind::Function, 4, 4),
             ],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 49,
             content_hash: "db-py".to_string(),
             references: vec![],
@@ -3844,6 +3914,7 @@ mod tests {
             content: b"from pkg.db import connect\n\ndef run():\n    connect()\n".to_vec(),
             symbols: vec![make_symbol("run", SymbolKind::Function, 3, 3)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 54,
             content_hash: "service-py".to_string(),
             references: vec![
@@ -3874,6 +3945,7 @@ mod tests {
             content: b"def run():\n    connect()\n".to_vec(),
             symbols: vec![make_symbol("run", SymbolKind::Function, 1, 1)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 25,
             content_hash: "other-py".to_string(),
             references: vec![make_reference("connect", ReferenceKind::Call, 1)],
@@ -3922,6 +3994,7 @@ mod tests {
                 make_symbol("connect", SymbolKind::Function, 4, 4),
             ],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 49,
             content_hash: "db-py".to_string(),
             references: vec![],
@@ -3935,6 +4008,7 @@ mod tests {
             content: b"from pkg.db import connect\n\ndef run():\n    connect()\n".to_vec(),
             symbols: vec![make_symbol("run", SymbolKind::Function, 3, 3)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 54,
             content_hash: "service-py".to_string(),
             references: vec![
@@ -3988,6 +4062,7 @@ mod tests {
                 make_symbol("connect", SymbolKind::Function, 3, 3),
             ],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 57,
             content_hash: "utils-ts-lines".to_string(),
             references: vec![],
@@ -4001,6 +4076,7 @@ mod tests {
             content: b"import { connect } from 'src/utils';\nconnect();\n".to_vec(),
             symbols: vec![make_symbol("run", SymbolKind::Function, 2, 2)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 49,
             content_hash: "app-ts".to_string(),
             references: vec![
@@ -4197,6 +4273,7 @@ mod tests {
             content: b"use crate::db::connect;\nfn run() { connect(); }\n".to_vec(),
             symbols: vec![make_symbol("run", SymbolKind::Function, 2, 2)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 46,
             content_hash: "abc".to_string(),
             references: vec![
@@ -4227,6 +4304,7 @@ mod tests {
             content: b"use crate::db::connect;\nfn helper() { connect(); }\n".to_vec(),
             symbols: vec![make_symbol("helper", SymbolKind::Function, 2, 2)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 52,
             content_hash: "def".to_string(),
             references: vec![
@@ -4297,6 +4375,7 @@ mod tests {
             content: b"use crate::db::connect;\nfn run() { connect(); }\n".to_vec(),
             symbols: vec![make_symbol("run", SymbolKind::Function, 2, 2)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 46,
             content_hash: "abc".to_string(),
             references: vec![
@@ -4327,6 +4406,7 @@ mod tests {
             content: b"from db import connect\n\ndef helper():\n    connect()\n".to_vec(),
             symbols: vec![make_symbol("helper", SymbolKind::Function, 3, 4)],
             parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
             byte_len: 51,
             content_hash: "def".to_string(),
             references: vec![

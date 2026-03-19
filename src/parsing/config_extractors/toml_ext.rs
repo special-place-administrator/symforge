@@ -3,80 +3,78 @@ use super::{
 };
 use crate::domain::{SymbolKind, SymbolRecord};
 
+use super::{parse_diagnostic, parse_diagnostic_from_span};
+
 pub struct TomlExtractor;
 
 impl ConfigExtractor for TomlExtractor {
     fn extract(&self, content: &[u8]) -> ExtractionResult {
-        let content_str = match std::str::from_utf8(content) {
-            Ok(s) => s,
-            Err(e) => {
+            let content_str = match std::str::from_utf8(content) {
+                Ok(s) => s,
+                Err(e) => {
+                    return ExtractionResult {
+                        symbols: vec![],
+                        outcome: ExtractionOutcome::Failed(parse_diagnostic(
+                            "utf-8",
+                            e.to_string(),
+                            None,
+                            None,
+                            None,
+                            false,
+                        )),
+                    };
+                }
+            };
+
+            if content_str.trim().is_empty() {
                 return ExtractionResult {
                     symbols: vec![],
-                    outcome: ExtractionOutcome::Failed(e.to_string()),
+                    outcome: ExtractionOutcome::Ok,
                 };
             }
-        };
 
-        if content_str.trim().is_empty() {
-            return ExtractionResult {
-                symbols: vec![],
-                outcome: ExtractionOutcome::Ok,
-            };
-        }
+            // Try strict parse first; fall back to line-scanning on parse error.
+            // Note: DocumentMut rejects some constructs (e.g. [a] with a.b="v" then [a.b])
+            // that real-world TOML files use. Line scanning handles these gracefully.
+            let line_starts = build_line_starts(content);
 
-        // Try strict parse first; fall back to line-scanning on parse error.
-        // Note: DocumentMut rejects some constructs (e.g. [a] with a.b="v" then [a.b])
-        // that real-world TOML files use. Line scanning handles these gracefully.
-        let line_starts = build_line_starts(content);
-
-        match content_str.parse::<toml_edit::DocumentMut>() {
-            Ok(doc) => {
-                let mut symbols = Vec::new();
-                let mut sort_order: u32 = 0;
-                walk_table(
-                    doc.as_table(),
-                    "",
-                    0,
-                    content,
-                    &line_starts,
-                    &mut symbols,
-                    &mut sort_order,
-                );
-                ExtractionResult {
-                    symbols,
-                    outcome: ExtractionOutcome::Ok,
-                }
-            }
-            Err(_) => {
-                // Fall back to line-based scanning so we still extract useful keys.
-                // Only return Failed for truly unparseable content (binary, wrong encoding, etc.)
-                // — but we already handled UTF-8 above. A TOML "duplicate key" error still
-                // produces meaningful output from line scanning.
-                let symbols = line_scan(content, &line_starts);
-                if symbols.is_empty() {
-                    // If line scan also produced nothing, report failure so callers know
-                    // parsing was degraded. But we check for the specific case of truly
-                    // malformed TOML (unclosed bracket, etc.) vs. spec-edge duplicate keys.
-                    let parse_err = content_str.parse::<toml_edit::DocumentMut>().unwrap_err();
-                    let msg = parse_err.message();
-                    // For truly broken TOML (not just duplicate-key edge cases), report failure
-                    if msg.contains("invalid")
-                        || msg.contains("expected")
-                        || msg.contains("unterminated")
-                    {
-                        return ExtractionResult {
-                            symbols: vec![],
-                            outcome: ExtractionOutcome::Failed(msg.to_string()),
-                        };
+            match content_str.parse::<toml_edit::DocumentMut>() {
+                Ok(doc) => {
+                    let mut symbols = Vec::new();
+                    let mut sort_order: u32 = 0;
+                    walk_table(
+                        doc.as_table(),
+                        "",
+                        0,
+                        content,
+                        &line_starts,
+                        &mut symbols,
+                        &mut sort_order,
+                    );
+                    ExtractionResult {
+                        symbols,
+                        outcome: ExtractionOutcome::Ok,
                     }
                 }
-                ExtractionResult {
-                    symbols,
-                    outcome: ExtractionOutcome::Ok,
+                Err(parse_err) => {
+                    // Fall back to line-based scanning so we still extract useful keys.
+                    let symbols = line_scan(content, &line_starts);
+                    let diagnostic = parse_diagnostic_from_span(
+                        "toml_edit",
+                        parse_err.message(),
+                        content,
+                        parse_err.span(),
+                        !symbols.is_empty(),
+                    );
+                    let outcome = if symbols.is_empty() {
+                        ExtractionOutcome::Failed(diagnostic)
+                    } else {
+                        ExtractionOutcome::Partial(diagnostic)
+                    };
+                    ExtractionResult { symbols, outcome }
                 }
             }
         }
-    }
 
     fn edit_capability(&self) -> EditCapability {
         EditCapability::StructuralEditSafe
@@ -597,7 +595,43 @@ mod tests {
     fn test_malformed_toml() {
         let result = TomlExtractor.extract(b"[invalid\nno closing");
         assert!(result.symbols.is_empty());
-        assert!(matches!(result.outcome, ExtractionOutcome::Failed(_)));
+
+        let diagnostic = match &result.outcome {
+            ExtractionOutcome::Failed(diagnostic) => diagnostic,
+            _ => panic!("expected failed extraction"),
+        };
+
+        assert_eq!(diagnostic.parser, "toml_edit");
+        assert!(!diagnostic.fallback_used);
+        assert!(diagnostic.line.is_some());
+        assert!(diagnostic.column.is_some());
+    }
+
+    #[test]
+    fn test_malformed_toml_reports_partial_diagnostic_when_line_scan_recovers_symbols() {
+        let result = TomlExtractor.extract(
+            b"[package]\nname = \"symforge\"\nversion = \"0.1.0\"\ninvalid = \"unterminated\n",
+        );
+
+        assert!(
+            result.symbols.iter().any(|symbol| symbol.name == "package"),
+            "fallback scan should still recover the table header"
+        );
+        assert!(
+            result.symbols.iter().any(|symbol| symbol.name == "package.name"),
+            "fallback scan should still recover keys"
+        );
+
+        let diagnostic = match &result.outcome {
+            ExtractionOutcome::Partial(diagnostic) => diagnostic,
+            _ => panic!("expected partial extraction"),
+        };
+
+        assert_eq!(diagnostic.parser, "toml_edit");
+        assert!(diagnostic.fallback_used);
+        assert!(diagnostic.line.is_some());
+        assert!(diagnostic.column.is_some());
+        assert!(diagnostic.byte_span.is_some());
     }
 
     #[test]

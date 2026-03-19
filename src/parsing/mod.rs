@@ -45,23 +45,33 @@ pub fn process_file_with_classification(
     // Config files use native parsers, not tree-sitter.
     if config_extractors::is_config_language(&language) {
         let result = config_extractors::extractor_for(&language).map(|e| e.extract(bytes));
-        let (symbols, outcome) = match result {
+        let (symbols, outcome, parse_diagnostic) = match result {
             Some(r) => {
-                let outcome = match r.outcome {
-                    config_extractors::ExtractionOutcome::Ok => FileOutcome::Processed,
-                    config_extractors::ExtractionOutcome::Failed(err) => {
-                        FileOutcome::Failed { error: err }
-                    }
+                let (outcome, parse_diagnostic) = match r.outcome {
+                    config_extractors::ExtractionOutcome::Ok => (FileOutcome::Processed, None),
+                    config_extractors::ExtractionOutcome::Partial(diagnostic) => (
+                        FileOutcome::PartialParse {
+                            warning: diagnostic.summary(),
+                        },
+                        Some(diagnostic),
+                    ),
+                    config_extractors::ExtractionOutcome::Failed(diagnostic) => (
+                        FileOutcome::Failed {
+                            error: diagnostic.summary(),
+                        },
+                        Some(diagnostic),
+                    ),
                 };
-                (r.symbols, outcome)
+                (r.symbols, outcome, parse_diagnostic)
             }
-            None => (vec![], FileOutcome::Processed),
+            None => (vec![], FileOutcome::Processed, None),
         };
         return FileProcessingResult {
             relative_path: relative_path.to_string(),
             language,
             classification,
             outcome,
+            parse_diagnostic,
             symbols,
             byte_len,
             content_hash,
@@ -88,6 +98,7 @@ pub fn process_file_with_classification(
                 language,
                 classification,
                 outcome,
+                parse_diagnostic: None,
                 symbols,
                 byte_len,
                 content_hash,
@@ -102,6 +113,7 @@ pub fn process_file_with_classification(
             outcome: FileOutcome::Failed {
                 error: err.to_string(),
             },
+            parse_diagnostic: None,
             symbols: vec![],
             byte_len,
             content_hash,
@@ -115,6 +127,7 @@ pub fn process_file_with_classification(
             outcome: FileOutcome::Failed {
                 error: "tree-sitter parser panicked during parsing".to_string(),
             },
+            parse_diagnostic: None,
             symbols: vec![],
             byte_len,
             content_hash,

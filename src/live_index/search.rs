@@ -1348,6 +1348,7 @@ mod tests {
                 content: content.as_bytes().to_vec(),
                 symbols,
                 parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
                 byte_len: content.len() as u64,
                 content_hash: "hash".to_string(),
                 references: Vec::new(),

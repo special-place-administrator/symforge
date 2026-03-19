@@ -256,6 +256,7 @@ mod tests {
                 content: content.to_vec(),
                 symbols: vec![],
                 parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
                 byte_len: content.len() as u64,
                 content_hash: "test".to_string(),
                 references: vec![],

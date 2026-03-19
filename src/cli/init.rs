@@ -197,6 +197,7 @@ pub fn merge_hooks_into_settings(
 const SYMFORGE_TOOL_NAMES: &[&str] = &[
     "mcp__symforge__health",
     "mcp__symforge__index_folder",
+    "mcp__symforge__validate_file_syntax",
     "mcp__symforge__get_file_content",
     "mcp__symforge__get_symbol",
     "mcp__symforge__get_repo_map",
@@ -221,12 +222,10 @@ const SYMFORGE_TOOL_NAMES: &[&str] = &[
     "mcp__symforge__batch_rename",
 ];
 
-/// Tool names allowed by default for the Kilo Code VS Code extension.
-///
-/// Kilo Code uses bare tool names (no `mcp__symforge__` prefix).
 const KILO_ALWAYS_ALLOW: &[&str] = &[
     "health",
     "index_folder",
+    "validate_file_syntax",
     "get_repo_map",
     "get_file_content",
     "search_symbols",
@@ -251,14 +250,11 @@ const KILO_ALWAYS_ALLOW: &[&str] = &[
     "batch_rename",
 ];
 
-/// Tool names registered in `alwaysAllow` for the Claude Code MCP entry in `~/.claude.json`.
-///
-/// These are bare tool names (no `mcp__symforge__` prefix) — Claude resolves them
-/// against the declared server namespace automatically.
 const CLAUDE_ALWAYS_ALLOW: &[&str] = &[
     "health",
     "get_repo_map",
     "explore",
+    "validate_file_syntax",
     "get_file_content",
     "get_file_context",
     "get_symbol",
@@ -712,6 +708,8 @@ SymForge MCP is installed and active. It provides indexed code search, symbol ex
 ### Decision Rules\n\
 \n\
 1. **Before reading a file**, call `get_file_context` — it returns the file's symbol outline, imports, and references, saving 70-95% of tokens vs reading raw source. Only read the full file if you need exact surrounding context that the outline doesn't provide.\n\
+\n\
+- **When a config file looks malformed**, call `validate_file_syntax` — it reports parser diagnostics with line/column details when available and keeps TOML/JSON/YAML validation inside SymForge.\n\
 \n\
 2. **Before grepping**, call `search_text` — it returns matches with enclosing symbol context and file structure awareness. Use `group_by='symbol'` to deduplicate and `follow_refs=true` to inline callers.\n\
 \n\

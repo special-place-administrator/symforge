@@ -4,64 +4,74 @@ use super::{
 };
 use crate::domain::{SymbolKind, SymbolRecord};
 
+use super::{optional_u32, parse_diagnostic};
+
 pub struct YamlExtractor;
 
 impl ConfigExtractor for YamlExtractor {
     fn extract(&self, content: &[u8]) -> ExtractionResult {
-        if content.is_empty() {
-            return ExtractionResult {
-                symbols: vec![],
-                outcome: ExtractionOutcome::Ok,
-            };
-        }
-
-        let value: serde_yml::Value = match serde_yml::from_slice(content) {
-            Ok(v) => v,
-            Err(e) => {
+            if content.is_empty() {
                 return ExtractionResult {
                     symbols: vec![],
-                    outcome: ExtractionOutcome::Failed(e.to_string()),
+                    outcome: ExtractionOutcome::Ok,
                 };
             }
-        };
 
-        // Build a line-start offset table for line_range computation.
-        let line_starts = build_line_starts(content);
+            let value: serde_yml::Value = match serde_yml::from_slice(content) {
+                Ok(v) => v,
+                Err(e) => {
+                    let location = e.location();
+                    return ExtractionResult {
+                        symbols: vec![],
+                        outcome: ExtractionOutcome::Failed(parse_diagnostic(
+                            "serde_yml",
+                            e.to_string(),
+                            location.as_ref().and_then(|loc| optional_u32(loc.line())),
+                            location.as_ref().and_then(|loc| optional_u32(loc.column())),
+                            None,
+                            false,
+                        )),
+                    };
+                }
+            };
 
-        let mut symbols = Vec::new();
-        let mut sort_order: u32 = 0;
+            // Build a line-start offset table for line_range computation.
+            let line_starts = build_line_starts(content);
 
-        match &value {
-            serde_yml::Value::Mapping(map) => {
-                walk_mapping(
-                    content,
-                    &line_starts,
-                    map,
-                    "",
-                    0,
-                    &mut symbols,
-                    &mut sort_order,
-                );
+            let mut symbols = Vec::new();
+            let mut sort_order: u32 = 0;
+
+            match &value {
+                serde_yml::Value::Mapping(map) => {
+                    walk_mapping(
+                        content,
+                        &line_starts,
+                        map,
+                        "",
+                        0,
+                        &mut symbols,
+                        &mut sort_order,
+                    );
+                }
+                serde_yml::Value::Sequence(seq) => {
+                    walk_sequence(
+                        content,
+                        &line_starts,
+                        seq,
+                        "",
+                        0,
+                        &mut symbols,
+                        &mut sort_order,
+                    );
+                }
+                _ => {}
             }
-            serde_yml::Value::Sequence(seq) => {
-                walk_sequence(
-                    content,
-                    &line_starts,
-                    seq,
-                    "",
-                    0,
-                    &mut symbols,
-                    &mut sort_order,
-                );
-            }
-            _ => {}
-        }
 
-        ExtractionResult {
-            symbols,
-            outcome: ExtractionOutcome::Ok,
+            ExtractionResult {
+                symbols,
+                outcome: ExtractionOutcome::Ok,
+            }
         }
-    }
 
     fn edit_capability(&self) -> EditCapability {
         EditCapability::TextEditSafe
