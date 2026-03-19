@@ -35,6 +35,7 @@ struct InitPaths {
     gemini_settings: PathBuf,
     gemini_memory: PathBuf,
     kilo_vscode_config: PathBuf,
+    kilo_rules_guidance: PathBuf,
 }
 
 impl InitPaths {
@@ -54,6 +55,10 @@ impl InitPaths {
             gemini_settings: home.join(".gemini").join("settings.json"),
             gemini_memory: home.join(".gemini").join("GEMINI.md"),
             kilo_vscode_config: working_dir.join(".kilocode").join("mcp.json"),
+            kilo_rules_guidance: working_dir
+                .join(".kilocode")
+                .join("rules")
+                .join("symforge.md"),
         }
     }
 }
@@ -139,6 +144,12 @@ pub fn run_init_with_context(
         eprintln!(
             "Kilo Code MCP server registered in {}",
             paths.kilo_vscode_config.display()
+        );
+
+        upsert_guidance_markdown(&paths.kilo_rules_guidance, &kilo_guidance_block())?;
+        eprintln!(
+            "Kilo Code guidance written to {}",
+            paths.kilo_rules_guidance.display()
         );
     }
 
@@ -801,38 +812,11 @@ fn codex_guidance_block() -> String {
 }
 
 fn gemini_guidance_block() -> String {
-    format!(
-        "{SYMFORGE_GUIDANCE_START}\n\
-## SymForge MCP — Code Intelligence\n\
-\n\
-SymForge MCP is installed and active. It provides indexed code search, symbol extraction, and structural analysis that is faster and more token-efficient than raw file operations.\n\
-\n\
-### Decision Rules\n\
-\n\
-1. **Before reading a file**, call `get_file_context` — it returns the file's symbol outline, imports, and references, saving 70-95% of tokens vs reading raw source. Only read the full file if you need exact surrounding context that the outline doesn't provide.\n\
-\n\
-2. **Before grepping**, call `search_text` — it returns matches with enclosing symbol context and file structure awareness. Use `group_by='symbol'` to deduplicate and `follow_refs=true` to inline callers.\n\
-\n\
-3. **To find a function/class/type**, call `search_symbols` — it searches indexed symbol names across the entire repo in milliseconds.\n\
-\n\
-4. **To understand a symbol's source**, call `get_symbol` — it returns the full source of a specific function, struct, class, etc. with doc comments.\n\
-\n\
-5. **To get a project overview**, call `get_repo_map` — it returns a structured outline of the entire repository with file counts, languages, and symbol summaries.\n\
-\n\
-6. **To trace call relationships**, call `find_references` — it shows callers and callees without scanning files. Use `get_symbol_context` for comprehensive usage analysis.\n\
-\n\
-7. **To check repo health**, call `health` — it shows index status, file counts, and watcher state.\n\
-\n\
-8. **After editing a file**, call `analyze_file_impact` — it re-indexes the file and reports affected dependents.\n\
-\n\
-9. **When resuming work**, call `what_changed` — it shows uncommitted changes so you can pick up where you left off.\n\
-\n\
-### When to use raw file reads instead\n\
-- Reading non-code files (docs, configs) where exact wording matters\n\
-- When you need the full file content including whitespace and formatting\n\
-- When SymForge tools return an error or the file isn't indexed\n\
-{SYMFORGE_GUIDANCE_END}"
-    )
+    claude_guidance_block()
+}
+
+fn kilo_guidance_block() -> String {
+    claude_guidance_block()
 }
 
 /// Returns the binary path of the currently running symforge executable.
@@ -1221,6 +1205,32 @@ mod tests {
         assert!(
             block.contains("Use `get_file_content` for exact raw reads of:"),
             "codex guidance should route exact raw reads through SymForge first: {block}"
+        );
+    }
+
+    #[test]
+    fn test_gemini_guidance_is_full_preference_block() {
+        let block = gemini_guidance_block();
+        assert!(
+            block.contains("Preferred tools for reading"),
+            "gemini guidance should include the full tooling preference section: {block}"
+        );
+        assert!(
+            block.contains("validate_file_syntax"),
+            "gemini guidance should mention config validation inside SymForge: {block}"
+        );
+    }
+
+    #[test]
+    fn test_kilo_guidance_is_full_preference_block() {
+        let block = kilo_guidance_block();
+        assert!(
+            block.contains("Tooling Preference"),
+            "kilo guidance should include the tooling preference section: {block}"
+        );
+        assert!(
+            block.contains("Do not default to broad raw file reads"),
+            "kilo guidance should encode the stronger source-inspection rule: {block}"
         );
     }
 

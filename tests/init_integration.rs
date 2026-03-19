@@ -506,6 +506,14 @@ fn test_run_init_claude_only_updates_claude_files() {
         !home.path().join(".codex").join("AGENTS.md").exists(),
         "Codex AGENTS guidance must not be created for claude-only init"
     );
+    assert!(
+        !home.path().join(".gemini").join("settings.json").exists(),
+        "Gemini config must not be created for claude-only init"
+    );
+    assert!(
+        !cwd.path().join(".kilocode").join("mcp.json").exists(),
+        "Kilo config must not be created for claude-only init"
+    );
 }
 
 #[test]
@@ -537,6 +545,26 @@ fn test_run_init_all_updates_both_clients() {
         home.path().join(".codex").join("AGENTS.md").exists(),
         "Codex AGENTS guidance must be created"
     );
+    assert!(
+        home.path().join(".gemini").join("settings.json").exists(),
+        "Gemini config must be created"
+    );
+    assert!(
+        home.path().join(".gemini").join("GEMINI.md").exists(),
+        "Gemini guidance must be created"
+    );
+    assert!(
+        cwd.path().join(".kilocode").join("mcp.json").exists(),
+        "Kilo config must be created"
+    );
+    assert!(
+        cwd.path()
+            .join(".kilocode")
+            .join("rules")
+            .join("symforge.md")
+            .exists(),
+        "Kilo guidance rules must be created"
+    );
 }
 
 #[test]
@@ -562,6 +590,14 @@ fn test_run_init_codex_writes_symforge_agents_guidance() {
     assert!(
         raw.contains("get_file_context"),
         "Codex AGENTS guidance must include tool guidance: {raw}"
+    );
+    assert!(
+        raw.contains("validate_file_syntax"),
+        "Codex AGENTS guidance must include config validation guidance: {raw}"
+    );
+    assert!(
+        raw.contains("Do not default to broad raw file reads"),
+        "Codex AGENTS guidance must encode the stronger source-inspection rule: {raw}"
     );
 }
 
@@ -618,6 +654,10 @@ fn test_run_init_claude_writes_symforge_memory_guidance() {
         raw.contains("Tooling Preference"),
         "Claude memory guidance must include the Tooling Preference section: {raw}"
     );
+    assert!(
+        raw.contains("validate_file_syntax"),
+        "Claude memory guidance must include config validation guidance: {raw}"
+    );
 }
 
 #[test]
@@ -643,4 +683,122 @@ fn test_run_init_claude_preserves_existing_memory_content_and_is_idempotent() {
         "existing Claude memory must survive"
     );
     assert_eq!(first, second, "Claude memory guidance must be idempotent");
+}
+
+#[test]
+fn test_run_init_gemini_only_updates_gemini_files() {
+    let home = TempDir::new().unwrap();
+    let cwd = TempDir::new().unwrap();
+    let binary_path = std::path::PathBuf::from(FAKE_BINARY);
+
+    run_init_with_context(InitClient::Gemini, home.path(), cwd.path(), &binary_path)
+        .expect("gemini init must succeed");
+
+    assert!(
+        home.path().join(".gemini").join("settings.json").exists(),
+        "Gemini config must be created"
+    );
+    assert!(
+        home.path().join(".gemini").join("GEMINI.md").exists(),
+        "Gemini guidance must be created"
+    );
+    assert!(
+        !home.path().join(".codex").join("config.toml").exists(),
+        "Codex config must not be created for gemini-only init"
+    );
+    assert!(
+        !home.path().join(".claude.json").exists(),
+        "Claude config must not be created for gemini-only init"
+    );
+    assert!(
+        !cwd.path().join(".kilocode").join("mcp.json").exists(),
+        "Kilo config must not be created for gemini-only init"
+    );
+}
+
+#[test]
+fn test_run_init_gemini_writes_full_symforge_guidance() {
+    let home = TempDir::new().unwrap();
+    let cwd = TempDir::new().unwrap();
+    let binary_path = std::path::PathBuf::from(FAKE_BINARY);
+
+    run_init_with_context(InitClient::Gemini, home.path(), cwd.path(), &binary_path)
+        .expect("gemini init must succeed");
+
+    let guidance_path = home.path().join(".gemini").join("GEMINI.md");
+    let raw = read_text(&guidance_path);
+
+    assert!(
+        raw.contains("Tooling Preference"),
+        "Gemini guidance must include the full tooling preference section: {raw}"
+    );
+    assert!(
+        raw.contains("validate_file_syntax"),
+        "Gemini guidance must include config validation guidance: {raw}"
+    );
+    assert!(
+        raw.contains("Do not default to broad raw file reads"),
+        "Gemini guidance must encode the stronger source-inspection rule: {raw}"
+    );
+}
+
+#[test]
+fn test_run_init_kilo_only_updates_kilo_files() {
+    let home = TempDir::new().unwrap();
+    let cwd = TempDir::new().unwrap();
+    let binary_path = std::path::PathBuf::from(FAKE_BINARY);
+
+    run_init_with_context(InitClient::KiloCode, home.path(), cwd.path(), &binary_path)
+        .expect("kilo init must succeed");
+
+    assert!(
+        cwd.path().join(".kilocode").join("mcp.json").exists(),
+        "Kilo config must be created"
+    );
+    assert!(
+        cwd.path()
+            .join(".kilocode")
+            .join("rules")
+            .join("symforge.md")
+            .exists(),
+        "Kilo guidance rules must be created"
+    );
+    assert!(
+        !home.path().join(".codex").join("config.toml").exists(),
+        "Codex config must not be created for kilo-only init"
+    );
+    assert!(
+        !home.path().join(".gemini").join("settings.json").exists(),
+        "Gemini config must not be created for kilo-only init"
+    );
+}
+
+#[test]
+fn test_run_init_kilo_writes_symforge_rules_guidance() {
+    let home = TempDir::new().unwrap();
+    let cwd = TempDir::new().unwrap();
+    let binary_path = std::path::PathBuf::from(FAKE_BINARY);
+
+    run_init_with_context(InitClient::KiloCode, home.path(), cwd.path(), &binary_path)
+        .expect("kilo init must succeed");
+
+    let rules_path = cwd
+        .path()
+        .join(".kilocode")
+        .join("rules")
+        .join("symforge.md");
+    let raw = read_text(&rules_path);
+
+    assert!(
+        raw.contains("SymForge MCP"),
+        "Kilo rules guidance must mention SymForge MCP: {raw}"
+    );
+    assert!(
+        raw.contains("Tooling Preference"),
+        "Kilo rules guidance must include the tooling preference section: {raw}"
+    );
+    assert!(
+        raw.contains("validate_file_syntax"),
+        "Kilo rules guidance must include config validation guidance: {raw}"
+    );
 }
