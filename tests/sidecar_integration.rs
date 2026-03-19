@@ -251,6 +251,34 @@ async fn test_outline_endpoint() {
     restore_cwd(&original);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_workflow_source_read_endpoint_matches_outline() {
+    let tmp = TempDir::new().unwrap();
+    let _guard = CWD_LOCK.lock().await;
+    let original = stable_cwd();
+    std::env::set_current_dir(tmp.path()).unwrap();
+
+    let index = build_shared_index(vec![make_rust_file("src/foo.rs", "hello")]);
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+        .await
+        .expect("spawn_sidecar should succeed");
+
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let canonical =
+        raw_http_get(handle.port, "/outline", "path=src/foo.rs").expect("GET /outline must succeed");
+    let workflow = raw_http_get(handle.port, "/workflows/source-read", "path=src/foo.rs")
+        .expect("GET /workflows/source-read must succeed");
+
+    assert_eq!(
+        workflow, canonical,
+        "workflow source-read adapter should stay identical to the canonical outline route"
+    );
+
+    let _ = handle.shutdown_tx.send(());
+    restore_cwd(&original);
+}
+
 // ---------------------------------------------------------------------------
 // HOOK-02: Shared index mutation visible through sidecar
 // ---------------------------------------------------------------------------
@@ -484,6 +512,39 @@ async fn test_repo_map_endpoint() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_workflow_repo_start_endpoint_matches_repo_map() {
+    let tmp = TempDir::new().unwrap();
+    let _guard = CWD_LOCK.lock().await;
+    let original = stable_cwd();
+    std::env::set_current_dir(tmp.path()).unwrap();
+
+    let files = vec![
+        make_rust_file("src/a.rs", "alpha"),
+        make_rust_file("src/b.rs", "beta"),
+        make_rust_file("src/c.rs", "gamma"),
+    ];
+    let index = build_shared_index(files);
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+        .await
+        .expect("spawn_sidecar should succeed");
+
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let canonical =
+        raw_http_get(handle.port, "/repo-map", "").expect("GET /repo-map must succeed");
+    let workflow = raw_http_get(handle.port, "/workflows/repo-start", "")
+        .expect("GET /workflows/repo-start must succeed");
+
+    assert_eq!(
+        workflow, canonical,
+        "workflow repo-start adapter should stay identical to the canonical repo-map route"
+    );
+
+    let _ = handle.shutdown_tx.send(());
+    restore_cwd(&original);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_prompt_context_endpoint_prefers_file_hint() {
     let tmp = TempDir::new().unwrap();
     let _guard = CWD_LOCK.lock().await;
@@ -511,6 +572,35 @@ async fn test_prompt_context_endpoint_prefers_file_hint() {
     assert!(
         body.contains("hello"),
         "prompt context should include the hinted file symbol"
+    );
+
+    let _ = handle.shutdown_tx.send(());
+    restore_cwd(&original);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_workflow_prompt_context_endpoint_matches_prompt_context() {
+    let tmp = TempDir::new().unwrap();
+    let _guard = CWD_LOCK.lock().await;
+    let original = stable_cwd();
+    std::env::set_current_dir(tmp.path()).unwrap();
+
+    let index = build_shared_index(vec![make_rust_file("src/foo.rs", "hello")]);
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+        .await
+        .expect("spawn_sidecar should succeed");
+
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let query = "text=please%20inspect%20src%2Ffoo.rs";
+    let canonical =
+        raw_http_get(handle.port, "/prompt-context", query).expect("GET /prompt-context must succeed");
+    let workflow = raw_http_get(handle.port, "/workflows/prompt-context", query)
+        .expect("GET /workflows/prompt-context must succeed");
+
+    assert_eq!(
+        workflow, canonical,
+        "workflow prompt-context adapter should stay identical to the canonical prompt-context route"
     );
 
     let _ = handle.shutdown_tx.send(());

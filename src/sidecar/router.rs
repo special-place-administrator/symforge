@@ -13,6 +13,11 @@ use super::{SidecarState, handlers};
 /// - `GET /symbol-context`  → `symbol_context_handler`
 /// - `GET /repo-map`        → `repo_map_handler`
 /// - `GET /prompt-context`  → `prompt_context_handler`
+/// - `GET /workflows/source-read`           → `workflow_source_read_handler`
+/// - `GET /workflows/search-hit-expansion`  → `workflow_search_hit_expansion_handler`
+/// - `GET /workflows/post-edit-impact`      → `workflow_post_edit_impact_handler`
+/// - `GET /workflows/repo-start`            → `workflow_repo_start_handler`
+/// - `GET /workflows/prompt-context`        → `workflow_prompt_narrowing_handler`
 /// - `GET /stats`           → `stats_handler`
 pub fn build_router(state: SidecarState) -> Router {
     Router::new()
@@ -22,6 +27,26 @@ pub fn build_router(state: SidecarState) -> Router {
         .route("/symbol-context", get(handlers::symbol_context_handler))
         .route("/repo-map", get(handlers::repo_map_handler))
         .route("/prompt-context", get(handlers::prompt_context_handler))
+        .route(
+            "/workflows/source-read",
+            get(handlers::workflow_source_read_handler),
+        )
+        .route(
+            "/workflows/search-hit-expansion",
+            get(handlers::workflow_search_hit_expansion_handler),
+        )
+        .route(
+            "/workflows/post-edit-impact",
+            get(handlers::workflow_post_edit_impact_handler),
+        )
+        .route(
+            "/workflows/repo-start",
+            get(handlers::workflow_repo_start_handler),
+        )
+        .route(
+            "/workflows/prompt-context",
+            get(handlers::workflow_prompt_narrowing_handler),
+        )
         .route("/stats", get(handlers::stats_handler))
         .with_state(state)
 }

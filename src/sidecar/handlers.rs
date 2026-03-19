@@ -136,6 +136,17 @@ pub async fn outline_handler(
     outline_hook_text(&state, &params)
 }
 
+/// Workflow adapter for source-code reads/orientation.
+///
+/// This remains a thin alias over the canonical outline hook behavior so the
+/// sidecar exposes an explicit workflow surface without duplicating logic.
+pub async fn workflow_source_read_handler(
+    State(state): State<SidecarState>,
+    Query(params): Query<OutlineParams>,
+) -> Result<String, StatusCode> {
+    outline_handler(State(state), Query(params)).await
+}
+
 pub(crate) fn outline_tool_text(
     state: &SidecarState,
     params: &OutlineParams,
@@ -394,6 +405,14 @@ pub async fn impact_handler(
     Query(params): Query<ImpactParams>,
 ) -> Result<String, StatusCode> {
     impact_hook_text(state, &params).await
+}
+
+/// Workflow adapter for post-edit impact summaries.
+pub async fn workflow_post_edit_impact_handler(
+    State(state): State<SidecarState>,
+    Query(params): Query<ImpactParams>,
+) -> Result<String, StatusCode> {
+    impact_handler(State(state), Query(params)).await
 }
 
 pub(crate) async fn impact_tool_text(
@@ -716,6 +735,14 @@ pub async fn symbol_context_handler(
     symbol_context_hook_text(&state, &params)
 }
 
+/// Workflow adapter for search-hit expansion and quick caller/context reads.
+pub async fn workflow_search_hit_expansion_handler(
+    State(state): State<SidecarState>,
+    Query(params): Query<SymbolContextParams>,
+) -> Result<String, StatusCode> {
+    symbol_context_handler(State(state), Query(params)).await
+}
+
 pub(crate) fn symbol_context_tool_text(
     state: &SidecarState,
     params: &SymbolContextParams,
@@ -847,6 +874,13 @@ pub async fn repo_map_handler(State(state): State<SidecarState>) -> Result<Strin
     repo_map_text(&state)
 }
 
+/// Workflow adapter for repo-start quick maps.
+pub async fn workflow_repo_start_handler(
+    State(state): State<SidecarState>,
+) -> Result<String, StatusCode> {
+    repo_map_handler(State(state)).await
+}
+
 pub(crate) fn repo_map_text(state: &SidecarState) -> Result<String, StatusCode> {
     let guard = state.index.read();
 
@@ -969,6 +1003,14 @@ pub async fn prompt_context_handler(
     Query(params): Query<PromptContextParams>,
 ) -> Result<String, StatusCode> {
     prompt_context_hook_text(&state, &params).await
+}
+
+/// Workflow adapter for prompt-context narrowing.
+pub async fn workflow_prompt_narrowing_handler(
+    State(state): State<SidecarState>,
+    Query(params): Query<PromptContextParams>,
+) -> Result<String, StatusCode> {
+    prompt_context_handler(State(state), Query(params)).await
 }
 
 async fn prompt_context_hook_text(

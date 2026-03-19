@@ -1103,7 +1103,15 @@ pub fn build_router(state: SharedDaemonState) -> Router {
             get(sidecar_outline_handler),
         )
         .route(
+            "/v1/sessions/{session_id}/sidecar/workflows/source-read",
+            get(sidecar_outline_handler),
+        )
+        .route(
             "/v1/sessions/{session_id}/sidecar/impact",
+            get(sidecar_impact_handler),
+        )
+        .route(
+            "/v1/sessions/{session_id}/sidecar/workflows/post-edit-impact",
             get(sidecar_impact_handler),
         )
         .route(
@@ -1111,11 +1119,23 @@ pub fn build_router(state: SharedDaemonState) -> Router {
             get(sidecar_symbol_context_handler),
         )
         .route(
+            "/v1/sessions/{session_id}/sidecar/workflows/search-hit-expansion",
+            get(sidecar_symbol_context_handler),
+        )
+        .route(
             "/v1/sessions/{session_id}/sidecar/repo-map",
             get(sidecar_repo_map_handler),
         )
         .route(
+            "/v1/sessions/{session_id}/sidecar/workflows/repo-start",
+            get(sidecar_repo_map_handler),
+        )
+        .route(
             "/v1/sessions/{session_id}/sidecar/prompt-context",
+            get(sidecar_prompt_context_handler),
+        )
+        .route(
+            "/v1/sessions/{session_id}/sidecar/workflows/prompt-context",
             get(sidecar_prompt_context_handler),
         )
         .route(
@@ -2401,6 +2421,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_daemon_workflow_repo_start_endpoint_matches_repo_map_route() {
+        let _env_lock = env_lock().await;
+        let daemon_home = TempDir::new().expect("daemon home");
+        let _env_guard = EnvVarGuard::set("SYMFORGE_HOME", daemon_home.path());
+        let project = project_dir("symforge-daemon-workflow-repo-start");
+        std::fs::write(project.path().join("src").join("main.rs"), "fn main() {}\n")
+            .expect("write source");
+
+        let handle = spawn_daemon("127.0.0.1").await.expect("spawn daemon");
+        let client = reqwest::Client::new();
+        let base_url = format!("http://127.0.0.1:{}", handle.port);
+
+        let opened = client
+            .post(format!("{base_url}/v1/sessions/open"))
+            .json(&OpenProjectRequest {
+                project_root: project.path().display().to_string(),
+                client_name: "claude".to_string(),
+                pid: Some(78),
+            })
+            .send()
+            .await
+            .expect("open request")
+            .error_for_status()
+            .expect("open status")
+            .json::<OpenProjectResponse>()
+            .await
+            .expect("open body");
+
+        let canonical = client
+            .get(format!(
+                "{base_url}/v1/sessions/{}/sidecar/repo-map",
+                opened.session_id
+            ))
+            .send()
+            .await
+            .expect("canonical request")
+            .error_for_status()
+            .expect("canonical status")
+            .text()
+            .await
+            .expect("canonical body");
+
+        let workflow = client
+            .get(format!(
+                "{base_url}/v1/sessions/{}/sidecar/workflows/repo-start",
+                opened.session_id
+            ))
+            .send()
+            .await
+            .expect("workflow request")
+            .error_for_status()
+            .expect("workflow status")
+            .text()
+            .await
+            .expect("workflow body");
+
+        assert_eq!(
+            workflow, canonical,
+            "workflow repo-start route should stay identical to the canonical repo-map route"
+        );
+
+        let _ = handle.shutdown_tx.send(());
+        wait_for_path_absent(&daemon_home.path().join(DAEMON_PORT_FILE)).await;
+    }
+
+    #[tokio::test]
     async fn test_daemon_serves_session_scoped_prompt_context_hook_endpoint() {
         let _env_lock = env_lock().await;
         let daemon_home = TempDir::new().expect("daemon home");
@@ -2449,6 +2535,74 @@ mod tests {
         assert!(
             body.contains("src/main.rs") && body.contains("main"),
             "prompt-context hook output should come from daemon project instance, got: {body}"
+        );
+
+        let _ = handle.shutdown_tx.send(());
+        wait_for_path_absent(&daemon_home.path().join(DAEMON_PORT_FILE)).await;
+    }
+
+    #[tokio::test]
+    async fn test_daemon_workflow_prompt_context_endpoint_matches_canonical_route() {
+        let _env_lock = env_lock().await;
+        let daemon_home = TempDir::new().expect("daemon home");
+        let _env_guard = EnvVarGuard::set("SYMFORGE_HOME", daemon_home.path());
+        let project = project_dir("symforge-daemon-workflow-prompt-context");
+        std::fs::write(project.path().join("src").join("main.rs"), "fn main() {}\n")
+            .expect("write source");
+
+        let handle = spawn_daemon("127.0.0.1").await.expect("spawn daemon");
+        let client = reqwest::Client::new();
+        let base_url = format!("http://127.0.0.1:{}", handle.port);
+
+        let opened = client
+            .post(format!("{base_url}/v1/sessions/open"))
+            .json(&OpenProjectRequest {
+                project_root: project.path().display().to_string(),
+                client_name: "claude".to_string(),
+                pid: Some(89),
+            })
+            .send()
+            .await
+            .expect("open request")
+            .error_for_status()
+            .expect("open status")
+            .json::<OpenProjectResponse>()
+            .await
+            .expect("open body");
+
+        let canonical = client
+            .get(format!(
+                "{base_url}/v1/sessions/{}/sidecar/prompt-context",
+                opened.session_id
+            ))
+            .query(&[("text", "please inspect src/main.rs")])
+            .send()
+            .await
+            .expect("canonical request")
+            .error_for_status()
+            .expect("canonical status")
+            .text()
+            .await
+            .expect("canonical body");
+
+        let workflow = client
+            .get(format!(
+                "{base_url}/v1/sessions/{}/sidecar/workflows/prompt-context",
+                opened.session_id
+            ))
+            .query(&[("text", "please inspect src/main.rs")])
+            .send()
+            .await
+            .expect("workflow request")
+            .error_for_status()
+            .expect("workflow status")
+            .text()
+            .await
+            .expect("workflow body");
+
+        assert_eq!(
+            workflow, canonical,
+            "workflow prompt-context route should stay identical to the canonical prompt-context route"
         );
 
         let _ = handle.shutdown_tx.send(());
