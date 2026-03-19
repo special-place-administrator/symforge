@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.5.0](https://github.com/special-place-administrator/symforge/compare/v1.4.0...v1.5.0) (2026-03-19)
+
+
+### Features
+
+* **adoption:** add workflow sidecar adapters ([143ac0b](https://github.com/special-place-administrator/symforge/commit/143ac0bfac5f09a978e4f85bc70c75f2028a0477))
+* **adoption:** define owned workflows for hooks ([0185310](https://github.com/special-place-administrator/symforge/commit/0185310fdbae3fded168d5a4249792372f666234))
+* **adoption:** steer protocol read workflows ([106cdda](https://github.com/special-place-administrator/symforge/commit/106cddaec9ecb7f0f1a82dae22cb54d95e942ff8))
+* **adoption:** tighten hook routing for source workflows ([5b9426a](https://github.com/special-place-administrator/symforge/commit/5b9426a9aa3f6f02f3f27575602bb35f1b74a8f9))
+* **init:** harden client guidance rollout ([f30667c](https://github.com/special-place-administrator/symforge/commit/f30667ce885ba5040a4a40751b7401080fad8977))
+
 ## [1.4.0](https://github.com/special-place-administrator/symforge/compare/v1.3.1...v1.4.0) (2026-03-19)
 
 
