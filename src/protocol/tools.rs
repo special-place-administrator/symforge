@@ -1478,7 +1478,7 @@ impl SymForgeServer {
     /// NOT for understanding who calls it (use find_references or get_symbol_context).
     /// NOT for edit preparation (use get_symbol_context with bundle=true).
     #[tool(
-        description = "Retrieves the complete source code of a specific symbol with doc comments — more precise than reading an entire file. Look up symbol(s) by file path and name. Single mode: provide path + name. Batch mode: provide targets[] array for 2+ symbols or code slices in one call (each target is file path + symbol name or byte range). NOT for finding symbols by name (use search_symbols first). NOT for understanding callers (use find_references or get_symbol_context). NOT for edit preparation (use get_symbol_context with bundle=true)."
+        description = "Prefer this over reading an entire file when you already know the symbol or have narrowed to one file. Retrieves the complete source code of a specific symbol with doc comments. Single mode: provide path + name. Batch mode: provide targets[] array for 2+ symbols or code slices in one call (each target is file path + symbol name or byte range). Use search_symbols first if you only know part of the name. NOT for understanding callers (use find_references or get_symbol_context). NOT for edit preparation (use get_symbol_context with bundle=true)."
     )]
     pub(crate) async fn get_symbol(&self, params: Parameters<GetSymbolInput>) -> String {
         if let Some(result) = self.proxy_tool_call("get_symbol", &params.0).await {
@@ -1525,10 +1525,18 @@ impl SymForgeServer {
                 .into_iter()
                 .map(|entry| match entry {
                     CapturedGetSymbolsEntry::SymbolLookup { file, name, kind } => {
-                        format::symbol_detail_from_indexed_file(
+                        let body = format::symbol_detail_from_indexed_file(
                             file.as_ref(),
                             &name,
                             kind.as_deref(),
+                        );
+                        format!(
+                            "{body}{}",
+                            format::compact_next_step_hint(&[
+                                "get_symbol_context (callers/callees/types)",
+                                "find_references (usages)",
+                                "edit_within_symbol / replace_symbol_body (edits)",
+                            ])
                         )
                     }
                     CapturedGetSymbolsEntry::CodeSlice {
@@ -1549,11 +1557,21 @@ impl SymForgeServer {
             guard.capture_shared_file(&params.0.path)
         };
         match file {
-            Some(file) => format::symbol_detail_from_indexed_file(
-                file.as_ref(),
-                &params.0.name,
-                params.0.kind.as_deref(),
-            ),
+            Some(file) => {
+                let body = format::symbol_detail_from_indexed_file(
+                    file.as_ref(),
+                    &params.0.name,
+                    params.0.kind.as_deref(),
+                );
+                format!(
+                    "{body}{}",
+                    format::compact_next_step_hint(&[
+                        "get_symbol_context (callers/callees/types)",
+                        "find_references (usages)",
+                        "edit_within_symbol / replace_symbol_body (edits)",
+                    ])
+                )
+            }
             None => format::not_found_file(&params.0.path),
         }
     }
@@ -1564,7 +1582,7 @@ impl SymForgeServer {
     /// counts and language tags — supports path and depth params for subtree browsing.
     /// NOT for file details (use get_file_context) or finding symbols (use search_symbols).
     #[tool(
-        description = "Start here for project orientation — returns a structural overview of the repository. Project overview with adjustable detail level. Modes: (1) default/compact: ~500 token overview with file count, languages, and directory tree. (2) detail='full': complete symbol outline of every file — warning: large output. (3) detail='tree': browsable file tree with per-file symbol counts and language tags — supports path and depth params for subtree browsing. NOT for file details (use get_file_context) or finding symbols (use search_symbols)."
+        description = "Start here for project orientation and the first code-reading pass before any broad raw file read. Returns a structural overview of the repository. Modes: (1) default/compact: ~500 token overview with file count, languages, and directory tree. (2) detail='full': complete symbol outline of every file — warning: large output. (3) detail='tree': browsable file tree with per-file symbol counts and language tags — supports path and depth params for subtree browsing. NOT for file details (use get_file_context) or finding symbols (use search_symbols)."
     )]
     pub(crate) async fn get_repo_map(&self, params: Parameters<GetRepoMapInput>) -> String {
         let detail = params.0.detail.as_deref().unwrap_or("compact");
@@ -1640,7 +1658,12 @@ impl SymForgeServer {
                 let state = sidecar_state_for_server(self);
                 match repo_map_text(&state) {
                     Ok(result) => {
-                        let hint = "\nTip: search_symbols (find by name) | explore (conceptual questions) | get_file_context (file overview) | diff_symbols (code review)";
+                        let hint = format::compact_next_step_hint(&[
+                            "get_file_context (open one file)",
+                            "search_symbols (find by name)",
+                            "search_text (find text/patterns)",
+                            "diff_symbols (review changes)",
+                        ]);
                         format!("{result}{hint}")
                     }
                     Err(StatusCode::NOT_FOUND) => "Repository map unavailable.".to_string(),
@@ -1659,7 +1682,7 @@ impl SymForgeServer {
     /// Much smaller than reading the raw file.
     /// NOT for reading actual source code (use get_file_content or get_symbol).
     #[tool(
-        description = "Prefer this over reading raw files — saves 70-95% of tokens by returning the file's symbol outline and structure. Rich file summary: symbol outline, imports, consumers, references, and git activity. Use sections=['outline'] for symbol-only outline (names, kinds, line ranges). Use sections=['outline','imports'] to limit output. Best tool for understanding a file before editing. Much smaller than reading the raw file. NOT for reading actual source code (use get_file_content or get_symbol)."
+        description = "Prefer this over raw file reads for code understanding — it usually saves 70-95% of tokens by returning the file's symbol outline and structure first. Rich file summary: symbol outline, imports, consumers, references, and git activity. Use sections=['outline'] for a fast first pass, or sections=['outline','imports'] to stay compact. Best tool for understanding a file before editing or before deciding whether you need exact raw text. NOT for reading actual source code (use get_file_content or get_symbol)."
     )]
     pub(crate) async fn get_file_context(&self, params: Parameters<GetFileContextInput>) -> String {
         if let Some(result) = self.proxy_tool_call("get_file_context", &params.0).await {
@@ -1684,10 +1707,17 @@ impl SymForgeServer {
         };
         match outline_tool_text(&state, &outline) {
             Ok(result) => {
-                let saved = raw_chars.saturating_sub(result.len());
-                let footer = format::compact_savings_footer(result.len(), raw_chars);
+                let hint = format::compact_next_step_hint(&[
+                    "get_symbol (body)",
+                    "find_references (callers/imports)",
+                    "search_text (string/pattern usage)",
+                    "get_file_content (exact raw text)",
+                ]);
+                let body = format!("{result}{hint}");
+                let saved = raw_chars.saturating_sub(body.len());
+                let footer = format::compact_savings_footer(body.len(), raw_chars);
                 self.record_read_savings((saved / 4) as u64);
-                format!("{result}{footer}")
+                format!("{body}{footer}")
             }
             Err(StatusCode::NOT_FOUND) => format::not_found_file(&params.0.path),
             Err(StatusCode::INTERNAL_SERVER_ERROR) => {
@@ -1844,6 +1874,11 @@ impl SymForgeServer {
                     output.push_str("\n\n");
                 }
                 output.push_str(&refs_text);
+                output.push_str(&format::compact_next_step_hint(&[
+                    "get_symbol_context (callers/callees/types)",
+                    "find_references (usages)",
+                    "edit_within_symbol / replace_symbol_body (edits)",
+                ]));
                 let saved = raw_chars.saturating_sub(output.len());
                 let footer = format::compact_savings_footer(output.len(), raw_chars);
                 self.record_read_savings((saved / 4) as u64);
@@ -1853,12 +1888,17 @@ impl SymForgeServer {
                 // Sidecar unavailable — fall back to the index definition so callers
                 // always get at least the symbol body instead of an opaque error.
                 if let Some(header) = symbol_header {
-                    let footer = format::compact_savings_footer(header.len(), raw_chars);
-                    let saved = raw_chars.saturating_sub(header.len());
+                    let body = format!(
+                        "{header}\n\n(Reference data unavailable — showing definition only){}",
+                        format::compact_next_step_hint(&[
+                            "get_symbol_context (callers/callees/types)",
+                            "find_references (usages)",
+                        ])
+                    );
+                    let footer = format::compact_savings_footer(body.len(), raw_chars);
+                    let saved = raw_chars.saturating_sub(body.len());
                     self.record_read_savings((saved / 4) as u64);
-                    format!(
-                        "{header}\n\n(Reference data unavailable — showing definition only){footer}"
-                    )
+                    format!("{body}{footer}")
                 } else {
                     format!("Symbol \"{}\" not found in index.", params.0.name)
                 }
@@ -1940,7 +1980,7 @@ impl SymForgeServer {
     /// one of query, kind, or path_prefix is required).
     /// NOT for text content search (use search_text). NOT for file path search (use search_files).
     #[tool(
-        description = "Use this to find functions, classes, types, and other symbols across the entire repository in milliseconds. Find symbols by name substring across the project — returns name, kind, file, line range. Use when you know part of a symbol name but not the file. Supports kind filter, language filter, and path prefix scope. Query is optional — omit it to browse all symbols matching kind/path_prefix (browse mode defaults to limit=20, sorted by path+line). At least one of query, kind, or path_prefix is required. NOT for text content search (use search_text). NOT for file path search (use search_files)."
+        description = "Prefer this before grep when you are looking for a function, class, type, or other symbol by name. Finds symbols across the repository in milliseconds and returns name, kind, file, and line range. Use when you know part of a symbol name but not the file. Supports kind filter, language filter, and path prefix scope. Query is optional — omit it to browse all symbols matching kind/path_prefix (browse mode defaults to limit=20, sorted by path+line). At least one of query, kind, or path_prefix is required. NOT for text content search (use search_text). NOT for file path search (use search_files)."
     )]
     pub(crate) async fn search_symbols(&self, params: Parameters<SearchSymbolsInput>) -> String {
         let query_str = params.0.query.as_deref().unwrap_or("").trim();
@@ -1972,7 +2012,13 @@ impl SymForgeServer {
                 .hits
                 .sort_by(|a, b| a.path.cmp(&b.path).then(a.line.cmp(&b.line)));
         }
-        format::search_symbols_result_view(&result, query_str)
+        let output = format::search_symbols_result_view(&result, query_str);
+        let hint = format::compact_next_step_hint(&[
+            "get_symbol (body)",
+            "get_symbol_context (callers/callees)",
+            "get_file_context (file overview)",
+        ]);
+        format!("{output}{hint}")
     }
 
     /// Full-text search across file contents — literal, OR-terms, or regex. Shows matches with
@@ -1980,7 +2026,7 @@ impl SymForgeServer {
     /// callers (control cost with follow_refs_limit). Use when searching for string patterns in code.
     /// NOT for symbol name search (use search_symbols). NOT for file path search (use search_files).
     #[tool(
-        description = "Prefer this over grep/ripgrep — returns matches with enclosing symbol context. Full-text search across file contents — literal, OR-terms, or regex. Shows matches with enclosing symbol context. Use group_by='symbol' to deduplicate, follow_refs=true to inline callers (control cost with follow_refs_limit). Use when searching for string patterns in code. NOT for symbol name search (use search_symbols). NOT for file path search (use search_files)."
+        description = "Prefer this over grep/ripgrep for code search — it returns matches with enclosing symbol context instead of raw lines alone. Full-text search across file contents: literal, OR-terms, or regex. Use group_by='symbol' to deduplicate and follow_refs=true to inline callers when you want quick impact clues. Use when searching for string patterns in code after or instead of raw grep. NOT for symbol name search (use search_symbols). NOT for file path search (use search_files)."
     )]
     pub(crate) async fn search_text(&self, params: Parameters<SearchTextInput>) -> String {
         if let Some(result) = self.proxy_tool_call("search_text", &params.0).await {
@@ -2092,6 +2138,11 @@ impl SymForgeServer {
                                     "\n(auto-corrected double-escaped regex: `{}` → `{}`)",
                                     query, fixed
                                 ));
+                                output.push_str(&format::compact_next_step_hint(&[
+                                    "inspect_match (deep-dive one hit)",
+                                    "get_file_context (file overview)",
+                                    "search_symbols (name-based lookup)",
+                                ]));
                                 return output;
                             }
                         }
@@ -2100,7 +2151,13 @@ impl SymForgeServer {
             }
         }
 
-        format::search_text_result_view(result, params.0.group_by.as_deref())
+        let output = format::search_text_result_view(result, params.0.group_by.as_deref());
+        let hint = format::compact_next_step_hint(&[
+            "inspect_match (deep-dive one hit)",
+            "get_file_context (file overview)",
+            "search_symbols (name-based lookup)",
+        ]);
+        format!("{output}{hint}")
     }
 
     /// Internal: trace_symbol logic, called by get_symbol_context when sections are provided.
@@ -2476,7 +2533,7 @@ impl SymForgeServer {
     /// For structured understanding use get_file_context. For a single function
     /// body use get_symbol.
     #[tool(
-        description = "Read raw file content. Modes: full file, line range, around_line/around_match/around_symbol, or chunked paging. Use this for exact docs/config reads, whitespace-sensitive inspection, or when you need actual source text that other tools don't provide. For structured understanding use get_file_context. For a single function body use get_symbol."
+        description = "Read exact raw file content. Modes: full file, line range, around_line/around_match/around_symbol, or chunked paging. Use this for exact docs/config reads, whitespace-sensitive inspection, or exact source excerpts after narrowing with get_file_context, search_text, or get_symbol. For structured code understanding use get_file_context first. For a single function body use get_symbol."
     )]
     pub(crate) async fn get_file_content(&self, params: Parameters<GetFileContentInput>) -> String {
         let mut input = params.0;
@@ -3912,6 +3969,7 @@ mod tests {
             .await;
         assert!(result.contains("src/main.rs"), "should contain path");
         assert!(result.contains("main"), "should contain symbol name");
+        assert!(result.contains("Tip:"), "should include next-step hint");
     }
 
     #[tokio::test]
@@ -3932,6 +3990,7 @@ mod tests {
             !result.starts_with("Index"),
             "should not return guard message, got: {result}"
         );
+        assert!(result.contains("Tip:"), "should include next-step hint: {result}");
     }
 
     #[tokio::test]
@@ -4038,6 +4097,7 @@ mod tests {
             result.contains("src"),
             "repo map should include directory breakdown; got: {result}"
         );
+        assert!(result.contains("Tip:"), "repo map should include next-step hint");
     }
 
     #[tokio::test]
@@ -4657,6 +4717,7 @@ mod tests {
             result.contains("find_user"),
             "should find matching symbol, got: {result}"
         );
+        assert!(result.contains("Tip:"), "search_symbols should include next-step hint");
     }
 
     #[tokio::test]
@@ -5018,6 +5079,7 @@ mod tests {
             result.contains("find_user"),
             "should find matching text, got: {result}"
         );
+        assert!(result.contains("Tip:"), "search_text should include next-step hint");
     }
 
     #[tokio::test]

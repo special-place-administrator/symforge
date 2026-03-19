@@ -2937,6 +2937,19 @@ pub fn compact_savings_footer(response_chars: usize, raw_chars: usize) -> String
     format!("\n\n~{saved} tokens saved vs raw file read")
 }
 
+/// Format a compact "what next" hint line for tool outputs.
+pub fn compact_next_step_hint(items: &[&str]) -> String {
+    let items: Vec<&str> = items
+        .iter()
+        .copied()
+        .filter(|item| !item.trim().is_empty())
+        .collect();
+    if items.is_empty() {
+        return String::new();
+    }
+    format!("\nTip: {}", items.join(" | "))
+}
+
 /// Format a one-line git temporal summary for the health report.
 pub fn git_temporal_health_line(
     temporal: &crate::live_index::git_temporal::GitTemporalIndex,
@@ -5207,6 +5220,21 @@ mod tests {
     fn test_compact_savings_footer_empty_for_small_files() {
         let footer = compact_savings_footer(50, 100);
         assert!(footer.is_empty());
+    }
+
+    #[test]
+    fn test_compact_next_step_hint_formats_joined_items() {
+        let hint = compact_next_step_hint(&["get_symbol (body)", "find_references (usages)"]);
+        assert_eq!(
+            hint,
+            "\nTip: get_symbol (body) | find_references (usages)"
+        );
+    }
+
+    #[test]
+    fn test_compact_next_step_hint_ignores_empty_items() {
+        let hint = compact_next_step_hint(&["", "search_text"]);
+        assert_eq!(hint, "\nTip: search_text");
     }
 
     // ── search_symbols tier ordering tests ───────────────────────────────────
