@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.0](https://github.com/special-place-administrator/symforge/compare/v1.3.1...v1.4.0) (2026-03-19)
+
+
+### Features
+
+* **config:** add structured syntax diagnostics ([7360beb](https://github.com/special-place-administrator/symforge/commit/7360bebb290e50bc65fee0a63ef5118cdc72117c))
+* **edit:** track item byte ranges on symbols ([da3294c](https://github.com/special-place-administrator/symforge/commit/da3294c623589382bfa8dd2311944d868a6804e7))
+
 ## [1.3.1](https://github.com/special-place-administrator/symforge/compare/v1.3.0...v1.3.1) (2026-03-19)
 
 
