@@ -79,17 +79,17 @@ Every applicable tool response includes a footer showing estimated tokens saved 
 
 Savings scale with file size. On large files (5000+ lines), `get_file_context` routinely saves 50,000-70,000 tokens per call. Over a coding session, cumulative savings typically reach 200,000-400,000 tokens.
 
-Token savings are tracked per-session and reported by the `health` tool. Skeptical? Run a session with SymForge, check `health` for cumulative savings, then try the same tasks with raw file reads and compare. The numbers speak for themselves on any codebase.
+Token savings and owned-workflow hook adoption are tracked per session and reported by the `health` tool. Skeptical? Run a session with SymForge, check `health`, then try the same tasks with raw file reads and compare. The numbers speak for themselves on any codebase.
 
 ## Tools
 
-24 unique tools + 7 backward-compatible aliases, organized by workflow stage. Edit tools accept symbol names — no need to read files first.
+25 unique tools + 7 backward-compatible aliases, organized by workflow stage. Edit tools accept symbol names — no need to read files first.
 
 ### Orientation
 
 | Tool | Purpose |
 |------|---------|
-| `health` | Index status, file counts, load time, watcher state, session token savings, git temporal status |
+| `health` | Index status, file counts, load time, watcher state, session token savings, hook adoption metrics, git temporal status |
 | `get_repo_map` | Start here. Adjustable detail: compact overview (~500 tokens), `detail='full'` for complete symbol outline, `detail='tree'` for browsable file tree with symbol counts |
 | `explore` | Concept-driven exploration — "how does authentication work?" returns related symbols, patterns, and files. Multi-term queries score symbols by how many terms match. Set `depth=2` for signatures and dependents, `depth=3` for implementations and type chains |
 
@@ -125,6 +125,12 @@ Token savings are tracked per-session and reported by the `health` tool. Skeptic
 | `what_changed` | Files changed since a timestamp, git ref, or uncommitted. Filter with `path_prefix`, `language`, or `code_only=true` to exclude non-source files |
 | `analyze_file_impact` | Re-read a file from disk, update the index, report symbol-level impact. Set `include_co_changes=true` for git temporal coupling data |
 | `diff_symbols` | Symbol-level diff between git refs — added, removed, and modified symbols per file. Filter by `language` or `path_prefix` |
+
+### Validation
+
+| Tool | Purpose |
+|------|---------|
+| `validate_file_syntax` | Parse and validate config files with exact diagnostics when available. Best for malformed TOML/JSON/YAML and other config reads where parser truth matters more than semantic summary |
 
 ### Editing — Single Symbol
 
@@ -243,7 +249,7 @@ Running `npm install -g symforge` does the following automatically:
 
    | Client | Files written |
    |--------|--------------|
-   | **Claude Code** | `~/.claude.json` — MCP server entry with `alwaysAllow` for all 24 tools<br>`~/.claude/settings.json` — hook entries (PostToolUse, PreToolUse, SessionStart, UserPromptSubmit)<br>`~/.claude/CLAUDE.md` — SymForge guidance block (Decision Rules + Tooling Preference) |
+   | **Claude Code** | `~/.claude.json` — MCP server entry with `alwaysAllow` for all 25 tools<br>`~/.claude/settings.json` — hook entries (PostToolUse, PreToolUse, SessionStart, UserPromptSubmit)<br>`~/.claude/CLAUDE.md` — SymForge guidance block (Decision Rules + Tooling Preference) |
    | **Codex** | `~/.codex/config.toml` — MCP server entry with timeouts and allowed tools<br>`~/.codex/AGENTS.md` — guidance block |
    | **Gemini CLI** | `~/.gemini/settings.json` — MCP server entry with `trust: true`<br>`~/.gemini/GEMINI.md` — guidance block |
 
@@ -272,7 +278,7 @@ symforge init --client all         # all clients; workspace-local clients use th
 
 ### Claude Code
 
-Updates `~/.claude.json`, `~/.claude/settings.json`, `~/.claude/CLAUDE.md`. Installs MCP server registration, hook entries (`read`, `edit`, `write`, `grep`, `session-start`, `prompt-submit`), guidance block, and auto-allows all 24 SymForge tools.
+Updates `~/.claude.json`, `~/.claude/settings.json`, `~/.claude/CLAUDE.md`. Installs MCP server registration, hook entries (`read`, `edit`, `write`, `grep`, `session-start`, `prompt-submit`), guidance block, and auto-allows all 25 SymForge tools.
 
 ### Codex
 
@@ -294,7 +300,7 @@ symforge init --client gemini
 /mcp
 ```
 
-You should see `symforge — Ready` with 24 tools listed. If the server shows `DISCONNECTED`, check that the binary exists at `~/.symforge/bin/symforge` (or `symforge.exe` on Windows).
+You should see `symforge — Ready` with 25 tools listed. If the server shows `DISCONNECTED`, check that the binary exists at `~/.symforge/bin/symforge` (or `symforge.exe` on Windows).
 
 ### VS Code Extensions (Kilo Code, Roo Code, Cline, etc.)
 
@@ -317,7 +323,7 @@ This creates `.kilocode/mcp.json` and `.kilocode/rules/symforge.md` in your work
       "disabled": false,
       "alwaysAllow": [
         "health", "get_repo_map", "explore", "get_file_content",
-        "get_file_context", "get_symbol", "get_symbol_context",
+        "validate_file_syntax", "get_file_context", "get_symbol", "get_symbol_context",
         "search_symbols", "search_text", "search_files",
         "find_references", "find_dependents", "inspect_match",
         "what_changed", "analyze_file_impact", "diff_symbols",
@@ -421,7 +427,7 @@ If the daemon becomes unreachable mid-session, the next tool call automatically 
 
 ### Hooks and Sidecar
 
-Claude Code hook integration uses project-local files under `.symforge/` (`sidecar.port`, `sidecar.pid`, `sidecar.session`). Hooks intercept read, edit, write, grep, session-start, and prompt-submit events to enrich responses transparently.
+Claude Code hook integration uses project-local files under `.symforge/` (`sidecar.port`, `sidecar.pid`, `sidecar.session`, `hook-adoption.log`). Hooks intercept read, edit, write, grep, session-start, and prompt-submit events to enrich responses transparently, and the adoption log lets `health` report routed vs fail-open hook outcomes for SymForge-owned workflows.
 
 ### Persistence
 
@@ -452,19 +458,9 @@ cargo test
 
 The Cargo package name is `symforge`.
 
-## Developer Setup
-
-```powershell
-# Windows
-.\setup.bat --client all
-
-# Unix
-bash scripts/setup.sh --client all
-```
-
 ## Release Process
 
-Managed through `release-please` + GitHub Actions. The latest automated release is `v1.3.0`. Details in [docs/release-process.md](docs/release-process.md).
+Managed through `release-please` + GitHub Actions. Details in [docs/release-process.md](docs/release-process.md).
 
 ```bash
 python execution/release_ops.py guide     # interactive guide
@@ -473,28 +469,9 @@ python execution/release_ops.py preflight # pre-release checks
 python execution/version_sync.py check    # version consistency
 ```
 
-## How we got here
+## Naming
 
-> **SymForge** — raw source code goes in, structured symbol intelligence comes out.
-
-This project was originally called "Tokenizor." The rename to SymForge is now complete. The name captures what the tool actually does: it takes raw source files and *forges* them into a structured symbol graph — parsed, indexed, cross-referenced, and instantly queryable by AI agents.
-
-### The naming journey
-
-The naming process was... thorough. We asked an LLM what it most valued about the tool (symbol-level addressing — "I stop being a text processor and start being a code reasoner"). Then we brainstormed 40+ names and systematically checked every one against npm, GitHub, and the web:
-
-- **RUNE** (Reference-Understanding Native Engine) — loved it, then moved on
-- **ATLAS** (Agent Token-saving Live Analysis System) — perfect, until we found MongoDB Atlas, an existing `atlas-mcp-server`, and Scale AI's MCP-Atlas benchmark all squatting the name
-- **Sigil** — taken (ebook editor)
-- **SPARK** — taken (Apache Spark, GitHub Spark)
-- **FORGE** — taken (Atlassian, Laravel, and two AI coding tools)
-- **Symbex** — taken (Simon Willison's Python tool, same AI/LLM space)
-- **Grasp** — taken (graspjs.com + `grasp-mcp` already on npm)
-- **Codegrid** — 5+ existing projects
-- **Lumen, Axiom, Prism, Reflex, Meridian** — all taken
-- **AURA** — nice word, forced acronym ("Agent Unified Reference Architecture" — we could smell our own BS)
-
-SymForge survived the gauntlet. It's honest about what the tool does, available everywhere, and doesn't pretend to be a clever acronym.
+This project was originally called `Tokenizor`. The rename to `SymForge` is complete, but a few historical docs and paths may still mention the old name.
 
 ## License
 
