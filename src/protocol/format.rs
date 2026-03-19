@@ -41,6 +41,7 @@ use crate::live_index::{
     RepoOutlineFileView, RepoOutlineView, ResolvePathView, SearchFilesTier, SearchFilesView,
     SymbolDetailView, TypeDependencyView, WhatChangedTimestampView, search,
 };
+use crate::{cli::hook::HookAdoptionSnapshot, sidecar::StatsSnapshot};
 
 /// Format the file outline for a given path.
 ///
@@ -2855,7 +2856,7 @@ pub fn empty_guard_message() -> String {
 /// Grep:  N fires, ~M tokens saved
 /// Total: ~T tokens saved
 /// ```
-pub fn format_token_savings(snap: &crate::sidecar::StatsSnapshot) -> String {
+pub fn format_token_savings(snap: &StatsSnapshot) -> String {
     let total_saved = snap.read_saved_tokens + snap.edit_saved_tokens + snap.grep_saved_tokens;
 
     // Show section only when at least one hook has fired.
@@ -2935,6 +2936,55 @@ pub fn compact_savings_footer(response_chars: usize, raw_chars: usize) -> String
         return String::new();
     }
     format!("\n\n~{saved} tokens saved vs raw file read")
+}
+
+/// Format a "Hook Adoption (current session)" section from hook-time workflow counters.
+pub(crate) fn format_hook_adoption(snap: &HookAdoptionSnapshot) -> String {
+    if snap.is_empty() {
+        return String::new();
+    }
+
+    let total = snap.total_attempts();
+    let routed = snap.total_routed();
+    let percent = if total == 0 {
+        0
+    } else {
+        ((routed as f64 / total as f64) * 100.0).round() as usize
+    };
+
+    let mut lines = vec![
+        "── Hook Adoption (current session) ──".to_string(),
+        format!(
+            "Owned workflows routed: {routed}/{total} ({percent}%)"
+        ),
+        format!("Fail-open outcomes: {}", snap.total_fail_open()),
+    ];
+
+    let mut push_workflow_line = |label: &str, counts: &crate::cli::hook::WorkflowAdoptionCounts| {
+        if counts.total() == 0 {
+            return;
+        }
+        let mut parts = vec![format!("routed {}", counts.routed)];
+        if counts.fail_open() > 0 && counts.no_sidecar > 0 {
+            parts.push(format!("no sidecar {}", counts.no_sidecar));
+        }
+        if counts.fail_open() > 0 && counts.sidecar_error > 0 {
+            parts.push(format!("sidecar errors {}", counts.sidecar_error));
+        }
+        lines.push(format!("{label}: {}", parts.join(", ")));
+    };
+
+    push_workflow_line("Source read", &snap.source_read);
+    push_workflow_line("Source search", &snap.source_search);
+    push_workflow_line("Repo start", &snap.repo_start);
+    push_workflow_line("Prompt context", &snap.prompt_context);
+    push_workflow_line("Post-edit impact", &snap.post_edit_impact);
+
+    if let Some(first) = snap.first_repo_start {
+        lines.push(format!("First repo start: {}", first.label()));
+    }
+
+    lines.join("\n")
 }
 
 /// Format a compact "what next" hint line for tool outputs.
@@ -5199,6 +5249,63 @@ mod tests {
         assert!(
             !result.contains("Write:"),
             "Write should be omitted when zero; got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_format_hook_adoption_returns_empty_for_no_attempts() {
+        let snap = crate::cli::hook::HookAdoptionSnapshot::default();
+        assert!(format_hook_adoption(&snap).is_empty());
+    }
+
+    #[test]
+    fn test_format_hook_adoption_shows_workflow_totals_and_first_repo_start() {
+        let snap = crate::cli::hook::HookAdoptionSnapshot {
+            source_read: crate::cli::hook::WorkflowAdoptionCounts {
+                routed: 3,
+                no_sidecar: 1,
+                sidecar_error: 0,
+            },
+            source_search: crate::cli::hook::WorkflowAdoptionCounts {
+                routed: 2,
+                no_sidecar: 0,
+                sidecar_error: 1,
+            },
+            repo_start: crate::cli::hook::WorkflowAdoptionCounts {
+                routed: 1,
+                no_sidecar: 0,
+                sidecar_error: 0,
+            },
+            prompt_context: crate::cli::hook::WorkflowAdoptionCounts::default(),
+            post_edit_impact: crate::cli::hook::WorkflowAdoptionCounts {
+                routed: 0,
+                no_sidecar: 1,
+                sidecar_error: 0,
+            },
+            first_repo_start: Some(crate::cli::hook::HookOutcome::Routed),
+        };
+
+        let result = format_hook_adoption(&snap);
+        assert!(result.contains("Hook Adoption"), "missing header: {result}");
+        assert!(
+            result.contains("Owned workflows routed: 6/9 (67%)"),
+            "missing totals line: {result}"
+        );
+        assert!(
+            result.contains("Source read: routed 3, no sidecar 1"),
+            "missing source-read line: {result}"
+        );
+        assert!(
+            result.contains("Source search: routed 2, sidecar errors 1"),
+            "missing source-search line: {result}"
+        );
+        assert!(
+            result.contains("Post-edit impact: routed 0, no sidecar 1"),
+            "missing post-edit line: {result}"
+        );
+        assert!(
+            result.contains("First repo start: routed"),
+            "missing first repo-start line: {result}"
         );
     }
 

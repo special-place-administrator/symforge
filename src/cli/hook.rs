@@ -10,12 +10,14 @@
 
 use std::io::{BufRead, Read, Write};
 use std::net::TcpStream;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::cli::HookSubcommand;
 
 const PORT_FILE: &str = ".symforge/sidecar.port";
 const SESSION_FILE: &str = ".symforge/sidecar.session";
+const ADOPTION_LOG_FILE: &str = ".symforge/hook-adoption.log";
 /// Hard HTTP timeout — leaves margin within HOOK-03's 100 ms total budget.
 const HTTP_TIMEOUT: Duration = Duration::from_millis(50);
 
@@ -66,6 +68,108 @@ enum HookWorkflow {
     PassThrough,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HookOutcome {
+    Routed,
+    NoSidecar,
+    SidecarError,
+}
+
+impl HookOutcome {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            HookOutcome::Routed => "routed",
+            HookOutcome::NoSidecar => "no-sidecar",
+            HookOutcome::SidecarError => "sidecar-error",
+        }
+    }
+
+    fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "routed" => Some(HookOutcome::Routed),
+            "no-sidecar" => Some(HookOutcome::NoSidecar),
+            "sidecar-error" => Some(HookOutcome::SidecarError),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Default, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct WorkflowAdoptionCounts {
+    pub routed: usize,
+    pub no_sidecar: usize,
+    pub sidecar_error: usize,
+}
+
+impl WorkflowAdoptionCounts {
+    fn record(&mut self, outcome: HookOutcome) {
+        match outcome {
+            HookOutcome::Routed => self.routed += 1,
+            HookOutcome::NoSidecar => self.no_sidecar += 1,
+            HookOutcome::SidecarError => self.sidecar_error += 1,
+        }
+    }
+
+    pub(crate) fn total(&self) -> usize {
+        self.routed + self.no_sidecar + self.sidecar_error
+    }
+
+    pub(crate) fn fail_open(&self) -> usize {
+        self.no_sidecar + self.sidecar_error
+    }
+}
+
+#[derive(Default, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HookAdoptionSnapshot {
+    pub source_read: WorkflowAdoptionCounts,
+    pub source_search: WorkflowAdoptionCounts,
+    pub repo_start: WorkflowAdoptionCounts,
+    pub prompt_context: WorkflowAdoptionCounts,
+    pub post_edit_impact: WorkflowAdoptionCounts,
+    pub first_repo_start: Option<HookOutcome>,
+}
+
+impl HookAdoptionSnapshot {
+    fn counts_mut(&mut self, workflow: HookWorkflow) -> Option<&mut WorkflowAdoptionCounts> {
+        match workflow {
+            HookWorkflow::SourceRead => Some(&mut self.source_read),
+            HookWorkflow::SourceSearch => Some(&mut self.source_search),
+            HookWorkflow::RepoStart => Some(&mut self.repo_start),
+            HookWorkflow::PromptContext => Some(&mut self.prompt_context),
+            HookWorkflow::PostEditImpact => Some(&mut self.post_edit_impact),
+            HookWorkflow::CodeEdit | HookWorkflow::PassThrough => None,
+        }
+    }
+
+    pub(crate) fn total_attempts(&self) -> usize {
+        self.source_read.total()
+            + self.source_search.total()
+            + self.repo_start.total()
+            + self.prompt_context.total()
+            + self.post_edit_impact.total()
+    }
+
+    pub(crate) fn total_routed(&self) -> usize {
+        self.source_read.routed
+            + self.source_search.routed
+            + self.repo_start.routed
+            + self.prompt_context.routed
+            + self.post_edit_impact.routed
+    }
+
+    pub(crate) fn total_fail_open(&self) -> usize {
+        self.source_read.fail_open()
+            + self.source_search.fail_open()
+            + self.repo_start.fail_open()
+            + self.prompt_context.fail_open()
+            + self.post_edit_impact.fail_open()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.total_attempts() == 0
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -107,6 +211,7 @@ pub fn run_hook(subcommand: Option<&HookSubcommand>) -> anyhow::Result<()> {
         .map(event_name_for)
         .unwrap_or("PostToolUse");
     let workflow = workflow_for_subcommand(resolved.as_ref(), &input);
+    let session_id = read_session_file().ok();
 
     // Conservatively fail open for workflows we do not want to semanticize.
     // This keeps docs/config/non-source reads and unknown tool events from
@@ -121,11 +226,11 @@ pub fn run_hook(subcommand: Option<&HookSubcommand>) -> anyhow::Result<()> {
         Ok(p) => p,
         Err(_) => {
             // Sidecar not running — fail open silently.
+            record_hook_outcome(workflow, HookOutcome::NoSidecar, session_id.as_deref());
             println!("{}", fail_open_json(event_name));
             return Ok(());
         }
     };
-    let session_id = read_session_file().ok();
 
     // Step 2 — determine endpoint + query string.
     let resolved_ref = resolved.as_ref();
@@ -136,12 +241,14 @@ pub fn run_hook(subcommand: Option<&HookSubcommand>) -> anyhow::Result<()> {
     let body = match sync_http_get(port, &request_path, query) {
         Ok(b) => b,
         Err(_) => {
+            record_hook_outcome(workflow, HookOutcome::SidecarError, session_id.as_deref());
             println!("{}", fail_open_json(event_name));
             return Ok(());
         }
     };
 
     // Step 5/6 — output result JSON.
+    record_hook_outcome(workflow, HookOutcome::Routed, session_id.as_deref());
     println!("{}", success_json(event_name, &body));
     Ok(())
 }
@@ -491,6 +598,130 @@ fn proxy_path(base_path: &str, session_id: Option<&str>) -> String {
     }
 }
 
+fn tracked_workflow_name(workflow: HookWorkflow) -> Option<&'static str> {
+    match workflow {
+        HookWorkflow::SourceRead => Some("source-read"),
+        HookWorkflow::SourceSearch => Some("source-search"),
+        HookWorkflow::RepoStart => Some("repo-start"),
+        HookWorkflow::PromptContext => Some("prompt-context"),
+        HookWorkflow::PostEditImpact => Some("post-edit-impact"),
+        HookWorkflow::CodeEdit | HookWorkflow::PassThrough => None,
+    }
+}
+
+fn parse_tracked_workflow(raw: &str) -> Option<HookWorkflow> {
+    match raw {
+        "source-read" => Some(HookWorkflow::SourceRead),
+        "source-search" => Some(HookWorkflow::SourceSearch),
+        "repo-start" => Some(HookWorkflow::RepoStart),
+        "prompt-context" => Some(HookWorkflow::PromptContext),
+        "post-edit-impact" => Some(HookWorkflow::PostEditImpact),
+        _ => None,
+    }
+}
+
+fn record_hook_outcome(workflow: HookWorkflow, outcome: HookOutcome, session_id: Option<&str>) {
+    let Some(workflow_name) = tracked_workflow_name(workflow) else {
+        return;
+    };
+    let _ = append_hook_adoption_event(
+        Path::new(ADOPTION_LOG_FILE),
+        session_id,
+        workflow_name,
+        outcome.label(),
+    );
+}
+
+fn append_hook_adoption_event(
+    log_path: &Path,
+    session_id: Option<&str>,
+    workflow_name: &str,
+    outcome_label: &str,
+) -> std::io::Result<()> {
+    if let Some(parent) = log_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)?;
+    let session = session_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("-");
+    writeln!(file, "{session}\t{workflow_name}\t{outcome_label}")
+}
+
+fn adoption_log_path(repo_root: Option<&Path>) -> PathBuf {
+    repo_root
+        .unwrap_or_else(|| Path::new("."))
+        .join(ADOPTION_LOG_FILE)
+}
+
+fn session_file_path(repo_root: Option<&Path>) -> PathBuf {
+    repo_root
+        .unwrap_or_else(|| Path::new("."))
+        .join(SESSION_FILE)
+}
+
+fn read_session_id_for_repo(repo_root: Option<&Path>) -> Option<String> {
+    std::fs::read_to_string(session_file_path(repo_root))
+        .ok()
+        .map(|text| text.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn load_hook_adoption_snapshot_from_path(
+    log_path: &Path,
+    session_filter: Option<&str>,
+) -> std::io::Result<HookAdoptionSnapshot> {
+    let Ok(contents) = std::fs::read_to_string(log_path) else {
+        return Ok(HookAdoptionSnapshot::default());
+    };
+
+    let mut snapshot = HookAdoptionSnapshot::default();
+    for line in contents.lines() {
+        let mut parts = line.split('\t');
+        let Some(session_id) = parts.next() else {
+            continue;
+        };
+        let Some(workflow_raw) = parts.next() else {
+            continue;
+        };
+        let Some(outcome_raw) = parts.next() else {
+            continue;
+        };
+
+        if let Some(filter) = session_filter {
+            if session_id != filter {
+                continue;
+            }
+        }
+
+        let Some(workflow) = parse_tracked_workflow(workflow_raw) else {
+            continue;
+        };
+        let Some(outcome) = HookOutcome::parse(outcome_raw) else {
+            continue;
+        };
+
+        if workflow == HookWorkflow::RepoStart && snapshot.first_repo_start.is_none() {
+            snapshot.first_repo_start = Some(outcome);
+        }
+        if let Some(counts) = snapshot.counts_mut(workflow) {
+            counts.record(outcome);
+        }
+    }
+
+    Ok(snapshot)
+}
+
+pub(crate) fn load_hook_adoption_snapshot(repo_root: Option<&Path>) -> HookAdoptionSnapshot {
+    let session = read_session_id_for_repo(repo_root);
+    load_hook_adoption_snapshot_from_path(&adoption_log_path(repo_root), session.as_deref())
+        .unwrap_or_default()
+}
+
 /// Make a synchronous HTTP/1.1 GET request to `127.0.0.1:{port}{path}?{query}`.
 ///
 /// Uses a raw `TcpStream` (no HTTP client crate) so there is no async runtime
@@ -572,6 +803,7 @@ fn json_escape(s: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::Value;
+    use tempfile::TempDir;
 
     // --- fail_open_json ---
 
@@ -1094,6 +1326,47 @@ mod tests {
         assert!(!is_non_source_path("src/main.rs"));
         assert!(!is_non_source_path("tests/test_foo.py"));
         assert!(!is_non_source_path("lib/parser.js"));
+    }
+
+    #[test]
+    fn test_load_hook_adoption_snapshot_filters_to_current_session() {
+        let tmp = TempDir::new().unwrap();
+        let symforge_dir = tmp.path().join(".symforge");
+        std::fs::create_dir_all(&symforge_dir).unwrap();
+        let log_path = symforge_dir.join("hook-adoption.log");
+        let session_path = symforge_dir.join("sidecar.session");
+
+        append_hook_adoption_event(&log_path, Some("session-a"), "source-read", "routed").unwrap();
+        append_hook_adoption_event(&log_path, Some("session-a"), "repo-start", "no-sidecar").unwrap();
+        append_hook_adoption_event(&log_path, Some("session-b"), "source-search", "routed").unwrap();
+        std::fs::write(&session_path, "session-a\n").unwrap();
+
+        let snapshot = load_hook_adoption_snapshot(Some(tmp.path()));
+        assert_eq!(snapshot.source_read.routed, 1);
+        assert_eq!(snapshot.source_search.routed, 0);
+        assert_eq!(snapshot.repo_start.no_sidecar, 1);
+        assert_eq!(snapshot.first_repo_start, Some(HookOutcome::NoSidecar));
+    }
+
+    #[test]
+    fn test_load_hook_adoption_snapshot_tracks_sidecar_errors_and_totals() {
+        let tmp = TempDir::new().unwrap();
+        let log_path = tmp.path().join("hook-adoption.log");
+
+        append_hook_adoption_event(&log_path, Some("session-z"), "prompt-context", "sidecar-error")
+            .unwrap();
+        append_hook_adoption_event(&log_path, Some("session-z"), "post-edit-impact", "routed")
+            .unwrap();
+        append_hook_adoption_event(&log_path, Some("session-z"), "source-read", "no-sidecar")
+            .unwrap();
+
+        let snapshot = load_hook_adoption_snapshot_from_path(&log_path, Some("session-z")).unwrap();
+        assert_eq!(snapshot.prompt_context.sidecar_error, 1);
+        assert_eq!(snapshot.post_edit_impact.routed, 1);
+        assert_eq!(snapshot.source_read.no_sidecar, 1);
+        assert_eq!(snapshot.total_routed(), 1);
+        assert_eq!(snapshot.total_fail_open(), 2);
+        assert_eq!(snapshot.total_attempts(), 3);
     }
 
     // --- helpers ---

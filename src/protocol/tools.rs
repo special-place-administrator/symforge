@@ -2351,9 +2351,10 @@ impl SymForgeServer {
     }
 
     /// Diagnostic: index status, file/symbol counts, load time, watcher state, token savings,
-    /// git temporal status. Always responds even during loading. Use to verify SymForge is working.
+    /// hook adoption metrics, git temporal status. Always responds even during loading. Use to
+    /// verify SymForge is working.
     #[tool(
-        description = "Diagnostic: index status, file/symbol counts, load time, watcher state, token savings, git temporal status. Always responds even during loading. Use to verify SymForge is working."
+        description = "Diagnostic: index status, file/symbol counts, load time, watcher state, token savings, hook adoption metrics, git temporal status. Always responds even during loading. Use to verify SymForge is working."
     )]
     pub(crate) async fn health(&self) -> String {
         if let Some(result) = self.proxy_tool_call_without_params("health").await {
@@ -2379,6 +2380,13 @@ impl SymForgeServer {
                 result.push('\n');
                 result.push_str(&counts_section);
             }
+        }
+
+        let adoption = crate::cli::hook::load_hook_adoption_snapshot(self.capture_repo_root().as_deref());
+        let adoption_section = format::format_hook_adoption(&adoption);
+        if !adoption_section.is_empty() {
+            result.push('\n');
+            result.push_str(&adoption_section);
         }
 
         // Append git temporal summary.
