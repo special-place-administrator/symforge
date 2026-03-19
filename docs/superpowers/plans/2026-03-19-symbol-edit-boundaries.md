@@ -4,7 +4,7 @@
 
 **Goal:** Make symbol-addressed structural edits boundary-aware so SymForge can handle attribute/decorator-adjacent edits without falling back to raw shell/text tooling.
 
-**Architecture:** Introduce `item_byte_range` as the full editable-item boundary on `SymbolRecord`, preserve it through indexing and snapshots, teach parser helpers to compute it, then switch structural edit tools to use item boundaries while keeping `edit_within_symbol` scoped to the core node range.
+**Architecture:** Introduce `item_byte_range` as the full editable-item boundary on `SymbolRecord`, preserve it through indexing and snapshots, teach parser helpers to compute it, then switch structural edit tools to use item boundaries while keeping `edit_within_symbol` scoped to the core node range. Audit existing `effective_start()` consumers before repurposing shared helpers so edit-boundary work does not accidentally change unrelated read/display surfaces.
 
 **Tech Stack:** Rust, tree-sitter language parsers already in the repo, existing edit pipeline in `src/protocol/edit.rs`
 
@@ -19,6 +19,7 @@
 | `src/domain/index.rs` | Modify | Add `item_byte_range` and boundary helpers on `SymbolRecord` |
 | `src/live_index/store.rs` | Modify | Preserve `item_byte_range` in `IndexedFile` flows |
 | `src/live_index/persist.rs` | Modify | Snapshot round-trip for richer symbol boundary data |
+| `src/live_index/query.rs` | Review / maybe modify | Decide whether context bundle uses doc-aware or full-item boundaries |
 | `src/parsing/languages/mod.rs` | Modify | Add generic symbol push helpers that accept full item boundaries |
 | `src/parsing/languages/python.rs` | Modify | Migrate decorated definitions to generic item-range support |
 | `src/parsing/languages/rust.rs` | Modify | Include outer attributes in symbol item ranges |
@@ -28,7 +29,7 @@
 | `src/parsing/config_extractors/*.rs` | Modify | Default `item_byte_range` to `byte_range` for config pseudo-symbols |
 | `src/protocol/edit.rs` | Modify | Switch structural edit primitives to `item_range`, keep `edit_within_symbol` on core range |
 | `src/protocol/tools.rs` | Modify | Preserve tool semantics and add regressions for boundary-aware edits |
-| `src/protocol/format.rs` | Optional modify | Only if output needs to mention new boundary semantics |
+| `src/protocol/format.rs` | Review / maybe modify | Decide whether symbol display should show core range or full item range |
 | `tests/` and inline test modules | Modify | Regression coverage for attribute/decorator boundary cases |
 
 ---
@@ -65,9 +66,15 @@ Rules:
 - `item_*` falls back to `byte_range` when `item_byte_range` is `None`
 - `core_range()` always returns `byte_range`
 
-- [ ] **Step 3: Reimplement `effective_start()` in terms of item semantics**
+- [ ] **Step 3: Add new helpers without repurposing `effective_start()` yet**
 
-Do not delete `effective_start()` in this chunk. Reimplement it to delegate to `item_start()` so existing call sites keep working until the explicit migration later.
+Do not delete `effective_start()` in this chunk, and do not blindly repurpose it to `item_start()` yet.
+
+Reason:
+- `effective_start()` is used by structural edit code
+- it is also used by read/display code such as symbol rendering and context-bundle capture
+
+Keep the old behavior stable until the read-surface audit below decides whether full-item boundaries should also become the default display boundary.
 
 - [ ] **Step 4: Fix all symbol construction sites**
 
@@ -86,7 +93,25 @@ item_byte_range: None,
 
 or a specific value where already known.
 
-- [ ] **Step 5: Compile check**
+- [ ] **Step 5: Audit `effective_start()` consumers before migration**
+
+Search for `effective_start()` across the repo and classify each call site as one of:
+- structural edit boundary
+- overlap/ordering logic for edits
+- read/display rendering
+- context bundle / retrieval
+
+At minimum, review:
+- `src/protocol/edit.rs`
+- `src/protocol/tools.rs`
+- `src/protocol/format.rs`
+- `src/live_index/query.rs`
+
+Record the migration intent in a short note in this plan while coding:
+- edit paths should move to `item_*` helpers
+- read/display paths must be an explicit product decision, not an accidental side effect
+
+- [ ] **Step 6: Compile check**
 
 Run:
 
@@ -247,6 +272,8 @@ Handle the highest-value wrapper cases first:
 
 If some decorator forms are not represented consistently by the grammar, document the limitation in code comments and tests rather than guessing.
 
+Do not block this chunk on import/re-export group editing. Import/re-export groups are not currently modeled as ordinary symbols in the same way as function/class/type declarations. Treat that as a separate symbolization problem or a future raw-range-edit use case.
+
 - [ ] **Step 2: C#**
 
 Include leading attribute lists in `item_byte_range` for declarations that SymForge indexes.
@@ -309,6 +336,11 @@ Use `item_range()` for:
 - `delete_symbol`
 - batch structural edits that rely on symbol boundaries
 
+This includes:
+- overlap detection in `execute_batch_edit`
+- reverse-offset ordering for batched structural edits
+- old/new byte-count reporting for structural edit summaries
+
 - [ ] **Step 4: Keep `edit_within_symbol()` on the core range**
 
 Do not silently expand it to `item_range()`. It must remain the narrow, body-local primitive.
@@ -317,13 +349,26 @@ Do not silently expand it to `item_range()`. It must remain the narrow, body-loc
 
 Keep `extend_past_orphaned_docs()` only as a compatibility fallback where parser coverage is still incomplete. Once `item_range()` is trusted in a path, do not double-expand it.
 
-- [ ] **Step 6: Add edit-unit regressions**
+- [ ] **Step 6: Decide read-surface behavior explicitly**
+
+Using the consumer audit from Chunk 1, make an explicit call for:
+- `render_symbol_detail` in `src/protocol/format.rs`
+- `capture_context_bundle_view` in `src/live_index/query.rs`
+
+Allowed outcomes:
+- keep them doc-aware/core-based for display stability
+- move them to full-item boundaries for consistency with editing
+
+Either choice is acceptable, but it must be deliberate and covered by tests.
+
+- [ ] **Step 7: Add edit-unit regressions**
 
 Add tests in `src/protocol/edit.rs` for:
 - insert-before on a Rust attributed item
 - replace on an attributed/decorated item
 - delete on an attributed/decorated item
 - unchanged `edit_within_symbol` scope
+- batch overlap detection uses full item boundaries, not just core ranges
 
 ---
 
@@ -388,6 +433,11 @@ Use the actual MCP tools against a small fixture or scratch file to confirm:
 - before/after insertion anchors
 - replace/delete full-item handling
 - `edit_within_symbol` staying core-scoped
+
+If Chunk 5 changed read/display behavior, also verify:
+- `get_symbol`
+- `get_symbol_context` / context bundle paths
+- any user-visible byte counts still make sense
 
 - [ ] **Step 4: Update user-facing docs only if behavior changed materially**
 
