@@ -4,8 +4,6 @@ A code-native MCP server that gives AI coding agents structured, symbol-aware ac
 
 Works with any MCP-compatible client — CLI agents (Claude Code, Codex, Gemini CLI), VS Code extensions (Kilo Code, Roo Code, Cline, Continue), JetBrains plugins, and custom agents.
 
-> **Current release status:** `v1.3.0` was tagged on 2026-03-19 via the automated release pipeline and is now the current public release line for SymForge.
-
 ## Why SymForge
 
 AI coding agents spend most of their token budget on orientation — reading files, grepping for patterns, figuring out what code is where. SymForge replaces that with structured tools that resolve symbols, references, and dependencies server-side.
@@ -240,37 +238,36 @@ Running `npm install -g symforge` does the following automatically:
 
 1. **Downloads the npm wrapper** from the registry
 2. **Downloads your platform's pre-built binary** from GitHub releases and places it at `~/.symforge/bin/symforge[.exe]`
-3. **Detects which AI CLI tools you have installed** by checking for `~/.claude`, `~/.codex`, and `~/.gemini` directories
-4. **Runs `symforge init`** on the downloaded binary, which configures each detected client:
+3. **Detects which home-scoped AI CLI tools you have installed** by checking for `~/.claude`, `~/.codex`, and `~/.gemini` directories
+4. **Runs `symforge init` from your home directory** on the downloaded binary, which configures each detected home-scoped client:
 
    | Client | Files written |
    |--------|--------------|
    | **Claude Code** | `~/.claude.json` — MCP server entry with `alwaysAllow` for all 24 tools<br>`~/.claude/settings.json` — hook entries (PostToolUse, PreToolUse, SessionStart, UserPromptSubmit)<br>`~/.claude/CLAUDE.md` — SymForge guidance block (Decision Rules + Tooling Preference) |
    | **Codex** | `~/.codex/config.toml` — MCP server entry with timeouts and allowed tools<br>`~/.codex/AGENTS.md` — guidance block |
    | **Gemini CLI** | `~/.gemini/settings.json` — MCP server entry with `trust: true`<br>`~/.gemini/GEMINI.md` — guidance block |
-   | **Kilo Code** | `.kilocode/mcp.json` in the current working directory |
-
-5. **Creates `.symforge/`** in the current working directory (runtime state directory)
 
 Everything is idempotent — re-running install or `symforge init` is safe and updates configs to the latest format without duplicating entries or losing existing settings.
 
 **Updates** work the same way — `npm install -g symforge` replaces the binary. During update, the installer stops running SymForge processes first so the binary can be replaced in place.
 
-**Auto-init** runs after every install/update: detects Claude Code, Codex, and Gemini CLI, registers the MCP server, installs hooks, and auto-allows all SymForge tools. Other MCP clients (VS Code extensions, JetBrains plugins, custom agents) can connect via manual stdio configuration.
+**Auto-init** runs after every install/update for home-scoped clients only: Claude Code, Codex, and Gemini CLI. Workspace-local clients such as Kilo Code are intentionally not auto-configured during global npm install because postinstall does not know which project workspace you want to modify.
+
+For **Kilo Code**, run `symforge init --client kilo-code` from the project directory you want to configure. That writes `.kilocode/mcp.json`, `.kilocode/rules/symforge.md`, and creates `.symforge/` for workspace-local runtime state.
 
 If your platform isn't listed, build from source instead.
 
 ## Client Setup
 
-Auto-configured during install. To re-run manually:
+Claude Code, Codex, and Gemini CLI are auto-configured during global install when their home directories already exist. To re-run manually:
 
 ```bash
 symforge init                      # auto-detect clients
 symforge init --client claude      # Claude Code only
 symforge init --client codex       # Codex only
 symforge init --client gemini      # Gemini CLI only
-symforge init --client kilo-code   # Kilo Code VS Code extension
-symforge init --client all         # all clients
+symforge init --client kilo-code   # Kilo Code in the current workspace
+symforge init --client all         # all clients; workspace-local clients use the current directory
 ```
 
 ### Claude Code
@@ -301,13 +298,13 @@ You should see `symforge — Ready` with 24 tools listed. If the server shows `D
 
 ### VS Code Extensions (Kilo Code, Roo Code, Cline, etc.)
 
-Any VS Code extension with MCP support can use SymForge. For **Kilo Code**, auto-init is supported:
+Any VS Code extension with MCP support can use SymForge. For **Kilo Code**, run init manually from the workspace you want to configure:
 
 ```bash
 symforge init --client kilo-code
 ```
 
-This creates `.kilocode/mcp.json` in your workspace with the full tool allowlist. For other extensions, configure manually through their MCP settings.
+This creates `.kilocode/mcp.json` and `.kilocode/rules/symforge.md` in your workspace, plus `.symforge/` for workspace-local runtime state. Global `npm install -g symforge` intentionally does not auto-write Kilo workspace files because npm postinstall runs from the package install directory, not from your project. For other extensions, configure manually through their MCP settings.
 
 **Kilo Code** manual config (sidebar → gear icon → MCP Servers, or `.kilocode/mcp.json`):
 
@@ -341,7 +338,7 @@ Other VS Code extensions and MCP clients follow a similar pattern — point the 
 
 ### Getting the Most Out of SymForge
 
-The `init` command writes a guidance block to your agent's system file (`CLAUDE.md`, `AGENTS.md`, or `GEMINI.md`), but CLI agents don't always follow it — they tend to fall back to built-in file reads and grep out of habit. For best results, add the following to your global or per-project system file so your agent treats SymForge as the primary code navigation layer:
+The `init` command writes a guidance block to your agent's system file (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, or `.kilocode/rules/symforge.md` for Kilo Code), but agents don't always follow it — they tend to fall back to built-in file reads and grep out of habit. For best results, add the following to your global or per-project system file so your agent treats SymForge as the primary code navigation layer:
 
 ```markdown
 ## Tooling Preference

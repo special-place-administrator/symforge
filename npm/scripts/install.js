@@ -259,10 +259,14 @@ function createInstaller(overrides = {}) {
   }
 
   /**
-   * Detect which CLI agents are installed and return the appropriate
-   * `--client` flag value for `symforge init`.
+   * Detect which home-scoped CLI agents are installed and can be safely
+   * initialized from a global npm postinstall context.
+   *
+   * Workspace-local clients such as Kilo Code are intentionally excluded here:
+   * global npm installs run from the package directory, not from a user
+   * workspace, so emitting `.kilocode/*` there would be wrong.
    */
-  function detectClients() {
+  function detectHomeScopedClients() {
     const clients = [];
 
     // Claude Code: check for ~/.claude directory
@@ -283,11 +287,7 @@ function createInstaller(overrides = {}) {
       clients.push("gemini");
     }
 
-    // If all, none, or more than 1 detected, use "all"
-    if (clients.length === 0 || clients.length >= 2) {
-      return "all";
-    }
-    return clients[0];
+    return clients;
   }
 
   /**
@@ -295,24 +295,44 @@ function createInstaller(overrides = {}) {
    * hooks and MCP server registration for detected CLI agents.
    */
   function runAutoInit(binPath) {
-    const client = detectClients();
-    consoleMod.log(`Auto-configuring for detected client(s): ${client}`);
-    try {
-      const output = execFileSyncFn(binPath, ["init", "--client", client], {
-        encoding: "utf8",
-        timeout: 15000,
-        env: processMod.env,
-      });
-      if (output) {
-        for (const line of output.trim().split(/\r?\n/)) {
-          consoleMod.log(line);
-        }
-      }
-    } catch (error) {
+    const clients = detectHomeScopedClients();
+    const initCwd = osMod.homedir();
+    if (clients.length === 0) {
       consoleMod.log(
-        `Auto-init warning: ${error.message}\nYou can run manually: symforge init --client all`
+        "Auto-configuring skipped: no home-scoped clients detected. " +
+          "Run `symforge init --client <client>` manually if needed."
       );
+      consoleMod.log(
+        "Kilo Code is workspace-local; run `symforge init --client kilo-code` from your project directory."
+      );
+      return;
     }
+
+    consoleMod.log(`Auto-configuring for detected client(s): ${clients.join(", ")}`);
+    for (const client of clients) {
+      try {
+        const output = execFileSyncFn(binPath, ["init", "--client", client], {
+          encoding: "utf8",
+          timeout: 15000,
+          env: processMod.env,
+          cwd: initCwd,
+        });
+        if (output) {
+          for (const line of output.trim().split(/\r?\n/)) {
+            consoleMod.log(line);
+          }
+        }
+      } catch (error) {
+        consoleMod.log(
+          `Auto-init warning for ${client}: ${error.message}\n` +
+            "You can run manually: symforge init --client " +
+            client
+        );
+      }
+    }
+    consoleMod.log(
+      "Kilo Code is workspace-local; run `symforge init --client kilo-code` from your project directory."
+    );
   }
 
   async function main() {
@@ -401,7 +421,7 @@ function createInstaller(overrides = {}) {
     main,
     stopAllRunningProcesses,
     stopRunningWindowsProcesses,
-    detectClients,
+    detectHomeScopedClients,
     runAutoInit,
   };
 }

@@ -11,6 +11,7 @@ function createFs({
   versionPath,
   pendingVersionPath,
   installDir,
+  existingPaths = [],
   binFailuresBeforeSuccess = 0,
   hasBinary = true,
   hasPending = false,
@@ -35,6 +36,9 @@ function createFs({
   }
   if (pendingVersion) {
     files.set(pendingVersionPath, `${pendingVersion}\n`);
+  }
+  for (const existingPath of existingPaths) {
+    files.set(existingPath, "");
   }
 
   return {
@@ -137,6 +141,11 @@ test("locked Windows binary is replaced after stopping running SymForge processe
     versionPath,
     pendingVersionPath,
     installDir,
+    existingPaths: [
+      "C:\\Users\\tester\\.claude",
+      "C:\\Users\\tester\\.codex",
+      "C:\\Users\\tester\\.gemini",
+    ],
     binFailuresBeforeSuccess: 1,
   });
   const execCalls = [];
@@ -159,9 +168,16 @@ test("locked Windows binary is replaced after stopping running SymForge processe
   assert.equal(powershellCalls.length, 2);
   // getInstalledVersion calls the binary with --version
   assert.equal(versionCalls.length, 1);
-  // runAutoInit calls the installed binary
-  assert.equal(initCalls.length, 1);
-  assert.match(initCalls[0].args.join(" "), /init/);
+  // runAutoInit calls the installed binary once per detected home-scoped client
+  assert.equal(initCalls.length, 3);
+  assert.deepEqual(
+    initCalls.map((call) => call.args.slice(-1)[0]).sort(),
+    ["claude", "codex", "gemini"]
+  );
+  assert.deepEqual(
+    initCalls.map((call) => call.options.cwd),
+    ["C:\\Users\\tester", "C:\\Users\\tester", "C:\\Users\\tester"]
+  );
   assert.equal(
     fsOverrides.writes.filter((entry) => entry.target === binPath).length,
     2
@@ -172,7 +188,8 @@ test("locked Windows binary is replaced after stopping running SymForge processe
   );
   assert.match(logs.join("\n"), /Stopped.*running SymForge process/);
   assert.match(logs.join("\n"), /Installed:/);
-  assert.match(logs.join("\n"), /Auto-configuring/);
+  assert.match(logs.join("\n"), /Auto-configuring for detected client\(s\): claude, codex, gemini/);
+  assert.match(logs.join("\n"), /Kilo Code is workspace-local/);
 });
 
 test("installer pre-stop targets all symforge processes instead of daemon-only command lines", async () => {
@@ -339,4 +356,37 @@ test("installer uses the symforge repo slug in release downloads and fallback in
   assert.match(downloadUrl, /github\.com\/special-place-administrator\/symforge\/releases\/download/);
   assert.match(errors.join("\n"), /git clone https:\/\/github\.com\/special-place-administrator\/symforge/);
   assert.match(errors.join("\n"), /cd symforge/);
+});
+
+test("installer skips auto-init when no home-scoped clients are detected", async () => {
+  const installDir = winPath.join("C:\\Users\\tester", ".symforge", "bin");
+  const binPath = winPath.join(installDir, "symforge.exe");
+  const pendingPath = winPath.join(installDir, "symforge.pending.exe");
+  const versionPath = winPath.join(installDir, "symforge.version");
+  const pendingVersionPath = winPath.join(installDir, "symforge.pending.version");
+  const fsOverrides = createFs({
+    binPath,
+    pendingPath,
+    versionPath,
+    pendingVersionPath,
+    installDir,
+    hasBinary: false,
+  });
+  const execCalls = [];
+  const { installer, logs } = createInstallerForTest({
+    fsOverrides,
+    installDir,
+    env: {},
+    execFileSync(command, args) {
+      execCalls.push({ command, args });
+      return "[]";
+    },
+  });
+
+  await installer.main();
+
+  const initCalls = execCalls.filter((call) => call.args && call.args.includes("init"));
+  assert.equal(initCalls.length, 0);
+  assert.match(logs.join("\n"), /Auto-configuring skipped: no home-scoped clients detected/);
+  assert.match(logs.join("\n"), /Kilo Code is workspace-local/);
 });
