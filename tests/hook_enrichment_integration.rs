@@ -75,6 +75,7 @@ fn make_rust_file_with_symbols(path: &str, symbols: Vec<(&str, SymbolKind)>) -> 
         content_hash: format!("hash-{}", path),
         references: vec![],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     }
 }
 

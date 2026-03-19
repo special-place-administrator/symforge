@@ -59,6 +59,7 @@ fn make_rust_file(path: &str, fn_name: &str) -> IndexedFile {
         content_hash: "test".to_string(),
         references: vec![],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     }
 }
 
@@ -551,6 +552,7 @@ async fn test_prompt_context_endpoint_extensionless_path_line_hint_disambiguates
         content_hash: "db".to_string(),
         references: vec![],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let test_target = IndexedFile {
         relative_path: "tests/db.py".to_string(),
@@ -571,6 +573,7 @@ async fn test_prompt_context_endpoint_extensionless_path_line_hint_disambiguates
         content_hash: "db-py".to_string(),
         references: vec![],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let src_dependent = IndexedFile {
         relative_path: "src/service.rs".to_string(),
@@ -608,6 +611,7 @@ async fn test_prompt_context_endpoint_extensionless_path_line_hint_disambiguates
             },
         ],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let unrelated = IndexedFile {
         relative_path: "src/other.rs".to_string(),
@@ -635,6 +639,7 @@ async fn test_prompt_context_endpoint_extensionless_path_line_hint_disambiguates
             enclosing_symbol_index: Some(0),
         }],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let index = build_shared_index(vec![src_target, test_target, src_dependent, unrelated]);
     let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
@@ -704,6 +709,7 @@ async fn test_prompt_context_endpoint_module_alias_line_hint_disambiguates_exact
         content_hash: "db".to_string(),
         references: vec![],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let test_target = IndexedFile {
         relative_path: "tests/db.py".to_string(),
@@ -724,6 +730,7 @@ async fn test_prompt_context_endpoint_module_alias_line_hint_disambiguates_exact
         content_hash: "db-py".to_string(),
         references: vec![],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let src_dependent = IndexedFile {
         relative_path: "src/service.rs".to_string(),
@@ -761,6 +768,7 @@ async fn test_prompt_context_endpoint_module_alias_line_hint_disambiguates_exact
             },
         ],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let unrelated = IndexedFile {
         relative_path: "src/other.rs".to_string(),
@@ -788,6 +796,7 @@ async fn test_prompt_context_endpoint_module_alias_line_hint_disambiguates_exact
             enclosing_symbol_index: Some(0),
         }],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let index = build_shared_index(vec![src_target, test_target, src_dependent, unrelated]);
     let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
@@ -846,6 +855,7 @@ async fn test_prompt_context_endpoint_module_alias_without_line_prefers_exact_fi
         content_hash: "db".to_string(),
         references: vec![],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let test_target = IndexedFile {
         relative_path: "tests/db.py".to_string(),
@@ -866,6 +876,7 @@ async fn test_prompt_context_endpoint_module_alias_without_line_prefers_exact_fi
         content_hash: "db-py".to_string(),
         references: vec![],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let src_dependent = IndexedFile {
         relative_path: "src/service.rs".to_string(),
@@ -903,6 +914,7 @@ async fn test_prompt_context_endpoint_module_alias_without_line_prefers_exact_fi
             },
         ],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let unrelated = IndexedFile {
         relative_path: "src/other.rs".to_string(),
@@ -930,6 +942,7 @@ async fn test_prompt_context_endpoint_module_alias_without_line_prefers_exact_fi
             enclosing_symbol_index: Some(0),
         }],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let index = build_shared_index(vec![src_target, test_target, src_dependent, unrelated]);
     let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
@@ -988,6 +1001,7 @@ async fn test_prompt_context_endpoint_slash_module_alias_without_line_prefers_ex
         content_hash: "utils-ts".to_string(),
         references: vec![],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let dependent = IndexedFile {
         relative_path: "src/app.ts".to_string(),
@@ -1025,6 +1039,7 @@ async fn test_prompt_context_endpoint_slash_module_alias_without_line_prefers_ex
             },
         ],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let unrelated = IndexedFile {
         relative_path: "src/other.ts".to_string(),
@@ -1052,6 +1067,7 @@ async fn test_prompt_context_endpoint_slash_module_alias_without_line_prefers_ex
             enclosing_symbol_index: Some(0),
         }],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let index = build_shared_index(vec![target, dependent, unrelated]);
     let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
@@ -1121,6 +1137,7 @@ async fn test_prompt_context_endpoint_slash_module_alias_line_hint_disambiguates
         content_hash: "utils-ts-lines".to_string(),
         references: vec![],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let dependent = IndexedFile {
         relative_path: "src/app.ts".to_string(),
@@ -1158,6 +1175,7 @@ async fn test_prompt_context_endpoint_slash_module_alias_line_hint_disambiguates
             },
         ],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let unrelated = IndexedFile {
         relative_path: "src/other.ts".to_string(),
@@ -1185,6 +1203,7 @@ async fn test_prompt_context_endpoint_slash_module_alias_line_hint_disambiguates
             enclosing_symbol_index: Some(0),
         }],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let index = build_shared_index(vec![target, dependent, unrelated]);
     let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
@@ -1261,6 +1280,7 @@ async fn test_prompt_context_endpoint_qualified_symbol_alias_prefers_exact_selec
             },
         ],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let unrelated = IndexedFile {
         relative_path: "src/other.rs".to_string(),
@@ -1288,6 +1308,7 @@ async fn test_prompt_context_endpoint_qualified_symbol_alias_prefers_exact_selec
             enclosing_symbol_index: Some(0),
         }],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let index = build_shared_index(vec![target, dependent, unrelated]);
     let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
@@ -1342,6 +1363,7 @@ async fn test_prompt_context_endpoint_dotted_qualified_symbol_alias_prefers_exac
         content_hash: "db-py".to_string(),
         references: vec![],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let dependent = IndexedFile {
         relative_path: "pkg/service.py".to_string(),
@@ -1379,6 +1401,7 @@ async fn test_prompt_context_endpoint_dotted_qualified_symbol_alias_prefers_exac
             },
         ],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let unrelated = IndexedFile {
         relative_path: "pkg/other.py".to_string(),
@@ -1406,6 +1429,7 @@ async fn test_prompt_context_endpoint_dotted_qualified_symbol_alias_prefers_exac
             enclosing_symbol_index: Some(0),
         }],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let index = build_shared_index(vec![target, dependent, unrelated]);
     let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
@@ -1460,6 +1484,7 @@ async fn test_prompt_context_endpoint_slash_qualified_symbol_alias_prefers_exact
         content_hash: "utils-ts".to_string(),
         references: vec![],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let dependent = IndexedFile {
         relative_path: "src/app.ts".to_string(),
@@ -1497,6 +1522,7 @@ async fn test_prompt_context_endpoint_slash_qualified_symbol_alias_prefers_exact
             },
         ],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let unrelated = IndexedFile {
         relative_path: "src/other.ts".to_string(),
@@ -1524,6 +1550,7 @@ async fn test_prompt_context_endpoint_slash_qualified_symbol_alias_prefers_exact
             enclosing_symbol_index: Some(0),
         }],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let index = build_shared_index(vec![target, dependent, unrelated]);
     let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
@@ -1590,6 +1617,7 @@ async fn test_prompt_context_endpoint_slash_qualified_symbol_alias_line_hint_dis
         content_hash: "utils-ts-lines".to_string(),
         references: vec![],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let dependent = IndexedFile {
         relative_path: "src/app.ts".to_string(),
@@ -1627,6 +1655,7 @@ async fn test_prompt_context_endpoint_slash_qualified_symbol_alias_line_hint_dis
             },
         ],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let unrelated = IndexedFile {
         relative_path: "src/other.ts".to_string(),
@@ -1654,6 +1683,7 @@ async fn test_prompt_context_endpoint_slash_qualified_symbol_alias_line_hint_dis
             enclosing_symbol_index: Some(0),
         }],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let index = build_shared_index(vec![target, dependent, unrelated]);
     let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
@@ -1724,6 +1754,7 @@ async fn test_prompt_context_endpoint_dotted_qualified_symbol_alias_line_hint_di
         content_hash: "db-py".to_string(),
         references: vec![],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let dependent = IndexedFile {
         relative_path: "pkg/service.py".to_string(),
@@ -1761,6 +1792,7 @@ async fn test_prompt_context_endpoint_dotted_qualified_symbol_alias_line_hint_di
             },
         ],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let unrelated = IndexedFile {
         relative_path: "pkg/other.py".to_string(),
@@ -1788,6 +1820,7 @@ async fn test_prompt_context_endpoint_dotted_qualified_symbol_alias_line_hint_di
             enclosing_symbol_index: Some(0),
         }],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let index = build_shared_index(vec![target, dependent, unrelated]);
     let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
@@ -1864,6 +1897,7 @@ async fn test_prompt_context_endpoint_combined_hint_uses_exact_selector() {
             },
         ],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let unrelated = IndexedFile {
         relative_path: "src/other.rs".to_string(),
@@ -1891,6 +1925,7 @@ async fn test_prompt_context_endpoint_combined_hint_uses_exact_selector() {
             enclosing_symbol_index: Some(0),
         }],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let index = build_shared_index(vec![target, dependent, unrelated]);
     let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
@@ -1956,6 +1991,7 @@ async fn test_prompt_context_endpoint_line_hint_disambiguates_exact_selector() {
         content_hash: "db".to_string(),
         references: vec![],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let dependent = IndexedFile {
         relative_path: "src/service.rs".to_string(),
@@ -1993,6 +2029,7 @@ async fn test_prompt_context_endpoint_line_hint_disambiguates_exact_selector() {
             },
         ],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let index = build_shared_index(vec![target, dependent]);
     let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
@@ -2058,6 +2095,7 @@ async fn test_prompt_context_endpoint_path_line_hint_disambiguates_exact_selecto
         content_hash: "db".to_string(),
         references: vec![],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let dependent = IndexedFile {
         relative_path: "src/service.rs".to_string(),
@@ -2095,6 +2133,7 @@ async fn test_prompt_context_endpoint_path_line_hint_disambiguates_exact_selecto
             },
         ],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let index = build_shared_index(vec![target, dependent]);
     let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
@@ -2160,6 +2199,7 @@ async fn test_prompt_context_endpoint_basename_line_hint_disambiguates_exact_sel
         content_hash: "db".to_string(),
         references: vec![],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let dependent = IndexedFile {
         relative_path: "src/service.rs".to_string(),
@@ -2197,6 +2237,7 @@ async fn test_prompt_context_endpoint_basename_line_hint_disambiguates_exact_sel
             },
         ],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let index = build_shared_index(vec![target, dependent]);
     let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
@@ -2262,6 +2303,7 @@ async fn test_prompt_context_endpoint_extensionless_alias_line_hint_disambiguate
         content_hash: "db".to_string(),
         references: vec![],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let dependent = IndexedFile {
         relative_path: "src/service.rs".to_string(),
@@ -2299,6 +2341,7 @@ async fn test_prompt_context_endpoint_extensionless_alias_line_hint_disambiguate
             },
         ],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let unrelated = IndexedFile {
         relative_path: "src/other.rs".to_string(),
@@ -2326,6 +2369,7 @@ async fn test_prompt_context_endpoint_extensionless_alias_line_hint_disambiguate
             enclosing_symbol_index: Some(0),
         }],
         alias_map: HashMap::new(),
+        mtime_secs: 0,
     };
     let index = build_shared_index(vec![target, dependent, unrelated]);
     let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")

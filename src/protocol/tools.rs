@@ -170,6 +170,7 @@ use crate::sidecar::handlers::{
     repo_map_text, symbol_context_tool_text,
 };
 use crate::sidecar::{SidecarState, TokenStats};
+use crate::watcher;
 
 use super::SymForgeServer;
 
@@ -386,6 +387,9 @@ pub struct GetFileContentInput {
     pub around_line: Option<u32>,
     /// Center the read around the first case-insensitive literal match in the file.
     pub around_match: Option<String>,
+    /// Select a specific 1-based occurrence of `around_match` instead of the first match.
+    #[serde(default, deserialize_with = "lenient_u32")]
+    pub match_occurrence: Option<u32>,
     /// Center the read around a symbol in the target file.
     pub around_symbol: Option<String>,
     /// Optional exact-selector line for `around_symbol`.
@@ -793,6 +797,22 @@ fn normalize_path_prefix(input: Option<&str>) -> search::PathScope {
     }
 }
 
+fn normalize_exact_path(input: &str) -> String {
+    let normalized = input
+        .trim()
+        .replace('\\', "/")
+        .trim_start_matches("./")
+        .trim_start_matches('/')
+        .trim_end_matches('/')
+        .to_string();
+
+    if normalized.is_empty() {
+        input.trim().to_string()
+    } else {
+        normalized
+    }
+}
+
 fn normalize_search_text_glob(input: Option<&str>) -> Option<String> {
     input
         .map(str::trim)
@@ -967,6 +987,20 @@ fn file_content_options_from_input(
         );
     }
 
+    if input.match_occurrence.is_some() && input.around_match.is_none() {
+        return Err(
+            "Invalid get_file_content request: `match_occurrence` requires `around_match`."
+                .to_string(),
+        );
+    }
+
+    if matches!(input.match_occurrence, Some(0)) {
+        return Err(
+            "Invalid get_file_content request: `match_occurrence` must be 1 or greater."
+                .to_string(),
+        );
+    }
+
     if let Some(raw_around_symbol) = input.around_symbol.as_deref() {
         let around_symbol = raw_around_symbol.trim();
         if around_symbol.is_empty() {
@@ -1065,6 +1099,7 @@ fn file_content_options_from_input(
             search::FileContentOptions::for_explicit_path_read_around_match(
                 input.path.clone(),
                 around_match,
+                input.match_occurrence,
                 input.context_lines,
                 show_line_numbers,
                 header,
@@ -1114,6 +1149,9 @@ fn describe_received_flags(input: &GetFileContentInput) -> String {
     if input.around_match.is_some() {
         flags.push("around_match");
     }
+    if input.match_occurrence.is_some() {
+        flags.push("match_occurrence");
+    }
     if input.around_symbol.is_some() {
         flags.push("around_symbol");
     }
@@ -1142,6 +1180,7 @@ fn validate_lines_mode(input: &GetFileContentInput) -> Result<search::FileConten
     let cross: Vec<&str> = [
         input.around_symbol.as_ref().map(|_| "around_symbol"),
         input.around_match.as_ref().map(|_| "around_match"),
+        input.match_occurrence.map(|_| "match_occurrence"),
         input.chunk_index.map(|_| "chunk_index"),
     ]
     .into_iter()
@@ -1154,7 +1193,7 @@ fn validate_lines_mode(input: &GetFileContentInput) -> Result<search::FileConten
             cross.join(", "),
             if input.around_symbol.is_some() {
                 "symbol"
-            } else if input.around_match.is_some() {
+            } else if input.around_match.is_some() || input.match_occurrence.is_some() {
                 "match"
             } else {
                 "chunk"
@@ -1205,6 +1244,7 @@ fn validate_symbol_mode(input: &GetFileContentInput) -> Result<search::FileConte
         input.end_line.map(|_| "end_line"),
         input.around_line.map(|_| "around_line"),
         input.around_match.as_ref().map(|_| "around_match"),
+        input.match_occurrence.map(|_| "match_occurrence"),
         input.chunk_index.map(|_| "chunk_index"),
     ]
     .into_iter()
@@ -1243,6 +1283,12 @@ fn validate_match_mode(input: &GetFileContentInput) -> Result<search::FileConten
     if around_match.is_empty() {
         return Err("mode=match requires around_match".to_string());
     }
+    if matches!(input.match_occurrence, Some(0)) {
+        return Err(
+            "Invalid get_file_content request: `match_occurrence` must be 1 or greater."
+                .to_string(),
+        );
+    }
 
     let cross: Vec<&str> = [
         input.start_line.map(|_| "start_line"),
@@ -1280,11 +1326,28 @@ fn validate_match_mode(input: &GetFileContentInput) -> Result<search::FileConten
         search::FileContentOptions::for_explicit_path_read_around_match(
             input.path.clone(),
             around_match,
+            input.match_occurrence,
             input.context_lines,
             show_line_numbers,
             header,
         ),
     )
+}
+
+fn freshen_exact_path_for_targeted_retrieval(
+    server: &SymForgeServer,
+    path_scope: &search::PathScope,
+) {
+    let search::PathScope::Exact(relative_path) = path_scope else {
+        return;
+    };
+    let Some(repo_root) = server.capture_repo_root() else {
+        return;
+    };
+    let Ok(abs_path) = edit::safe_repo_path(&repo_root, relative_path) else {
+        return;
+    };
+    watcher::freshen_file_if_stale(relative_path, &abs_path, &server.index);
 }
 
 fn validate_chunk_mode(input: &GetFileContentInput) -> Result<search::FileContentOptions, String> {
@@ -1309,6 +1372,7 @@ fn validate_chunk_mode(input: &GetFileContentInput) -> Result<search::FileConten
     let cross: Vec<&str> = [
         input.around_symbol.as_ref().map(|_| "around_symbol"),
         input.around_match.as_ref().map(|_| "around_match"),
+        input.match_occurrence.map(|_| "match_occurrence"),
         input.around_line.map(|_| "around_line"),
         input.start_line.map(|_| "start_line"),
         input.end_line.map(|_| "end_line"),
@@ -1323,7 +1387,7 @@ fn validate_chunk_mode(input: &GetFileContentInput) -> Result<search::FileConten
             cross.join(", "),
             if input.around_symbol.is_some() {
                 "symbol"
-            } else if input.around_match.is_some() {
+            } else if input.around_match.is_some() || input.match_occurrence.is_some() {
                 "match"
             } else {
                 "lines"
@@ -2405,13 +2469,17 @@ impl SymForgeServer {
         description = "Read raw file content. Modes: full file, line range, around_line/around_match/around_symbol, or chunked paging. Only use when you need actual source text that other tools don't provide. For structured understanding use get_file_context. For a single function body use get_symbol."
     )]
     pub(crate) async fn get_file_content(&self, params: Parameters<GetFileContentInput>) -> String {
-        if let Some(result) = self.proxy_tool_call("get_file_content", &params.0).await {
+        let mut input = params.0;
+        input.path = normalize_exact_path(&input.path);
+
+        if let Some(result) = self.proxy_tool_call("get_file_content", &input).await {
             return result;
         }
-        let options = match file_content_options_from_input(&params.0) {
+        let options = match file_content_options_from_input(&input) {
             Ok(options) => options,
             Err(message) => return message,
         };
+        freshen_exact_path_for_targeted_retrieval(self, &options.path_scope);
         let file = {
             let guard = self.index.read();
             loading_guard!(guard);
@@ -2426,29 +2494,26 @@ impl SymForgeServer {
                 // Not in index — try raw disk read for non-source files
                 // (Cargo.toml, package.json, workflow YAMLs, etc.)
                 if let Some(root) = self.capture_repo_root() {
-                    let canon_path = match edit::safe_repo_path(&root, &params.0.path) {
+                    let canon_path = match edit::safe_repo_path(&root, &input.path) {
                         Ok(p) => p,
-                        Err(_) => return format::not_found_file(&params.0.path),
+                        Err(_) => return format::not_found_file(&input.path),
                     };
                     if canon_path.is_file() {
                         match std::fs::read(&canon_path) {
                             Ok(content) => {
                                 return format::render_file_content_bytes(
-                                    &params.0.path,
+                                    &input.path,
                                     &content,
                                     options.content_context,
                                 );
                             }
                             Err(e) => {
-                                return format!(
-                                    "{} [error: could not read file: {e}]",
-                                    params.0.path
-                                );
+                                return format!("{} [error: could not read file: {e}]", input.path);
                             }
                         }
                     }
                 }
-                format::not_found_file(&params.0.path)
+                format::not_found_file(&input.path)
             }
         }
     }
@@ -3496,6 +3561,7 @@ mod tests {
                 content_hash: "test".to_string(),
                 references: vec![],
                 alias_map: std::collections::HashMap::new(),
+                mtime_secs: 0,
             },
         )
     }
@@ -5473,6 +5539,7 @@ mod tests {
                 max_lines: None,
                 around_line: None,
                 around_match: None,
+                match_occurrence: None,
                 around_symbol: None,
                 symbol_line: None,
                 context_lines: None,
@@ -5499,6 +5566,7 @@ mod tests {
                 max_lines: None,
                 around_line: None,
                 around_match: None,
+                match_occurrence: None,
                 around_symbol: None,
                 symbol_line: None,
                 context_lines: None,
@@ -5524,6 +5592,7 @@ mod tests {
                 max_lines: None,
                 around_line: None,
                 around_match: None,
+                match_occurrence: None,
                 around_symbol: None,
                 symbol_line: None,
                 context_lines: None,
@@ -5549,6 +5618,7 @@ mod tests {
                 max_lines: None,
                 around_line: None,
                 around_match: None,
+                match_occurrence: None,
                 around_symbol: None,
                 symbol_line: None,
                 context_lines: None,
@@ -5574,6 +5644,7 @@ mod tests {
                 max_lines: None,
                 around_line: None,
                 around_match: None,
+                match_occurrence: None,
                 around_symbol: None,
                 symbol_line: None,
                 context_lines: None,
@@ -5599,6 +5670,7 @@ mod tests {
                 max_lines: None,
                 around_line: Some(3),
                 around_match: None,
+                match_occurrence: None,
                 around_symbol: None,
                 symbol_line: None,
                 context_lines: Some(1),
@@ -5624,6 +5696,7 @@ mod tests {
                 max_lines: None,
                 around_line: Some(2),
                 around_match: None,
+                match_occurrence: None,
                 around_symbol: None,
                 symbol_line: None,
                 context_lines: Some(1),
@@ -5657,6 +5730,7 @@ mod tests {
                 max_lines: None,
                 around_line: Some(2),
                 around_match: None,
+                match_occurrence: None,
                 around_symbol: None,
                 symbol_line: None,
                 context_lines: Some(1),
@@ -5685,6 +5759,7 @@ mod tests {
                 max_lines: None,
                 around_line: None,
                 around_match: Some("todo".to_string()),
+                match_occurrence: None,
                 around_symbol: None,
                 symbol_line: None,
                 context_lines: Some(1),
@@ -5710,6 +5785,7 @@ mod tests {
                 max_lines: Some(2),
                 around_line: None,
                 around_match: None,
+                match_occurrence: None,
                 around_symbol: None,
                 symbol_line: None,
                 context_lines: None,
@@ -5738,6 +5814,7 @@ mod tests {
                 max_lines: Some(2),
                 around_line: None,
                 around_match: None,
+                match_occurrence: None,
                 around_symbol: None,
                 symbol_line: None,
                 context_lines: None,
@@ -5763,6 +5840,7 @@ mod tests {
                 max_lines: None,
                 around_line: None,
                 around_match: Some("needle".to_string()),
+                match_occurrence: None,
                 around_symbol: None,
                 symbol_line: None,
                 context_lines: Some(1),
@@ -5771,6 +5849,147 @@ mod tests {
             }))
             .await;
         assert_eq!(result, "No matches for 'needle' in src/lib.rs");
+    }
+
+    #[tokio::test]
+    async fn test_get_file_content_selects_requested_match_occurrence() {
+        let content = b"line 1\nTODO first\nline 3\nTODO second\nline 5";
+        let (key, file) = make_file("src/lib.rs", content, vec![]);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let result = server
+            .get_file_content(Parameters(super::GetFileContentInput {
+                path: "src/lib.rs".to_string(),
+                mode: None,
+                start_line: None,
+                end_line: None,
+                chunk_index: None,
+                max_lines: None,
+                around_line: None,
+                around_match: Some("todo".to_string()),
+                match_occurrence: Some(2),
+                around_symbol: None,
+                symbol_line: None,
+                context_lines: Some(1),
+                show_line_numbers: None,
+                header: None,
+            }))
+            .await;
+        assert_eq!(result, "3: line 3\n4: TODO second\n5: line 5");
+    }
+
+    #[tokio::test]
+    async fn test_get_file_content_reports_missing_match_occurrence() {
+        let content = b"line 1\nTODO first\nline 3";
+        let (key, file) = make_file("src/lib.rs", content, vec![]);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let result = server
+            .get_file_content(Parameters(super::GetFileContentInput {
+                path: "src/lib.rs".to_string(),
+                mode: None,
+                start_line: None,
+                end_line: None,
+                chunk_index: None,
+                max_lines: None,
+                around_line: None,
+                around_match: Some("todo".to_string()),
+                match_occurrence: Some(2),
+                around_symbol: None,
+                symbol_line: None,
+                context_lines: Some(1),
+                show_line_numbers: None,
+                header: None,
+            }))
+            .await;
+        assert_eq!(
+            result,
+            "Match occurrence 2 for 'todo' not found in src/lib.rs; 1 match(es) available at lines 2"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_file_content_freshens_stale_indexed_file_before_rendering() {
+        let repo = tempfile::tempdir().unwrap();
+        let src_dir = repo.path().join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+        let disk_path = src_dir.join("lib.rs");
+        fs::write(&disk_path, "fn fresh() {}\n").unwrap();
+
+        let (key, file) = make_file("src/lib.rs", b"fn stale() {}\n", vec![]);
+        let server = make_server_with_root(
+            make_live_index_ready(vec![(key, file)]),
+            Some(repo.path().to_path_buf()),
+        );
+
+        let result = server
+            .get_file_content(Parameters(super::GetFileContentInput {
+                path: "src/lib.rs".to_string(),
+                mode: None,
+                start_line: None,
+                end_line: None,
+                chunk_index: None,
+                max_lines: None,
+                around_line: None,
+                around_match: None,
+                match_occurrence: None,
+                around_symbol: None,
+                symbol_line: None,
+                context_lines: None,
+                show_line_numbers: None,
+                header: None,
+            }))
+            .await;
+
+        assert!(
+            result.contains("fn fresh() {}"),
+            "expected fresh disk content, got: {result}"
+        );
+        assert!(
+            !result.contains("fn stale() {}"),
+            "stale indexed content should not be served after refresh: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_file_content_normalizes_exact_path_before_freshness_and_lookup() {
+        let repo = tempfile::tempdir().unwrap();
+        let src_dir = repo.path().join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+        let disk_path = src_dir.join("lib.rs");
+        fs::write(&disk_path, "fn fresh() {}\n").unwrap();
+
+        let (key, file) = make_file("src/lib.rs", b"fn stale() {}\n", vec![]);
+        let server = make_server_with_root(
+            make_live_index_ready(vec![(key, file)]),
+            Some(repo.path().to_path_buf()),
+        );
+
+        let result = server
+            .get_file_content(Parameters(super::GetFileContentInput {
+                path: "./src\\lib.rs".to_string(),
+                mode: None,
+                start_line: None,
+                end_line: None,
+                chunk_index: None,
+                max_lines: None,
+                around_line: None,
+                around_match: None,
+                match_occurrence: None,
+                around_symbol: None,
+                symbol_line: None,
+                context_lines: None,
+                show_line_numbers: None,
+                header: None,
+            }))
+            .await;
+
+        assert!(
+            result.contains("fn fresh() {}"),
+            "expected fresh disk content, got: {result}"
+        );
+
+        let guard = server.index.read();
+        assert!(guard.get_file("src/lib.rs").is_some());
+        assert!(guard.get_file("./src\\lib.rs").is_none());
     }
 
     #[tokio::test]
@@ -5792,6 +6011,7 @@ mod tests {
                 max_lines: None,
                 around_line: None,
                 around_match: None,
+                match_occurrence: None,
                 around_symbol: Some("connect".to_string()),
                 symbol_line: None,
                 context_lines: Some(1),
@@ -5824,6 +6044,7 @@ mod tests {
                 max_lines: None,
                 around_line: None,
                 around_match: None,
+                match_occurrence: None,
                 around_symbol: Some("connect".to_string()),
                 symbol_line: None,
                 context_lines: Some(1),
@@ -5859,6 +6080,7 @@ mod tests {
                 max_lines: None,
                 around_line: None,
                 around_match: None,
+                match_occurrence: None,
                 around_symbol: Some("connect".to_string()),
                 symbol_line: Some(2),
                 context_lines: Some(0),
@@ -5888,6 +6110,7 @@ mod tests {
                 max_lines: None,
                 around_line: None,
                 around_match: None,
+                match_occurrence: None,
                 around_symbol: Some("connect".to_string()),
                 symbol_line: None,
                 context_lines: Some(1),
@@ -5916,6 +6139,7 @@ mod tests {
                 max_lines: Some(2),
                 around_line: None,
                 around_match: None,
+                match_occurrence: None,
                 around_symbol: None,
                 symbol_line: None,
                 context_lines: None,
@@ -5944,6 +6168,7 @@ mod tests {
                 max_lines: None,
                 around_line: None,
                 around_match: None,
+                match_occurrence: None,
                 around_symbol: None,
                 symbol_line: None,
                 context_lines: None,
@@ -5972,6 +6197,7 @@ mod tests {
                 max_lines: None,
                 around_line: None,
                 around_match: None,
+                match_occurrence: None,
                 around_symbol: Some("connect".to_string()),
                 symbol_line: None,
                 context_lines: Some(1),
@@ -6000,6 +6226,7 @@ mod tests {
                 max_lines: None,
                 around_line: None,
                 around_match: None,
+                match_occurrence: None,
                 around_symbol: None,
                 symbol_line: Some(2),
                 context_lines: Some(1),
@@ -6028,6 +6255,7 @@ mod tests {
                 max_lines: None,
                 around_line: Some(2),
                 around_match: Some("line".to_string()),
+                match_occurrence: None,
                 around_symbol: None,
                 symbol_line: None,
                 context_lines: Some(1),
@@ -6062,6 +6290,7 @@ mod tests {
                 max_lines: None,
                 around_line: None,
                 around_match: None,
+                match_occurrence: None,
                 around_symbol: Some("connect".to_string()),
                 symbol_line: None,
                 context_lines: Some(1),
@@ -6090,6 +6319,7 @@ mod tests {
                 max_lines: None,
                 around_line: None,
                 around_match: None,
+                match_occurrence: None,
                 around_symbol: None,
                 symbol_line: None,
                 context_lines: None,
@@ -6115,6 +6345,7 @@ mod tests {
                 max_lines: None,
                 around_line: None,
                 around_match: None,
+                match_occurrence: None,
                 around_symbol: Some("foo".to_string()),
                 symbol_line: None,
                 context_lines: None,
@@ -6128,6 +6359,39 @@ mod tests {
         );
         assert!(
             result.contains("Use mode=symbol"),
+            "expected guidance, got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mode_lines_rejects_match_occurrence_cross_mode_flag() {
+        let content = b"line 1\nline 2";
+        let (key, file) = make_file("src/lib.rs", content, vec![]);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let result = server
+            .get_file_content(Parameters(super::GetFileContentInput {
+                path: "src/lib.rs".to_string(),
+                mode: Some("lines".to_string()),
+                start_line: Some(1),
+                end_line: None,
+                chunk_index: None,
+                max_lines: None,
+                around_line: None,
+                around_match: None,
+                match_occurrence: Some(2),
+                around_symbol: None,
+                symbol_line: None,
+                context_lines: None,
+                show_line_numbers: None,
+                header: None,
+            }))
+            .await;
+        assert!(
+            result.contains("mode=lines conflicts with match_occurrence"),
+            "expected cross-mode error, got: {result}"
+        );
+        assert!(
+            result.contains("Use mode=match"),
             "expected guidance, got: {result}"
         );
     }
@@ -6147,6 +6411,7 @@ mod tests {
                 max_lines: None,
                 around_line: None,
                 around_match: None,
+                match_occurrence: None,
                 around_symbol: None,
                 symbol_line: None,
                 context_lines: None,
@@ -6175,6 +6440,7 @@ mod tests {
                 max_lines: None,
                 around_line: None,
                 around_match: None,
+                match_occurrence: None,
                 around_symbol: None,
                 symbol_line: None,
                 context_lines: None,
@@ -6204,6 +6470,7 @@ mod tests {
                 max_lines: None,
                 around_line: None,
                 around_match: None,
+                match_occurrence: None,
                 around_symbol: Some("connect".to_string()),
                 symbol_line: None,
                 context_lines: Some(10),
@@ -6214,6 +6481,39 @@ mod tests {
         assert!(
             result.contains("fn connect()"),
             "expected symbol content with context, got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mode_symbol_rejects_match_occurrence_cross_mode_flag() {
+        let content = b"line 1\nfn connect() {}\nline 3";
+        let (key, file) = make_file(
+            "src/lib.rs",
+            content,
+            vec![make_symbol("connect", SymbolKind::Function, 2, 2)],
+        );
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let result = server
+            .get_file_content(Parameters(super::GetFileContentInput {
+                path: "src/lib.rs".to_string(),
+                mode: Some("symbol".to_string()),
+                start_line: None,
+                end_line: None,
+                chunk_index: None,
+                max_lines: None,
+                around_line: None,
+                around_match: None,
+                match_occurrence: Some(2),
+                around_symbol: Some("connect".to_string()),
+                symbol_line: None,
+                context_lines: None,
+                show_line_numbers: None,
+                header: None,
+            }))
+            .await;
+        assert!(
+            result.contains("mode=symbol conflicts with match_occurrence"),
+            "expected cross-mode error, got: {result}"
         );
     }
 
@@ -6232,6 +6532,7 @@ mod tests {
                 max_lines: None,
                 around_line: None,
                 around_match: None,
+                match_occurrence: None,
                 around_symbol: None,
                 symbol_line: None,
                 context_lines: None,
@@ -6260,6 +6561,7 @@ mod tests {
                 max_lines: None,
                 around_line: None,
                 around_match: None,
+                match_occurrence: None,
                 around_symbol: None,
                 symbol_line: None,
                 context_lines: None,
@@ -6268,6 +6570,64 @@ mod tests {
             }))
             .await;
         assert_eq!(result, "mode=match requires around_match");
+    }
+
+    #[tokio::test]
+    async fn test_match_occurrence_requires_around_match() {
+        let content = b"line 1";
+        let (key, file) = make_file("src/lib.rs", content, vec![]);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let result = server
+            .get_file_content(Parameters(super::GetFileContentInput {
+                path: "src/lib.rs".to_string(),
+                mode: None,
+                start_line: None,
+                end_line: None,
+                chunk_index: None,
+                max_lines: None,
+                around_line: None,
+                around_match: None,
+                match_occurrence: Some(1),
+                around_symbol: None,
+                symbol_line: None,
+                context_lines: None,
+                show_line_numbers: None,
+                header: None,
+            }))
+            .await;
+        assert_eq!(
+            result,
+            "Invalid get_file_content request: `match_occurrence` requires `around_match`."
+        );
+    }
+
+    #[tokio::test]
+    async fn test_match_occurrence_must_be_positive() {
+        let content = b"line 1\nTODO";
+        let (key, file) = make_file("src/lib.rs", content, vec![]);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let result = server
+            .get_file_content(Parameters(super::GetFileContentInput {
+                path: "src/lib.rs".to_string(),
+                mode: Some("match".to_string()),
+                start_line: None,
+                end_line: None,
+                chunk_index: None,
+                max_lines: None,
+                around_line: None,
+                around_match: Some("todo".to_string()),
+                match_occurrence: Some(0),
+                around_symbol: None,
+                symbol_line: None,
+                context_lines: None,
+                show_line_numbers: None,
+                header: None,
+            }))
+            .await;
+        assert_eq!(
+            result,
+            "Invalid get_file_content request: `match_occurrence` must be 1 or greater."
+        );
     }
 
     #[tokio::test]
@@ -6285,6 +6645,7 @@ mod tests {
                 max_lines: None,
                 around_line: None,
                 around_match: None,
+                match_occurrence: None,
                 around_symbol: None,
                 symbol_line: None,
                 context_lines: None,
@@ -6310,6 +6671,7 @@ mod tests {
                 max_lines: Some(10),
                 around_line: None,
                 around_match: Some("line".to_string()),
+                match_occurrence: None,
                 around_symbol: None,
                 symbol_line: None,
                 context_lines: None,
@@ -6320,6 +6682,39 @@ mod tests {
         assert!(
             result.contains("mode=chunk conflicts with around_match"),
             "expected cross-mode error, got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mode_chunk_rejects_match_occurrence_cross_mode_flag() {
+        let content = b"line 1\nline 2\nline 3";
+        let (key, file) = make_file("src/lib.rs", content, vec![]);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let result = server
+            .get_file_content(Parameters(super::GetFileContentInput {
+                path: "src/lib.rs".to_string(),
+                mode: Some("chunk".to_string()),
+                start_line: None,
+                end_line: None,
+                chunk_index: Some(1),
+                max_lines: Some(10),
+                around_line: None,
+                around_match: None,
+                match_occurrence: Some(2),
+                around_symbol: None,
+                symbol_line: None,
+                context_lines: None,
+                show_line_numbers: None,
+                header: None,
+            }))
+            .await;
+        assert!(
+            result.contains("mode=chunk conflicts with match_occurrence"),
+            "expected cross-mode error, got: {result}"
+        );
+        assert!(
+            result.contains("Use mode=match"),
+            "expected guidance, got: {result}"
         );
     }
 
