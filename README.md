@@ -4,6 +4,8 @@ A code-native MCP server that gives AI coding agents structured, symbol-aware ac
 
 Works with any MCP-compatible client — CLI agents (Claude Code, Codex, Gemini CLI), VS Code extensions (Kilo Code, Roo Code, Cline, Continue), JetBrains plugins, and custom agents.
 
+> **Current release status:** `v1.3.0` was tagged on 2026-03-19 via the automated release pipeline and is now the current public release line for SymForge.
+
 ## Why SymForge
 
 AI coding agents spend most of their token budget on orientation — reading files, grepping for patterns, figuring out what code is where. SymForge replaces that with structured tools that resolve symbols, references, and dependencies server-side.
@@ -447,7 +449,7 @@ bash scripts/setup.sh --client all
 
 ## Release Process
 
-Managed through `release-please` + GitHub Actions. Details in [docs/release-process.md](docs/release-process.md).
+Managed through `release-please` + GitHub Actions. The latest automated release is `v1.3.0`. Details in [docs/release-process.md](docs/release-process.md).
 
 ```bash
 python execution/release_ops.py guide     # interactive guide
