@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.6.0](https://github.com/special-place-administrator/symforge/compare/v1.5.0...v1.6.0) (2026-03-19)
+
+
+### Features
+
+* **adoption:** add hook outcome metrics ([cce4473](https://github.com/special-place-administrator/symforge/commit/cce4473e5024ade6de5f5eea2b6daef87ff38c2e))
+
+
+### Bug Fixes
+
+* **npm:** keep global auto-init out of workspaces ([1626dfa](https://github.com/special-place-administrator/symforge/commit/1626dfa89a6da5a9e14b0107df3eec7a0b325c61))
+
 ## [1.5.0](https://github.com/special-place-administrator/symforge/compare/v1.4.0...v1.5.0) (2026-03-19)
 
 
