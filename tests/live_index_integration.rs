@@ -638,6 +638,36 @@ fn test_health_report_format() {
     );
 }
 
+#[test]
+fn test_health_report_with_watcher_reconciliation_fields() {
+    use std::time::SystemTime;
+    use symforge::protocol::format;
+    use symforge::watcher::{WatcherInfo, WatcherState};
+
+    let dir = tempdir().unwrap();
+    write_file(dir.path(), "a.rs", "fn alpha() {}");
+
+    let shared = LiveIndex::load(dir.path()).unwrap();
+    let index = shared.read();
+    let watcher = WatcherInfo {
+        state: WatcherState::Active,
+        events_processed: 11,
+        last_event_at: Some(SystemTime::now()),
+        debounce_window_ms: 250,
+        overflow_count: 2,
+        last_overflow_at: Some(SystemTime::now()),
+        stale_files_found: 4,
+        last_reconcile_at: Some(SystemTime::now()),
+    };
+
+    let result = format::health_report_with_watcher(&index, &watcher);
+
+    assert!(result.contains("overflows: 2"), "got: {result}");
+    assert!(result.contains("stale reconciled: 4"), "got: {result}");
+    assert!(result.contains("last overflow:"), "got: {result}");
+    assert!(result.contains("last reconcile:"), "got: {result}");
+}
+
 // --------------------------------------------------------------------------
 // Test TOOL-08: index_folder reload replaces index contents
 //
@@ -806,6 +836,53 @@ fn test_get_file_content_with_around_match() {
     );
 
     assert_eq!(result, "1: line one\n2: TODO first\n3: line three");
+}
+
+#[test]
+fn test_get_file_content_with_specific_match_occurrence() {
+    use symforge::live_index::search::ContentContext;
+    use symforge::protocol::format;
+
+    let dir = tempdir().unwrap();
+    write_file(
+        dir.path(),
+        "lines.rs",
+        "line one\nTODO first\nline three\nTODO second\nline five",
+    );
+
+    let shared = LiveIndex::load(dir.path()).unwrap();
+    let index = shared.read();
+    let file = index.capture_shared_file("lines.rs").unwrap();
+
+    let result = format::file_content_from_indexed_file_with_context(
+        file.as_ref(),
+        ContentContext::around_match_occurrence("todo", Some(2), Some(1), false, false),
+    );
+
+    assert_eq!(result, "3: line three\n4: TODO second\n5: line five");
+}
+
+#[test]
+fn test_get_file_content_with_missing_match_occurrence_reports_lines() {
+    use symforge::live_index::search::ContentContext;
+    use symforge::protocol::format;
+
+    let dir = tempdir().unwrap();
+    write_file(dir.path(), "lines.rs", "line one\nTODO first\nline three");
+
+    let shared = LiveIndex::load(dir.path()).unwrap();
+    let index = shared.read();
+    let file = index.capture_shared_file("lines.rs").unwrap();
+
+    let result = format::file_content_from_indexed_file_with_context(
+        file.as_ref(),
+        ContentContext::around_match_occurrence("todo", Some(2), Some(1), false, false),
+    );
+
+    assert_eq!(
+        result,
+        "Match occurrence 2 for 'todo' not found in lines.rs; 1 match(es) available at lines 2"
+    );
 }
 
 #[test]

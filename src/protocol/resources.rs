@@ -19,7 +19,7 @@ pub(crate) const REPO_CHANGES_URI: &str = "symforge://repo/changes/uncommitted";
 
 pub(crate) const FILE_CONTEXT_TEMPLATE: &str =
     "symforge://file/context?path={path}&max_tokens={max_tokens}";
-pub(crate) const FILE_CONTENT_TEMPLATE: &str = "symforge://file/content?path={path}&start_line={start_line}&end_line={end_line}&around_line={around_line}&around_match={around_match}&context_lines={context_lines}&show_line_numbers={show_line_numbers}&header={header}";
+pub(crate) const FILE_CONTENT_TEMPLATE: &str = "symforge://file/content?path={path}&start_line={start_line}&end_line={end_line}&around_line={around_line}&around_match={around_match}&match_occurrence={match_occurrence}&context_lines={context_lines}&show_line_numbers={show_line_numbers}&header={header}";
 pub(crate) const SYMBOL_DETAIL_TEMPLATE: &str =
     "symforge://symbol/detail?path={path}&name={name}&kind={kind}";
 pub(crate) const SYMBOL_CONTEXT_TEMPLATE: &str =
@@ -40,6 +40,7 @@ enum ResourceRequest {
         end_line: Option<u32>,
         around_line: Option<u32>,
         around_match: Option<String>,
+        match_occurrence: Option<u32>,
         context_lines: Option<u32>,
         show_line_numbers: Option<bool>,
         header: Option<bool>,
@@ -174,6 +175,7 @@ impl SymForgeServer {
                 end_line,
                 around_line,
                 around_match,
+                match_occurrence,
                 context_lines,
                 show_line_numbers,
                 header,
@@ -187,6 +189,7 @@ impl SymForgeServer {
                     max_lines: None,
                     around_line,
                     around_match,
+                    match_occurrence,
                     around_symbol: None,
                     symbol_line: None,
                     context_lines,
@@ -333,6 +336,7 @@ fn parse_resource_uri(uri: &str) -> Result<ResourceRequest, String> {
             end_line: optional_query(&query, "end_line").transpose()?,
             around_line: optional_query(&query, "around_line").transpose()?,
             around_match: optional_text(&query, "around_match"),
+            match_occurrence: optional_query(&query, "match_occurrence").transpose()?,
             context_lines: optional_query(&query, "context_lines").transpose()?,
             show_line_numbers: optional_query(&query, "show_line_numbers").transpose()?,
             header: optional_query(&query, "header").transpose()?,
@@ -422,6 +426,7 @@ mod tests {
             content_hash: "test".to_string(),
             references: vec![],
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         };
         let mut files = HashMap::new();
         files.insert(path.to_string(), std::sync::Arc::new(file));

@@ -973,6 +973,10 @@ pub fn health_report_from_published_state(
         events_processed: watcher.events_processed,
         last_event_at: watcher.last_event_at,
         debounce_window_ms: watcher.debounce_window_ms,
+        overflow_count: watcher.overflow_count,
+        last_overflow_at: watcher.last_overflow_at,
+        stale_files_found: watcher.stale_files_found,
+        last_reconcile_at: watcher.last_reconcile_at,
         partial_parse_files: vec![],
         tier_counts: published.tier_counts,
     };
@@ -987,26 +991,35 @@ pub fn health_report_from_published_state(
 pub fn health_report_from_stats(status: &str, stats: &HealthStats) -> String {
     use crate::watcher::WatcherState;
 
+    let relative_age = |time: Option<std::time::SystemTime>| -> String {
+        match time {
+            None => "never".to_string(),
+            Some(t) => {
+                let secs = t.elapsed().map(|d| d.as_secs()).unwrap_or(0);
+                format!("{secs}s ago")
+            }
+        }
+    };
+
     let watcher_line = match &stats.watcher_state {
-        WatcherState::Active => {
-            let last = match stats.last_event_at {
-                None => "never".to_string(),
-                Some(t) => {
-                    let secs = t.elapsed().map(|d| d.as_secs()).unwrap_or(0);
-                    format!("{secs}s ago")
-                }
-            };
-            format!(
-                "Watcher: active ({} events, last: {}, debounce: {}ms)",
-                stats.events_processed, last, stats.debounce_window_ms
-            )
-        }
-        WatcherState::Degraded => {
-            format!(
-                "Watcher: degraded ({} events processed before failure)",
-                stats.events_processed
-            )
-        }
+        WatcherState::Active => format!(
+            "Watcher: active ({} events, last: {}, debounce: {}ms, overflows: {}, stale reconciled: {}, last overflow: {}, last reconcile: {})",
+            stats.events_processed,
+            relative_age(stats.last_event_at),
+            stats.debounce_window_ms,
+            stats.overflow_count,
+            stats.stale_files_found,
+            relative_age(stats.last_overflow_at),
+            relative_age(stats.last_reconcile_at)
+        ),
+        WatcherState::Degraded => format!(
+            "Watcher: degraded ({} events processed before failure, overflows: {}, stale reconciled: {}, last overflow: {}, last reconcile: {})",
+            stats.events_processed,
+            stats.overflow_count,
+            stats.stale_files_found,
+            relative_age(stats.last_overflow_at),
+            relative_age(stats.last_reconcile_at)
+        ),
         WatcherState::Off => "Watcher: off".to_string(),
     };
 
@@ -1234,6 +1247,7 @@ pub fn file_content_from_indexed_file_with_context(
         return render_numbered_around_match_excerpt(
             file,
             around_match,
+            context.match_occurrence.unwrap_or(1),
             context
                 .context_lines
                 .unwrap_or(DEFAULT_AROUND_LINE_CONTEXT_LINES),
@@ -1579,25 +1593,46 @@ fn dedup_symbol_candidate_lines(symbols: &[&crate::domain::SymbolRecord]) -> Vec
 fn render_numbered_around_match_excerpt(
     file: &IndexedFile,
     around_match: &str,
+    match_occurrence: u32,
     context_lines: u32,
 ) -> String {
     let content = String::from_utf8_lossy(&file.content);
     let lines: Vec<&str> = content.lines().collect();
 
-    let Some(around_line) = find_first_case_insensitive_match_line(&lines, around_match) else {
+    let candidate_lines = find_case_insensitive_match_lines(&lines, around_match);
+    if candidate_lines.is_empty() {
         return not_found_file_match(&file.relative_path, around_match);
+    }
+
+    let occurrence_index = match_occurrence.saturating_sub(1) as usize;
+    let Some(&around_line) = candidate_lines.get(occurrence_index) else {
+        let available_lines = candidate_lines
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        return format!(
+            "Match occurrence {match_occurrence} for '{around_match}' not found in {}; {} match(es) available at lines {available_lines}",
+            file.relative_path,
+            candidate_lines.len()
+        );
     };
 
     render_numbered_around_line_excerpt(&lines, around_line, context_lines)
 }
 
-fn find_first_case_insensitive_match_line(lines: &[&str], around_match: &str) -> Option<u32> {
+fn find_case_insensitive_match_lines(lines: &[&str], around_match: &str) -> Vec<u32> {
     let needle = around_match.to_lowercase();
 
     lines
         .iter()
-        .position(|line| line.to_lowercase().contains(&needle))
-        .map(|index| (index + 1) as u32)
+        .enumerate()
+        .filter_map(|(index, line)| {
+            line.to_lowercase()
+                .contains(&needle)
+                .then_some((index + 1) as u32)
+        })
+        .collect()
 }
 
 fn render_numbered_around_line_excerpt(
@@ -2972,6 +3007,7 @@ mod tests {
                 content_hash: "test".to_string(),
                 references: vec![],
                 alias_map: std::collections::HashMap::new(),
+                mtime_secs: 0,
             },
         )
     }
@@ -3560,10 +3596,12 @@ mod tests {
             events_processed: 7,
             last_event_at: None,
             debounce_window_ms: 200,
+            ..WatcherInfo::default()
         };
         let stats = index.health_stats_with_watcher(&watcher);
         assert_eq!(stats.watcher_state, WatcherState::Active);
         assert_eq!(stats.events_processed, 7);
+        assert_eq!(stats.overflow_count, 0);
     }
 
     #[test]
@@ -3578,6 +3616,7 @@ mod tests {
             events_processed: 7,
             last_event_at: None,
             debounce_window_ms: 200,
+            ..WatcherInfo::default()
         };
 
         let live_result = health_report_with_watcher(&index, &watcher);
@@ -3599,6 +3638,7 @@ mod tests {
             events_processed: 7,
             last_event_at: None,
             debounce_window_ms: 200,
+            ..WatcherInfo::default()
         };
 
         let live_result = health_report_with_watcher(&index, &watcher);
@@ -3625,6 +3665,10 @@ mod tests {
             events_processed: 0,
             last_event_at: None,
             debounce_window_ms: 200,
+            overflow_count: 0,
+            last_overflow_at: None,
+            stale_files_found: 0,
+            last_reconcile_at: None,
             partial_parse_files: vec![
                 "src/a.rs".to_string(),
                 "src/b.rs".to_string(),
@@ -3664,6 +3708,10 @@ mod tests {
             events_processed: 0,
             last_event_at: None,
             debounce_window_ms: 200,
+            overflow_count: 0,
+            last_overflow_at: None,
+            stale_files_found: 0,
+            last_reconcile_at: None,
             partial_parse_files,
             tier_counts: (50, 0, 0),
         };
@@ -3696,6 +3744,10 @@ mod tests {
             events_processed: 0,
             last_event_at: None,
             debounce_window_ms: 200,
+            overflow_count: 0,
+            last_overflow_at: None,
+            stale_files_found: 0,
+            last_reconcile_at: None,
             partial_parse_files: vec![],
             tier_counts: (8200, 1280, 20),
         };
@@ -3715,6 +3767,68 @@ mod tests {
         assert!(
             report.contains("Tier 3 (hard-skipped): 20"),
             "should show Tier 3 count; got:\n{report}"
+        );
+    }
+
+    #[test]
+    fn test_health_report_shows_reconciliation_and_overflow_stats() {
+        use crate::watcher::WatcherState;
+        use std::time::{Duration, SystemTime};
+
+        let stats = HealthStats {
+            file_count: 1,
+            symbol_count: 0,
+            parsed_count: 1,
+            partial_parse_count: 0,
+            failed_count: 0,
+            load_duration: Duration::from_millis(10),
+            watcher_state: WatcherState::Active,
+            events_processed: 7,
+            last_event_at: Some(SystemTime::now()),
+            debounce_window_ms: 200,
+            overflow_count: 2,
+            last_overflow_at: Some(SystemTime::now()),
+            stale_files_found: 5,
+            last_reconcile_at: Some(SystemTime::now()),
+            partial_parse_files: vec![],
+            tier_counts: (1, 0, 0),
+        };
+
+        let report = health_report_from_stats("Ready", &stats);
+        assert!(report.contains("overflows: 2"), "got: {report}");
+        assert!(report.contains("stale reconciled: 5"), "got: {report}");
+        assert!(report.contains("last overflow:"), "got: {report}");
+        assert!(report.contains("last reconcile:"), "got: {report}");
+    }
+
+    #[test]
+    fn test_around_match_occurrence_selects_requested_match() {
+        let content = b"line one\nTODO first\nline three\nTODO second\nline five";
+        let (key, file) = make_file("src/main.rs", content, vec![]);
+        let index = make_index(vec![(key, file)]);
+
+        let result = file_content_from_indexed_file_with_context(
+            index.capture_shared_file("src/main.rs").unwrap().as_ref(),
+            search::ContentContext::around_match_occurrence("todo", Some(2), Some(1), false, false),
+        );
+
+        assert_eq!(result, "3: line three\n4: TODO second\n5: line five");
+    }
+
+    #[test]
+    fn test_around_match_occurrence_reports_available_lines() {
+        let content = b"line one\nTODO first\nline three";
+        let (key, file) = make_file("src/main.rs", content, vec![]);
+        let index = make_index(vec![(key, file)]);
+
+        let result = file_content_from_indexed_file_with_context(
+            index.capture_shared_file("src/main.rs").unwrap().as_ref(),
+            search::ContentContext::around_match_occurrence("todo", Some(2), Some(1), false, false),
+        );
+
+        assert_eq!(
+            result,
+            "Match occurrence 2 for 'todo' not found in src/main.rs; 1 match(es) available at lines 2"
         );
     }
 
@@ -4342,6 +4456,7 @@ mod tests {
                 content_hash: "test".to_string(),
                 references,
                 alias_map: std::collections::HashMap::new(),
+                mtime_secs: 0,
             },
         )
     }
@@ -5223,6 +5338,7 @@ mod tests {
                 content_hash: "test".to_string(),
                 references: vec![],
                 alias_map: std::collections::HashMap::new(),
+                mtime_secs: 0,
             },
         )
     }

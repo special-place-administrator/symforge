@@ -609,6 +609,14 @@ pub struct HealthStats {
     pub last_event_at: Option<SystemTime>,
     /// Effective debounce window in milliseconds.
     pub debounce_window_ms: u64,
+    /// Number of watcher overflow/reconciliation triggers observed.
+    pub overflow_count: u64,
+    /// Wall-clock time of the most recent overflow event.
+    pub last_overflow_at: Option<SystemTime>,
+    /// Total stale files refreshed by reconciliation sweeps.
+    pub stale_files_found: u64,
+    /// Wall-clock time of the most recent reconciliation sweep.
+    pub last_reconcile_at: Option<SystemTime>,
     /// Sorted, deduplicated list of files with partial-parse status.
     pub partial_parse_files: Vec<String>,
     /// Admission tier counts: (Tier1 indexed, Tier2 metadata-only, Tier3 hard-skipped).
@@ -2119,6 +2127,10 @@ impl LiveIndex {
             events_processed: 0,
             last_event_at: None,
             debounce_window_ms: 200,
+            overflow_count: 0,
+            last_overflow_at: None,
+            stale_files_found: 0,
+            last_reconcile_at: None,
             partial_parse_files,
             tier_counts: self.tier_counts(),
         }
@@ -2134,6 +2146,10 @@ impl LiveIndex {
         stats.events_processed = watcher.events_processed;
         stats.last_event_at = watcher.last_event_at;
         stats.debounce_window_ms = watcher.debounce_window_ms;
+        stats.overflow_count = watcher.overflow_count;
+        stats.last_overflow_at = watcher.last_overflow_at;
+        stats.stale_files_found = watcher.stale_files_found;
+        stats.last_reconcile_at = watcher.last_reconcile_at;
         stats
     }
 
@@ -2674,6 +2690,7 @@ mod tests {
             content_hash: "abc".to_string(),
             references: vec![],
             alias_map: std::collections::HashMap::new(),
+            mtime_secs: 0,
         }
     }
 
@@ -2755,6 +2772,7 @@ mod tests {
             content_hash: "abc".to_string(),
             references: refs,
             alias_map,
+            mtime_secs: 0,
         }
     }
 
@@ -2776,6 +2794,7 @@ mod tests {
             content_hash: "abc".to_string(),
             references: refs,
             alias_map: HashMap::new(),
+            mtime_secs: 0,
         }
     }
 
@@ -3919,12 +3938,20 @@ impl Actor for MyActor {
             events_processed: 42,
             last_event_at: Some(now),
             debounce_window_ms: 500,
+            overflow_count: 3,
+            last_overflow_at: Some(now),
+            stale_files_found: 9,
+            last_reconcile_at: Some(now),
         };
         let stats = index.health_stats_with_watcher(&watcher);
         assert_eq!(stats.watcher_state, WatcherState::Active);
         assert_eq!(stats.events_processed, 42);
         assert_eq!(stats.last_event_at, Some(now));
         assert_eq!(stats.debounce_window_ms, 500);
+        assert_eq!(stats.overflow_count, 3);
+        assert_eq!(stats.last_overflow_at, Some(now));
+        assert_eq!(stats.stale_files_found, 9);
+        assert_eq!(stats.last_reconcile_at, Some(now));
     }
 
     // -----------------------------------------------------------------------

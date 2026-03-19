@@ -123,6 +123,7 @@ pub struct ContentContext {
     pub end_line: Option<u32>,
     pub around_line: Option<u32>,
     pub around_match: Option<String>,
+    pub match_occurrence: Option<u32>,
     pub around_symbol: Option<String>,
     pub symbol_line: Option<u32>,
     pub context_lines: Option<u32>,
@@ -148,6 +149,7 @@ impl ContentContext {
             end_line,
             around_line: None,
             around_match: None,
+            match_occurrence: None,
             around_symbol: None,
             symbol_line: None,
             context_lines: None,
@@ -169,6 +171,7 @@ impl ContentContext {
             end_line: None,
             around_line: Some(around_line),
             around_match: None,
+            match_occurrence: None,
             around_symbol: None,
             symbol_line: None,
             context_lines,
@@ -185,11 +188,22 @@ impl ContentContext {
         show_line_numbers: bool,
         header: bool,
     ) -> Self {
+        Self::around_match_occurrence(around_match, None, context_lines, show_line_numbers, header)
+    }
+
+    pub fn around_match_occurrence(
+        around_match: impl Into<String>,
+        match_occurrence: Option<u32>,
+        context_lines: Option<u32>,
+        show_line_numbers: bool,
+        header: bool,
+    ) -> Self {
         Self {
             start_line: None,
             end_line: None,
             around_line: None,
             around_match: Some(around_match.into()),
+            match_occurrence,
             around_symbol: None,
             symbol_line: None,
             context_lines,
@@ -228,6 +242,7 @@ impl ContentContext {
             end_line: None,
             around_line: None,
             around_match: None,
+            match_occurrence: None,
             around_symbol: Some(around_symbol.into()),
             symbol_line,
             context_lines,
@@ -244,6 +259,7 @@ impl ContentContext {
             end_line: None,
             around_line: None,
             around_match: None,
+            match_occurrence: None,
             around_symbol: None,
             symbol_line: None,
             context_lines: None,
@@ -550,14 +566,16 @@ impl FileContentOptions {
     pub fn for_explicit_path_read_around_match(
         path: impl Into<String>,
         around_match: impl Into<String>,
+        match_occurrence: Option<u32>,
         context_lines: Option<u32>,
         show_line_numbers: bool,
         header: bool,
     ) -> Self {
         Self {
             path_scope: PathScope::exact(path),
-            content_context: ContentContext::around_match(
+            content_context: ContentContext::around_match_occurrence(
                 around_match,
+                match_occurrence,
                 context_lines,
                 show_line_numbers,
                 header,
@@ -1334,6 +1352,7 @@ mod tests {
                 content_hash: "hash".to_string(),
                 references: Vec::new(),
                 alias_map: HashMap::new(),
+                mtime_secs: 0,
             },
         )
     }
@@ -1966,6 +1985,7 @@ mod tests {
         let options = FileContentOptions::for_explicit_path_read_around_match(
             "src/lib.rs",
             "needle",
+            None,
             Some(1),
             false,
             false,
