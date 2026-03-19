@@ -106,6 +106,15 @@ pub fn run_hook(subcommand: Option<&HookSubcommand>) -> anyhow::Result<()> {
         .as_ref()
         .map(event_name_for)
         .unwrap_or("PostToolUse");
+    let workflow = workflow_for_subcommand(resolved.as_ref(), &input);
+
+    // Conservatively fail open for workflows we do not want to semanticize.
+    // This keeps docs/config/non-source reads and unknown tool events from
+    // producing unrelated sidecar output.
+    if workflow == HookWorkflow::PassThrough {
+        println!("{}", fail_open_json(event_name));
+        return Ok(());
+    }
 
     // Step 1 — read port file.
     let port = match read_port_file() {
@@ -206,11 +215,28 @@ pub fn event_name_for(subcommand: &HookSubcommand) -> &'static str {
 /// SymForge tool to use instead of the built-in tool it's about to call.
 fn pre_tool_suggestion(input: &HookInput) -> String {
     let tool = input.tool_name.as_deref().unwrap_or("");
+    let cwd = input.cwd.as_deref().unwrap_or("");
+    let file = extract_file_path(input, cwd);
+    let pattern = input
+        .tool_input
+        .as_ref()
+        .and_then(|ti| ti.pattern.as_deref().or(ti.path.as_deref()))
+        .unwrap_or("");
+
     match pre_tool_workflow(input) {
-        HookWorkflow::SourceSearch => "SymForge MCP is connected. Prefer search_text (full-text with symbol context) or search_symbols (by name/kind) over Grep for source code searches.".to_string(),
-        HookWorkflow::SourceRead => "SymForge MCP is connected. Prefer get_file_context (outline + imports + consumers) or get_symbol/get_symbol_context (targeted symbol lookup) over Read for source code inspection.".to_string(),
+        HookWorkflow::SourceSearch if !pattern.is_empty() => format!(
+            "SymForge can answer this more directly. Start with search_text(query=\"{pattern}\") for symbol-aware source matches, or search_symbols(query=\"{pattern}\") if this is likely a symbol name."
+        ),
+        HookWorkflow::SourceSearch => "SymForge can answer this more directly. Prefer search_text for source-code search with enclosing symbol context, or search_symbols when you are searching by name/kind.".to_string(),
+        HookWorkflow::SourceRead if !file.is_empty() => format!(
+            "SymForge can answer this more efficiently. Start with get_file_context(path=\"{file}\") for structure and key references, or get_symbol/get_symbol_context if you only need a specific symbol."
+        ),
+        HookWorkflow::SourceRead => "SymForge can answer this more efficiently. Prefer get_file_context for source-file structure and get_symbol/get_symbol_context for targeted symbol reads.".to_string(),
         HookWorkflow::CodeEdit => "SymForge MCP is connected. Prefer replace_symbol_body, edit_within_symbol, or batch_edit over Edit for source code modifications — they resolve by symbol name, auto-indent, and re-index atomically.".to_string(),
-        HookWorkflow::PassThrough if tool == "Glob" => "SymForge MCP is connected. Prefer search_files (ranked path discovery) or get_repo_map (repository overview) over Glob for finding source files.".to_string(),
+        HookWorkflow::PassThrough if tool == "Glob" && !pattern.is_empty() => format!(
+            "SymForge can narrow this faster. Prefer search_files(query=\"{pattern}\") for ranked path discovery, or get_repo_map if you need a project overview first."
+        ),
+        HookWorkflow::PassThrough if tool == "Glob" => "SymForge can narrow this faster. Prefer search_files for ranked path discovery, or get_repo_map for repository overview.".to_string(),
         _ => String::new(),
     }
 }
@@ -219,7 +245,7 @@ fn pre_tool_suggestion(input: &HookInput) -> String {
 ///
 /// This helper intentionally preserves current PR 1 behavior:
 /// - source `Read` gets a SymForge suggestion
-/// - non-source `Read` remains pass-through
+/// - docs/config/non-source `Read` remains pass-through
 /// - `Grep` is treated as source search
 /// - `Edit` is treated as code-edit intent
 /// - everything else remains pass-through for now
@@ -232,7 +258,7 @@ fn pre_tool_workflow(input: &HookInput) -> HookWorkflow {
         .unwrap_or("");
 
     match tool {
-        "Read" if !is_non_source_path(file_path) => HookWorkflow::SourceRead,
+        "Read" if !should_fail_open_read(file_path) => HookWorkflow::SourceRead,
         "Grep" => HookWorkflow::SourceSearch,
         "Edit" => HookWorkflow::CodeEdit,
         _ => HookWorkflow::PassThrough,
@@ -249,7 +275,7 @@ fn workflow_for_subcommand(
     input: &HookInput,
 ) -> HookWorkflow {
     match subcommand {
-        Some(HookSubcommand::Read) if !is_non_source_path(&extract_file_path(input, "")) => {
+        Some(HookSubcommand::Read) if !should_fail_open_read(&extract_file_path(input, "")) => {
             HookWorkflow::SourceRead
         }
         Some(HookSubcommand::Read) => HookWorkflow::PassThrough,
@@ -262,14 +288,36 @@ fn workflow_for_subcommand(
     }
 }
 
-/// Returns true for paths that are clearly non-source (docs, configs, etc.)
-/// where direct file reads are appropriate and SymForge shouldn't intercept.
+/// Returns true when a read should stay conservative and fail open instead of
+/// being steered into semantic code-inspection flows.
+///
+/// This is intentionally broader than `is_non_source_path`: SymForge may index
+/// many config files, but exact raw reads of docs/configs are still often the
+/// correct user intent.
+fn should_fail_open_read(path: &str) -> bool {
+    if is_non_source_path(path) {
+        return true;
+    }
+
+    let p = path.replace('\\', "/").to_lowercase();
+    let literal_read_exts = [
+        ".md", ".mdx", ".txt", ".json", ".toml", ".yaml", ".yml", ".env",
+    ];
+    literal_read_exts.iter().any(|ext| p.ends_with(ext))
+}
+
+/// Returns true for paths that are clearly outside source-code inspection
+/// flows, such as docs directories, binary-ish assets, and other non-code
+/// artifacts.
+///
+/// This helper is intentionally coarser than `should_fail_open_read`: config
+/// and doc-like extensions can still stay out of semantic hook routing even if
+/// we do not classify them as broad non-source paths here.
 fn is_non_source_path(path: &str) -> bool {
     let p = path.replace('\\', "/").to_lowercase();
 
-    // Non-source file extensions
-    // Config files now handled by SymForge (.md, .json, .toml, .yaml, .yml, .env)
-    // are intentionally NOT in this list — PreToolUse hook should suggest SymForge for them.
+    // Broadly non-source file extensions. Literal docs/config reads are handled
+    // separately by `should_fail_open_read`.
     let non_source_exts = [
         ".txt",
         ".xml",
@@ -324,7 +372,6 @@ pub(crate) fn endpoint_for(
     subcommand: Option<&HookSubcommand>,
     input: &HookInput,
 ) -> (&'static str, String) {
-    let _workflow = workflow_for_subcommand(subcommand, input);
     let cwd = input.cwd.as_deref().unwrap_or("");
 
     match subcommand {
@@ -875,10 +922,15 @@ mod tests {
     fn test_pre_tool_suggestion_grep_suggests_search_text() {
         let input = HookInput {
             tool_name: Some("Grep".to_string()),
+            tool_input: Some(HookToolInput {
+                pattern: Some("helper".to_string()),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         let s = pre_tool_suggestion(&input);
         assert!(s.contains("search_text"), "should suggest search_text: {s}");
+        assert!(s.contains("helper"), "should include the query in the hint: {s}");
     }
 
     #[test]
@@ -886,9 +938,10 @@ mod tests {
         let input = HookInput {
             tool_name: Some("Read".to_string()),
             tool_input: Some(HookToolInput {
-                file_path: Some("src/main.rs".to_string()),
+                file_path: Some("/repo/src/main.rs".to_string()),
                 ..Default::default()
             }),
+            cwd: Some("/repo".to_string()),
             ..Default::default()
         };
         let s = pre_tool_suggestion(&input);
@@ -896,11 +949,12 @@ mod tests {
             s.contains("get_file_context"),
             "should suggest get_file_context for source: {s}"
         );
+        assert!(s.contains("src/main.rs"), "should include the path hint: {s}");
     }
 
     #[test]
-    fn test_pre_tool_suggestion_read_markdown_suggests_symforge() {
-        // Markdown is now handled by SymForge — should suggest
+    fn test_pre_tool_suggestion_read_markdown_is_empty() {
+        // PR 2 keeps docs/config conservative at hook time.
         let input = HookInput {
             tool_name: Some("Read".to_string()),
             tool_input: Some(HookToolInput {
@@ -910,8 +964,7 @@ mod tests {
             ..Default::default()
         };
         let s = pre_tool_suggestion(&input);
-        assert!(!s.is_empty(), "should suggest SymForge for .md files");
-        assert!(s.contains("get_file_context"));
+        assert!(s.is_empty(), "should stay pass-through for markdown reads: {s}");
     }
 
     #[test]
@@ -968,6 +1021,24 @@ mod tests {
     }
 
     #[test]
+    fn test_workflow_for_subcommand_leaves_non_source_read_as_passthrough() {
+        let input = make_input("Read", Some("/repo/docs/guide.md"), None, "/repo");
+        assert_eq!(
+            workflow_for_subcommand(Some(&HookSubcommand::Read), &input),
+            HookWorkflow::PassThrough
+        );
+    }
+
+    #[test]
+    fn test_workflow_for_subcommand_leaves_config_read_as_passthrough() {
+        let input = make_input("Read", Some("/repo/Cargo.toml"), None, "/repo");
+        assert_eq!(
+            workflow_for_subcommand(Some(&HookSubcommand::Read), &input),
+            HookWorkflow::PassThrough
+        );
+    }
+
+    #[test]
     fn test_workflow_for_subcommand_classifies_repo_start() {
         let input = HookInput::default();
         assert_eq!(
@@ -1000,7 +1071,8 @@ mod tests {
 
     #[test]
     fn test_is_non_source_path_allows_config_files() {
-        // Config files are now handled by SymForge — should NOT be skipped
+        // These are not treated as broad non-source paths; literal-read routing
+        // is decided separately by `should_fail_open_read`.
         assert!(!is_non_source_path("package.json"));
         assert!(!is_non_source_path("Cargo.toml"));
         assert!(!is_non_source_path("README.md"));
