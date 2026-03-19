@@ -1741,8 +1741,11 @@ impl SymForgeServer {
                 (v, raw)
             };
             let verbosity = params.0.verbosity.as_deref().unwrap_or("full");
-            let result =
-                format::context_bundle_result_view_with_max_tokens(&view, verbosity, params.0.max_tokens);
+            let result = format::context_bundle_result_view_with_max_tokens(
+                &view,
+                verbosity,
+                params.0.max_tokens,
+            );
             let saved = raw_chars.saturating_sub(result.len());
             let footer = format::compact_savings_footer(result.len(), raw_chars);
             self.record_read_savings((saved / 4) as u64);
@@ -2462,11 +2465,12 @@ impl SymForgeServer {
     }
 
     /// Read raw file content. Modes: full file, line range, around_line/around_match/around_symbol,
-    /// or chunked paging. Only use when you need actual source text that other tools don't provide.
+    /// or chunked paging. Use this for exact docs/config reads, whitespace-sensitive inspection,
+    /// or when you need actual source text that other tools don't provide.
     /// For structured understanding use get_file_context. For a single function
     /// body use get_symbol.
     #[tool(
-        description = "Read raw file content. Modes: full file, line range, around_line/around_match/around_symbol, or chunked paging. Only use when you need actual source text that other tools don't provide. For structured understanding use get_file_context. For a single function body use get_symbol."
+        description = "Read raw file content. Modes: full file, line range, around_line/around_match/around_symbol, or chunked paging. Use this for exact docs/config reads, whitespace-sensitive inspection, or when you need actual source text that other tools don't provide. For structured understanding use get_file_context. For a single function body use get_symbol."
     )]
     pub(crate) async fn get_file_content(&self, params: Parameters<GetFileContentInput>) -> String {
         let mut input = params.0;

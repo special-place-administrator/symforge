@@ -197,27 +197,19 @@ pub fn merge_hooks_into_settings(
 const SYMFORGE_TOOL_NAMES: &[&str] = &[
     "mcp__symforge__health",
     "mcp__symforge__index_folder",
-    "mcp__symforge__get_file_outline",
     "mcp__symforge__get_file_content",
-    "mcp__symforge__get_file_tree",
     "mcp__symforge__get_symbol",
-    "mcp__symforge__get_symbols",
-    "mcp__symforge__get_repo_outline",
     "mcp__symforge__get_repo_map",
     "mcp__symforge__get_file_context",
     "mcp__symforge__get_symbol_context",
-    "mcp__symforge__get_context_bundle",
     "mcp__symforge__search_symbols",
     "mcp__symforge__search_text",
     "mcp__symforge__search_files",
-    "mcp__symforge__resolve_path",
     "mcp__symforge__find_references",
     "mcp__symforge__find_dependents",
-    "mcp__symforge__find_implementations",
     "mcp__symforge__inspect_match",
     "mcp__symforge__analyze_file_impact",
     "mcp__symforge__what_changed",
-    "mcp__symforge__get_co_changes",
     "mcp__symforge__diff_symbols",
     "mcp__symforge__explore",
     "mcp__symforge__replace_symbol_body",
@@ -234,17 +226,22 @@ const SYMFORGE_TOOL_NAMES: &[&str] = &[
 /// Kilo Code uses bare tool names (no `mcp__symforge__` prefix).
 const KILO_ALWAYS_ALLOW: &[&str] = &[
     "health",
+    "index_folder",
     "get_repo_map",
+    "get_file_content",
     "search_symbols",
     "search_text",
+    "search_files",
     "get_file_context",
     "get_symbol",
-    "get_symbols",
     "get_symbol_context",
-    "trace_symbol",
     "find_references",
+    "find_dependents",
+    "inspect_match",
+    "what_changed",
+    "analyze_file_impact",
+    "diff_symbols",
     "explore",
-    "get_file_outline",
     "replace_symbol_body",
     "edit_within_symbol",
     "insert_symbol",
@@ -545,6 +542,7 @@ fn merge_codex_project_doc_fallbacks(config: &mut DocumentMut) {
     let key = "project_doc_fallback_filenames";
     if !config.as_table().contains_key(key) || !config[key].is_array() {
         let mut fallbacks = Array::default();
+        fallbacks.push("AGENTS.md");
         fallbacks.push("CLAUDE.md");
         config[key] = value(fallbacks);
         return;
@@ -553,11 +551,13 @@ fn merge_codex_project_doc_fallbacks(config: &mut DocumentMut) {
     let fallbacks = config[key]
         .as_array_mut()
         .expect("project_doc_fallback_filenames must be an array");
-    let has_claude_md = fallbacks
-        .iter()
-        .any(|entry| entry.as_str() == Some("CLAUDE.md"));
-    if !has_claude_md {
-        fallbacks.push("CLAUDE.md");
+    for doc_name in ["AGENTS.md", "CLAUDE.md"] {
+        let has_doc = fallbacks
+            .iter()
+            .any(|entry| entry.as_str() == Some(doc_name));
+        if !has_doc {
+            fallbacks.push(doc_name);
+        }
     }
 }
 
@@ -729,10 +729,14 @@ SymForge MCP is installed and active. It provides indexed code search, symbol ex
 \n\
 9. **When resuming work**, call `what_changed` — it shows uncommitted changes so you can pick up where you left off.\n\
 \n\
-### When to use raw file reads instead\n\
+### When to use `get_file_content`\n\
 - Reading non-code files (docs, configs) where exact wording matters\n\
 - When you need the full file content including whitespace and formatting\n\
-- When SymForge tools return an error or the file isn't indexed\n\
+- When you need line ranges or a focused excerpt around a symbol or match\n\
+\n\
+### When to fall back beyond SymForge\n\
+- When SymForge tools return an error\n\
+- When the file is not indexed and `get_file_content` cannot read it\n\
 \n\
 ## Tooling Preference\n\
 \n\
@@ -784,9 +788,8 @@ Default rule:\n\
   `edit_within_symbol`) over text-based find-and-replace whenever\n\
   possible to ensure structural integrity and automatic re-indexing\n\
 \n\
-Direct file reads are still appropriate for:\n\
-- exact document text in `docs/` or planning artifacts where literal\n\
-  wording matters\n\
+Use `get_file_content` for exact raw reads of:\n\
+- document text in `docs/` or planning artifacts where literal wording matters\n\
 - configuration files where exact raw contents are the point of inspection\n\
 \n\
 Do not default to broad raw file reads for source-code inspection when\n\
@@ -796,40 +799,7 @@ SymForge can answer the question more directly.\n\
 }
 
 fn codex_guidance_block() -> String {
-    format!(
-        "{SYMFORGE_GUIDANCE_START}\n\
-## SymForge MCP — Code Intelligence\n\
-\n\
-SymForge MCP is installed and active. It provides indexed code search, symbol extraction, and structural analysis that is faster and more token-efficient than raw file operations.\n\
-\n\
-### Decision Rules\n\
-\n\
-1. **Before reading a file**, call `get_file_context` — it returns the file's symbol outline, imports, and references, saving 70-95% of tokens vs reading raw source. Only read the full file if you need exact surrounding context that the outline doesn't provide.\n\
-\n\
-2. **Before grepping**, call `search_text` — it returns matches with enclosing symbol context and file structure awareness. Use `group_by='symbol'` to deduplicate and `follow_refs=true` to inline callers.\n\
-\n\
-3. **To find a function/class/type**, call `search_symbols` — it searches indexed symbol names across the entire repo in milliseconds.\n\
-\n\
-4. **To understand a symbol's source**, call `get_symbol` — it returns the full source of a specific function, struct, class, etc. with doc comments.\n\
-\n\
-5. **To get a project overview**, call `get_repo_map` — it returns a structured outline of the entire repository with file counts, languages, and symbol summaries.\n\
-\n\
-6. **To trace call relationships**, call `find_references` — it shows callers and callees without scanning files. Use `get_symbol_context` for comprehensive usage analysis.\n\
-\n\
-7. **To check repo health**, call `health` — it shows index status, file counts, and watcher state.\n\
-\n\
-8. **After editing a file**, call `analyze_file_impact` — it re-indexes the file and reports affected dependents.\n\
-\n\
-9. **When resuming work**, call `what_changed` — it shows uncommitted changes so you can pick up where you left off.\n\
-\n\
-### When to use raw file reads instead\n\
-- Reading non-code files (docs, configs) where exact wording matters\n\
-- When you need the full file content including whitespace and formatting\n\
-- When SymForge tools return an error or the file isn't indexed\n\
-\n\
-Codex is configured to read `CLAUDE.md` project guidance too, so treat project SymForge instructions there as authoritative when `AGENTS.md` is absent.\n\
-{SYMFORGE_GUIDANCE_END}"
-    )
+    claude_guidance_block()
 }
 
 fn gemini_guidance_block() -> String {
@@ -1197,8 +1167,20 @@ mod tests {
         assert!(
             allowed
                 .iter()
+                .any(|v| v.as_str() == Some("mcp__symforge__get_file_content")),
+            "should include get_file_content"
+        );
+        assert!(
+            allowed
+                .iter()
                 .any(|v| v.as_str() == Some("mcp__symforge__get_symbol")),
             "should include get_symbol"
+        );
+        assert!(
+            !allowed
+                .iter()
+                .any(|v| v.as_str() == Some("mcp__symforge__get_file_outline")),
+            "should not include alias-only tool names"
         );
         let first_len = allowed.len();
         // Should not duplicate on re-run
@@ -1216,6 +1198,31 @@ mod tests {
         assert!(
             content.contains("search_symbols"),
             "should contain tool names: {content}"
+        );
+        assert!(
+            content.contains("get_file_content"),
+            "should contain canonical raw-read tool: {content}"
+        );
+        assert!(
+            !content.contains("get_file_outline"),
+            "should not write alias-only tool names: {content}"
+        );
+        assert!(
+            content.contains("project_doc_fallback_filenames = [\"AGENTS.md\", \"CLAUDE.md\"]"),
+            "should register both AGENTS.md and CLAUDE.md as project doc fallbacks: {content}"
+        );
+    }
+
+    #[test]
+    fn test_codex_guidance_is_full_preference_block() {
+        let block = codex_guidance_block();
+        assert!(
+            block.contains("Preferred tools for reading"),
+            "codex guidance should include the full tooling preference section: {block}"
+        );
+        assert!(
+            block.contains("Use `get_file_content` for exact raw reads of:"),
+            "codex guidance should route exact raw reads through SymForge first: {block}"
         );
     }
 

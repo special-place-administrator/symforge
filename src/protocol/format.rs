@@ -2223,11 +2223,8 @@ fn render_context_bundle_found_with_max_tokens(
                 return truncated;
             }
 
-            let (dep_text, omitted) = format_type_dependencies_with_budget(
-                &view.dependencies,
-                max_bytes,
-                output.len(),
-            );
+            let (dep_text, omitted) =
+                format_type_dependencies_with_budget(&view.dependencies, max_bytes, output.len());
             output.push_str(&dep_text);
             if omitted > 0 {
                 output.push_str(&format_bundle_truncation_notice(max_tokens, Some(omitted)));

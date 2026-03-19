@@ -13,8 +13,7 @@ pub use query::{
     InspectMatchFoundView, InspectMatchView, ReferenceContextLineView, ReferenceFileView,
     ReferenceHitView, RepoOutlineFileView, RepoOutlineView, ResolvePathView, SearchFilesHit,
     SearchFilesTier, SearchFilesView, SiblingSymbolView, SymbolDetailView, TraceSymbolView,
-    TypeDependencyView,
-    WhatChangedTimestampView,
+    TypeDependencyView, WhatChangedTimestampView,
 };
 pub use store::{
     CircuitBreakerState, IndexLoadSource, IndexState, IndexedFile, LiveIndex, ParseStatus,

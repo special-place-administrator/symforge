@@ -2,7 +2,9 @@ use std::fs;
 use std::path::Path;
 
 use symforge::live_index::LiveIndex;
-use symforge::protocol::format::{context_bundle_result_view, context_bundle_result_view_with_max_tokens};
+use symforge::protocol::format::{
+    context_bundle_result_view, context_bundle_result_view_with_max_tokens,
+};
 
 fn write_file(root: &Path, relative: &str, contents: &str) {
     let path = root.join(relative);

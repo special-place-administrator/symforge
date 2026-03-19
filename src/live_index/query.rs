@@ -1772,12 +1772,15 @@ impl LiveIndex {
             .into_iter()
             .collect();
         let dependencies = self.resolve_type_dependencies(&type_names, 2);
-        let implementation_suggestions =
-            if matches!(sym_rec.kind, SymbolKind::Struct | SymbolKind::Enum) && callers.is_empty() {
-                self.capture_impl_block_suggestions(name)
-            } else {
-                Vec::new()
-            };
+        let implementation_suggestions = if matches!(
+            sym_rec.kind,
+            SymbolKind::Struct | SymbolKind::Enum
+        ) && callers.is_empty()
+        {
+            self.capture_impl_block_suggestions(name)
+        } else {
+            Vec::new()
+        };
 
         ContextBundleView::Found(ContextBundleFoundView {
             file_path: file.relative_path.clone(),
@@ -3706,7 +3709,8 @@ impl Actor for MyActor {
         );
         let index = make_index(vec![("src/actors.rs", target)], false);
 
-        let view = index.capture_context_bundle_view("src/actors.rs", "MyActor", Some("struct"), Some(0));
+        let view =
+            index.capture_context_bundle_view("src/actors.rs", "MyActor", Some("struct"), Some(0));
 
         let ContextBundleView::Found(found) = view else {
             panic!("expected found view");
@@ -3718,18 +3722,12 @@ impl Actor for MyActor {
             found.implementation_suggestions[0].display_name,
             "impl MyActor"
         );
-        assert_eq!(
-            found.implementation_suggestions[0].line_number,
-            3
-        );
+        assert_eq!(found.implementation_suggestions[0].line_number, 3);
         assert_eq!(
             found.implementation_suggestions[1].display_name,
             "impl Actor for MyActor"
         );
-        assert_eq!(
-            found.implementation_suggestions[1].line_number,
-            7
-        );
+        assert_eq!(found.implementation_suggestions[1].line_number, 7);
     }
 
     #[test]
