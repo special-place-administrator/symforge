@@ -161,17 +161,19 @@ pub(super) fn push_symbol(
     doc_spec: &DocCommentSpec,
 ) {
     let doc_byte_range = scan_doc_range(node, source, doc_spec);
+    let byte_range = (node.start_byte() as u32, node.end_byte() as u32);
     symbols.push(SymbolRecord {
         name,
         kind,
         depth,
         sort_order: *sort_order,
-        byte_range: (node.start_byte() as u32, node.end_byte() as u32),
+        byte_range,
         line_range: (
             node.start_position().row as u32,
             node.end_position().row as u32,
         ),
         doc_byte_range,
+        item_byte_range: Some(byte_range),
     });
     *sort_order += 1;
 }

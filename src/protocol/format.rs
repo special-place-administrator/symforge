@@ -2997,12 +2997,14 @@ mod tests {
         line_start: u32,
         line_end: u32,
     ) -> SymbolRecord {
+        let byte_range = (0, 10);
         SymbolRecord {
             name: name.to_string(),
             kind,
             depth,
             sort_order: 0,
-            byte_range: (0, 10),
+            byte_range,
+            item_byte_range: Some(byte_range),
             line_range: (line_start, line_end),
             doc_byte_range: None,
         }
@@ -3017,12 +3019,14 @@ mod tests {
         byte_start: u32,
         byte_end: u32,
     ) -> SymbolRecord {
+        let byte_range = (byte_start, byte_end);
         SymbolRecord {
             name: name.to_string(),
             kind,
             depth,
             sort_order: 0,
-            byte_range: (byte_start, byte_end),
+            byte_range,
+            item_byte_range: Some(byte_range),
             line_range: (line_start, line_end),
             doc_byte_range: None,
         }

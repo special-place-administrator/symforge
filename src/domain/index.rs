@@ -314,9 +314,35 @@ pub struct SymbolRecord {
     pub byte_range: (u32, u32),
     pub line_range: (u32, u32),
     pub doc_byte_range: Option<(u32, u32)>,
+    #[serde(default)]
+    pub item_byte_range: Option<(u32, u32)>,
 }
 
 impl SymbolRecord {
+    /// Returns the start byte of the full editable item when available.
+    pub fn item_start(&self) -> u32 {
+        self.item_byte_range.map_or_else(
+            || self.doc_byte_range.map_or(self.byte_range.0, |(start, _)| start),
+            |(start, _)| start,
+        )
+    }
+
+    /// Returns the end byte of the full editable item when available.
+    pub fn item_end(&self) -> u32 {
+        self.item_byte_range
+            .map_or(self.byte_range.1, |(_, end)| end)
+    }
+
+    /// Returns the full editable item range when available.
+    pub fn item_range(&self) -> (u32, u32) {
+        (self.item_start(), self.item_end())
+    }
+
+    /// Returns the parser's core symbol node range.
+    pub fn core_range(&self) -> (u32, u32) {
+        self.byte_range
+    }
+
     /// Returns the effective start byte, including doc comments if present.
     pub fn effective_start(&self) -> u32 {
         self.doc_byte_range
@@ -755,6 +781,7 @@ mod tests {
                 byte_range: (0, 100),
                 line_range: (0, 10),
                 doc_byte_range: None,
+                item_byte_range: None,
             },
             SymbolRecord {
                 name: "inner".to_string(),
@@ -764,9 +791,10 @@ mod tests {
                 byte_range: (30, 60),
                 line_range: (3, 6),
                 doc_byte_range: None,
+                item_byte_range: None,
             },
         ];
-        // Reference at line 4 is inside both — should return inner (index 1)
+        // Reference at line 4 is inside both - should return inner (index 1)
         let idx = find_enclosing_symbol(&symbols, 4);
         assert_eq!(idx, Some(1), "should return innermost enclosing symbol");
     }
@@ -781,10 +809,49 @@ mod tests {
             byte_range: (50, 100),
             line_range: (5, 10),
             doc_byte_range: None,
+            item_byte_range: None,
         }];
         // Reference at line 0 is not inside any symbol
         let idx = find_enclosing_symbol(&symbols, 0);
         assert_eq!(idx, None, "should return None when not inside any symbol");
+    }
+
+    #[test]
+    fn test_symbol_record_item_helpers_fall_back_to_doc_range() {
+        let symbol = SymbolRecord {
+            name: "target".to_string(),
+            kind: SymbolKind::Function,
+            depth: 0,
+            sort_order: 0,
+            byte_range: (20, 40),
+            line_range: (1, 3),
+            doc_byte_range: Some((10, 20)),
+            item_byte_range: None,
+        };
+
+        assert_eq!(symbol.item_start(), 10);
+        assert_eq!(symbol.item_end(), 40);
+        assert_eq!(symbol.item_range(), (10, 40));
+        assert_eq!(symbol.core_range(), (20, 40));
+    }
+
+    #[test]
+    fn test_symbol_record_item_helpers_prefer_item_range() {
+        let symbol = SymbolRecord {
+            name: "target".to_string(),
+            kind: SymbolKind::Function,
+            depth: 0,
+            sort_order: 0,
+            byte_range: (20, 40),
+            line_range: (1, 3),
+            doc_byte_range: Some((10, 20)),
+            item_byte_range: Some((5, 44)),
+        };
+
+        assert_eq!(symbol.item_start(), 5);
+        assert_eq!(symbol.item_end(), 44);
+        assert_eq!(symbol.item_range(), (5, 44));
+        assert_eq!(symbol.core_range(), (20, 40));
     }
 
     #[test]

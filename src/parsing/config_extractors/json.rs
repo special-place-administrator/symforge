@@ -94,8 +94,6 @@ fn byte_to_line(line_starts: &[u32], offset: u32) -> u32 {
     }
 }
 
-/// Walk a JSON object, emitting a SymbolRecord for each key and recursing
-/// into nested objects / arrays.
 fn walk_object(
     content: &[u8],
     line_starts: &[u32],
@@ -114,6 +112,7 @@ fn walk_object(
 
         // Find the byte range for this key-value pair in the raw content.
         let (byte_start, byte_end) = find_key_value_range(content, key, &mut search_from);
+        let byte_range = (byte_start as u32, byte_end as u32);
 
         let start_line = byte_to_line(line_starts, byte_start as u32);
         let end_line = byte_to_line(
@@ -126,9 +125,10 @@ fn walk_object(
             kind: SymbolKind::Key,
             depth,
             sort_order: *sort_order,
-            byte_range: (byte_start as u32, byte_end as u32),
+            byte_range,
             line_range: (start_line, end_line),
             doc_byte_range: None,
+            item_byte_range: Some(byte_range),
         });
         *sort_order += 1;
 
@@ -163,8 +163,6 @@ fn walk_object(
     }
 }
 
-/// Walk a JSON array, emitting a SymbolRecord for each element (up to
-/// MAX_ARRAY_ITEMS) and recursing into nested objects / arrays.
 fn walk_array(
     content: &[u8],
     line_starts: &[u32],
@@ -185,6 +183,7 @@ fn walk_array(
         // simple (0,0) placeholder and then try to refine below.
         let byte_start = 0u32;
         let byte_end = content.len() as u32;
+        let byte_range = (byte_start, byte_end);
         let start_line = byte_to_line(line_starts, byte_start);
         let end_line = byte_to_line(line_starts, byte_end.saturating_sub(1).max(byte_start));
 
@@ -193,9 +192,10 @@ fn walk_array(
             kind: SymbolKind::Key,
             depth,
             sort_order: *sort_order,
-            byte_range: (byte_start, byte_end),
+            byte_range,
             line_range: (start_line, end_line),
             doc_byte_range: None,
+            item_byte_range: Some(byte_range),
         });
         *sort_order += 1;
 

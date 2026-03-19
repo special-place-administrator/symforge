@@ -1267,12 +1267,14 @@ mod tests {
     use tempfile::TempDir;
 
     fn dummy_symbol() -> SymbolRecord {
+        let byte_range = (0, 10);
         SymbolRecord {
             name: "foo".to_string(),
             kind: SymbolKind::Function,
             depth: 0,
             sort_order: 0,
-            byte_range: (0, 10),
+            byte_range,
+            item_byte_range: Some(byte_range),
             line_range: (0, 1),
             doc_byte_range: None,
         }

@@ -403,12 +403,14 @@ mod tests {
     use crate::watcher::WatcherInfo;
 
     fn make_server_with_file(path: &str, content: &[u8]) -> SymForgeServer {
+        let byte_range = (0, 10);
         let symbol = SymbolRecord {
             name: "main".to_string(),
             kind: SymbolKind::Function,
             depth: 0,
             sort_order: 0,
-            byte_range: (0, 10),
+            byte_range,
+            item_byte_range: Some(byte_range),
             line_range: (
                 1,
                 content.iter().filter(|&&byte| byte == b'\n').count() as u32 + 1,

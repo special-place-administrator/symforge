@@ -486,14 +486,16 @@ fn make_symbol(
 ) -> SymbolRecord {
     let start_line = byte_to_line(line_starts, byte_start as u32);
     let end_line = byte_to_line(line_starts, byte_end.saturating_sub(1) as u32);
+    let byte_range = (byte_start as u32, byte_end as u32);
     SymbolRecord {
         name: name.to_string(),
         kind: SymbolKind::Key,
         depth,
         sort_order,
-        byte_range: (byte_start as u32, byte_end as u32),
+        byte_range,
         line_range: (start_line, end_line),
         doc_byte_range: None,
+        item_byte_range: Some(byte_range),
     }
 }
 

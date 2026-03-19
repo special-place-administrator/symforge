@@ -543,12 +543,14 @@ mod tests {
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     fn make_symbol(name: &str) -> SymbolRecord {
+        let byte_range = (0, 10);
         SymbolRecord {
             name: name.to_string(),
             kind: SymbolKind::Function,
             depth: 0,
             sort_order: 0,
-            byte_range: (0, 10),
+            byte_range,
+            item_byte_range: Some(byte_range),
             line_range: (0, 1),
             doc_byte_range: None,
         }

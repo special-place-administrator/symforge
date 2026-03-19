@@ -244,6 +244,7 @@ fn walk_mapping(
         let key_path = join_key_path(parent_path, &key_str);
 
         let (byte_start, byte_end) = find_yaml_key_range(content, &key_str, &mut search_from);
+        let byte_range = (byte_start as u32, byte_end as u32);
 
         let start_line = byte_to_line(line_starts, byte_start as u32);
         let end_line = byte_to_line(
@@ -256,7 +257,8 @@ fn walk_mapping(
             kind: SymbolKind::Key,
             depth,
             sort_order: *sort_order,
-            byte_range: (byte_start as u32, byte_end as u32),
+            byte_range,
+            item_byte_range: Some(byte_range),
             line_range: (start_line, end_line),
             doc_byte_range: None,
         });
@@ -313,6 +315,7 @@ fn walk_sequence(
         // use the whole content span as a conservative range.
         let byte_start = 0u32;
         let byte_end = content.len() as u32;
+        let byte_range = (byte_start, byte_end);
         let start_line = byte_to_line(line_starts, byte_start);
         let end_line = byte_to_line(line_starts, byte_end.saturating_sub(1).max(byte_start));
 
@@ -321,7 +324,8 @@ fn walk_sequence(
             kind: SymbolKind::Key,
             depth,
             sort_order: *sort_order,
-            byte_range: (byte_start, byte_end),
+            byte_range,
+            item_byte_range: Some(byte_range),
             line_range: (start_line, end_line),
             doc_byte_range: None,
         });

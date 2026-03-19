@@ -2666,12 +2666,14 @@ mod tests {
     use std::time::{Duration, Instant, SystemTime};
 
     fn make_symbol(name: &str) -> SymbolRecord {
+        let byte_range = (0, 10);
         SymbolRecord {
             name: name.to_string(),
             kind: SymbolKind::Function,
             depth: 0,
             sort_order: 0,
-            byte_range: (0, 10),
+            byte_range,
+            item_byte_range: Some(byte_range),
             line_range: (0, 1),
             doc_byte_range: None,
         }
@@ -2805,12 +2807,14 @@ mod tests {
     }
 
     fn make_symbol_with_kind_and_line(name: &str, kind: SymbolKind, line: u32) -> SymbolRecord {
+        let byte_range = (0, 10);
         SymbolRecord {
             name: name.to_string(),
             kind,
             depth: 0,
             sort_order: 0,
-            byte_range: (0, 10),
+            byte_range,
+            item_byte_range: Some(byte_range),
             line_range: (line, line),
             doc_byte_range: None,
         }
@@ -2828,6 +2832,7 @@ mod tests {
             depth: 0,
             sort_order: 0,
             byte_range,
+            item_byte_range: Some(byte_range),
             line_range: (line, line),
             doc_byte_range: None,
         }
@@ -3313,6 +3318,7 @@ mod tests {
                 byte_range: (0, 18),
                 line_range: (0, 0),
                 doc_byte_range: None,
+                item_byte_range: None,
             }],
         );
         let importer = make_file_with_refs_and_content(
@@ -3331,6 +3337,7 @@ mod tests {
                 byte_range: (15, 38),
                 line_range: (1, 1),
                 doc_byte_range: None,
+                item_byte_range: None,
             }],
         );
         let index = make_index(vec![("src/db.rs", target), ("src/app.rs", importer)], false);
@@ -3358,6 +3365,7 @@ mod tests {
                 byte_range: (0, 14),
                 line_range: (0, 0),
                 doc_byte_range: None,
+                item_byte_range: None,
             }],
         );
         let caller = make_file_with_refs_and_content(
@@ -3373,6 +3381,7 @@ mod tests {
                 byte_range: (0, 28),
                 line_range: (0, 2),
                 doc_byte_range: None,
+                item_byte_range: None,
             }],
         );
         let index = make_index(vec![("src/lib.rs", target), ("src/app.rs", caller)], false);
@@ -3413,6 +3422,7 @@ mod tests {
                     byte_range: (0, 30),
                     line_range: (0, 2),
                     doc_byte_range: None,
+                item_byte_range: None,
                 },
                 SymbolRecord {
                     name: "helper".to_string(),
@@ -3422,6 +3432,7 @@ mod tests {
                     byte_range: (31, 45),
                     line_range: (3, 3),
                     doc_byte_range: None,
+                item_byte_range: None,
                 },
             ],
         );
@@ -3454,6 +3465,7 @@ mod tests {
                 byte_range: (0, 52),
                 line_range: (0, 3),
                 doc_byte_range: None,
+                item_byte_range: None,
             }],
         );
         let index = make_index(vec![("src/db.rs", target), ("src/app.rs", caller)], false);
@@ -4346,6 +4358,7 @@ impl Actor for MyActor {
             byte_range: (0, 30),
             line_range: (0, 1),
             doc_byte_range: None,
+            item_byte_range: None,
         };
         let mut f_types = make_file_with_refs("crates/core/src/types.rs", vec![], HashMap::new());
         f_types.symbols.push(my_type_sym);
@@ -4514,6 +4527,7 @@ impl Actor for MyActor {
                 byte_range: (0, 10),
                 line_range: (0, 0),
                 doc_byte_range: None,
+                item_byte_range: None,
             }],
         );
         let dependent = make_file_with_refs_and_content(
@@ -4587,6 +4601,7 @@ namespace CeRegistry.Api.Controllers {
                 byte_range: (0, 10),
                 line_range: (0, 0),
                 doc_byte_range: None,
+                item_byte_range: None,
             }],
         );
         let dependent = make_file_with_refs_and_content(
@@ -4639,6 +4654,7 @@ namespace CeRegistry.Api.Controllers {
                 byte_range: (0, 10),
                 line_range: (0, 0),
                 doc_byte_range: None,
+                item_byte_range: None,
             }],
         );
         let dependent = make_file_with_refs_and_content(
@@ -4701,6 +4717,7 @@ public class PacketsController {
                 byte_range: (0, 10),
                 line_range: (0, 0),
                 doc_byte_range: None,
+                item_byte_range: None,
             }],
         );
         let dependent = make_file_with_refs_and_content(
@@ -4719,6 +4736,7 @@ public class PacketsController {
                 byte_range: (0, 10),
                 line_range: (0, 0),
                 doc_byte_range: None,
+                item_byte_range: None,
             }],
         );
         let index = make_index(
@@ -4759,6 +4777,7 @@ public class PacketsController {
                 byte_range: (0, 38),
                 line_range: (0, 0),
                 doc_byte_range: None,
+                item_byte_range: None,
             }],
         );
 
@@ -4848,6 +4867,7 @@ public class PacketsController {
                 byte_range: (0, 35),
                 line_range: (0, 0),
                 doc_byte_range: None,
+                item_byte_range: None,
             }],
         );
 
@@ -4924,6 +4944,7 @@ public class PacketsController {
                 byte_range: (0, 20),
                 line_range: (0, 0),
                 doc_byte_range: None,
+                item_byte_range: None,
             }],
         );
 
@@ -5105,6 +5126,7 @@ public class PacketsController {
                     byte_range: (0, 500),
                     line_range: (0, 4),
                     doc_byte_range: None,
+                    item_byte_range: None,
                 },
                 SymbolRecord {
                     name: "UploadAsync".to_string(),
@@ -5114,6 +5136,7 @@ public class PacketsController {
                     byte_range: (50, 400),
                     line_range: (1, 3),
                     doc_byte_range: None,
+                    item_byte_range: None,
                 },
             ],
         );
@@ -5196,6 +5219,7 @@ public class PacketsController {
                     byte_range: (0, 40),
                     line_range: (0, 0),
                     doc_byte_range: None,
+                    item_byte_range: None,
                 },
                 SymbolRecord {
                     name: "other".to_string(),
@@ -5205,6 +5229,7 @@ public class PacketsController {
                     byte_range: (41, 65),
                     line_range: (1, 1),
                     doc_byte_range: None,
+                    item_byte_range: None,
                 },
             ],
         );
@@ -5231,6 +5256,7 @@ public class PacketsController {
                 byte_range: (0, config_body.len() as u32),
                 line_range: (0, 2),
                 doc_byte_range: None,
+                item_byte_range: None,
             }],
         );
         let index = make_index(vec![("src/config.rs", config_file)], false);
@@ -5267,6 +5293,7 @@ public class PacketsController {
                 byte_range: (0, config_body.len() as u32),
                 line_range: (0, 1),
                 doc_byte_range: None,
+                item_byte_range: None,
             }],
         );
         let addr_file = make_file_with_refs_and_content(
@@ -5282,6 +5309,7 @@ public class PacketsController {
                 byte_range: (0, addr_body.len() as u32),
                 line_range: (0, 1),
                 doc_byte_range: None,
+                item_byte_range: None,
             }],
         );
         let index = make_index(
@@ -5335,6 +5363,7 @@ public class PacketsController {
                         byte_range: (0, leaked_body.len() as u32),
                         line_range: (0, 0),
                         doc_byte_range: None,
+                        item_byte_range: None,
                     }],
                 );
                 (leaked_path, f)

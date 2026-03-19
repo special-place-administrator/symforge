@@ -3614,12 +3614,14 @@ mod tests {
     // ── Test helpers ─────────────────────────────────────────────────────────
 
     fn make_symbol(name: &str, kind: SymbolKind, line_start: u32, line_end: u32) -> SymbolRecord {
+        let byte_range = (0, 10);
         SymbolRecord {
             name: name.to_string(),
             kind,
             depth: 0,
             sort_order: 0,
-            byte_range: (0, 10),
+            byte_range,
+            item_byte_range: Some(byte_range),
             line_range: (line_start, line_end),
             doc_byte_range: None,
         }
@@ -6949,6 +6951,7 @@ mod tests {
             byte_range: (0, content.len() as u32),
             line_range: (0, 5),
             doc_byte_range: None,
+            item_byte_range: None,
         };
         let (key, file) = make_file("src/error.rs", content, vec![sym]);
         let server = make_server(make_live_index_ready(vec![(key, file)]));
@@ -6981,6 +6984,7 @@ mod tests {
             byte_range: (0, content.len() as u32),
             line_range: (0, 3),
             doc_byte_range: None,
+            item_byte_range: None,
         };
         let (key, file) = make_file("src/watcher.rs", content, vec![burst_tracker]);
         let server = make_server(make_live_index_ready(vec![(key, file)]));
@@ -7009,6 +7013,7 @@ mod tests {
             byte_range: (0, content.len() as u32),
             line_range: (0, 2),
             doc_byte_range: None,
+            item_byte_range: None,
         };
         let (key, file) = make_file("src/watcher/mod.rs", content, vec![watcher_sym]);
         let server = make_server(make_live_index_ready(vec![(key, file)]));
@@ -7037,6 +7042,7 @@ mod tests {
             byte_range: (0, content.len() as u32),
             line_range: (0, 0),
             doc_byte_range: None,
+            item_byte_range: None,
         };
         let (key, file) = make_file("src/watcher/errors.rs", content, vec![sym]);
         let server = make_server(make_live_index_ready(vec![(key, file)]));
@@ -7065,6 +7071,7 @@ mod tests {
             byte_range: (0, content.len() as u32),
             line_range: (0, 0),
             doc_byte_range: None,
+            item_byte_range: None,
         };
         let (key, file) = make_file("src/error.rs", content, vec![sym]);
         let server = make_server(make_live_index_ready(vec![(key, file)]));
@@ -7094,6 +7101,7 @@ mod tests {
             byte_range: (0, vendor_content.len() as u32),
             line_range: (0, 0),
             doc_byte_range: None,
+            item_byte_range: None,
         };
         let src_content = b"pub fn process_error() {}\n";
         let src_sym = SymbolRecord {
@@ -7104,6 +7112,7 @@ mod tests {
             byte_range: (0, src_content.len() as u32),
             line_range: (0, 0),
             doc_byte_range: None,
+            item_byte_range: None,
         };
         let (vkey, vfile) = make_file("vendor/somelib/lib.rs", vendor_content, vec![vendor_sym]);
         let (skey, sfile) = make_file("src/error.rs", src_content, vec![src_sym]);
@@ -7137,6 +7146,7 @@ mod tests {
             byte_range: (0, vendor_content.len() as u32),
             line_range: (0, 0),
             doc_byte_range: None,
+            item_byte_range: None,
         };
         let (vkey, vfile) = make_file("vendor/somelib/lib.rs", vendor_content, vec![vendor_sym]);
         let server = make_server(make_live_index_ready(vec![(vkey, vfile)]));
@@ -7165,6 +7175,7 @@ mod tests {
             byte_range: (0, vendor_content.len() as u32),
             line_range: (0, 0),
             doc_byte_range: None,
+            item_byte_range: None,
         };
         let (vkey, vfile) = make_file("vendor/somelib/lib.rs", vendor_content, vec![vendor_sym]);
         let server = make_server(make_live_index_ready(vec![(vkey, vfile)]));

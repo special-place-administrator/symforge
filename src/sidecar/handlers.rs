@@ -1532,12 +1532,14 @@ mod tests {
     // -----------------------------------------------------------------------
 
     fn make_symbol(name: &str, kind: SymbolKind, start: u32, end: u32) -> SymbolRecord {
+        let byte_range = (0, 10);
         SymbolRecord {
             name: name.to_string(),
             kind,
             depth: 0,
             sort_order: 0,
-            byte_range: (0, 10),
+            byte_range,
+            item_byte_range: Some(byte_range),
             line_range: (start, end),
             doc_byte_range: None,
         }

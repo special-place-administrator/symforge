@@ -2071,6 +2071,7 @@ mod tests {
             depth: 0,
             sort_order: 0,
             byte_range,
+            item_byte_range: Some(byte_range),
             line_range: (line_start, line_start + 2),
             doc_byte_range: None,
         }
@@ -2779,6 +2780,7 @@ mod tests {
                 byte_range: (0, 100),
                 line_range: (0, 10),
                 doc_byte_range: None,
+                item_byte_range: None,
             },
             SymbolRecord {
                 name: "display".to_string(),
@@ -2788,6 +2790,7 @@ mod tests {
                 byte_range: (20, 80),
                 line_range: (2, 8),
                 doc_byte_range: None,
+                item_byte_range: None,
             },
         ]);
         let method = &file.symbols[1];
@@ -2945,6 +2948,7 @@ mod tests {
             byte_range: (30, 46),
             line_range: (2, 2),
             doc_byte_range: Some((0, 30)),
+            item_byte_range: None,
         };
         let result = build_delete(content, &sym, LineEnding::Lf);
         let result_str = String::from_utf8(result).unwrap();
@@ -2982,6 +2986,7 @@ mod tests {
             byte_range: (27, 48),
             line_range: (2, 2),
             doc_byte_range: None, // blank line prevents attachment
+            item_byte_range: None,
         };
         let result = build_delete(content, &sym, LineEnding::Lf);
         let result_str = String::from_utf8(result).unwrap();
@@ -3008,6 +3013,7 @@ mod tests {
             byte_range: (16, 32),
             line_range: (1, 1),
             doc_byte_range: Some((0, 16)),
+            item_byte_range: None,
         };
         let result = build_insert_before(content, &sym, "use std::io;", LineEnding::Lf);
         let result_str = String::from_utf8(result).unwrap();
@@ -3034,6 +3040,7 @@ mod tests {
             byte_range: (0, 23),
             line_range: (0, 0),
             doc_byte_range: None,
+            item_byte_range: None,
         };
         let result =
             build_insert_before(content, &sym, "struct Point3D { x: f64 }", LineEnding::Lf);
@@ -3058,6 +3065,7 @@ mod tests {
             byte_range: (1, 18),
             line_range: (1, 1),
             doc_byte_range: None,
+            item_byte_range: None,
         };
         let result = build_insert_before(content, &sym, "fn new_fn() {}", LineEnding::Lf);
         let result_str = String::from_utf8(result).unwrap();
@@ -3087,6 +3095,7 @@ mod tests {
             byte_range: (0, 13),
             line_range: (0, 0),
             doc_byte_range: None,
+            item_byte_range: None,
         };
         let result = build_insert_before(content, &sym, "fn before() {}", LineEnding::Lf);
         let result_str = String::from_utf8(result).unwrap();
@@ -3120,6 +3129,7 @@ mod tests {
             byte_range: (8, 23),
             line_range: (1, 1),
             doc_byte_range: Some((0, 8)),
+            item_byte_range: None,
         };
         let result = build_insert_before(content, &sym, "fn inserted() {}", LineEnding::Lf);
         let result_str = String::from_utf8(result).unwrap();
@@ -3151,6 +3161,7 @@ mod tests {
             byte_range: (16, 32),
             line_range: (1, 1),
             doc_byte_range: Some((0, 16)),
+            item_byte_range: None,
         };
         let (result, count) = build_edit_within(content, &sym, "foo", "bar", false).unwrap();
         let result_str = String::from_utf8(result).unwrap();
@@ -3290,7 +3301,9 @@ mod tests {
 
     #[test]
     fn test_atomic_write_concurrent_no_hybrid() {
+        use std::io::ErrorKind;
         use std::sync::{Arc, Barrier};
+
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("target.txt");
 
@@ -3310,14 +3323,29 @@ mod tests {
 
         let ha = std::thread::spawn(move || {
             ba.wait();
-            atomic_write_file(&target_a, &pa).unwrap();
+            atomic_write_file(&target_a, &pa)
         });
         let hb = std::thread::spawn(move || {
             bb.wait();
-            atomic_write_file(&target_b, &pb).unwrap();
+            atomic_write_file(&target_b, &pb)
         });
-        ha.join().unwrap();
-        hb.join().unwrap();
+
+        let result_a = ha.join().unwrap();
+        let result_b = hb.join().unwrap();
+
+        for result in [&result_a, &result_b] {
+            if let Err(err) = result {
+                assert_eq!(
+                    err.kind(),
+                    ErrorKind::PermissionDenied,
+                    "unexpected concurrent atomic_write_file error: {err}"
+                );
+            }
+        }
+        assert!(
+            result_a.is_ok() || result_b.is_ok(),
+            "at least one concurrent writer should succeed: a={result_a:?} b={result_b:?}"
+        );
 
         let result = std::fs::read(&target).unwrap();
         assert!(
