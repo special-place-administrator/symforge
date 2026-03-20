@@ -114,5 +114,201 @@ fn extract_var_declarations(
 }
 
 fn find_name(node: &Node, source: &str) -> Option<String> {
-    find_first_named_child(node, source, &["identifier", "type_identifier"])
+    find_first_named_child(
+        node,
+        source,
+        &["identifier", "type_identifier", "field_identifier"],
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use crate::domain::{FileOutcome, LanguageId, SymbolKind};
+    use crate::parsing::process_file;
+
+    #[test]
+    fn test_go_function_extracted() {
+        let source = b"package main\n\nfunc main() {}";
+        let result = process_file("test.go", source, LanguageId::Go);
+        assert!(
+            matches!(
+                result.outcome,
+                FileOutcome::Processed | FileOutcome::PartialParse { .. }
+            ),
+            "Go should parse successfully: {:?}",
+            result.outcome
+        );
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Function && s.name == "main"),
+            "should extract func main as Function, got: {:?}",
+            result.symbols
+        );
+    }
+
+    #[test]
+    fn test_go_method_extracted() {
+        let source = b"package main\n\ntype Server struct{}\n\nfunc (s *Server) Handle() {}";
+        let result = process_file("test.go", source, LanguageId::Go);
+        assert!(
+            matches!(
+                result.outcome,
+                FileOutcome::Processed | FileOutcome::PartialParse { .. }
+            ),
+            "Go should parse successfully: {:?}",
+            result.outcome
+        );
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Method && s.name == "Handle"),
+            "should extract Handle as Method, got: {:?}",
+            result.symbols
+        );
+    }
+
+    #[test]
+    fn test_go_struct_extracted() {
+        let source = b"package main\n\ntype Config struct { Name string }";
+        let result = process_file("test.go", source, LanguageId::Go);
+        assert!(
+            matches!(
+                result.outcome,
+                FileOutcome::Processed | FileOutcome::PartialParse { .. }
+            ),
+            "Go should parse successfully: {:?}",
+            result.outcome
+        );
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Struct && s.name == "Config"),
+            "should extract Config as Struct, got: {:?}",
+            result.symbols
+        );
+    }
+
+    #[test]
+    fn test_go_interface_extracted() {
+        let source = b"package main\n\ntype Handler interface { Handle() }";
+        let result = process_file("test.go", source, LanguageId::Go);
+        assert!(
+            matches!(
+                result.outcome,
+                FileOutcome::Processed | FileOutcome::PartialParse { .. }
+            ),
+            "Go should parse successfully: {:?}",
+            result.outcome
+        );
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Interface && s.name == "Handler"),
+            "should extract Handler as Interface, got: {:?}",
+            result.symbols
+        );
+    }
+
+    #[test]
+    fn test_go_constant_extracted() {
+        let source = b"package main\n\nconst MaxRetries = 3";
+        let result = process_file("test.go", source, LanguageId::Go);
+        assert!(
+            matches!(
+                result.outcome,
+                FileOutcome::Processed | FileOutcome::PartialParse { .. }
+            ),
+            "Go should parse successfully: {:?}",
+            result.outcome
+        );
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Constant && s.name == "MaxRetries"),
+            "should extract MaxRetries as Constant, got: {:?}",
+            result.symbols
+        );
+    }
+
+    #[test]
+    fn test_go_variable_extracted() {
+        let source = b"package main\n\nvar DefaultTimeout = 30";
+        let result = process_file("test.go", source, LanguageId::Go);
+        assert!(
+            matches!(
+                result.outcome,
+                FileOutcome::Processed | FileOutcome::PartialParse { .. }
+            ),
+            "Go should parse successfully: {:?}",
+            result.outcome
+        );
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Variable && s.name == "DefaultTimeout"),
+            "should extract DefaultTimeout as Variable, got: {:?}",
+            result.symbols
+        );
+    }
+
+    #[test]
+    fn test_go_all_symbol_kinds() {
+        let source = b"package main\n\nfunc main() {}\n\ntype Server struct{}\n\nfunc (s *Server) Handle() {}\n\ntype Config struct { Name string }\n\ntype Handler interface { Handle() }\n\nconst MaxRetries = 3\n\nvar DefaultTimeout = 30";
+        let result = process_file("test.go", source, LanguageId::Go);
+        assert!(
+            matches!(
+                result.outcome,
+                FileOutcome::Processed | FileOutcome::PartialParse { .. }
+            ),
+            "Go should parse successfully: {:?}",
+            result.outcome
+        );
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Function),
+            "missing Function"
+        );
+        assert!(
+            result.symbols.iter().any(|s| s.kind == SymbolKind::Method),
+            "missing Method"
+        );
+        assert!(
+            result.symbols.iter().any(|s| s.kind == SymbolKind::Struct),
+            "missing Struct"
+        );
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Interface),
+            "missing Interface"
+        );
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Constant),
+            "missing Constant"
+        );
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Variable),
+            "missing Variable"
+        );
+    }
 }

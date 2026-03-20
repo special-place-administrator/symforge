@@ -1057,14 +1057,12 @@ impl LiveIndex {
                 let mut matching_paths: Vec<&String> = self
                     .files
                     .keys()
-                    .filter(|path| path.starts_with(prefix))
+                    .filter(|path| path.starts_with(prefix.as_str()))
                     .collect();
-                matching_paths.sort();
-                if matching_paths.len() == 1 {
-                    self.capture_shared_file(matching_paths[0])
-                } else {
-                    None
-                }
+                matching_paths.sort_by_key(|p| p.len());
+                matching_paths
+                    .first()
+                    .and_then(|p| self.capture_shared_file(p))
             }
         }
     }
@@ -2551,7 +2549,7 @@ impl LiveIndex {
         // import from Y are also dependents of X.  We use a BFS with a depth
         // limit to avoid infinite loops and keep the search bounded.
         if target_language == LanguageId::Rust {
-            let already_found: HashSet<&str> = results.iter().map(|(path, _)| *path).collect();
+            let mut already_found: HashSet<&str> = results.iter().map(|(path, _)| *path).collect();
 
             let mut visited: HashSet<&str> = HashSet::new();
             visited.insert(target_path);
@@ -2617,6 +2615,7 @@ impl LiveIndex {
                                 })
                                 .collect();
                             if !symbol_refs.is_empty() {
+                                already_found.insert(file_path.as_str());
                                 results.extend(
                                     symbol_refs.into_iter().map(|r| (file_path.as_str(), r)),
                                 );
@@ -2624,6 +2623,7 @@ impl LiveIndex {
                             }
                         }
 
+                        already_found.insert(file_path.as_str());
                         results.extend(
                             transitive_imports
                                 .into_iter()
@@ -3221,8 +3221,12 @@ mod tests {
             .expect("unique prefix should resolve");
         assert_eq!(unique.relative_path, "tests/lib_test.rs");
 
-        let ambiguous = index.capture_shared_file_for_scope(&super::PathScope::prefix("src/"));
-        assert!(ambiguous.is_none(), "ambiguous prefix should not resolve");
+        // When multiple files match a prefix, the function returns the shortest
+        // path (sorted by length). "src/lib.rs" (10 chars) < "src/main.rs" (11).
+        let multi_match = index
+            .capture_shared_file_for_scope(&super::PathScope::prefix("src/"))
+            .expect("prefix with multiple matches should return shortest path");
+        assert_eq!(multi_match.relative_path, "src/lib.rs");
 
         let any = index.capture_shared_file_for_scope(&super::PathScope::any());
         assert!(any.is_none(), "Any scope should not guess a single file");

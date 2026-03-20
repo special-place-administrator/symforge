@@ -23,10 +23,27 @@ fn walk_node(
     symbols: &mut Vec<SymbolRecord>,
 ) {
     // NOTE: tree-sitter-kotlin-sg maps enum class, interface, and class to class_declaration.
-    // All emit SymbolKind::Class.
+    // Inspect child nodes to distinguish enum/interface from plain class.
     let kind = match node.kind() {
         "function_declaration" => Some(SymbolKind::Function),
-        "class_declaration" => Some(SymbolKind::Class),
+        "class_declaration" => {
+            let mut cursor = node.walk();
+            let mut refined = SymbolKind::Class;
+            for child in node.children(&mut cursor) {
+                match child.utf8_text(source.as_bytes()).unwrap_or("") {
+                    "enum" => {
+                        refined = SymbolKind::Enum;
+                        break;
+                    }
+                    "interface" => {
+                        refined = SymbolKind::Interface;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            Some(refined)
+        }
         "object_declaration" => Some(SymbolKind::Module),
         _ => None,
     };
@@ -97,17 +114,29 @@ mod tests {
     }
 
     #[test]
-    fn test_kotlin_interface_maps_to_class() {
-        // In tree-sitter-kotlin-sg, 'interface' keyword creates class_declaration nodes
+    fn test_kotlin_interface_maps_to_interface() {
         let source = "interface Runnable { fun run() }";
         let symbols = parse_kotlin(source);
-        // Interface maps to Class kind in this grammar
-        let cls = symbols
+        let iface = symbols
             .iter()
-            .find(|s| s.kind == SymbolKind::Class && s.name == "Runnable");
+            .find(|s| s.kind == SymbolKind::Interface && s.name == "Runnable");
         assert!(
-            cls.is_some(),
-            "should extract Runnable as Class, got: {:?}",
+            iface.is_some(),
+            "should extract Runnable as Interface, got: {:?}",
+            symbols
+        );
+    }
+
+    #[test]
+    fn test_kotlin_enum_class_maps_to_enum() {
+        let source = "enum class Color { RED, GREEN, BLUE }";
+        let symbols = parse_kotlin(source);
+        let enm = symbols
+            .iter()
+            .find(|s| s.kind == SymbolKind::Enum && s.name == "Color");
+        assert!(
+            enm.is_some(),
+            "should extract Color as Enum, got: {:?}",
             symbols
         );
     }

@@ -101,6 +101,29 @@ pub fn edit_capability_for_language(language: &LanguageId) -> Option<EditCapabil
 }
 
 // ---------------------------------------------------------------------------
+// Line offset helpers (shared by json, yaml, toml_ext)
+// ---------------------------------------------------------------------------
+
+/// Build a table mapping line index → byte offset of line start.
+pub(super) fn build_line_starts(content: &[u8]) -> Vec<u32> {
+    let mut starts: Vec<u32> = vec![0];
+    for (i, &b) in content.iter().enumerate() {
+        if b == b'\n' {
+            starts.push((i + 1) as u32);
+        }
+    }
+    starts
+}
+
+/// Convert a byte offset into a 0-based line number.
+pub(super) fn byte_to_line(line_starts: &[u32], offset: u32) -> u32 {
+    match line_starts.binary_search(&offset) {
+        Ok(idx) => idx as u32,
+        Err(idx) => (idx.saturating_sub(1)) as u32,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Key escaping helpers
 // ---------------------------------------------------------------------------
 

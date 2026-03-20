@@ -79,4 +79,77 @@ mod tests {
             result.symbols
         );
     }
+
+    // tree-sitter-swift v0.7.1 emits `class_declaration` for both `class` and
+    // `extension` declarations (it cannot distinguish them at the grammar level).
+    // Therefore extensions are extracted as Class, not Impl.
+    #[test]
+    fn test_swift_extension_extracted_as_class() {
+        let source = b"protocol Drawable {}\nclass MyClass {}\nextension MyClass: Drawable {}";
+        let result = process_file("test.swift", source, LanguageId::Swift);
+        assert!(
+            matches!(
+                result.outcome,
+                FileOutcome::Processed | FileOutcome::PartialParse { .. }
+            ),
+            "Swift should parse successfully: {:?}",
+            result.outcome
+        );
+        // The grammar maps extension_declaration -> class_declaration, so the
+        // extractor produces Class.  Verify the name is captured regardless.
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Class && s.name == "MyClass"),
+            "should extract extension as Class (grammar limitation), symbols: {:?}",
+            result.symbols
+        );
+    }
+
+    #[test]
+    fn test_swift_protocol_extracted_as_interface() {
+        let source = b"protocol Drawable {}";
+        let result = process_file("test.swift", source, LanguageId::Swift);
+        assert!(
+            matches!(
+                result.outcome,
+                FileOutcome::Processed | FileOutcome::PartialParse { .. }
+            ),
+            "Swift should parse successfully: {:?}",
+            result.outcome
+        );
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Interface && s.name == "Drawable"),
+            "should extract protocol as Interface, symbols: {:?}",
+            result.symbols
+        );
+    }
+
+    // tree-sitter-swift v0.7.1 emits `class_declaration` for `enum` as well.
+    // Verify the enum name is captured even though the kind is Class.
+    #[test]
+    fn test_swift_enum_extracted_as_class() {
+        let source = b"enum Direction { case north }";
+        let result = process_file("test.swift", source, LanguageId::Swift);
+        assert!(
+            matches!(
+                result.outcome,
+                FileOutcome::Processed | FileOutcome::PartialParse { .. }
+            ),
+            "Swift should parse successfully: {:?}",
+            result.outcome
+        );
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Class && s.name == "Direction"),
+            "should extract enum as Class (grammar limitation), symbols: {:?}",
+            result.symbols
+        );
+    }
 }

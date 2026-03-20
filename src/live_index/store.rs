@@ -1098,6 +1098,8 @@ impl LiveIndex {
             load_duration,
             gitignore: discovery::load_gitignore(root),
             derived,
+            // NOTE: reload does not track skipped files; health tier counts
+            // will show 0 for Tier 2/3 after reload.
             skipped_files: Vec::new(),
         })
     }

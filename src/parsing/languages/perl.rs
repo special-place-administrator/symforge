@@ -86,4 +86,26 @@ mod tests {
             result.symbols
         );
     }
+
+    #[test]
+    fn test_perl_package_extracted_as_module() {
+        let source = b"package MyApp::Module;\n\nsub new { return bless {}, shift; }";
+        let result = process_file("test.pl", source, LanguageId::Perl);
+        assert!(
+            matches!(
+                result.outcome,
+                FileOutcome::Processed | FileOutcome::PartialParse { .. }
+            ),
+            "Perl should parse successfully: {:?}",
+            result.outcome
+        );
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Module && s.name == "MyApp::Module"),
+            "should extract package as Module, symbols: {:?}",
+            result.symbols
+        );
+    }
 }

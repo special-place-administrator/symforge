@@ -1,6 +1,6 @@
 use super::{
     ConfigExtractor, EditCapability, ExtractionOutcome, ExtractionResult, MAX_ARRAY_ITEMS,
-    MAX_DEPTH, join_array_index, join_key_path,
+    MAX_DEPTH, build_line_starts, byte_to_line, join_array_index, join_key_path,
 };
 use crate::domain::{SymbolKind, SymbolRecord};
 
@@ -155,25 +155,6 @@ impl ConfigExtractor for JsonExtractor {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Build a table mapping line index → byte offset of line start.
-fn build_line_starts(content: &[u8]) -> Vec<u32> {
-    let mut starts: Vec<u32> = vec![0];
-    for (i, &b) in content.iter().enumerate() {
-        if b == b'\n' {
-            starts.push((i + 1) as u32);
-        }
-    }
-    starts
-}
-
-/// Convert a byte offset into a 0-based line number.
-fn byte_to_line(line_starts: &[u32], offset: u32) -> u32 {
-    match line_starts.binary_search(&offset) {
-        Ok(idx) => idx as u32,
-        Err(idx) => (idx.saturating_sub(1)) as u32,
-    }
-}
 
 fn walk_object(
     content: &[u8],

@@ -79,4 +79,70 @@ mod tests {
             result.symbols
         );
     }
+
+    #[test]
+    fn test_php_trait_extracted() {
+        let source = b"<?php trait Loggable {}";
+        let result = process_file("test.php", source, LanguageId::Php);
+        assert!(
+            matches!(
+                result.outcome,
+                FileOutcome::Processed | FileOutcome::PartialParse { .. }
+            ),
+            "PHP should parse successfully: {:?}",
+            result.outcome
+        );
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Trait && s.name == "Loggable"),
+            "should extract trait as Trait, symbols: {:?}",
+            result.symbols
+        );
+    }
+
+    #[test]
+    fn test_php_enum_extracted() {
+        let source = b"<?php enum Color { case Red; }";
+        let result = process_file("test.php", source, LanguageId::Php);
+        assert!(
+            matches!(
+                result.outcome,
+                FileOutcome::Processed | FileOutcome::PartialParse { .. }
+            ),
+            "PHP should parse successfully: {:?}",
+            result.outcome
+        );
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Enum && s.name == "Color"),
+            "should extract enum as Enum, symbols: {:?}",
+            result.symbols
+        );
+    }
+
+    #[test]
+    fn test_php_interface_extracted() {
+        let source = b"<?php interface Printable {}";
+        let result = process_file("test.php", source, LanguageId::Php);
+        assert!(
+            matches!(
+                result.outcome,
+                FileOutcome::Processed | FileOutcome::PartialParse { .. }
+            ),
+            "PHP should parse successfully: {:?}",
+            result.outcome
+        );
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Interface && s.name == "Printable"),
+            "should extract interface as Interface, symbols: {:?}",
+            result.symbols
+        );
+    }
 }
