@@ -2157,6 +2157,7 @@ impl SymForgeServer {
                                 let mut output = format::search_text_result_view(
                                     retry_result,
                                     params.0.group_by.as_deref(),
+                                    params.0.terms.as_deref(),
                                 );
                                 output.push_str(&format!(
                                     "\n(auto-corrected double-escaped regex: `{}` → `{}`)",
@@ -2175,7 +2176,7 @@ impl SymForgeServer {
             }
         }
 
-        let output = format::search_text_result_view(result, params.0.group_by.as_deref());
+        let output = format::search_text_result_view(result, params.0.group_by.as_deref(), params.0.terms.as_deref());
         let hint = format::compact_next_step_hint(&[
             "inspect_match (deep-dive one hit)",
             "get_file_context (file overview)",
@@ -5233,6 +5234,50 @@ mod tests {
         assert!(
             !result.contains("NOTE: ignored"),
             "unmatched line should be absent: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_text_terms_annotates_matched_term() {
+        let sym_a = make_symbol("fn_alpha", SymbolKind::Function, 0, 0);
+        let sym_b = make_symbol("fn_beta", SymbolKind::Function, 1, 1);
+        let file = make_file(
+            "src/lib.rs",
+            b"fn fn_alpha() { alpha_value }\nfn fn_beta() { beta_value }\n",
+            vec![sym_a, sym_b],
+        );
+        let server = make_server(make_live_index_ready(vec![file]));
+
+        let result = server
+            .search_text(Parameters(super::SearchTextInput {
+                query: None,
+                terms: Some(vec!["alpha_value".to_string(), "beta_value".to_string()]),
+                regex: None,
+                path_prefix: None,
+                language: None,
+                limit: None,
+                max_per_file: None,
+                include_generated: None,
+                include_tests: None,
+                glob: None,
+                exclude_glob: None,
+                context: None,
+                case_sensitive: None,
+                whole_word: None,
+                group_by: None,
+                follow_refs: None,
+                follow_refs_limit: None,
+                ranked: None,
+            }))
+            .await;
+
+        assert!(
+            result.contains("[term: alpha_value]"),
+            "should annotate alpha term: {result}"
+        );
+        assert!(
+            result.contains("[term: beta_value]"),
+            "should annotate beta term: {result}"
         );
     }
 

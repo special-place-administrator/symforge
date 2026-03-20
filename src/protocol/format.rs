@@ -277,7 +277,7 @@ pub fn search_text_result_with_options(
     regex: bool,
 ) -> String {
     let result = search::search_text(index, query, terms, regex);
-    search_text_result_view(result, None)
+    search_text_result_view(result, None, None)
 }
 
 /// Returns true if the line looks like an import statement or a non-doc comment.
@@ -302,6 +302,7 @@ pub fn is_noise_line(line: &str) -> bool {
 pub fn search_text_result_view(
     result: Result<search::TextSearchResult, search::TextSearchError>,
     group_by: Option<&str>,
+    terms: Option<&[String]>,
 ) -> String {
     let result = match result {
         Ok(result) => result,
@@ -323,6 +324,21 @@ pub fn search_text_result_view(
         }
         Err(search::TextSearchError::UnsupportedWholeWordRegex) => {
             return "whole_word is not supported when `regex=true`.".to_string();
+        }
+    };
+
+    let annotate_term = |line: &str| -> String {
+        match &terms {
+            Some(ts) if ts.len() > 1 => {
+                let lower = line.to_lowercase();
+                for term in *ts {
+                    if lower.contains(&term.to_lowercase()) {
+                        return format!("  [term: {term}]");
+                    }
+                }
+                String::new()
+            }
+            _ => String::new(),
         }
     };
 
@@ -426,13 +442,19 @@ pub fn search_text_result_view(
                                 last_symbol = Some(enc.name.clone());
                             }
                             lines.push(format!(
-                                "    > {}: {}",
-                                line_match.line_number, line_match.line
+                                "    > {}: {}{}",
+                                line_match.line_number,
+                                line_match.line,
+                                annotate_term(&line_match.line)
                             ));
                         } else {
                             last_symbol = None;
-                            lines
-                                .push(format!("  {}: {}", line_match.line_number, line_match.line));
+                            lines.push(format!(
+                                "  {}: {}{}",
+                                line_match.line_number,
+                                line_match.line,
+                                annotate_term(&line_match.line)
+                            ));
                         }
                     }
                     if filtered_count > 0 {
@@ -457,13 +479,19 @@ pub fn search_text_result_view(
                                 last_symbol = Some(enc.name.clone());
                             }
                             lines.push(format!(
-                                "    > {}: {}",
-                                line_match.line_number, line_match.line
+                                "    > {}: {}{}",
+                                line_match.line_number,
+                                line_match.line,
+                                annotate_term(&line_match.line)
                             ));
                         } else {
                             last_symbol = None;
-                            lines
-                                .push(format!("  {}: {}", line_match.line_number, line_match.line));
+                            lines.push(format!(
+                                "  {}: {}{}",
+                                line_match.line_number,
+                                line_match.line,
+                                annotate_term(&line_match.line)
+                            ));
                         }
                     }
                 }
@@ -3527,7 +3555,7 @@ mod tests {
 
         let live_result = search_text_result(&index, "let");
         let captured_result =
-            search_text_result_view(search::search_text(&index, Some("let"), None, false), None);
+            search_text_result_view(search::search_text(&index, Some("let"), None, false), None, None);
 
         assert_eq!(captured_result, live_result);
     }
@@ -3610,7 +3638,7 @@ mod tests {
             },
         );
 
-        let rendered = search_text_result_view(result, None);
+        let rendered = search_text_result_view(result, None, None);
 
         assert!(
             rendered.contains("src/lib.rs"),
