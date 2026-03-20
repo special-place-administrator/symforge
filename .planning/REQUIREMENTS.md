@@ -15,14 +15,14 @@
 
 ### Hook Diagnostics
 
-- [ ] **HOOK-01**: `NoSidecar` adoption log entry includes whether sidecar.port is missing vs stale, and the project root
-- [ ] **HOOK-02**: `SYMFORGE_HOOK_VERBOSE=1` env var enables stderr diagnostic output during hook execution
-- [ ] **HOOK-03**: First `NoSidecar` event per session writes a one-time hint to adoption log explaining how to start the sidecar
+- [x] **HOOK-01**: `NoSidecar` adoption log entry includes whether sidecar.port is missing vs stale, and the project root
+- [x] **HOOK-02**: `SYMFORGE_HOOK_VERBOSE=1` env var enables stderr diagnostic output during hook execution
+- [x] **HOOK-03**: First `NoSidecar` event per session writes a one-time hint to stderr explaining how to start the sidecar (marker file with 30-min freshness)
 
 ### Documentation
 
-- [ ] **DOCS-01**: `docs/codex-ceiling.md` documents what works in Codex (MCP tools), what doesn't (hooks, sidecar), and what requires Codex changes
-- [ ] **DOCS-02**: README or CLAUDE.md references the Codex ceiling doc for client-specific guidance
+- [x] **DOCS-01**: `docs/codex-integration-ceiling.md` documents what works in Codex (MCP tools), what doesn't (hooks, sidecar), and what requires Codex changes *(Completed by Kilo Code)*
+- [x] **DOCS-02**: CLAUDE.md references the Codex ceiling doc for client-specific guidance *(Completed by Kilo Code)*
 
 ## Out of Scope
 
@@ -46,11 +46,11 @@
 | SYMB-01 | Phase 1 | Complete |
 | SYMB-02 | Phase 1 | Complete |
 | SYMB-03 | Phase 1 | Complete |
-| HOOK-01 | Phase 2 | Pending |
-| HOOK-02 | Phase 2 | Pending |
-| HOOK-03 | Phase 2 | Pending |
-| DOCS-01 | Phase 2 | Pending |
-| DOCS-02 | Phase 2 | Pending |
+| HOOK-01 | Phase 2 | Complete |
+| HOOK-02 | Phase 2 | Complete |
+| HOOK-03 | Phase 2 | Complete |
+| DOCS-01 | Phase 2 | Complete |
+| DOCS-02 | Phase 2 | Complete |
 
 **Coverage:**
 - v1 requirements: 8 total
