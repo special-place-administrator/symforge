@@ -380,6 +380,28 @@ pub(crate) enum SymbolSelectorMatch<'a> {
     Ambiguous(Vec<u32>),
 }
 
+/// Returns a disambiguation tier for a SymbolKind.  Lower number = higher
+/// priority.  Used by `resolve_symbol_selector` to auto-pick the most
+/// likely intended symbol when multiple candidates share the same name but
+/// differ in kind.
+///
+/// Tier 1 — type definitions (class, struct, enum, interface, trait)
+/// Tier 2 — namespace containers (module)
+/// Tier 3 — callables (function, method, impl)
+/// Tier 4 — everything else (constant, variable, type alias, key, section, other)
+fn kind_disambiguation_tier(kind: &SymbolKind) -> u8 {
+    match kind {
+        SymbolKind::Class
+        | SymbolKind::Struct
+        | SymbolKind::Enum
+        | SymbolKind::Interface
+        | SymbolKind::Trait => 1,
+        SymbolKind::Module => 2,
+        SymbolKind::Function | SymbolKind::Method | SymbolKind::Impl => 3,
+        _ => 4, // Constant, Variable, Type, Key, Section, Other
+    }
+}
+
 pub(crate) fn resolve_symbol_selector<'a>(
     file: &'a IndexedFile,
     name: &str,
@@ -5491,5 +5513,204 @@ public class PacketsController {
             "should be capped at MAX_DEPENDENCIES=15, got {}",
             deps.len()
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // kind_disambiguation_tier + resolve_symbol_selector tier tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_kind_disambiguation_tier_values() {
+        use super::kind_disambiguation_tier;
+        assert_eq!(kind_disambiguation_tier(&SymbolKind::Class), 1);
+        assert_eq!(kind_disambiguation_tier(&SymbolKind::Struct), 1);
+        assert_eq!(kind_disambiguation_tier(&SymbolKind::Enum), 1);
+        assert_eq!(kind_disambiguation_tier(&SymbolKind::Interface), 1);
+        assert_eq!(kind_disambiguation_tier(&SymbolKind::Trait), 1);
+        assert_eq!(kind_disambiguation_tier(&SymbolKind::Module), 2);
+        assert_eq!(kind_disambiguation_tier(&SymbolKind::Function), 3);
+        assert_eq!(kind_disambiguation_tier(&SymbolKind::Method), 3);
+        assert_eq!(kind_disambiguation_tier(&SymbolKind::Impl), 3);
+        assert_eq!(kind_disambiguation_tier(&SymbolKind::Constant), 4);
+        assert_eq!(kind_disambiguation_tier(&SymbolKind::Variable), 4);
+        assert_eq!(kind_disambiguation_tier(&SymbolKind::Type), 4);
+        assert_eq!(kind_disambiguation_tier(&SymbolKind::Key), 4);
+        assert_eq!(kind_disambiguation_tier(&SymbolKind::Section), 4);
+        assert_eq!(kind_disambiguation_tier(&SymbolKind::Other), 4);
+    }
+
+    #[test]
+    fn test_resolve_selector_class_vs_constructor_returns_class() {
+        // SYMB-02: C# class "Foo" + constructor "Foo" (mapped to Function)
+        use super::{resolve_symbol_selector, SymbolSelectorMatch};
+        let class_sym = SymbolRecord {
+            kind: SymbolKind::Class,
+            line_range: (0, 20),
+            ..make_symbol("Foo")
+        };
+        let ctor_sym = SymbolRecord {
+            kind: SymbolKind::Function,
+            line_range: (5, 15),
+            ..make_symbol("Foo")
+        };
+        let file = make_indexed_file("src/Foo.cs", vec![class_sym, ctor_sym], ParseStatus::Parsed);
+        match resolve_symbol_selector(&file, "Foo", None, None) {
+            SymbolSelectorMatch::Selected(idx, sym) => {
+                assert_eq!(idx, 0);
+                assert_eq!(sym.kind, SymbolKind::Class);
+            }
+            other => panic!(
+                "Expected Selected, got {:?}",
+                match other {
+                    SymbolSelectorMatch::Ambiguous(v) => format!("Ambiguous({v:?})"),
+                    SymbolSelectorMatch::NotFound => "NotFound".to_string(),
+                    _ => unreachable!(),
+                }
+            ),
+        }
+    }
+
+    #[test]
+    fn test_resolve_selector_module_vs_function_returns_module() {
+        // Cross-tier: module (tier 2) beats function (tier 3)
+        use super::{resolve_symbol_selector, SymbolSelectorMatch};
+        let mod_sym = SymbolRecord {
+            kind: SymbolKind::Module,
+            line_range: (0, 50),
+            ..make_symbol("utils")
+        };
+        let fn_sym = SymbolRecord {
+            kind: SymbolKind::Function,
+            line_range: (10, 20),
+            ..make_symbol("utils")
+        };
+        let file = make_indexed_file("src/utils.py", vec![mod_sym, fn_sym], ParseStatus::Parsed);
+        match resolve_symbol_selector(&file, "utils", None, None) {
+            SymbolSelectorMatch::Selected(idx, sym) => {
+                assert_eq!(idx, 0);
+                assert_eq!(sym.kind, SymbolKind::Module);
+            }
+            other => panic!(
+                "Expected Selected for Module, got {:?}",
+                match other {
+                    SymbolSelectorMatch::Ambiguous(v) => format!("Ambiguous({v:?})"),
+                    SymbolSelectorMatch::NotFound => "NotFound".to_string(),
+                    _ => unreachable!(),
+                }
+            ),
+        }
+    }
+
+    #[test]
+    fn test_resolve_selector_same_tier_returns_ambiguous() {
+        // SYMB-03: Two functions with same name = same tier = Ambiguous
+        use super::{resolve_symbol_selector, SymbolSelectorMatch};
+        let fn1 = SymbolRecord {
+            kind: SymbolKind::Function,
+            line_range: (0, 5),
+            ..make_symbol("connect")
+        };
+        let fn2 = SymbolRecord {
+            kind: SymbolKind::Function,
+            line_range: (10, 15),
+            ..make_symbol("connect")
+        };
+        let file = make_indexed_file("src/db.rs", vec![fn1, fn2], ParseStatus::Parsed);
+        match resolve_symbol_selector(&file, "connect", None, None) {
+            SymbolSelectorMatch::Ambiguous(lines) => {
+                assert_eq!(lines, vec![0, 10]);
+            }
+            _ => panic!("Expected Ambiguous for same-tier symbols"),
+        }
+    }
+
+    #[test]
+    fn test_resolve_selector_same_tier_class_struct_returns_ambiguous() {
+        // SYMB-03: Class + Struct at tier 1 = Ambiguous
+        use super::{resolve_symbol_selector, SymbolSelectorMatch};
+        let class_sym = SymbolRecord {
+            kind: SymbolKind::Class,
+            line_range: (0, 10),
+            ..make_symbol("Data")
+        };
+        let struct_sym = SymbolRecord {
+            kind: SymbolKind::Struct,
+            line_range: (20, 30),
+            ..make_symbol("Data")
+        };
+        let file =
+            make_indexed_file("src/data.rs", vec![class_sym, struct_sym], ParseStatus::Parsed);
+        match resolve_symbol_selector(&file, "Data", None, None) {
+            SymbolSelectorMatch::Ambiguous(lines) => {
+                assert_eq!(lines, vec![0, 20]);
+            }
+            _ => panic!("Expected Ambiguous for two tier-1 symbols"),
+        }
+    }
+
+    #[test]
+    fn test_resolve_selector_explicit_kind_bypasses_tier_logic() {
+        // When symbol_kind is specified, tier logic should NOT apply
+        use super::{resolve_symbol_selector, SymbolSelectorMatch};
+        let class_sym = SymbolRecord {
+            kind: SymbolKind::Class,
+            line_range: (0, 20),
+            ..make_symbol("Foo")
+        };
+        let fn_sym = SymbolRecord {
+            kind: SymbolKind::Function,
+            line_range: (5, 15),
+            ..make_symbol("Foo")
+        };
+        let file = make_indexed_file("src/Foo.cs", vec![class_sym, fn_sym], ParseStatus::Parsed);
+        // Asking specifically for "fn" should return the function, not the class
+        match resolve_symbol_selector(&file, "Foo", Some("fn"), None) {
+            SymbolSelectorMatch::Selected(idx, sym) => {
+                assert_eq!(idx, 1);
+                assert_eq!(sym.kind, SymbolKind::Function);
+            }
+            _ => panic!("Expected Selected for explicit kind filter"),
+        }
+    }
+
+    #[test]
+    fn test_resolve_selector_three_way_picks_highest_tier() {
+        // Class (tier 1) + Module (tier 2) + Function (tier 3) => Class wins
+        use super::{resolve_symbol_selector, SymbolSelectorMatch};
+        let fn_sym = SymbolRecord {
+            kind: SymbolKind::Function,
+            line_range: (30, 40),
+            ..make_symbol("Foo")
+        };
+        let mod_sym = SymbolRecord {
+            kind: SymbolKind::Module,
+            line_range: (0, 50),
+            ..make_symbol("Foo")
+        };
+        let class_sym = SymbolRecord {
+            kind: SymbolKind::Class,
+            line_range: (10, 25),
+            ..make_symbol("Foo")
+        };
+        // Intentionally not in tier order to test sorting
+        let file = make_indexed_file(
+            "src/Foo.cs",
+            vec![fn_sym, mod_sym, class_sym],
+            ParseStatus::Parsed,
+        );
+        match resolve_symbol_selector(&file, "Foo", None, None) {
+            SymbolSelectorMatch::Selected(idx, sym) => {
+                assert_eq!(idx, 2); // class_sym is at index 2 in the vec
+                assert_eq!(sym.kind, SymbolKind::Class);
+            }
+            other => panic!(
+                "Expected Selected for Class in 3-way, got {:?}",
+                match other {
+                    SymbolSelectorMatch::Ambiguous(v) => format!("Ambiguous({v:?})"),
+                    SymbolSelectorMatch::NotFound => "NotFound".to_string(),
+                    _ => unreachable!(),
+                }
+            ),
+        }
     }
 }
