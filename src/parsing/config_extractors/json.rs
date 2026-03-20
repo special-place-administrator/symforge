@@ -86,6 +86,7 @@ fn strip_json_comments(input: &[u8]) -> Vec<u8> {
 
     out
 }
+
 impl ConfigExtractor for JsonExtractor {
     fn extract(&self, content: &[u8]) -> ExtractionResult {
         let stripped = strip_json_comments(content);
