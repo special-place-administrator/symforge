@@ -739,11 +739,19 @@ fn parse_language_filter(input: Option<&str>) -> Result<Option<LanguageId>, Stri
         "dart" => Some(LanguageId::Dart),
         "perl" => Some(LanguageId::Perl),
         "elixir" => Some(LanguageId::Elixir),
+        "json" => Some(LanguageId::Json),
+        "toml" => Some(LanguageId::Toml),
+        "yaml" => Some(LanguageId::Yaml),
+        "markdown" | "md" => Some(LanguageId::Markdown),
+        "env" => Some(LanguageId::Env),
+        "html" => Some(LanguageId::Html),
+        "css" => Some(LanguageId::Css),
+        "scss" => Some(LanguageId::Scss),
         _ => None,
     };
 
     parsed.map(Some).ok_or_else(|| {
-        "Unsupported language filter. Use one of: Rust, Python, JavaScript, TypeScript, Go, Java, C, C++, C#, Ruby, PHP, Swift, Kotlin, Dart, Perl, Elixir.".to_string()
+        "Unsupported language filter. Use one of: Rust, Python, JavaScript, TypeScript, Go, Java, C, C++, C#, Ruby, PHP, Swift, Kotlin, Dart, Perl, Elixir, JSON, TOML, YAML, Markdown, Env, HTML, CSS, SCSS.".to_string()
     })
 }
 
@@ -9718,6 +9726,93 @@ mod tests {
         ];
         let result = super::filter_paths_by_prefix_and_language(paths, None, None, true).unwrap();
         assert_eq!(result, vec!["src/main.rs", "src/lib.rs"]);
+    }
+
+    #[test]
+    fn test_parse_language_filter_frontend_and_data_languages() {
+        use super::parse_language_filter;
+        use crate::domain::index::LanguageId;
+
+        // Frontend languages previously missing from the filter
+        assert_eq!(
+            parse_language_filter(Some("html")),
+            Ok(Some(LanguageId::Html))
+        );
+        assert_eq!(
+            parse_language_filter(Some("HTML")),
+            Ok(Some(LanguageId::Html))
+        );
+        assert_eq!(
+            parse_language_filter(Some("css")),
+            Ok(Some(LanguageId::Css))
+        );
+        assert_eq!(
+            parse_language_filter(Some("CSS")),
+            Ok(Some(LanguageId::Css))
+        );
+        assert_eq!(
+            parse_language_filter(Some("scss")),
+            Ok(Some(LanguageId::Scss))
+        );
+        assert_eq!(
+            parse_language_filter(Some("SCSS")),
+            Ok(Some(LanguageId::Scss))
+        );
+
+        // Data / config languages previously missing
+        assert_eq!(
+            parse_language_filter(Some("json")),
+            Ok(Some(LanguageId::Json))
+        );
+        assert_eq!(
+            parse_language_filter(Some("JSON")),
+            Ok(Some(LanguageId::Json))
+        );
+        assert_eq!(
+            parse_language_filter(Some("toml")),
+            Ok(Some(LanguageId::Toml))
+        );
+        assert_eq!(
+            parse_language_filter(Some("TOML")),
+            Ok(Some(LanguageId::Toml))
+        );
+        assert_eq!(
+            parse_language_filter(Some("yaml")),
+            Ok(Some(LanguageId::Yaml))
+        );
+        assert_eq!(
+            parse_language_filter(Some("YAML")),
+            Ok(Some(LanguageId::Yaml))
+        );
+        assert_eq!(
+            parse_language_filter(Some("markdown")),
+            Ok(Some(LanguageId::Markdown))
+        );
+        assert_eq!(
+            parse_language_filter(Some("md")),
+            Ok(Some(LanguageId::Markdown))
+        );
+        assert_eq!(
+            parse_language_filter(Some("env")),
+            Ok(Some(LanguageId::Env))
+        );
+
+        // Existing languages still work
+        assert_eq!(
+            parse_language_filter(Some("Rust")),
+            Ok(Some(LanguageId::Rust))
+        );
+        assert_eq!(
+            parse_language_filter(Some("TypeScript")),
+            Ok(Some(LanguageId::TypeScript))
+        );
+
+        // Empty / None returns Ok(None)
+        assert_eq!(parse_language_filter(None), Ok(None));
+        assert_eq!(parse_language_filter(Some("")), Ok(None));
+
+        // Unknown language returns an error
+        assert!(parse_language_filter(Some("COBOL")).is_err());
     }
 
     #[test]

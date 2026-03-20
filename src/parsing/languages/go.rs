@@ -114,11 +114,33 @@ fn extract_var_declarations(
 }
 
 fn find_name(node: &Node, source: &str) -> Option<String> {
+    // For method_declaration, the receiver's parameter_list contains an
+    // identifier that would match before the method's field_identifier.
+    // Skip the receiver and look for field_identifier directly.
+    if node.kind() == "method_declaration" {
+        return find_method_name(node, source);
+    }
     find_first_named_child(
         node,
         source,
         &["identifier", "type_identifier", "field_identifier"],
     )
+}
+
+/// Extract method name from a Go method_declaration node.
+/// The grammar structure is: receiver(parameter_list) + name(field_identifier) + ...
+/// We need the top-level field_identifier, not the identifier inside the receiver.
+fn find_method_name(node: &Node, source: &str) -> Option<String> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "field_identifier" {
+            let text = source[child.start_byte()..child.end_byte()].trim();
+            if !text.is_empty() {
+                return Some(text.to_string());
+            }
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------

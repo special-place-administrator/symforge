@@ -267,4 +267,42 @@ mod tests {
         let symbols = parse_scss("");
         assert!(symbols.is_empty(), "empty file should produce zero symbols");
     }
+
+    #[test]
+    fn test_scss_variable_with_default_flag() {
+        // PrimeNG pattern: $variable: value !default;
+        let symbols = parse_scss("$primary-color: blue !default;");
+        let var = symbols.iter().find(|s| s.kind == SymbolKind::Variable);
+        assert!(
+            var.is_some(),
+            "should extract $variable with !default as Variable, got: {:?}",
+            symbols
+        );
+        assert_eq!(var.unwrap().name, "$primary-color");
+    }
+
+    #[test]
+    fn test_scss_node_dump_default() {
+        // Dump tree for debugging — helps identify node kind for !default pattern
+        let mut parser = tree_sitter::Parser::new();
+        let lang: tree_sitter::Language = tree_sitter_scss::language().into();
+        parser.set_language(&lang).expect("set SCSS language");
+        let source = "$primary-color: blue !default;";
+        let tree = parser.parse(source, None).expect("parse");
+
+        fn dump(node: &tree_sitter::Node, source: &str, indent: usize) -> String {
+            let text = node.utf8_text(source.as_bytes()).unwrap_or("?");
+            let short = if text.len() > 30 { &text[..30] } else { text };
+            let mut s = format!("{}{} => {:?}\n", "  ".repeat(indent), node.kind(), short);
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                s.push_str(&dump(&child, source, indent + 1));
+            }
+            s
+        }
+
+        let dump_str = dump(&tree.root_node(), source, 0);
+        println!("\n{}", dump_str);
+        // Always passes — just for inspection
+    }
 }
