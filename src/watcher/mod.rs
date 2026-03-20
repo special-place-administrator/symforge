@@ -528,10 +528,7 @@ pub async fn run_watcher(
                         last_reconcile = Instant::now();
                     }
 
-                    match handle
-                        .event_rx
-                        .recv_timeout(Duration::from_millis(RECV_TIMEOUT_MS))
-                    {
+                    match handle.event_rx.try_recv() {
                         Ok(Ok(events)) => {
                             // Run process_events in spawn_blocking to avoid
                             // starving tokio worker threads during file I/O
@@ -596,12 +593,12 @@ pub async fn run_watcher(
                                 break;
                             }
                         }
-                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                            // No event within the poll window — block_in_place already
-                            // informed tokio that this thread was blocking, so the
-                            // executor can compensate. No explicit yield needed.
+                        Err(std::sync::mpsc::TryRecvError::Empty) => {
+                            // No event ready — yield to tokio async executor
+                            // instead of blocking the worker thread.
+                            tokio::time::sleep(Duration::from_millis(RECV_TIMEOUT_MS)).await;
                         }
-                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                             // Channel closed — debouncer dropped or OS watcher died
                             warn!("watcher: event channel closed, restarting");
                             break;
