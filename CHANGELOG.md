@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.8.0](https://github.com/special-place-administrator/symforge/compare/v1.7.0...v1.8.0) (2026-03-20)
+
+
+### Features
+
+* **01-01:** implement kind-tier disambiguation in resolve_symbol_selector ([2e11ac4](https://github.com/special-place-administrator/symforge/commit/2e11ac4985e690e034da2982fcf3b900d734d30b))
+* **02-01:** hook diagnostics — verbose mode, port-missing vs stale, one-time hint ([4547428](https://github.com/special-place-administrator/symforge/commit/4547428aeb984e727947ea94a3f0e40451060216))
+* RTK adoption milestone — symbol disambiguation tests, hook diagnostics, docs links ([9bc3ead](https://github.com/special-place-administrator/symforge/commit/9bc3ead5c49813998a9987b3e2066398313d48db))
+
+
+### Bug Fixes
+
+* wrap env var manipulation in unsafe blocks for Rust 2024 edition compliance ([c363499](https://github.com/special-place-administrator/symforge/commit/c3634999e2c91fcbc57a2fb92decc5f6a217a77f))
+
 ## [1.7.0](https://github.com/special-place-administrator/symforge/compare/v1.6.0...v1.7.0) (2026-03-20)
 
 
