@@ -1537,7 +1537,7 @@ impl SymForgeServer {
                     .collect::<Vec<_>>()
             };
 
-            return captured
+            let output = captured
                 .into_iter()
                 .map(|entry| match entry {
                     CapturedGetSymbolsEntry::SymbolLookup { file, name, kind } => {
@@ -1564,6 +1564,8 @@ impl SymForgeServer {
                 })
                 .collect::<Vec<_>>()
                 .join("\n---\n");
+            self.record_tool_savings((output.len() * 5 / 4) as u64, (output.len() / 4) as u64);
+            return output;
         }
 
         // Single mode: path + name
@@ -1579,14 +1581,16 @@ impl SymForgeServer {
                     &params.0.name,
                     params.0.kind.as_deref(),
                 );
-                format!(
+                let output = format!(
                     "{body}{}",
                     format::compact_next_step_hint(&[
                         "get_symbol_context (callers/callees/types)",
                         "find_references (usages)",
                         "edit_within_symbol / replace_symbol_body (edits)",
                     ])
-                )
+                );
+                self.record_tool_savings((output.len() * 5 / 4) as u64, (output.len() / 4) as u64);
+                output
             }
             None => format::not_found_file(&params.0.path),
         }
@@ -2036,7 +2040,9 @@ impl SymForgeServer {
             "get_symbol_context (callers/callees)",
             "get_file_context (file overview)",
         ]);
-        format!("{output}{hint}")
+        let output = format!("{output}{hint}");
+        self.record_tool_savings((output.len() * 10 / 4) as u64, (output.len() / 4) as u64);
+        output
     }
 
     /// Full-text search across file contents — literal, OR-terms, or regex. Shows matches with
@@ -2587,10 +2593,15 @@ impl SymForgeServer {
             guard.capture_shared_file_for_scope(&options.path_scope)
         };
         match file {
-            Some(file) => format::file_content_from_indexed_file_with_context(
-                file.as_ref(),
-                options.content_context,
-            ),
+            Some(file) => {
+                let raw_chars = file.as_ref().content.len();
+                let output = format::file_content_from_indexed_file_with_context(
+                    file.as_ref(),
+                    options.content_context,
+                );
+                self.record_tool_savings((raw_chars / 4) as u64, (output.len() / 4) as u64);
+                output
+            }
             None => {
                 // Not in index — try raw disk read for non-source files
                 // (Cargo.toml, package.json, workflow YAMLs, etc.)
@@ -2751,9 +2762,15 @@ impl SymForgeServer {
         };
         match result {
             Ok(view) if input.compact.unwrap_or(false) => {
-                format::find_references_compact_view(&view, &input.name, &limits)
+                let output = format::find_references_compact_view(&view, &input.name, &limits);
+                self.record_tool_savings((output.len() * 8 / 4) as u64, (output.len() / 4) as u64);
+                output
             }
-            Ok(view) => format::find_references_result_view(&view, &input.name, &limits),
+            Ok(view) => {
+                let output = format::find_references_result_view(&view, &input.name, &limits);
+                self.record_tool_savings((output.len() * 8 / 4) as u64, (output.len() / 4) as u64);
+                output
+            }
             Err(error) => error,
         }
     }
@@ -3130,6 +3147,7 @@ impl SymForgeServer {
             ));
         }
 
+        self.record_tool_savings((output.len() * 10 / 4) as u64, (output.len() / 4) as u64);
         output
     }
 
@@ -3210,13 +3228,15 @@ impl SymForgeServer {
             return format!("No file changes found between {base} and {target}.");
         }
 
-        format::diff_symbols_result_view(
+        let output = format::diff_symbols_result_view(
             base,
             target,
             &changed_files,
             &repo,
             params.0.compact.unwrap_or(false),
-        )
+        );
+        self.record_tool_savings((output.len() * 5 / 4) as u64, (output.len() / 4) as u64);
+        output
     }
 
     // ─── Edit tools (Tier 1) ─────────────────────────────────────────────────
@@ -8453,6 +8473,7 @@ mod tests {
             kind: None,
             symbol_line: None,
             new_body: "fn hello() {\n    println!(\"HELLO\");\n}".to_string(),
+            dry_run: None,
         };
         let result = server.replace_symbol_body(Parameters(input)).await;
         assert!(result.contains("replaced"), "result was: {result}");
@@ -8481,6 +8502,7 @@ mod tests {
             kind: None,
             symbol_line: None,
             new_body: "fn inner() {\n    new_body();\n}".to_string(),
+            dry_run: None,
         };
         let result = server.replace_symbol_body(Parameters(input)).await;
         assert!(result.contains("replaced"), "result: {result}");
@@ -8504,6 +8526,7 @@ mod tests {
             kind: None,
             symbol_line: None,
             new_body: "fn foo() {}".to_string(),
+            dry_run: None,
         };
         let result = server.replace_symbol_body(Parameters(input)).await;
         assert!(
@@ -8524,6 +8547,7 @@ mod tests {
             symbol_line: None,
             content: "fn world() {\n    println!(\"world\");\n}".to_string(),
             position: None, // defaults to "after"
+            dry_run: None,
         };
         let result = server.insert_symbol(Parameters(input)).await;
         assert!(result.contains("inserted"), "result: {result}");
@@ -8550,6 +8574,7 @@ mod tests {
             symbol_line: None,
             content: "fn hello() {\n    println!(\"hello\");\n}".to_string(),
             position: Some("before".to_string()),
+            dry_run: None,
         };
         let result = server.insert_symbol(Parameters(input)).await;
         assert!(result.contains("inserted"), "result: {result}");
@@ -8571,6 +8596,7 @@ mod tests {
             name: "hello".to_string(),
             kind: None,
             symbol_line: None,
+                    dry_run: None,
         };
         let result = server.delete_symbol(Parameters(input)).await;
         assert!(result.contains("deleted"), "result: {result}");
@@ -8632,6 +8658,7 @@ mod tests {
             old_text: "\"hello\"".to_string(),
             new_text: "\"HELLO\"".to_string(),
             replace_all: false,
+            dry_run: None,
         };
         let result = server.edit_within_symbol(Parameters(input)).await;
         assert!(result.contains("edited within"), "result: {result}");
@@ -8655,9 +8682,97 @@ mod tests {
             old_text: "nonexistent".to_string(),
             new_text: "replacement".to_string(),
             replace_all: false,
+            dry_run: None,
         };
         let result = server.edit_within_symbol(Parameters(input)).await;
         assert!(result.contains("not found within"), "result: {result}");
+    }
+
+
+    #[tokio::test]
+    async fn test_replace_symbol_body_dry_run_skips_write() {
+        let original = b"fn foo() { old }\n";
+        let (_dir, server, file_path) = setup_edit_test(original);
+
+        let result = server
+            .replace_symbol_body(Parameters(crate::protocol::edit::ReplaceSymbolBodyInput {
+                path: "src/lib.rs".to_string(),
+                name: "foo".to_string(),
+                kind: None,
+                symbol_line: None,
+                new_body: "fn foo() { new }".to_string(),
+                dry_run: Some(true),
+            }))
+            .await;
+
+        assert!(result.contains("[DRY RUN]"), "should show dry run: {result}");
+        let on_disk = std::fs::read_to_string(&file_path).unwrap();
+        assert!(on_disk.contains("old"), "file should be unchanged: {on_disk}");
+    }
+
+    #[tokio::test]
+    async fn test_insert_symbol_dry_run_skips_write() {
+        let original = b"fn anchor() {}\n";
+        let (_dir, server, file_path) = setup_edit_test(original);
+
+        let result = server
+            .insert_symbol(Parameters(crate::protocol::edit::InsertSymbolInput {
+                path: "src/lib.rs".to_string(),
+                name: "anchor".to_string(),
+                kind: None,
+                symbol_line: None,
+                content: "fn new_fn() {}".to_string(),
+                position: Some("after".to_string()),
+                dry_run: Some(true),
+            }))
+            .await;
+
+        assert!(result.contains("[DRY RUN]"), "should show dry run: {result}");
+        let on_disk = std::fs::read_to_string(&file_path).unwrap();
+        assert!(!on_disk.contains("new_fn"), "file should be unchanged: {on_disk}");
+    }
+
+    #[tokio::test]
+    async fn test_delete_symbol_dry_run_skips_write() {
+        let original = b"fn target() {}\nfn keep() {}\n";
+        let (_dir, server, file_path) = setup_edit_test(original);
+
+        let result = server
+            .delete_symbol(Parameters(crate::protocol::edit::DeleteSymbolInput {
+                path: "src/lib.rs".to_string(),
+                name: "target".to_string(),
+                kind: None,
+                symbol_line: None,
+                dry_run: Some(true),
+            }))
+            .await;
+
+        assert!(result.contains("[DRY RUN]"), "should show dry run: {result}");
+        let on_disk = std::fs::read_to_string(&file_path).unwrap();
+        assert!(on_disk.contains("target"), "file should be unchanged: {on_disk}");
+    }
+
+    #[tokio::test]
+    async fn test_edit_within_symbol_dry_run_skips_write() {
+        let original = b"fn foo() { old_text }\n";
+        let (_dir, server, file_path) = setup_edit_test(original);
+
+        let result = server
+            .edit_within_symbol(Parameters(crate::protocol::edit::EditWithinSymbolInput {
+                path: "src/lib.rs".to_string(),
+                name: "foo".to_string(),
+                kind: None,
+                symbol_line: None,
+                old_text: "old_text".to_string(),
+                new_text: "new_text".to_string(),
+                replace_all: false,
+                dry_run: Some(true),
+            }))
+            .await;
+
+        assert!(result.contains("[DRY RUN]"), "should show dry run: {result}");
+        let on_disk = std::fs::read_to_string(&file_path).unwrap();
+        assert!(on_disk.contains("old_text"), "file should be unchanged: {on_disk}");
     }
 
     // ── Tier 2 batch tool integration tests ──
