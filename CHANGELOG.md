@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.0.2](https://github.com/special-place-administrator/symforge/compare/v2.0.1...v2.0.2) (2026-03-20)
+
+
+### Bug Fixes
+
+* resolve 4 bugs from code review ([31b9a0c](https://github.com/special-place-administrator/symforge/commit/31b9a0c78b5576262c74946adaf00aad8262ebcb))
+* wave 1 audit remediation — 12 safety and correctness fixes ([b02bd12](https://github.com/special-place-administrator/symforge/commit/b02bd1203ba78ee404e204dda80ae54328ba3642))
+
 ## [2.0.1](https://github.com/special-place-administrator/symforge/compare/v2.0.0...v2.0.1) (2026-03-20)
 
 
