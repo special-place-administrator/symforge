@@ -2117,7 +2117,7 @@ pub fn find_dependents_mermaid(
 
     for file in view.files.iter().take(limits.max_files) {
         let dep_id = mermaid_node_id(&file.file_path);
-        let ref_count = file.lines.len().min(limits.max_per_file);
+        let ref_count = file.lines.len();
         lines.push(format!(
             "    {dep_id}[\"{}\"] -->|{} refs| {target_id}",
             file.file_path, ref_count
@@ -2148,7 +2148,7 @@ pub fn find_dependents_dot(view: &FindDependentsView, path: &str, limits: &Outpu
     ));
 
     for file in view.files.iter().take(limits.max_files) {
-        let ref_count = file.lines.len().min(limits.max_per_file);
+        let ref_count = file.lines.len();
         lines.push(format!(
             "    \"{}\" -> \"{}\" [label=\"{} refs\"];",
             dot_escape(&file.file_path),
@@ -4949,6 +4949,56 @@ mod tests {
         let view = index.capture_find_dependents_view("src/db.rs");
         let result = find_dependents_dot(&view, "src/db.rs", &OutputLimits::default());
         assert_eq!(result, "No dependents found for \"src/db.rs\"");
+    }
+
+    #[test]
+    fn test_find_dependents_mermaid_shows_true_ref_count_not_capped() {
+        // Construct a view directly with 5 lines, but set max_per_file=2.
+        // The mermaid label should show "5 refs" (the true total), not "2 refs".
+        use crate::live_index::query::{DependentFileView, DependentLineView, FindDependentsView};
+        let lines: Vec<DependentLineView> = (1..=5)
+            .map(|i| DependentLineView {
+                line_number: i,
+                line_content: format!("use crate::db; // ref {i}"),
+                kind: "import".to_string(),
+            })
+            .collect();
+        let view = FindDependentsView {
+            files: vec![DependentFileView {
+                file_path: "src/handler.rs".to_string(),
+                lines,
+            }],
+        };
+        let limits = OutputLimits::new(20, 2); // max_per_file=2, but 5 actual refs
+        let result = find_dependents_mermaid(&view, "src/db.rs", &limits);
+        assert!(
+            result.contains("5 refs"),
+            "mermaid label should show true ref count (5), not capped at max_per_file (2). Got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_find_dependents_dot_shows_true_ref_count_not_capped() {
+        use crate::live_index::query::{DependentFileView, DependentLineView, FindDependentsView};
+        let lines: Vec<DependentLineView> = (1..=5)
+            .map(|i| DependentLineView {
+                line_number: i,
+                line_content: format!("use crate::db; // ref {i}"),
+                kind: "import".to_string(),
+            })
+            .collect();
+        let view = FindDependentsView {
+            files: vec![DependentFileView {
+                file_path: "src/handler.rs".to_string(),
+                lines,
+            }],
+        };
+        let limits = OutputLimits::new(20, 2);
+        let result = find_dependents_dot(&view, "src/db.rs", &limits);
+        assert!(
+            result.contains("5 refs"),
+            "dot label should show true ref count (5), not capped at max_per_file (2). Got: {result}"
+        );
     }
 
     // ─── context_bundle_result tests ──────────────────────────────────────

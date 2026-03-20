@@ -433,19 +433,67 @@ impl SharedIndexHandle {
                 .write()
                 .insert(path.clone(), snapshot);
         }
-        live.update_file(path, file);
+        let path_clone = path.clone();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            live.update_file(path, file);
+        }));
+        if let Err(panic_info) = result {
+            let msg = panic_info
+                .downcast_ref::<String>()
+                .map(|s| s.as_str())
+                .or_else(|| panic_info.downcast_ref::<&str>().copied())
+                .unwrap_or("unknown");
+            tracing::error!(
+                "index mutation panicked for '{}': {} — repairing",
+                path_clone,
+                msg
+            );
+            live.repair_file_indices(&path_clone);
+        }
         self.publish_locked(&live);
     }
 
     pub fn add_file(&self, path: String, file: IndexedFile) {
         let mut live = self.live.write();
-        live.add_file(path, file);
+        let path_clone = path.clone();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            live.add_file(path, file);
+        }));
+        if let Err(panic_info) = result {
+            let msg = panic_info
+                .downcast_ref::<String>()
+                .map(|s| s.as_str())
+                .or_else(|| panic_info.downcast_ref::<&str>().copied())
+                .unwrap_or("unknown");
+            tracing::error!(
+                "index add panicked for '{}': {} — repairing",
+                path_clone,
+                msg
+            );
+            live.repair_file_indices(&path_clone);
+        }
         self.publish_locked(&live);
     }
 
     pub fn remove_file(&self, path: &str) {
         let mut live = self.live.write();
-        live.remove_file(path);
+        let path_owned = path.to_string();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            live.remove_file(path);
+        }));
+        if let Err(panic_info) = result {
+            let msg = panic_info
+                .downcast_ref::<String>()
+                .map(|s| s.as_str())
+                .or_else(|| panic_info.downcast_ref::<&str>().copied())
+                .unwrap_or("unknown");
+            tracing::error!(
+                "index remove panicked for '{}': {} — repairing",
+                path_owned,
+                msg
+            );
+            live.repair_file_indices(&path_owned);
+        }
         self.publish_locked(&live);
     }
 
@@ -1076,12 +1124,38 @@ impl LiveIndex {
     /// Updates `loaded_at_system` to reflect the mutation time.
     /// If the file already exists, its entry is replaced atomically.
     pub fn update_file(&mut self, path: String, file: IndexedFile) {
-        if self.files.contains_key(&path) {
+        // Capture old reference names BEFORE replacing the file, so we can
+        // clean up stale reverse index entries after the insert.
+        let old_ref_names: Vec<String> = self
+            .files
+            .get(&path)
+            .map(|f| f.references.iter().map(|r| r.name.clone()).collect())
+            .unwrap_or_default();
+        let had_existing = !old_ref_names.is_empty() || self.files.contains_key(&path);
+
+        // SAFETY: Insert the new file into the primary store FIRST.
+        // This ensures the file is always present in `self.files` even if
+        // auxiliary index updates panic (e.g., from concurrent access or
+        // gitignore assertion failures). Auxiliary indices may become
+        // temporarily stale, but the file won't vanish from the index.
+        self.files.insert(path.clone(), Arc::new(file));
+
+        // Clean up old auxiliary indices using captured state.
+        if had_existing {
             self.remove_path_indices_for_path(&path);
         }
-        self.trigram_index.update_file(&path, &file.content);
-        self.remove_reverse_index_for_path(&path);
-        self.files.insert(path.clone(), Arc::new(file));
+        // Remove old reverse index entries using the captured old reference names
+        // (not the new file's references, which are already in self.files).
+        for name in &old_ref_names {
+            if let Some(locs) = self.reverse_index.get_mut(name) {
+                locs.retain(|loc| loc.file_path != path);
+                if locs.is_empty() {
+                    self.reverse_index.remove(name);
+                }
+            }
+        }
+        self.trigram_index
+            .update_file(&path, &self.files[&path].content);
         self.insert_reverse_index_for_path(&path);
         self.insert_path_indices_for_path(&path);
         self.is_empty = false;
@@ -1158,6 +1232,37 @@ impl LiveIndex {
         let (by_basename, by_dir_component) = build_path_indices_from_files(&self.files);
         self.files_by_basename = by_basename;
         self.files_by_dir_component = by_dir_component;
+    }
+
+    /// Repair all auxiliary indices for a single file path after a panic or
+    /// detected corruption.
+    ///
+    /// Performs a thorough O(reverse_index_size) scan to remove ALL stale entries
+    /// pointing to this path, then rebuilds from the primary store. Only called
+    /// on the exceptional panic-recovery path, never during normal operations.
+    pub(crate) fn repair_file_indices(&mut self, path: &str) {
+        // 1. Thorough reverse index cleanup: scan ALL entries, not just those
+        //    matching current file references (old refs may differ from new).
+        self.reverse_index.retain(|_name, locs| {
+            locs.retain(|loc| loc.file_path != path);
+            !locs.is_empty()
+        });
+
+        // 2. Remove path indices (basename + dir component).
+        self.remove_path_indices_for_path(path);
+
+        // 3. Rebuild from primary store state.
+        if self.files.contains_key(path) {
+            if let Some(file) = self.files.get(path) {
+                self.trigram_index.update_file(path, &file.content);
+            }
+            self.insert_reverse_index_for_path(path);
+            self.insert_path_indices_for_path(path);
+        } else {
+            self.trigram_index.remove_file(path);
+        }
+
+        tracing::info!("repaired auxiliary indices for '{path}'");
     }
 
     fn insert_path_indices_for_path(&mut self, path: &str) {

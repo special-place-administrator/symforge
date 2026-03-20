@@ -985,8 +985,9 @@ pub(crate) fn repo_map_text(state: &SidecarState) -> Result<String, StatusCode> 
         }
     }
 
-    // Apply budget (500 tokens = 2000 bytes).
-    let (text, _) = build_with_budget(&lines, 2000);
+    // Apply budget (1000 tokens = 4000 bytes).
+    // Medium repos (up to ~70 directories) fit without truncation.
+    let (text, _) = build_with_budget(&lines, 4000);
 
     Ok(text)
 }

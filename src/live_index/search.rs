@@ -384,10 +384,16 @@ impl NoisePolicy {
         }
 
         // 3. Gitignore catch-all
+        // The `ignore` crate asserts that paths are relative (!path.has_root()).
+        // Guard against absolute paths reaching here (e.g., from watcher events
+        // or concurrent agents passing unsanitized paths).
         if let Some(gi) = gitignore {
-            let matched = gi.matched_path_or_any_parents(path, false);
-            if matched.is_ignore() {
-                return NoiseClass::Ignored;
+            let p = std::path::Path::new(path);
+            if !p.has_root() {
+                let matched = gi.matched_path_or_any_parents(path, false);
+                if matched.is_ignore() {
+                    return NoiseClass::Ignored;
+                }
             }
         }
 
@@ -754,7 +760,32 @@ pub fn search_symbols_with_options(
         {
             continue;
         }
+        // Precompute test module byte ranges so we can skip symbols inside
+        // inline `mod tests` blocks even when the file itself is not a test file.
+        let test_module_ranges: Vec<(u32, u32)> =
+            if !options.noise_policy.include_tests && !file.classification.is_test {
+                file.symbols
+                    .iter()
+                    .filter(|s| {
+                        s.kind == crate::domain::SymbolKind::Module
+                            && matches!(s.name.as_str(), "tests" | "test")
+                    })
+                    .map(|s| s.byte_range)
+                    .collect()
+            } else {
+                vec![]
+            };
+
         for sym in &file.symbols {
+            // Skip symbols inside inline test modules (e.g. `mod tests { struct T; }`)
+            if !test_module_ranges.is_empty()
+                && test_module_ranges
+                    .iter()
+                    .any(|&(start, end)| sym.byte_range.0 >= start && sym.byte_range.1 <= end)
+            {
+                continue;
+            }
+
             if let Some(filter) = kind_filter
                 && !filter.eq_ignore_ascii_case("all")
                 && !sym.kind.to_string().eq_ignore_ascii_case(filter)
