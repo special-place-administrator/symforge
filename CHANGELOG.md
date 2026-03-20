@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.9](https://github.com/special-place-administrator/symforge/compare/v2.0.8...v2.0.9) (2026-03-20)
+
+
+### Bug Fixes
+
+* CSS @layer/[@container](https://github.com/container) extraction — use generic at_rule node kind ([97fc47f](https://github.com/special-place-administrator/symforge/commit/97fc47fd201c89888231e21e4f665d919c73b3fc))
+
 ## [2.0.8](https://github.com/special-place-administrator/symforge/compare/v2.0.7...v2.0.8) (2026-03-20)
 
 
