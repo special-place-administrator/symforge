@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.8](https://github.com/special-place-administrator/symforge/compare/v2.0.7...v2.0.8) (2026-03-20)
+
+
+### Bug Fixes
+
+* comprehensive codebase audit — 18 bug fixes across parsers, core engine, and protocol ([3b0cd44](https://github.com/special-place-administrator/symforge/commit/3b0cd442841748ebb30e05d2b23d13b57246ee5e))
+
 ## [2.0.7](https://github.com/special-place-administrator/symforge/compare/v2.0.6...v2.0.7) (2026-03-20)
 
 
