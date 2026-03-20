@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.9.0](https://github.com/special-place-administrator/symforge/compare/v1.8.1...v1.9.0) (2026-03-20)
+
+
+### Features
+
+* aggregate token savings across tool handlers ([25343e9](https://github.com/special-place-administrator/symforge/commit/25343e9b20774d3489ca9610955ca81aeda38e5b))
+* **edit:** add dry_run to replace_symbol_body, insert_symbol, delete_symbol, edit_within_symbol ([1f401d8](https://github.com/special-place-administrator/symforge/commit/1f401d82444bf19bd86746b2346b8aa3082f9880))
+* **find_dependents:** show symbol names in mermaid and dot edge labels ([e358b77](https://github.com/special-place-administrator/symforge/commit/e358b77697162cd859fd41f72a301ee23f64d5f3))
+* **get_repo_map:** paginate detail=full output with max_files parameter ([8c15c5d](https://github.com/special-place-administrator/symforge/commit/8c15c5d2bc55768123a754fa6a74c23bb9b6c131))
+* **health:** list failed files with error messages in health report ([7306089](https://github.com/special-place-administrator/symforge/commit/73060890c96058223dd04dffd91b06087fb4dd1a))
+* **json:** add JSONC comment stripping for tsconfig.json support ([c3c208f](https://github.com/special-place-administrator/symforge/commit/c3c208fb496449efe2cd14a7ee82562bd4088df9))
+* **search_text:** annotate which term matched in OR-term searches ([e53a7f7](https://github.com/special-place-administrator/symforge/commit/e53a7f748e55afe0983d4710b6375edc01058397))
+
+
+### Bug Fixes
+
+* **dependents:** filter false positives from non-pub symbol name collisions ([0bf3c77](https://github.com/special-place-administrator/symforge/commit/0bf3c77b1d41ea7ba383d18b83029ba15f0855a6))
+* **diff_symbols:** show omission note in compact mode when files have no symbol changes ([c6eade8](https://github.com/special-place-administrator/symforge/commit/c6eade8fc0770c042c26b9a0b258a7b619537e21))
+* **diff_symbols:** skip type keywords in C# const declarations ([00049d2](https://github.com/special-place-administrator/symforge/commit/00049d264058dafbbbb2ab72816cdfc8dd608164))
+* **find_references:** explain why classes/structs have no implementations ([7566e2a](https://github.com/special-place-administrator/symforge/commit/7566e2a3bc9a928d55b6266307738029d63487e9))
+* **get_file_content:** explain why zero-symbol files have no matches ([d4420f8](https://github.com/special-place-administrator/symforge/commit/d4420f8df45c949f6bc3be1731eca17fe620c7db))
+* **get_symbol_context:** auto-resolve path and show empty-references message ([8b4caf5](https://github.com/special-place-administrator/symforge/commit/8b4caf5b49e6ac402744b23eddd1926762421b62))
+* remediate reviewer feedback from external codebase testing ([80303a9](https://github.com/special-place-administrator/symforge/commit/80303a9a9558d05ad281740552fdc95b349270f3))
+* **test:** update assertion for changed zero-symbol message ([90a5722](https://github.com/special-place-administrator/symforge/commit/90a57229f697bfc541adc4d58ea35f1f2dc53295))
+
 ## [1.8.1](https://github.com/special-place-administrator/symforge/compare/v1.8.0...v1.8.1) (2026-03-20)
 
 
