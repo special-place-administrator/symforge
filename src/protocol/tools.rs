@@ -1645,13 +1645,19 @@ impl SymForgeServer {
                     let max_files = params.0.max_files.unwrap_or(200) as usize;
                     if filtered_view.files.len() > max_files {
                         let remaining = filtered_view.files.len() - max_files;
-                        let truncated_files: Vec<_> = filtered_view.files.iter().take(max_files).cloned().collect();
+                        let truncated_files: Vec<_> = filtered_view
+                            .files
+                            .iter()
+                            .take(max_files)
+                            .cloned()
+                            .collect();
                         let truncated_view = crate::live_index::query::RepoOutlineView {
                             total_files: filtered_view.total_files,
                             total_symbols: filtered_view.total_symbols,
                             files: truncated_files,
                         };
-                        let mut output = format::repo_outline_view(&truncated_view, &self.project_name);
+                        let mut output =
+                            format::repo_outline_view(&truncated_view, &self.project_name);
                         output.push_str(&format!(
                             "\n\n... and {} more files (increase max_files= to see more)",
                             remaining
@@ -1663,14 +1669,16 @@ impl SymForgeServer {
                 } else {
                     let max_files = params.0.max_files.unwrap_or(200) as usize;
                     if view.files.len() > max_files {
-                        let truncated_files: Vec<_> = view.files.iter().take(max_files).cloned().collect();
+                        let truncated_files: Vec<_> =
+                            view.files.iter().take(max_files).cloned().collect();
                         let remaining = view.files.len() - max_files;
                         let truncated_view = crate::live_index::query::RepoOutlineView {
                             total_files: view.total_files,
                             total_symbols: view.total_symbols,
                             files: truncated_files,
                         };
-                        let mut output = format::repo_outline_view(&truncated_view, &self.project_name);
+                        let mut output =
+                            format::repo_outline_view(&truncated_view, &self.project_name);
                         output.push_str(&format!(
                             "\n\n... and {} more files (use path= to scope or increase max_files=)",
                             remaining
@@ -2272,7 +2280,11 @@ impl SymForgeServer {
             }
         }
 
-        let output = format::search_text_result_view(result, params.0.group_by.as_deref(), params.0.terms.as_deref());
+        let output = format::search_text_result_view(
+            result,
+            params.0.group_by.as_deref(),
+            params.0.terms.as_deref(),
+        );
         let hint = format::compact_next_step_hint(&[
             "inspect_match (deep-dive one hit)",
             "get_file_context (file overview)",
@@ -3066,8 +3078,7 @@ impl SymForgeServer {
                 }
                 if let Some(ref lang) = lang_filter {
                     let ext = path.rsplit('.').next().unwrap_or("");
-                    if crate::domain::index::LanguageId::from_extension(ext).as_ref()
-                        != Some(lang)
+                    if crate::domain::index::LanguageId::from_extension(ext).as_ref() != Some(lang)
                     {
                         return false;
                     }
@@ -3466,7 +3477,10 @@ impl SymForgeServer {
             let old_bytes = (sym.byte_range.1 - sym.byte_range.0) as usize;
             return format!(
                 "[DRY RUN] Would replace `{}` in {} (old: {} bytes -> new: {} bytes)",
-                params.0.name, params.0.path, old_bytes, params.0.new_body.len()
+                params.0.name,
+                params.0.path,
+                old_bytes,
+                params.0.new_body.len()
             );
         }
         let old_bytes = (sym.byte_range.1 - sym.byte_range.0) as usize;
@@ -3573,7 +3587,10 @@ impl SymForgeServer {
         if params.0.dry_run == Some(true) {
             return format!(
                 "[DRY RUN] Would insert {} `{}` in {} ({} bytes of content)",
-                position, params.0.name, params.0.path, params.0.content.len()
+                position,
+                params.0.name,
+                params.0.path,
+                params.0.content.len()
             );
         }
         let line_ending = edit::detect_line_ending(&file.content);
@@ -4496,7 +4513,7 @@ mod tests {
                 },
             ],
         );
-        let target_file = make_file("src/target.rs", b"fn target() {}", vec![callee]);
+        let target_file = make_file("src/target.rs", b"pub fn target() {}", vec![callee]);
         let server = make_server(make_live_index_ready(vec![target_file, caller_file]));
 
         // Check caller.rs — should have "Imports from" section.
@@ -7590,6 +7607,8 @@ mod tests {
                 limit: Some(10),
                 depth: None,
                 include_noise: Some(true),
+                language: None,
+                path_prefix: None,
             }))
             .await;
         assert!(
@@ -8220,7 +8239,7 @@ mod tests {
         let import_ref = make_ref("target", None, ReferenceKind::Import, 0, None);
         let usage_ref = make_ref("TargetType", None, ReferenceKind::TypeUsage, 1, Some(0));
         let dep_sym = make_symbol("consumer", SymbolKind::Function, 0, 1);
-        let target_file = make_file("src/target.rs", b"struct TargetType {}\n", vec![target_sym]);
+        let target_file = make_file("src/target.rs", b"pub struct TargetType {}\n", vec![target_sym]);
         let dep_file = make_file_with_refs(
             "src/dep.rs",
             b"use target::TargetType;\nfn consumer() { TargetType }\n",
@@ -8242,6 +8261,99 @@ mod tests {
         assert!(
             result.contains("TargetType"),
             "mermaid edge should include symbol name: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_find_dependents_excludes_non_pub_name_collision() {
+        // target.rs defines a non-pub `run` function.
+        // other.rs imports from target (triggering the symbol_refs path) AND calls
+        // its own local `run` — same name, different function.
+        // Without the pub filter, the "run" Call ref would be falsely attributed to
+        // target.rs's symbol. With the pub filter, symbol_refs is empty and the
+        // result falls back to the import ref — "run" must not appear as attributed.
+        let target_sym = make_symbol("run", SymbolKind::Function, 0, 1);
+        let target_file = make_file(
+            "src/target.rs",
+            b"fn run() { internal }\n",
+            vec![target_sym],
+        );
+
+        let other_sym = make_symbol("main", SymbolKind::Function, 2, 4);
+        let other_import = make_ref("target", Some("crate::target"), ReferenceKind::Import, 0, None);
+        let other_call = make_ref("run", None, ReferenceKind::Call, 3, Some(0));
+        let other_file = make_file_with_refs(
+            "src/other.rs",
+            b"use crate::target;\nfn run() {}\nfn main() {\n    run();\n}\n",
+            vec![other_sym],
+            vec![other_import, other_call],
+        );
+
+        let server = make_server(make_live_index_ready(vec![target_file, other_file]));
+
+        let result = server
+            .find_dependents(Parameters(super::FindDependentsInput {
+                path: "src/target.rs".to_string(),
+                compact: None,
+                format: None,
+                limit: None,
+                max_per_file: None,
+            }))
+            .await;
+
+        // other.rs still appears as a dependent (via the import), but the
+        // non-pub "run" symbol must NOT be surfaced as an attributed reference.
+        assert!(
+            result.contains("src/other.rs"),
+            "other.rs should appear via the import ref: {result}"
+        );
+        assert!(
+            !result.contains("run"),
+            "non-pub 'run' collision must not be attributed as a symbol reference: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_find_dependents_includes_pub_symbol_references() {
+        let target_sym = make_symbol("PublicApi", SymbolKind::Struct, 0, 1);
+        let target_file = make_file(
+            "src/target.rs",
+            b"pub struct PublicApi {}\n",
+            vec![target_sym],
+        );
+
+        let consumer_sym = make_symbol("use_it", SymbolKind::Function, 1, 3);
+        let consumer_import = ReferenceRecord {
+            name: "target".to_string(),
+            qualified_name: Some("crate::target".to_string()),
+            kind: ReferenceKind::Import,
+            byte_range: (0, 20),
+            line_range: (0, 0),
+            enclosing_symbol_index: None,
+        };
+        let consumer_ref = make_ref("PublicApi", None, ReferenceKind::TypeUsage, 2, Some(0));
+        let consumer_file = make_file_with_refs(
+            "src/consumer.rs",
+            b"use crate::target;\nfn use_it() {\n    PublicApi {}\n}\n",
+            vec![consumer_sym],
+            vec![consumer_import, consumer_ref],
+        );
+
+        let server = make_server(make_live_index_ready(vec![target_file, consumer_file]));
+
+        let result = server
+            .find_dependents(Parameters(super::FindDependentsInput {
+                path: "src/target.rs".to_string(),
+                compact: None,
+                format: None,
+                limit: None,
+                max_per_file: None,
+            }))
+            .await;
+
+        assert!(
+            result.contains("src/consumer.rs"),
+            "pub symbol with import should be a real dependent: {result}"
         );
     }
 
@@ -8797,7 +8909,7 @@ mod tests {
             name: "hello".to_string(),
             kind: None,
             symbol_line: None,
-                    dry_run: None,
+            dry_run: None,
         };
         let result = server.delete_symbol(Parameters(input)).await;
         assert!(result.contains("deleted"), "result: {result}");
@@ -8889,7 +9001,6 @@ mod tests {
         assert!(result.contains("not found within"), "result: {result}");
     }
 
-
     #[tokio::test]
     async fn test_replace_symbol_body_dry_run_skips_write() {
         let original = b"fn foo() { old }\n";
@@ -8906,9 +9017,15 @@ mod tests {
             }))
             .await;
 
-        assert!(result.contains("[DRY RUN]"), "should show dry run: {result}");
+        assert!(
+            result.contains("[DRY RUN]"),
+            "should show dry run: {result}"
+        );
         let on_disk = std::fs::read_to_string(&file_path).unwrap();
-        assert!(on_disk.contains("old"), "file should be unchanged: {on_disk}");
+        assert!(
+            on_disk.contains("old"),
+            "file should be unchanged: {on_disk}"
+        );
     }
 
     #[tokio::test]
@@ -8928,9 +9045,15 @@ mod tests {
             }))
             .await;
 
-        assert!(result.contains("[DRY RUN]"), "should show dry run: {result}");
+        assert!(
+            result.contains("[DRY RUN]"),
+            "should show dry run: {result}"
+        );
         let on_disk = std::fs::read_to_string(&file_path).unwrap();
-        assert!(!on_disk.contains("new_fn"), "file should be unchanged: {on_disk}");
+        assert!(
+            !on_disk.contains("new_fn"),
+            "file should be unchanged: {on_disk}"
+        );
     }
 
     #[tokio::test]
@@ -8948,9 +9071,15 @@ mod tests {
             }))
             .await;
 
-        assert!(result.contains("[DRY RUN]"), "should show dry run: {result}");
+        assert!(
+            result.contains("[DRY RUN]"),
+            "should show dry run: {result}"
+        );
         let on_disk = std::fs::read_to_string(&file_path).unwrap();
-        assert!(on_disk.contains("target"), "file should be unchanged: {on_disk}");
+        assert!(
+            on_disk.contains("target"),
+            "file should be unchanged: {on_disk}"
+        );
     }
 
     #[tokio::test]
@@ -8971,9 +9100,15 @@ mod tests {
             }))
             .await;
 
-        assert!(result.contains("[DRY RUN]"), "should show dry run: {result}");
+        assert!(
+            result.contains("[DRY RUN]"),
+            "should show dry run: {result}"
+        );
         let on_disk = std::fs::read_to_string(&file_path).unwrap();
-        assert!(on_disk.contains("old_text"), "file should be unchanged: {on_disk}");
+        assert!(
+            on_disk.contains("old_text"),
+            "file should be unchanged: {on_disk}"
+        );
     }
 
     // ── Tier 2 batch tool integration tests ──
