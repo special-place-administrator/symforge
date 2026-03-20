@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.7](https://github.com/special-place-administrator/symforge/compare/v2.0.6...v2.0.7) (2026-03-20)
+
+
+### Bug Fixes
+
+* symbol kind filter accepts semantic aliases (variable, function, etc.) ([2e80fb5](https://github.com/special-place-administrator/symforge/commit/2e80fb5cd96b441e256e4a7c7afb5fad20fbbfbe))
+
 ## [2.0.6](https://github.com/special-place-administrator/symforge/compare/v2.0.5...v2.0.6) (2026-03-20)
 
 
