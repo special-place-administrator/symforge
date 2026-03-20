@@ -101,8 +101,25 @@ fn walk_node(
             );
             // Do NOT recurse — skip inner keyframe steps.
         }
-        // @import, @layer, @container — extract as Module symbols.
-        "import_statement" | "layer_statement" | "container_query_statement" => {
+        // @import — dedicated node in tree-sitter-css.
+        "import_statement" => {
+            let name = at_rule_name(node, source);
+            if !name.is_empty() {
+                push_symbol(
+                    node,
+                    source,
+                    name,
+                    SymbolKind::Module,
+                    depth,
+                    sort_order,
+                    symbols,
+                    &NO_DOC_SPEC,
+                );
+            }
+        }
+        // Generic at-rules: @layer, @container, @supports, @charset, etc.
+        // tree-sitter-css emits these as "at_rule" (no dedicated node kind).
+        "at_rule" => {
             let name = at_rule_name(node, source);
             if !name.is_empty() {
                 push_symbol(
@@ -253,5 +270,29 @@ mod tests {
     fn test_css_empty_file() {
         let symbols = parse_css("");
         assert!(symbols.is_empty(), "empty file should produce zero symbols");
+    }
+
+    #[test]
+    fn test_css_layer_extracted() {
+        let symbols = parse_css("@layer utilities { .mt-4 { margin-top: 1rem; } }");
+        let layer = symbols.iter().find(|s| s.name.contains("@layer"));
+        assert!(
+            layer.is_some(),
+            "should extract @layer as Module, got: {:?}",
+            symbols
+        );
+        assert_eq!(layer.unwrap().kind, SymbolKind::Module);
+    }
+
+    #[test]
+    fn test_css_import_extracted() {
+        let symbols = parse_css("@import url('base.css');");
+        let import = symbols.iter().find(|s| s.name.contains("@import"));
+        assert!(
+            import.is_some(),
+            "should extract @import as Module, got: {:?}",
+            symbols
+        );
+        assert_eq!(import.unwrap().kind, SymbolKind::Module);
     }
 }
