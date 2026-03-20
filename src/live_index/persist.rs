@@ -993,7 +993,7 @@ mod tests {
                 content: b"fn foo() {}".to_vec(),
                 symbols: vec![],
                 parse_status: ParseStatus::Parsed,
-            parse_diagnostic: None,
+                parse_diagnostic: None,
                 byte_len: 999, // wrong size — simulates change
                 content_hash: "old_hash".to_string(),
                 references: vec![],
@@ -1055,7 +1055,7 @@ mod tests {
                 content: b"fn ghost() {}".to_vec(),
                 symbols: vec![],
                 parse_status: ParseStatus::Parsed,
-            parse_diagnostic: None,
+                parse_diagnostic: None,
                 byte_len: 13,
                 content_hash: "hash".to_string(),
                 references: vec![],
@@ -1125,7 +1125,7 @@ mod tests {
                 content: b"fn original() {}".to_vec(), // old content
                 symbols: vec![],
                 parse_status: ParseStatus::Parsed,
-            parse_diagnostic: None,
+                parse_diagnostic: None,
                 byte_len: 16,
                 content_hash: crate::hash::digest_hex(b"fn original() {}"), // stale hash
                 references: vec![],
@@ -1179,7 +1179,7 @@ mod tests {
                 content: content.to_vec(),
                 symbols: vec![],
                 parse_status: ParseStatus::Parsed,
-            parse_diagnostic: None,
+                parse_diagnostic: None,
                 byte_len: content.len() as u64,
                 content_hash: hash,
                 references: vec![],

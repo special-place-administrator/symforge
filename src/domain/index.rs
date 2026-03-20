@@ -280,7 +280,6 @@ impl ParseDiagnostic {
     }
 }
 
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileProcessingResult {
     pub relative_path: String,
@@ -322,7 +321,10 @@ impl SymbolRecord {
     /// Returns the start byte of the full editable item when available.
     pub fn item_start(&self) -> u32 {
         self.item_byte_range.map_or_else(
-            || self.doc_byte_range.map_or(self.byte_range.0, |(start, _)| start),
+            || {
+                self.doc_byte_range
+                    .map_or(self.byte_range.0, |(start, _)| start)
+            },
             |(start, _)| start,
         )
     }

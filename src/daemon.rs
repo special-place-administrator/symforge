@@ -1641,7 +1641,9 @@ async fn execute_tool_call(
             .batch_insert(Parameters(decode_params::<BatchInsertInput>(params)?))
             .await),
         "validate_file_syntax" => Ok(server
-            .validate_file_syntax(Parameters(decode_params::<ValidateFileSyntaxInput>(params)?))
+            .validate_file_syntax(Parameters(decode_params::<ValidateFileSyntaxInput>(
+                params,
+            )?))
             .await),
         other => anyhow::bail!("unknown tool '{other}'"),
     }

@@ -2406,7 +2406,8 @@ impl SymForgeServer {
             }
         }
 
-        let adoption = crate::cli::hook::load_hook_adoption_snapshot(self.capture_repo_root().as_deref());
+        let adoption =
+            crate::cli::hook::load_hook_adoption_snapshot(self.capture_repo_root().as_deref());
         let adoption_section = format::format_hook_adoption(&adoption);
         if !adoption_section.is_empty() {
             result.push('\n');
@@ -2682,8 +2683,6 @@ impl SymForgeServer {
         let file = IndexedFile::from_parse_result(result, bytes);
         format::validate_file_syntax_result(&input.path, &file)
     }
-
-
 
     /// Find all references or implementations for a symbol. Modes: (1) default/references: call sites,
     /// imports, type usages grouped by file - set compact=true for ~60-75% smaller output. (2) mode='implementations':
@@ -3726,7 +3725,7 @@ mod tests {
                 content: content.to_vec(),
                 symbols,
                 parse_status: ParseStatus::Parsed,
-            parse_diagnostic: None,
+                parse_diagnostic: None,
                 byte_len: content.len() as u64,
                 content_hash: "test".to_string(),
                 references: vec![],
@@ -4022,7 +4021,10 @@ mod tests {
             !result.starts_with("Index"),
             "should not return guard message, got: {result}"
         );
-        assert!(result.contains("Tip:"), "should include next-step hint: {result}");
+        assert!(
+            result.contains("Tip:"),
+            "should include next-step hint: {result}"
+        );
     }
 
     #[tokio::test]
@@ -4129,7 +4131,10 @@ mod tests {
             result.contains("src"),
             "repo map should include directory breakdown; got: {result}"
         );
-        assert!(result.contains("Tip:"), "repo map should include next-step hint");
+        assert!(
+            result.contains("Tip:"),
+            "repo map should include next-step hint"
+        );
     }
 
     #[tokio::test]
@@ -4236,7 +4241,8 @@ mod tests {
             "[package]\nname = \"symforge\"\nversion = \"0.1.0\"\ninvalid = \"unterminated\n",
         )
         .expect("write malformed toml");
-        let server = make_server_with_root(make_live_index_empty(), Some(repo.path().to_path_buf()));
+        let server =
+            make_server_with_root(make_live_index_empty(), Some(repo.path().to_path_buf()));
 
         let result = server
             .validate_file_syntax(Parameters(super::ValidateFileSyntaxInput {
@@ -4749,7 +4755,10 @@ mod tests {
             result.contains("find_user"),
             "should find matching symbol, got: {result}"
         );
-        assert!(result.contains("Tip:"), "search_symbols should include next-step hint");
+        assert!(
+            result.contains("Tip:"),
+            "search_symbols should include next-step hint"
+        );
     }
 
     #[tokio::test]
@@ -5111,7 +5120,10 @@ mod tests {
             result.contains("find_user"),
             "should find matching text, got: {result}"
         );
-        assert!(result.contains("Tip:"), "search_text should include next-step hint");
+        assert!(
+            result.contains("Tip:"),
+            "search_text should include next-step hint"
+        );
     }
 
     #[tokio::test]

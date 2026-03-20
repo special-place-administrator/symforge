@@ -1803,10 +1803,7 @@ impl LiveIndex {
                 .collect();
 
             let unique_count = {
-                let mut names: Vec<&str> = refs
-                    .iter()
-                    .map(|(_, r)| r.name.as_str())
-                    .collect();
+                let mut names: Vec<&str> = refs.iter().map(|(_, r)| r.name.as_str()).collect();
                 names.sort_unstable();
                 names.dedup();
                 names.len()
@@ -1829,7 +1826,9 @@ impl LiveIndex {
                 let mut name_counts: std::collections::HashMap<&str, (usize, usize)> =
                     std::collections::HashMap::new();
                 for (idx, (_file_path, reference)) in refs.iter().enumerate() {
-                    let entry = name_counts.entry(reference.name.as_str()).or_insert((0, idx));
+                    let entry = name_counts
+                        .entry(reference.name.as_str())
+                        .or_insert((0, idx));
                     entry.0 += 1;
                 }
 
@@ -3548,7 +3547,7 @@ mod tests {
                     byte_range: (0, 30),
                     line_range: (0, 2),
                     doc_byte_range: None,
-                item_byte_range: None,
+                    item_byte_range: None,
                 },
                 SymbolRecord {
                     name: "helper".to_string(),
@@ -3558,7 +3557,7 @@ mod tests {
                     byte_range: (31, 45),
                     line_range: (3, 3),
                     doc_byte_range: None,
-                item_byte_range: None,
+                    item_byte_range: None,
                 },
             ],
         );
@@ -5538,7 +5537,7 @@ public class PacketsController {
     #[test]
     fn test_resolve_selector_class_vs_constructor_returns_class() {
         // SYMB-02: C# class "Foo" + constructor "Foo" (mapped to Function)
-        use super::{resolve_symbol_selector, SymbolSelectorMatch};
+        use super::{SymbolSelectorMatch, resolve_symbol_selector};
         let class_sym = SymbolRecord {
             kind: SymbolKind::Class,
             line_range: (0, 20),
@@ -5569,7 +5568,7 @@ public class PacketsController {
     #[test]
     fn test_resolve_selector_module_vs_function_returns_module() {
         // Cross-tier: module (tier 2) beats function (tier 3)
-        use super::{resolve_symbol_selector, SymbolSelectorMatch};
+        use super::{SymbolSelectorMatch, resolve_symbol_selector};
         let mod_sym = SymbolRecord {
             kind: SymbolKind::Module,
             line_range: (0, 50),
@@ -5600,7 +5599,7 @@ public class PacketsController {
     #[test]
     fn test_resolve_selector_same_tier_returns_ambiguous() {
         // SYMB-03: Two functions with same name = same tier = Ambiguous
-        use super::{resolve_symbol_selector, SymbolSelectorMatch};
+        use super::{SymbolSelectorMatch, resolve_symbol_selector};
         let fn1 = SymbolRecord {
             kind: SymbolKind::Function,
             line_range: (0, 5),
@@ -5623,7 +5622,7 @@ public class PacketsController {
     #[test]
     fn test_resolve_selector_same_tier_class_struct_returns_ambiguous() {
         // SYMB-03: Class + Struct at tier 1 = Ambiguous
-        use super::{resolve_symbol_selector, SymbolSelectorMatch};
+        use super::{SymbolSelectorMatch, resolve_symbol_selector};
         let class_sym = SymbolRecord {
             kind: SymbolKind::Class,
             line_range: (0, 10),
@@ -5634,8 +5633,11 @@ public class PacketsController {
             line_range: (20, 30),
             ..make_symbol("Data")
         };
-        let file =
-            make_indexed_file("src/data.rs", vec![class_sym, struct_sym], ParseStatus::Parsed);
+        let file = make_indexed_file(
+            "src/data.rs",
+            vec![class_sym, struct_sym],
+            ParseStatus::Parsed,
+        );
         match resolve_symbol_selector(&file, "Data", None, None) {
             SymbolSelectorMatch::Ambiguous(lines) => {
                 assert_eq!(lines, vec![0, 20]);
@@ -5647,7 +5649,7 @@ public class PacketsController {
     #[test]
     fn test_resolve_selector_explicit_kind_bypasses_tier_logic() {
         // When symbol_kind is specified, tier logic should NOT apply
-        use super::{resolve_symbol_selector, SymbolSelectorMatch};
+        use super::{SymbolSelectorMatch, resolve_symbol_selector};
         let class_sym = SymbolRecord {
             kind: SymbolKind::Class,
             line_range: (0, 20),
@@ -5672,7 +5674,7 @@ public class PacketsController {
     #[test]
     fn test_resolve_selector_three_way_picks_highest_tier() {
         // Class (tier 1) + Module (tier 2) + Function (tier 3) => Class wins
-        use super::{resolve_symbol_selector, SymbolSelectorMatch};
+        use super::{SymbolSelectorMatch, resolve_symbol_selector};
         let fn_sym = SymbolRecord {
             kind: SymbolKind::Function,
             line_range: (30, 40),

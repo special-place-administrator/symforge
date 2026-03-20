@@ -21,9 +21,17 @@ const ADOPTION_LOG_FILE: &str = ".symforge/hook-adoption.log";
 /// Hard HTTP timeout — leaves margin within HOOK-03's 100 ms total budget.
 const HTTP_TIMEOUT: Duration = Duration::from_millis(50);
 
-/// Total deadline for the entire daemon fallback sequence (port-file read +
-/// two HTTP round-trips + JSON parsing).  Individual requests get whatever
-/// time remains within this budget.
+/// Total deadline for the entire daemon fallback sequence
+/// (port-file read + two HTTP round-trips + JSON parsing).
+///
+/// **Degraded-mode policy**: this intentionally exceeds HOOK-03's 100 ms
+/// normal-path latency target.  The daemon fallback activates only when
+/// the sidecar is unreachable and requires two sequential HTTP round-trips
+/// that cannot reliably fit in 100 ms.  Accepting up to 500 ms of added
+/// latency in this rare degraded scenario is preferable to returning
+/// empty context when the daemon holds useful data.
+///
+/// Individual requests get whatever time remains within this budget.
 const DAEMON_FALLBACK_DEADLINE: Duration = Duration::from_millis(500);
 
 // ---------------------------------------------------------------------------
@@ -160,11 +168,16 @@ impl HookAdoptionSnapshot {
     }
 
     pub(crate) fn total_routed(&self) -> usize {
-        self.source_read.routed + self.source_read.daemon_fallback
-            + self.source_search.routed + self.source_search.daemon_fallback
-            + self.repo_start.routed + self.repo_start.daemon_fallback
-            + self.prompt_context.routed + self.prompt_context.daemon_fallback
-            + self.post_edit_impact.routed + self.post_edit_impact.daemon_fallback
+        self.source_read.routed
+            + self.source_read.daemon_fallback
+            + self.source_search.routed
+            + self.source_search.daemon_fallback
+            + self.repo_start.routed
+            + self.repo_start.daemon_fallback
+            + self.prompt_context.routed
+            + self.prompt_context.daemon_fallback
+            + self.post_edit_impact.routed
+            + self.post_edit_impact.daemon_fallback
     }
 
     pub(crate) fn total_fail_open(&self) -> usize {
@@ -275,7 +288,11 @@ pub fn run_hook(subcommand: Option<&HookSubcommand>) -> anyhow::Result<()> {
     let body = match sync_http_get(port, &request_path, query) {
         Ok(b) => b,
         Err(_) => {
-            record_hook_outcome(workflow, HookOutcome::SidecarError, effective_session_id.as_deref());
+            record_hook_outcome(
+                workflow,
+                HookOutcome::SidecarError,
+                effective_session_id.as_deref(),
+            );
             println!("{}", fail_open_json(event_name));
             return Ok(());
         }
@@ -418,10 +435,7 @@ fn pre_tool_workflow(input: &HookInput) -> HookWorkflow {
 /// PR 1 does not change endpoint routing with this helper yet; it exists so
 /// later routing work can move from raw tool-name branching to workflow-aware
 /// decisions without redefining the vocabulary.
-fn workflow_for_subcommand(
-    subcommand: Option<&HookSubcommand>,
-    input: &HookInput,
-) -> HookWorkflow {
+fn workflow_for_subcommand(subcommand: Option<&HookSubcommand>, input: &HookInput) -> HookWorkflow {
     match subcommand {
         Some(HookSubcommand::Read) if !should_fail_open_read(&extract_file_path(input, "")) => {
             HookWorkflow::SourceRead
@@ -673,7 +687,6 @@ fn record_hook_outcome(workflow: HookWorkflow, outcome: HookOutcome, session_id:
     );
 }
 
-
 // ---------------------------------------------------------------------------
 // Daemon fallback (Gap 2)
 // ---------------------------------------------------------------------------
@@ -699,28 +712,21 @@ fn try_daemon_fallback(repo_root: &Path) -> Option<DaemonFallbackResult> {
 
     // Step 2: Query GET /v1/projects for the list of active projects.
     let remaining = deadline.checked_duration_since(std::time::Instant::now())?;
-    let projects_json = sync_http_get_with_timeout(
-        daemon_port,
-        "/v1/projects",
-        String::new(),
-        remaining,
-    )
-    .ok()?;
+    let projects_json =
+        sync_http_get_with_timeout(daemon_port, "/v1/projects", String::new(), remaining).ok()?;
 
     // Step 3: Parse the projects list and find one matching this repo root.
-    let canon_root = std::fs::canonicalize(repo_root)
-        .unwrap_or_else(|_| repo_root.to_path_buf());
+    let canon_root = std::fs::canonicalize(repo_root).unwrap_or_else(|_| repo_root.to_path_buf());
     let canon_root_str = normalize_path_for_match(&canon_root);
 
     // Minimal serde structs for daemon JSON responses.
     // The daemon returns a JSON array of objects with `canonical_root`,
     // `project_id`, and `session_count` fields.
-    let projects: Vec<DaemonProjectEntry> =
-        serde_json::from_str(&projects_json).ok()?;
+    let projects: Vec<DaemonProjectEntry> = serde_json::from_str(&projects_json).ok()?;
 
-    let matching = projects.iter().find(|p| {
-        normalize_path_for_match(Path::new(&p.canonical_root)) == canon_root_str
-    })?;
+    let matching = projects
+        .iter()
+        .find(|p| normalize_path_for_match(Path::new(&p.canonical_root)) == canon_root_str)?;
 
     if matching.session_count == 0 {
         return None;
@@ -729,16 +735,10 @@ fn try_daemon_fallback(repo_root: &Path) -> Option<DaemonFallbackResult> {
     // Step 4: Query GET /v1/projects/{project_id}/sessions to get a session id.
     let remaining = deadline.checked_duration_since(std::time::Instant::now())?;
     let sessions_path = format!("/v1/projects/{}/sessions", url_encode(&matching.project_id));
-    let sessions_json = sync_http_get_with_timeout(
-        daemon_port,
-        &sessions_path,
-        String::new(),
-        remaining,
-    )
-    .ok()?;
+    let sessions_json =
+        sync_http_get_with_timeout(daemon_port, &sessions_path, String::new(), remaining).ok()?;
 
-    let sessions: Vec<DaemonSessionEntry> =
-        serde_json::from_str(&sessions_json).ok()?;
+    let sessions: Vec<DaemonSessionEntry> = serde_json::from_str(&sessions_json).ok()?;
 
     // Pick the most recently seen session.
     let session = sessions.iter().max_by_key(|s| s.last_seen_at_unix_secs)?;
@@ -805,13 +805,28 @@ fn sync_http_get_with_timeout(
     let mut response = String::new();
     stream.read_to_string(&mut response)?;
 
-    let body = response
+    let (headers, body) = response
         .split_once("\r\n\r\n")
-        .map(|(_, body)| body)
-        .unwrap_or("")
-        .to_string();
+        .ok_or_else(|| anyhow::anyhow!("malformed HTTP response: no header/body separator"))?;
 
-    Ok(body)
+    let status_line = headers
+        .lines()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("malformed HTTP response: empty headers"))?;
+
+    // Status line format: "HTTP/1.1 200 OK"
+    let status_code: u16 = status_line
+        .split_whitespace()
+        .nth(1)
+        .ok_or_else(|| anyhow::anyhow!("malformed HTTP status line: {status_line}"))?
+        .parse()
+        .map_err(|_| anyhow::anyhow!("non-numeric HTTP status code in: {status_line}"))?;
+
+    if !(200..=299).contains(&status_code) {
+        anyhow::bail!("HTTP {status_code} from {path}");
+    }
+
+    Ok(body.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -842,10 +857,7 @@ fn emit_no_sidecar_diagnostic(repo_root: &Path, port_file_path: &Path) {
         PORT_FILE,
         repo_root.display()
     );
-    eprintln!(
-        "  Searched: {}",
-        port_file_path.display()
-    );
+    eprintln!("  Searched: {}", port_file_path.display());
     eprintln!("  {daemon_status}");
     eprintln!(
         "  To start: run 'symforge' as an MCP server, or start a Claude/Codex session with SymForge configured."
@@ -1404,7 +1416,10 @@ mod tests {
         };
         let s = pre_tool_suggestion(&input);
         assert!(s.contains("search_text"), "should suggest search_text: {s}");
-        assert!(s.contains("helper"), "should include the query in the hint: {s}");
+        assert!(
+            s.contains("helper"),
+            "should include the query in the hint: {s}"
+        );
     }
 
     #[test]
@@ -1423,7 +1438,10 @@ mod tests {
             s.contains("get_file_context"),
             "should suggest get_file_context for source: {s}"
         );
-        assert!(s.contains("src/main.rs"), "should include the path hint: {s}");
+        assert!(
+            s.contains("src/main.rs"),
+            "should include the path hint: {s}"
+        );
     }
 
     #[test]
@@ -1438,7 +1456,10 @@ mod tests {
             ..Default::default()
         };
         let s = pre_tool_suggestion(&input);
-        assert!(s.is_empty(), "should stay pass-through for markdown reads: {s}");
+        assert!(
+            s.is_empty(),
+            "should stay pass-through for markdown reads: {s}"
+        );
     }
 
     #[test]
@@ -1579,8 +1600,10 @@ mod tests {
         let session_path = symforge_dir.join("sidecar.session");
 
         append_hook_adoption_event(&log_path, Some("session-a"), "source-read", "routed").unwrap();
-        append_hook_adoption_event(&log_path, Some("session-a"), "repo-start", "no-sidecar").unwrap();
-        append_hook_adoption_event(&log_path, Some("session-b"), "source-search", "routed").unwrap();
+        append_hook_adoption_event(&log_path, Some("session-a"), "repo-start", "no-sidecar")
+            .unwrap();
+        append_hook_adoption_event(&log_path, Some("session-b"), "source-search", "routed")
+            .unwrap();
         std::fs::write(&session_path, "session-a\n").unwrap();
 
         let snapshot = load_hook_adoption_snapshot(Some(tmp.path()));
@@ -1595,8 +1618,13 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let log_path = tmp.path().join("hook-adoption.log");
 
-        append_hook_adoption_event(&log_path, Some("session-z"), "prompt-context", "sidecar-error")
-            .unwrap();
+        append_hook_adoption_event(
+            &log_path,
+            Some("session-z"),
+            "prompt-context",
+            "sidecar-error",
+        )
+        .unwrap();
         append_hook_adoption_event(&log_path, Some("session-z"), "post-edit-impact", "routed")
             .unwrap();
         append_hook_adoption_event(&log_path, Some("session-z"), "source-read", "no-sidecar")

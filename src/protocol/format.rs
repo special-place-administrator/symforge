@@ -2440,19 +2440,17 @@ fn format_enclosing(enclosing: &crate::live_index::EnclosingSymbolView) -> Strin
 
 fn format_context_bundle_section(title: &str, section: &ContextBundleSectionView) -> String {
     // Detect if this section has deduplicated entries (any occurrence_count > 1).
-    let has_dedup = section
-        .entries
-        .iter()
-        .any(|e| e.occurrence_count > 1);
+    let has_dedup = section.entries.iter().any(|e| e.occurrence_count > 1);
 
-    let header = if has_dedup && section.unique_count > 0 && section.unique_count < section.total_count {
-        format!(
-            "\n{title} ({} total, {} unique):",
-            section.total_count, section.unique_count
-        )
-    } else {
-        format!("\n{title} ({}):", section.total_count)
-    };
+    let header =
+        if has_dedup && section.unique_count > 0 && section.unique_count < section.total_count {
+            format!(
+                "\n{title} ({} total, {} unique):",
+                section.total_count, section.unique_count
+            )
+        } else {
+            format!("\n{title} ({}):", section.total_count)
+        };
 
     let mut lines = vec![header];
 
@@ -3007,9 +3005,7 @@ pub(crate) fn format_hook_adoption(snap: &HookAdoptionSnapshot) -> String {
 
     let mut lines = vec![
         "── Hook Adoption (current session) ──".to_string(),
-        format!(
-            "Owned workflows routed: {routed}/{total} ({percent}%)"
-        ),
+        format!("Owned workflows routed: {routed}/{total} ({percent}%)"),
         format!("Fail-open outcomes: {}", snap.total_fail_open()),
     ];
 
@@ -3023,22 +3019,23 @@ pub(crate) fn format_hook_adoption(snap: &HookAdoptionSnapshot) -> String {
         lines.push(format!("Daemon fallback routed: {total_daemon}"));
     }
 
-    let mut push_workflow_line = |label: &str, counts: &crate::cli::hook::WorkflowAdoptionCounts| {
-        if counts.total() == 0 {
-            return;
-        }
-        let mut parts = vec![format!("routed {}", counts.routed)];
-        if counts.daemon_fallback > 0 {
-            parts.push(format!("daemon fallback {}", counts.daemon_fallback));
-        }
-        if counts.fail_open() > 0 && counts.no_sidecar > 0 {
-            parts.push(format!("no sidecar {}", counts.no_sidecar));
-        }
-        if counts.fail_open() > 0 && counts.sidecar_error > 0 {
-            parts.push(format!("sidecar errors {}", counts.sidecar_error));
-        }
-        lines.push(format!("{label}: {}", parts.join(", ")));
-    };
+    let mut push_workflow_line =
+        |label: &str, counts: &crate::cli::hook::WorkflowAdoptionCounts| {
+            if counts.total() == 0 {
+                return;
+            }
+            let mut parts = vec![format!("routed {}", counts.routed)];
+            if counts.daemon_fallback > 0 {
+                parts.push(format!("daemon fallback {}", counts.daemon_fallback));
+            }
+            if counts.fail_open() > 0 && counts.no_sidecar > 0 {
+                parts.push(format!("no sidecar {}", counts.no_sidecar));
+            }
+            if counts.fail_open() > 0 && counts.sidecar_error > 0 {
+                parts.push(format!("sidecar errors {}", counts.sidecar_error));
+            }
+            lines.push(format!("{label}: {}", parts.join(", ")));
+        };
 
     push_workflow_line("Source read", &snap.source_read);
     push_workflow_line("Source search", &snap.source_search);
@@ -3178,7 +3175,7 @@ mod tests {
                 content: content.to_vec(),
                 symbols,
                 parse_status: ParseStatus::Parsed,
-            parse_diagnostic: None,
+                parse_diagnostic: None,
                 byte_len: content.len() as u64,
                 content_hash: "test".to_string(),
                 references: vec![],
@@ -4628,7 +4625,7 @@ mod tests {
                 content: content.to_vec(),
                 symbols,
                 parse_status: ParseStatus::Parsed,
-            parse_diagnostic: None,
+                parse_diagnostic: None,
                 byte_len: content.len() as u64,
                 content_hash: "test".to_string(),
                 references,
@@ -5411,10 +5408,7 @@ mod tests {
     #[test]
     fn test_compact_next_step_hint_formats_joined_items() {
         let hint = compact_next_step_hint(&["get_symbol (body)", "find_references (usages)"]);
-        assert_eq!(
-            hint,
-            "\nTip: get_symbol (body) | find_references (usages)"
-        );
+        assert_eq!(hint, "\nTip: get_symbol (body) | find_references (usages)");
     }
 
     #[test]
@@ -5589,7 +5583,7 @@ mod tests {
                 content: content.to_vec(),
                 symbols,
                 parse_status: ParseStatus::Parsed,
-            parse_diagnostic: None,
+                parse_diagnostic: None,
                 byte_len: content.len() as u64,
                 content_hash: "test".to_string(),
                 references: vec![],

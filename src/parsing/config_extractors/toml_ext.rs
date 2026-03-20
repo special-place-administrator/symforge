@@ -9,72 +9,72 @@ pub struct TomlExtractor;
 
 impl ConfigExtractor for TomlExtractor {
     fn extract(&self, content: &[u8]) -> ExtractionResult {
-            let content_str = match std::str::from_utf8(content) {
-                Ok(s) => s,
-                Err(e) => {
-                    return ExtractionResult {
-                        symbols: vec![],
-                        outcome: ExtractionOutcome::Failed(parse_diagnostic(
-                            "utf-8",
-                            e.to_string(),
-                            None,
-                            None,
-                            None,
-                            false,
-                        )),
-                    };
-                }
-            };
-
-            if content_str.trim().is_empty() {
+        let content_str = match std::str::from_utf8(content) {
+            Ok(s) => s,
+            Err(e) => {
                 return ExtractionResult {
                     symbols: vec![],
-                    outcome: ExtractionOutcome::Ok,
+                    outcome: ExtractionOutcome::Failed(parse_diagnostic(
+                        "utf-8",
+                        e.to_string(),
+                        None,
+                        None,
+                        None,
+                        false,
+                    )),
                 };
             }
+        };
 
-            // Try strict parse first; fall back to line-scanning on parse error.
-            // Note: DocumentMut rejects some constructs (e.g. [a] with a.b="v" then [a.b])
-            // that real-world TOML files use. Line scanning handles these gracefully.
-            let line_starts = build_line_starts(content);
+        if content_str.trim().is_empty() {
+            return ExtractionResult {
+                symbols: vec![],
+                outcome: ExtractionOutcome::Ok,
+            };
+        }
 
-            match content_str.parse::<toml_edit::DocumentMut>() {
-                Ok(doc) => {
-                    let mut symbols = Vec::new();
-                    let mut sort_order: u32 = 0;
-                    walk_table(
-                        doc.as_table(),
-                        "",
-                        0,
-                        content,
-                        &line_starts,
-                        &mut symbols,
-                        &mut sort_order,
-                    );
-                    ExtractionResult {
-                        symbols,
-                        outcome: ExtractionOutcome::Ok,
-                    }
-                }
-                Err(parse_err) => {
-                    // Fall back to line-based scanning so we still extract useful keys.
-                    let symbols = line_scan(content, &line_starts);
-                    let diagnostic = parse_diagnostic_from_span(
-                        "toml_edit",
-                        parse_err.message(),
-                        content,
-                        parse_err.span(),
-                        !symbols.is_empty(),
-                    );
-                    let outcome = if symbols.is_empty() {
-                        ExtractionOutcome::Failed(diagnostic)
-                    } else {
-                        ExtractionOutcome::Partial(diagnostic)
-                    };
-                    ExtractionResult { symbols, outcome }
+        // Try strict parse first; fall back to line-scanning on parse error.
+        // Note: DocumentMut rejects some constructs (e.g. [a] with a.b="v" then [a.b])
+        // that real-world TOML files use. Line scanning handles these gracefully.
+        let line_starts = build_line_starts(content);
+
+        match content_str.parse::<toml_edit::DocumentMut>() {
+            Ok(doc) => {
+                let mut symbols = Vec::new();
+                let mut sort_order: u32 = 0;
+                walk_table(
+                    doc.as_table(),
+                    "",
+                    0,
+                    content,
+                    &line_starts,
+                    &mut symbols,
+                    &mut sort_order,
+                );
+                ExtractionResult {
+                    symbols,
+                    outcome: ExtractionOutcome::Ok,
                 }
             }
+            Err(parse_err) => {
+                // Fall back to line-based scanning so we still extract useful keys.
+                let symbols = line_scan(content, &line_starts);
+                let diagnostic = parse_diagnostic_from_span(
+                    "toml_edit",
+                    parse_err.message(),
+                    content,
+                    parse_err.span(),
+                    !symbols.is_empty(),
+                );
+                let outcome = if symbols.is_empty() {
+                    ExtractionOutcome::Failed(diagnostic)
+                } else {
+                    ExtractionOutcome::Partial(diagnostic)
+                };
+                ExtractionResult { symbols, outcome }
+            }
         }
+    }
 
     fn edit_capability(&self) -> EditCapability {
         EditCapability::StructuralEditSafe
@@ -620,7 +620,10 @@ mod tests {
             "fallback scan should still recover the table header"
         );
         assert!(
-            result.symbols.iter().any(|symbol| symbol.name == "package.name"),
+            result
+                .symbols
+                .iter()
+                .any(|symbol| symbol.name == "package.name"),
             "fallback scan should still recover keys"
         );
 
