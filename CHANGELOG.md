@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.4](https://github.com/special-place-administrator/symforge/compare/v2.0.3...v2.0.4) (2026-03-20)
+
+
+### Bug Fixes
+
+* wave 3 audit remediation — polish, docs, and remaining fixes ([c7c2ba8](https://github.com/special-place-administrator/symforge/commit/c7c2ba8f6129565f16a3346026ae35606f8f60f5))
+
 ## [2.0.3](https://github.com/special-place-administrator/symforge/compare/v2.0.2...v2.0.3) (2026-03-20)
 
 
