@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.11](https://github.com/special-place-administrator/symforge/compare/v2.0.10...v2.0.11) (2026-03-20)
+
+
+### Bug Fixes
+
+* watcher recv_timeout blocks tokio worker — use try_recv + async sleep ([a4b7d34](https://github.com/special-place-administrator/symforge/commit/a4b7d34db100eac9528325f6f3bdbdd58827d54d))
+
 ## [2.0.10](https://github.com/special-place-administrator/symforge/compare/v2.0.9...v2.0.10) (2026-03-20)
 
 
