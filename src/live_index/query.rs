@@ -669,6 +669,8 @@ pub struct HealthStats {
     pub last_reconcile_at: Option<SystemTime>,
     /// Sorted, deduplicated list of files with partial-parse status.
     pub partial_parse_files: Vec<String>,
+    /// Sorted, deduplicated list of files with failed parse status and their error messages.
+    pub failed_files: Vec<(String, String)>,
     /// Admission tier counts: (Tier1 indexed, Tier2 metadata-only, Tier3 hard-skipped).
     pub tier_counts: (usize, usize, usize),
 }
@@ -771,6 +773,7 @@ pub struct DependentLineView {
     pub line_number: u32,
     pub line_content: String,
     pub kind: String,
+    pub name: String,
 }
 
 /// One dependent file entry captured for `find_dependents`.
@@ -1464,6 +1467,7 @@ impl LiveIndex {
                     line_number,
                     line_content,
                     kind: reference.kind.to_string(),
+                    name: reference.name.clone(),
                 });
         }
 
@@ -2244,6 +2248,19 @@ impl LiveIndex {
         partial_parse_files.sort();
         partial_parse_files.dedup();
 
+        let mut failed_files: Vec<(String, String)> = self
+            .files
+            .iter()
+            .filter_map(|(path, f)| {
+                if let ParseStatus::Failed { error } = &f.parse_status {
+                    Some((path.clone(), error.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        failed_files.sort_by(|a, b| a.0.cmp(&b.0));
+
         HealthStats {
             file_count: self.files.len(),
             symbol_count,
@@ -2260,6 +2277,7 @@ impl LiveIndex {
             stale_files_found: 0,
             last_reconcile_at: None,
             partial_parse_files,
+            failed_files,
             tier_counts: self.tier_counts(),
         }
     }
@@ -2393,6 +2411,43 @@ impl LiveIndex {
         }
     }
 
+    /// Check whether a file exports a public symbol with the given name.
+    /// Uses a text scan of file content since SymbolRecord has no visibility field.
+    fn has_pub_symbol(file: &IndexedFile, name: &str) -> bool {
+        match file.language {
+            LanguageId::Rust => {
+                let content = String::from_utf8_lossy(&file.content);
+                for keyword in &[
+                    "fn", "struct", "enum", "trait", "type", "const", "static", "mod",
+                ] {
+                    let pattern = format!("pub {keyword} {name}");
+                    if content.contains(&pattern) {
+                        return true;
+                    }
+                    let crate_pattern = format!("pub(crate) {keyword} {name}");
+                    if content.contains(&crate_pattern) {
+                        return true;
+                    }
+                }
+                false
+            }
+            LanguageId::JavaScript | LanguageId::TypeScript => {
+                let content = String::from_utf8_lossy(&file.content);
+                content.contains(&format!("export {{ {name}"))
+                    || content.contains(&format!("export {name}"))
+                    || content.contains(&format!("export default {name}"))
+                    || content.contains(&format!("export function {name}"))
+                    || content.contains(&format!("export class {name}"))
+                    || content.contains(&format!("export const {name}"))
+                    || content.contains(&format!("export interface {name}"))
+                    || content.contains(&format!("export type {name}"))
+            }
+            // Python: all module-level symbols are importable, skip filter
+            // Other languages: skip filter to avoid false negatives
+            _ => true,
+        }
+    }
+
     /// Find all files that import (depend on) `target_path`.
     ///
     /// Uses two strategies:
@@ -2453,6 +2508,7 @@ impl LiveIndex {
                     .filter(|reference| {
                         reference.kind != ReferenceKind::Import
                             && target_symbol_names.contains(reference.name.as_str())
+                            && Self::has_pub_symbol(target_file, &reference.name)
                     })
                     .collect();
 
@@ -2541,6 +2597,7 @@ impl LiveIndex {
                                 .filter(|reference| {
                                     reference.kind != ReferenceKind::Import
                                         && target_symbol_names.contains(reference.name.as_str())
+                                        && Self::has_pub_symbol(target_file, &reference.name)
                                 })
                                 .collect();
                             if !symbol_refs.is_empty() {

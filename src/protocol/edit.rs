@@ -569,6 +569,9 @@ pub struct ReplaceSymbolBodyInput {
     pub symbol_line: Option<u32>,
     /// Complete new source code for the symbol (replaces the entire definition).
     pub new_body: String,
+    /// When true, validate and preview but skip the actual write.
+    #[serde(default, deserialize_with = "super::tools::lenient_bool")]
+    pub dry_run: Option<bool>,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -587,6 +590,9 @@ pub struct InsertSymbolInput {
     /// Where to insert relative to the target symbol: `"before"` or `"after"` (default `"after"`).
     #[serde(default)]
     pub position: Option<String>,
+    /// When true, validate and preview but skip the actual write.
+    #[serde(default, deserialize_with = "super::tools::lenient_bool")]
+    pub dry_run: Option<bool>,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -600,6 +606,9 @@ pub struct DeleteSymbolInput {
     /// Line number to disambiguate.
     #[serde(default, deserialize_with = "super::tools::lenient_u32")]
     pub symbol_line: Option<u32>,
+    /// When true, validate and preview but skip the actual write.
+    #[serde(default, deserialize_with = "super::tools::lenient_bool")]
+    pub dry_run: Option<bool>,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -620,6 +629,9 @@ pub struct EditWithinSymbolInput {
     /// If true, replace all occurrences within the symbol. Default: false (first match only).
     #[serde(default)]
     pub replace_all: bool,
+    /// When true, validate and preview but skip the actual write.
+    #[serde(default, deserialize_with = "super::tools::lenient_bool")]
+    pub dry_run: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------

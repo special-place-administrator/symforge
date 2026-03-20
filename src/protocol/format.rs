@@ -277,7 +277,7 @@ pub fn search_text_result_with_options(
     regex: bool,
 ) -> String {
     let result = search::search_text(index, query, terms, regex);
-    search_text_result_view(result, None)
+    search_text_result_view(result, None, None)
 }
 
 /// Returns true if the line looks like an import statement or a non-doc comment.
@@ -302,6 +302,7 @@ pub fn is_noise_line(line: &str) -> bool {
 pub fn search_text_result_view(
     result: Result<search::TextSearchResult, search::TextSearchError>,
     group_by: Option<&str>,
+    terms: Option<&[String]>,
 ) -> String {
     let result = match result {
         Ok(result) => result,
@@ -323,6 +324,21 @@ pub fn search_text_result_view(
         }
         Err(search::TextSearchError::UnsupportedWholeWordRegex) => {
             return "whole_word is not supported when `regex=true`.".to_string();
+        }
+    };
+
+    let annotate_term = |line: &str| -> String {
+        match &terms {
+            Some(ts) if ts.len() > 1 => {
+                let lower = line.to_lowercase();
+                for term in *ts {
+                    if lower.contains(&term.to_lowercase()) {
+                        return format!("  [term: {term}]");
+                    }
+                }
+                String::new()
+            }
+            _ => String::new(),
         }
     };
 
@@ -426,13 +442,19 @@ pub fn search_text_result_view(
                                 last_symbol = Some(enc.name.clone());
                             }
                             lines.push(format!(
-                                "    > {}: {}",
-                                line_match.line_number, line_match.line
+                                "    > {}: {}{}",
+                                line_match.line_number,
+                                line_match.line,
+                                annotate_term(&line_match.line)
                             ));
                         } else {
                             last_symbol = None;
-                            lines
-                                .push(format!("  {}: {}", line_match.line_number, line_match.line));
+                            lines.push(format!(
+                                "  {}: {}{}",
+                                line_match.line_number,
+                                line_match.line,
+                                annotate_term(&line_match.line)
+                            ));
                         }
                     }
                     if filtered_count > 0 {
@@ -457,13 +479,19 @@ pub fn search_text_result_view(
                                 last_symbol = Some(enc.name.clone());
                             }
                             lines.push(format!(
-                                "    > {}: {}",
-                                line_match.line_number, line_match.line
+                                "    > {}: {}{}",
+                                line_match.line_number,
+                                line_match.line,
+                                annotate_term(&line_match.line)
                             ));
                         } else {
                             last_symbol = None;
-                            lines
-                                .push(format!("  {}: {}", line_match.line_number, line_match.line));
+                            lines.push(format!(
+                                "  {}: {}{}",
+                                line_match.line_number,
+                                line_match.line,
+                                annotate_term(&line_match.line)
+                            ));
                         }
                     }
                 }
@@ -979,6 +1007,7 @@ pub fn health_report_from_published_state(
         stale_files_found: watcher.stale_files_found,
         last_reconcile_at: watcher.last_reconcile_at,
         partial_parse_files: vec![],
+        failed_files: vec![],
         tier_counts: published.tier_counts,
     };
     // Preserve the existing formatter shape by reusing HealthStats.
@@ -1056,6 +1085,19 @@ pub fn health_report_from_stats(status: &str, stats: &HealthStats) -> String {
             output.push_str(&format!(
                 "  ... and {} more partial files\n",
                 stats.partial_parse_files.len() - 10
+            ));
+        }
+    }
+
+    if !stats.failed_files.is_empty() {
+        output.push_str(&format!("\nFailed files ({}):\n", stats.failed_files.len()));
+        for (i, (path, error)) in stats.failed_files.iter().take(10).enumerate() {
+            output.push_str(&format!("  {}. {} — {}\n", i + 1, path, error));
+        }
+        if stats.failed_files.len() > 10 {
+            output.push_str(&format!(
+                "  ... and {} more failed files\n",
+                stats.failed_files.len() - 10
             ));
         }
     }
@@ -1761,7 +1803,12 @@ fn fuzzy_distance(a: &str, b: &str) -> usize {
 
 fn not_found_symbol_names(relative_path: &str, symbol_names: &[String], name: &str) -> String {
     if symbol_names.is_empty() {
-        return format!("No symbol {name} in {relative_path}. No symbols in that file.");
+        return format!(
+            "No symbol {name} in {relative_path}. \
+             This file has no indexed symbols — it may use top-level statements, \
+             expression-bodied code, or a syntax not extracted by the parser. \
+             Use get_file_content without around_symbol to read the raw file."
+        );
     }
 
     // Rank by fuzzy distance and take top 5.
@@ -2118,9 +2165,27 @@ pub fn find_dependents_mermaid(
     for file in view.files.iter().take(limits.max_files) {
         let dep_id = mermaid_node_id(&file.file_path);
         let ref_count = file.lines.len();
+
+        let mut names: Vec<&str> = Vec::new();
+        for line in &file.lines {
+            if !names.contains(&line.name.as_str()) {
+                names.push(&line.name);
+                if names.len() >= 3 {
+                    break;
+                }
+            }
+        }
+        let remaining = ref_count.saturating_sub(names.len());
+        let label = if names.is_empty() {
+            format!("{ref_count} refs")
+        } else if remaining > 0 {
+            format!("{} +{remaining}", names.join(", "))
+        } else {
+            names.join(", ")
+        };
         lines.push(format!(
-            "    {dep_id}[\"{}\"] -->|{} refs| {target_id}",
-            file.file_path, ref_count
+            "    {dep_id}[\"{}\"] -->|\"{label}\"| {target_id}",
+            file.file_path
         ));
     }
 
@@ -2148,12 +2213,28 @@ pub fn find_dependents_dot(view: &FindDependentsView, path: &str, limits: &Outpu
     ));
 
     for file in view.files.iter().take(limits.max_files) {
-        let ref_count = file.lines.len();
+        let mut names: Vec<&str> = Vec::new();
+        for line in &file.lines {
+            if !names.contains(&line.name.as_str()) {
+                names.push(&line.name);
+                if names.len() >= 3 {
+                    break;
+                }
+            }
+        }
+        let remaining = file.lines.len().saturating_sub(names.len());
+        let label = if names.is_empty() {
+            format!("{} refs", file.lines.len())
+        } else if remaining > 0 {
+            format!("{} +{remaining}", names.join(", "))
+        } else {
+            names.join(", ")
+        };
         lines.push(format!(
-            "    \"{}\" -> \"{}\" [label=\"{} refs\"];",
+            "    \"{}\" -> \"{}\" [label=\"{}\"];",
             dot_escape(&file.file_path),
             dot_escape(path),
-            ref_count
+            label
         ));
     }
 
@@ -3526,8 +3607,11 @@ mod tests {
         let index = make_index(vec![(key, file)]);
 
         let live_result = search_text_result(&index, "let");
-        let captured_result =
-            search_text_result_view(search::search_text(&index, Some("let"), None, false), None);
+        let captured_result = search_text_result_view(
+            search::search_text(&index, Some("let"), None, false),
+            None,
+            None,
+        );
 
         assert_eq!(captured_result, live_result);
     }
@@ -3610,7 +3694,7 @@ mod tests {
             },
         );
 
-        let rendered = search_text_result_view(result, None);
+        let rendered = search_text_result_view(result, None, None);
 
         assert!(
             rendered.contains("src/lib.rs"),
@@ -3847,6 +3931,7 @@ mod tests {
                 "src/b.rs".to_string(),
                 "src/c.rs".to_string(),
             ],
+            failed_files: vec![],
             tier_counts: (3, 0, 0),
         };
         let report = health_report_from_stats("Ready", &stats);
@@ -3886,6 +3971,7 @@ mod tests {
             stale_files_found: 0,
             last_reconcile_at: None,
             partial_parse_files,
+            failed_files: vec![],
             tier_counts: (50, 0, 0),
         };
         let report = health_report_from_stats("Ready", &stats);
@@ -3922,6 +4008,7 @@ mod tests {
             stale_files_found: 0,
             last_reconcile_at: None,
             partial_parse_files: vec![],
+            failed_files: vec![],
             tier_counts: (8200, 1280, 20),
         };
         let report = health_report_from_stats("Ready", &stats);
@@ -3964,6 +4051,7 @@ mod tests {
             stale_files_found: 5,
             last_reconcile_at: Some(SystemTime::now()),
             partial_parse_files: vec![],
+            failed_files: vec![],
             tier_counts: (1, 0, 0),
         };
 
@@ -4587,7 +4675,7 @@ mod tests {
         let (key, file) = make_file("src/lib.rs", b"", vec![]);
         let index = make_index(vec![(key, file)]);
         let result = not_found_symbol(&index, "src/lib.rs", "foo");
-        assert!(result.contains("No symbols in that file"));
+        assert!(result.contains("no indexed symbols"));
     }
 
     // ─── find_references_result tests ─────────────────────────────────────
@@ -4909,7 +4997,10 @@ mod tests {
             result.contains("src/handler.rs"),
             "should mention dependent"
         );
-        assert!(result.contains("refs"), "should show ref count");
+        assert!(
+            result.contains("db"),
+            "should show symbol name in edge label"
+        );
     }
 
     #[test]
@@ -4954,13 +5045,14 @@ mod tests {
     #[test]
     fn test_find_dependents_mermaid_shows_true_ref_count_not_capped() {
         // Construct a view directly with 5 lines, but set max_per_file=2.
-        // The mermaid label should show "5 refs" (the true total), not "2 refs".
+        // The mermaid label should show symbol names (all "db"), not just "5 refs".
         use crate::live_index::query::{DependentFileView, DependentLineView, FindDependentsView};
         let lines: Vec<DependentLineView> = (1..=5)
             .map(|i| DependentLineView {
                 line_number: i,
                 line_content: format!("use crate::db; // ref {i}"),
                 kind: "import".to_string(),
+                name: "db".to_string(),
             })
             .collect();
         let view = FindDependentsView {
@@ -4972,8 +5064,8 @@ mod tests {
         let limits = OutputLimits::new(20, 2); // max_per_file=2, but 5 actual refs
         let result = find_dependents_mermaid(&view, "src/db.rs", &limits);
         assert!(
-            result.contains("5 refs"),
-            "mermaid label should show true ref count (5), not capped at max_per_file (2). Got: {result}"
+            result.contains("db"),
+            "mermaid label should include symbol name 'db'. Got: {result}"
         );
     }
 
@@ -4985,6 +5077,7 @@ mod tests {
                 line_number: i,
                 line_content: format!("use crate::db; // ref {i}"),
                 kind: "import".to_string(),
+                name: "db".to_string(),
             })
             .collect();
         let view = FindDependentsView {
@@ -4996,8 +5089,8 @@ mod tests {
         let limits = OutputLimits::new(20, 2);
         let result = find_dependents_dot(&view, "src/db.rs", &limits);
         assert!(
-            result.contains("5 refs"),
-            "dot label should show true ref count (5), not capped at max_per_file (2). Got: {result}"
+            result.contains("db"),
+            "dot label should include symbol name 'db'. Got: {result}"
         );
     }
 
@@ -6003,6 +6096,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_extract_declaration_name_csharp_const() {
+        // C# const: `const string Foo = "bar"` — name is Foo, not string
+        assert_eq!(
+            super::extract_declaration_name("const string ConnectionString = \"...\";"),
+            Some("ConnectionString".to_string())
+        );
+        assert_eq!(
+            super::extract_declaration_name("const int MaxRetries = 3;"),
+            Some("MaxRetries".to_string())
+        );
+        // Rust const should still work (type after colon, not before name)
+        assert_eq!(
+            super::extract_declaration_name("const MAX_SIZE: usize = 100;"),
+            Some("MAX_SIZE".to_string())
+        );
+    }
+
     // ─── extract_signature / apply_verbosity tests (U6) ──────────────────────
 
     #[test]
@@ -6281,6 +6392,7 @@ pub fn diff_symbols_result_view(
     let mut total_added = 0usize;
     let mut total_removed = 0usize;
     let mut total_modified = 0usize;
+    let mut files_with_changes = 0usize;
 
     for file_path in changed_files {
         // Get content at base and target refs
@@ -6334,6 +6446,7 @@ pub fn diff_symbols_result_view(
         total_added += file_added.len();
         total_removed += file_removed.len();
         total_modified += file_modified.len();
+        files_with_changes += 1;
 
         if compact {
             // Compact mode: one line per file with counts only
@@ -6387,6 +6500,13 @@ pub fn diff_symbols_result_view(
         ));
     }
 
+    if compact && files_with_changes > 0 && changed_files.len() > files_with_changes {
+        let omitted = changed_files.len() - files_with_changes;
+        lines.push(format!(
+            "({omitted} file(s) with only non-symbol changes omitted)"
+        ));
+    }
+
     lines.join("\n")
 }
 
@@ -6416,6 +6536,34 @@ fn extract_symbol_signatures(content: &str) -> Vec<(String, String)> {
         }
     }
     symbols
+}
+
+/// Check if a word is a well-known type keyword that would appear between
+/// `const` and the actual variable name in C#, Java, or TypeScript.
+fn is_likely_type_keyword(word: &str) -> bool {
+    matches!(
+        word,
+        "string"
+            | "String"
+            | "int"
+            | "Int32"
+            | "Int64"
+            | "bool"
+            | "Boolean"
+            | "float"
+            | "double"
+            | "decimal"
+            | "char"
+            | "byte"
+            | "long"
+            | "short"
+            | "uint"
+            | "object"
+            | "var"
+            | "number"
+            | "bigint"
+            | "any"
+    )
 }
 
 /// Try to extract a declaration name from a line of code.
@@ -6463,9 +6611,22 @@ pub(crate) fn extract_declaration_name(line: &str) -> Option<String> {
                 .chars()
                 .take_while(|c| c.is_alphanumeric() || *c == '_')
                 .collect();
-            if !name.is_empty() {
-                return Some(name);
+            if name.is_empty() {
+                continue;
             }
+            // For `const`, the first word might be a type name (C#: `const string Foo`).
+            // If it looks like a well-known type, skip it and take the next identifier.
+            if *kw == "const " && is_likely_type_keyword(&name) {
+                let after_type = &rest[name.len()..].trim_start();
+                let real_name: String = after_type
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                if !real_name.is_empty() {
+                    return Some(real_name);
+                }
+            }
+            return Some(name);
         }
     }
     None

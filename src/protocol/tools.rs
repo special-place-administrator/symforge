@@ -483,6 +483,9 @@ pub struct GetRepoMapInput {
     /// Max depth levels to expand (only used when detail="tree", default: 2, max: 5).
     #[serde(default, deserialize_with = "lenient_u32")]
     pub depth: Option<u32>,
+    /// Maximum number of files to include in the output (only used when detail="full", default: 200).
+    #[serde(default, deserialize_with = "lenient_u32")]
+    pub max_files: Option<u32>,
 }
 
 /// Input for `get_file_tree` (backward compat).
@@ -626,6 +629,10 @@ pub struct ExploreInput {
     /// By default these are hidden to reduce noise (default false).
     #[serde(default, deserialize_with = "lenient_bool")]
     pub include_noise: Option<bool>,
+    /// Optional canonical language name filter (e.g., "Rust", "TypeScript", "C#").
+    pub language: Option<String>,
+    /// Optional relative path prefix scope (e.g., "src/", "backend/").
+    pub path_prefix: Option<String>,
 }
 
 /// Input for `get_co_changes`.
@@ -1537,7 +1544,7 @@ impl SymForgeServer {
                     .collect::<Vec<_>>()
             };
 
-            return captured
+            let output = captured
                 .into_iter()
                 .map(|entry| match entry {
                     CapturedGetSymbolsEntry::SymbolLookup { file, name, kind } => {
@@ -1564,6 +1571,8 @@ impl SymForgeServer {
                 })
                 .collect::<Vec<_>>()
                 .join("\n---\n");
+            self.record_tool_savings((output.len() * 5 / 4) as u64, (output.len() / 4) as u64);
+            return output;
         }
 
         // Single mode: path + name
@@ -1579,14 +1588,16 @@ impl SymForgeServer {
                     &params.0.name,
                     params.0.kind.as_deref(),
                 );
-                format!(
+                let output = format!(
                     "{body}{}",
                     format::compact_next_step_hint(&[
                         "get_symbol_context (callers/callees/types)",
                         "find_references (usages)",
                         "edit_within_symbol / replace_symbol_body (edits)",
                     ])
-                )
+                );
+                self.record_tool_savings((output.len() * 5 / 4) as u64, (output.len() / 4) as u64);
+                output
             }
             None => format::not_found_file(&params.0.path),
         }
@@ -1631,9 +1642,51 @@ impl SymForgeServer {
                         total_symbols: filtered_symbols,
                         files: filtered_files,
                     };
-                    format::repo_outline_view(&filtered_view, &self.project_name)
+                    let max_files = params.0.max_files.unwrap_or(200) as usize;
+                    if filtered_view.files.len() > max_files {
+                        let remaining = filtered_view.files.len() - max_files;
+                        let truncated_files: Vec<_> = filtered_view
+                            .files
+                            .iter()
+                            .take(max_files)
+                            .cloned()
+                            .collect();
+                        let truncated_view = crate::live_index::query::RepoOutlineView {
+                            total_files: filtered_view.total_files,
+                            total_symbols: filtered_view.total_symbols,
+                            files: truncated_files,
+                        };
+                        let mut output =
+                            format::repo_outline_view(&truncated_view, &self.project_name);
+                        output.push_str(&format!(
+                            "\n\n... and {} more files (increase max_files= to see more)",
+                            remaining
+                        ));
+                        output
+                    } else {
+                        format::repo_outline_view(&filtered_view, &self.project_name)
+                    }
                 } else {
-                    format::repo_outline_view(&view, &self.project_name)
+                    let max_files = params.0.max_files.unwrap_or(200) as usize;
+                    if view.files.len() > max_files {
+                        let truncated_files: Vec<_> =
+                            view.files.iter().take(max_files).cloned().collect();
+                        let remaining = view.files.len() - max_files;
+                        let truncated_view = crate::live_index::query::RepoOutlineView {
+                            total_files: view.total_files,
+                            total_symbols: view.total_symbols,
+                            files: truncated_files,
+                        };
+                        let mut output =
+                            format::repo_outline_view(&truncated_view, &self.project_name);
+                        output.push_str(&format!(
+                            "\n\n... and {} more files (use path= to scope or increase max_files=)",
+                            remaining
+                        ));
+                        output
+                    } else {
+                        format::repo_outline_view(&view, &self.project_name)
+                    }
                 }
             }
             "tree" => {
@@ -1835,6 +1888,36 @@ impl SymForgeServer {
             return result;
         }
         let file_path_hint = params.0.path.as_deref().or(params.0.file.as_deref());
+        // Auto-resolve path from index when not provided
+        let resolved_path: Option<String>;
+        let file_path_hint = if file_path_hint.is_some() {
+            resolved_path = None;
+            file_path_hint
+        } else {
+            let guard = self.index.read();
+            let candidates: Vec<String> = guard
+                .all_files()
+                .filter_map(|(path, file)| {
+                    if file.symbols.iter().any(|s| s.name == params.0.name) {
+                        Some(path.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .take(5)
+                .collect();
+            drop(guard);
+            if candidates.len() == 1 {
+                resolved_path = Some(candidates.into_iter().next().unwrap());
+                resolved_path.as_deref()
+            } else if candidates.len() > 1 {
+                resolved_path = Some(candidates[0].clone());
+                resolved_path.as_deref()
+            } else {
+                resolved_path = None;
+                None
+            }
+        };
         let verbosity = params.0.verbosity.as_deref().unwrap_or("full");
         let max_tokens = params.0.max_tokens;
 
@@ -1897,6 +1980,25 @@ impl SymForgeServer {
                     "find_references (usages)",
                     "edit_within_symbol / replace_symbol_body (edits)",
                 ]));
+                // Add disambiguation note when path was auto-resolved from multiple candidates
+                if params.0.path.is_none() && params.0.file.is_none() {
+                    if let Some(ref resolved) = resolved_path {
+                        let guard = self.index.read();
+                        let count = guard
+                            .all_files()
+                            .filter(|(_, file)| {
+                                file.symbols.iter().any(|s| s.name == params.0.name)
+                            })
+                            .count();
+                        drop(guard);
+                        if count > 1 {
+                            output.push_str(&format!(
+                                "\n\nNote: {} symbols named \"{}\" found — showing from {}. Specify path for precision.",
+                                count, params.0.name, resolved
+                            ));
+                        }
+                    }
+                }
                 let saved = raw_chars.saturating_sub(output.len());
                 let footer = format::compact_savings_footer(output.len(), raw_chars);
                 self.record_read_savings((saved / 4) as u64);
@@ -2036,7 +2138,9 @@ impl SymForgeServer {
             "get_symbol_context (callers/callees)",
             "get_file_context (file overview)",
         ]);
-        format!("{output}{hint}")
+        let output = format!("{output}{hint}");
+        self.record_tool_savings((output.len() * 10 / 4) as u64, (output.len() / 4) as u64);
+        output
     }
 
     /// Full-text search across file contents — literal, OR-terms, or regex. Shows matches with
@@ -2157,6 +2261,7 @@ impl SymForgeServer {
                                 let mut output = format::search_text_result_view(
                                     retry_result,
                                     params.0.group_by.as_deref(),
+                                    params.0.terms.as_deref(),
                                 );
                                 output.push_str(&format!(
                                     "\n(auto-corrected double-escaped regex: `{}` → `{}`)",
@@ -2175,7 +2280,11 @@ impl SymForgeServer {
             }
         }
 
-        let output = format::search_text_result_view(result, params.0.group_by.as_deref());
+        let output = format::search_text_result_view(
+            result,
+            params.0.group_by.as_deref(),
+            params.0.terms.as_deref(),
+        );
         let hint = format::compact_next_step_hint(&[
             "inspect_match (deep-dive one hit)",
             "get_file_context (file overview)",
@@ -2586,10 +2695,15 @@ impl SymForgeServer {
             guard.capture_shared_file_for_scope(&options.path_scope)
         };
         match file {
-            Some(file) => format::file_content_from_indexed_file_with_context(
-                file.as_ref(),
-                options.content_context,
-            ),
+            Some(file) => {
+                let raw_chars = file.as_ref().content.len();
+                let output = format::file_content_from_indexed_file_with_context(
+                    file.as_ref(),
+                    options.content_context,
+                );
+                self.record_tool_savings((raw_chars / 4) as u64, (output.len() / 4) as u64);
+                output
+            }
             None => {
                 // Not in index — try raw disk read for non-source files
                 // (Cargo.toml, package.json, workflow YAMLs, etc.)
@@ -2719,7 +2833,31 @@ impl SymForgeServer {
             };
             let cap = input.limit.unwrap_or(200).min(500);
             let limits = format::OutputLimits::new(cap, cap);
-            return format::find_implementations_result_view(&view, &input.name, &limits);
+            let result = format::find_implementations_result_view(&view, &input.name, &limits);
+            if view.entries.is_empty() {
+                // Check if the symbol is a class/struct (not an interface/trait)
+                let guard = self.index.read();
+                let is_concrete = guard.all_files().any(|(_, file)| {
+                    file.symbols.iter().any(|s| {
+                        s.name == input.name
+                            && matches!(
+                                s.kind,
+                                crate::domain::SymbolKind::Class
+                                    | crate::domain::SymbolKind::Struct
+                            )
+                    })
+                });
+                drop(guard);
+                if is_concrete {
+                    return format!(
+                        "No implementations found for \"{}\" — it is a class/struct, not an \
+                         interface/trait.\nUse find_references with mode=\"references\" to find \
+                         callers and usages instead.",
+                        input.name
+                    );
+                }
+            }
+            return result;
         }
 
         // Default: references mode
@@ -2750,9 +2888,15 @@ impl SymForgeServer {
         };
         match result {
             Ok(view) if input.compact.unwrap_or(false) => {
-                format::find_references_compact_view(&view, &input.name, &limits)
+                let output = format::find_references_compact_view(&view, &input.name, &limits);
+                self.record_tool_savings((output.len() * 8 / 4) as u64, (output.len() / 4) as u64);
+                output
             }
-            Ok(view) => format::find_references_result_view(&view, &input.name, &limits),
+            Ok(view) => {
+                let output = format::find_references_result_view(&view, &input.name, &limits);
+                self.record_tool_savings((output.len() * 8 / 4) as u64, (output.len() / 4) as u64);
+                output
+            }
             Err(error) => error,
         }
     }
@@ -2819,6 +2963,10 @@ impl SymForgeServer {
         if let Some(result) = self.proxy_tool_call("explore", &params.0).await {
             return result;
         }
+        let lang_filter = match parse_language_filter(params.0.language.as_deref()) {
+            Ok(f) => f,
+            Err(e) => return e,
+        };
         let limit = params.0.limit.unwrap_or(10) as usize;
         let guard = self.index.read();
         loading_guard!(guard);
@@ -2920,14 +3068,39 @@ impl SymForgeServer {
             }
         }
 
+        // Filter Phase 1 results by language and path_prefix
+        if lang_filter.is_some() || params.0.path_prefix.is_some() {
+            match_counts.retain(|(_, _, path), _| {
+                if let Some(ref prefix) = params.0.path_prefix {
+                    if !path.starts_with(prefix.as_str()) {
+                        return false;
+                    }
+                }
+                if let Some(ref lang) = lang_filter {
+                    let ext = path.rsplit('.').next().unwrap_or("");
+                    if crate::domain::index::LanguageId::from_extension(ext).as_ref() != Some(lang)
+                    {
+                        return false;
+                    }
+                }
+                true
+            });
+        }
+
         // Phase 2: Text search — collect text hits and inject enclosing symbols into match_counts
         let mut text_hits: Vec<(String, String, usize)> = Vec::new(); // (path, line, line_number)
         for tq in &all_text_queries {
-            let options = search::TextSearchOptions {
+            let mut options = search::TextSearchOptions {
                 total_limit: limit.min(50),
                 max_per_file: limit, // need enough matches per file for enclosing symbol extraction
                 ..search::TextSearchOptions::for_current_code_search()
             };
+            if let Some(ref prefix) = params.0.path_prefix {
+                options.path_scope = search::PathScope::Prefix(prefix.clone());
+            }
+            if let Some(ref lang) = lang_filter {
+                options.language_filter = Some(lang.clone());
+            }
             let result = search::search_text_with_options(&guard, Some(tq), None, false, &options);
             if let Ok(r) = result {
                 for file in &r.files {
@@ -2943,6 +3116,11 @@ impl SymForgeServer {
                     }
                 }
             }
+        }
+
+        // Filter text hits by path_prefix (language already handled via TextSearchOptions)
+        if let Some(ref prefix) = params.0.path_prefix {
+            text_hits.retain(|(path, _, _)| path.starts_with(prefix.as_str()));
         }
 
         // Phase 3: Filter noise, weight by kind and path, sort, truncate to limit.
@@ -3129,6 +3307,7 @@ impl SymForgeServer {
             ));
         }
 
+        self.record_tool_savings((output.len() * 10 / 4) as u64, (output.len() / 4) as u64);
         output
     }
 
@@ -3209,13 +3388,15 @@ impl SymForgeServer {
             return format!("No file changes found between {base} and {target}.");
         }
 
-        format::diff_symbols_result_view(
+        let output = format::diff_symbols_result_view(
             base,
             target,
             &changed_files,
             &repo,
             params.0.compact.unwrap_or(false),
-        )
+        );
+        self.record_tool_savings((output.len() * 5 / 4) as u64, (output.len() / 4) as u64);
+        output
     }
 
     // ─── Edit tools (Tier 1) ─────────────────────────────────────────────────
@@ -3292,6 +3473,16 @@ impl SymForgeServer {
             Ok(s) => s,
             Err(e) => return e,
         };
+        if params.0.dry_run == Some(true) {
+            let old_bytes = (sym.byte_range.1 - sym.byte_range.0) as usize;
+            return format!(
+                "[DRY RUN] Would replace `{}` in {} (old: {} bytes -> new: {} bytes)",
+                params.0.name,
+                params.0.path,
+                old_bytes,
+                params.0.new_body.len()
+            );
+        }
         let old_bytes = (sym.byte_range.1 - sym.byte_range.0) as usize;
         // Splice at line start and apply indentation — same approach as insert tools.
         // Extend past orphaned doc comments so they get replaced along with the symbol,
@@ -3393,6 +3584,15 @@ impl SymForgeServer {
             Ok(s) => s,
             Err(e) => return e,
         };
+        if params.0.dry_run == Some(true) {
+            return format!(
+                "[DRY RUN] Would insert {} `{}` in {} ({} bytes of content)",
+                position,
+                params.0.name,
+                params.0.path,
+                params.0.content.len()
+            );
+        }
         let line_ending = edit::detect_line_ending(&file.content);
         let new_content = if position == "before" {
             edit::build_insert_before(&file.content, &sym, &params.0.content, line_ending)
@@ -3462,6 +3662,13 @@ impl SymForgeServer {
             Ok(s) => s,
             Err(e) => return e,
         };
+        if params.0.dry_run == Some(true) {
+            let deleted_bytes = (sym.byte_range.1 - sym.byte_range.0) as usize;
+            return format!(
+                "[DRY RUN] Would delete `{}` in {} ({} bytes)",
+                params.0.name, params.0.path, deleted_bytes
+            );
+        }
         let deleted_bytes = (sym.byte_range.1 - sym.byte_range.0) as usize;
         let line_ending = edit::detect_line_ending(&file.content);
         let new_content = edit::build_delete(&file.content, &sym, line_ending);
@@ -3565,6 +3772,12 @@ impl SymForgeServer {
             return format!(
                 "Error: `{}` not found within symbol `{}`",
                 params.0.old_text, params.0.name
+            );
+        }
+        if params.0.dry_run == Some(true) {
+            return format!(
+                "[DRY RUN] Would edit within `{}` in {} ({} replacement(s))",
+                params.0.name, params.0.path, count
             );
         }
         let old_sym_bytes = sym_end - sym_start;
@@ -4036,6 +4249,7 @@ mod tests {
                 detail: Some("full".to_string()),
                 path: None,
                 depth: None,
+                max_files: None,
             }))
             .await;
         assert!(
@@ -4052,6 +4266,7 @@ mod tests {
                 detail: Some("full".to_string()),
                 path: None,
                 depth: None,
+                max_files: None,
             }))
             .await;
         assert_eq!(result, crate::protocol::format::empty_guard_message());
@@ -4099,6 +4314,7 @@ mod tests {
                 detail: Some("full".to_string()),
                 path: None,
                 depth: None,
+                max_files: None,
             }))
             .await;
         assert!(
@@ -4120,6 +4336,7 @@ mod tests {
                 detail: None,
                 path: None,
                 depth: None,
+                max_files: None,
             }))
             .await;
 
@@ -4141,7 +4358,7 @@ mod tests {
     async fn test_get_file_context_returns_outline_and_key_references() {
         let callee = make_symbol("target", SymbolKind::Function, 1, 3);
         let caller = make_symbol("caller", SymbolKind::Function, 1, 3);
-        let target_file = make_file("src/target.rs", b"fn target() {}", vec![callee]);
+        let target_file = make_file("src/target.rs", b"pub fn target() {}", vec![callee]);
         let caller_file = make_file_with_refs(
             "src/caller.rs",
             b"use crate::target;\nfn caller() { target(); }",
@@ -4296,7 +4513,7 @@ mod tests {
                 },
             ],
         );
-        let target_file = make_file("src/target.rs", b"fn target() {}", vec![callee]);
+        let target_file = make_file("src/target.rs", b"pub fn target() {}", vec![callee]);
         let server = make_server(make_live_index_ready(vec![target_file, caller_file]));
 
         // Check caller.rs — should have "Imports from" section.
@@ -5233,6 +5450,50 @@ mod tests {
         assert!(
             !result.contains("NOTE: ignored"),
             "unmatched line should be absent: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_text_terms_annotates_matched_term() {
+        let sym_a = make_symbol("fn_alpha", SymbolKind::Function, 0, 0);
+        let sym_b = make_symbol("fn_beta", SymbolKind::Function, 1, 1);
+        let file = make_file(
+            "src/lib.rs",
+            b"fn fn_alpha() { alpha_value }\nfn fn_beta() { beta_value }\n",
+            vec![sym_a, sym_b],
+        );
+        let server = make_server(make_live_index_ready(vec![file]));
+
+        let result = server
+            .search_text(Parameters(super::SearchTextInput {
+                query: None,
+                terms: Some(vec!["alpha_value".to_string(), "beta_value".to_string()]),
+                regex: None,
+                path_prefix: None,
+                language: None,
+                limit: None,
+                max_per_file: None,
+                include_generated: None,
+                include_tests: None,
+                glob: None,
+                exclude_glob: None,
+                context: None,
+                case_sensitive: None,
+                whole_word: None,
+                group_by: None,
+                follow_refs: None,
+                follow_refs_limit: None,
+                ranked: None,
+            }))
+            .await;
+
+        assert!(
+            result.contains("[term: alpha_value]"),
+            "should annotate alpha term: {result}"
+        );
+        assert!(
+            result.contains("[term: beta_value]"),
+            "should annotate beta term: {result}"
         );
     }
 
@@ -7063,6 +7324,8 @@ mod tests {
                 limit: Some(5),
                 depth: None,
                 include_noise: None,
+                language: None,
+                path_prefix: None,
             }))
             .await;
         assert!(
@@ -7087,6 +7350,8 @@ mod tests {
                 limit: Some(5),
                 depth: None,
                 include_noise: None,
+                language: None,
+                path_prefix: None,
             }))
             .await;
         assert!(
@@ -7104,6 +7369,8 @@ mod tests {
                 limit: None,
                 depth: None,
                 include_noise: None,
+                language: None,
+                path_prefix: None,
             }))
             .await;
         assert!(
@@ -7133,6 +7400,8 @@ mod tests {
                 limit: Some(5),
                 depth: Some(2),
                 include_noise: None,
+                language: None,
+                path_prefix: None,
             }))
             .await;
         assert!(
@@ -7166,6 +7435,8 @@ mod tests {
                 limit: Some(10),
                 depth: None,
                 include_noise: None,
+                language: None,
+                path_prefix: None,
             }))
             .await;
         assert!(
@@ -7195,6 +7466,8 @@ mod tests {
                 limit: Some(10),
                 depth: None,
                 include_noise: None,
+                language: None,
+                path_prefix: None,
             }))
             .await;
         assert!(
@@ -7224,6 +7497,8 @@ mod tests {
                 limit: Some(10),
                 depth: None,
                 include_noise: None,
+                language: None,
+                path_prefix: None,
             }))
             .await;
         assert!(
@@ -7253,6 +7528,8 @@ mod tests {
                 limit: Some(10),
                 depth: None,
                 include_noise: None,
+                language: None,
+                path_prefix: None,
             }))
             .await;
         assert!(
@@ -7295,6 +7572,8 @@ mod tests {
                 limit: Some(10),
                 depth: None,
                 include_noise: None,
+                language: None,
+                path_prefix: None,
             }))
             .await;
         assert!(
@@ -7328,6 +7607,8 @@ mod tests {
                 limit: Some(10),
                 depth: None,
                 include_noise: Some(true),
+                language: None,
+                path_prefix: None,
             }))
             .await;
         assert!(
@@ -7357,6 +7638,8 @@ mod tests {
                 limit: Some(10),
                 depth: None,
                 include_noise: None,
+                language: None,
+                path_prefix: None,
             }))
             .await;
         assert!(
@@ -7630,6 +7913,7 @@ mod tests {
                 detail: Some("tree".to_string()),
                 path: None,
                 depth: None,
+                max_files: None,
             }))
             .await;
         assert!(
@@ -7650,6 +7934,7 @@ mod tests {
                 detail: Some("tree".to_string()),
                 path: None,
                 depth: None,
+                max_files: None,
             }))
             .await;
         assert_eq!(result, crate::protocol::format::empty_guard_message());
@@ -7943,6 +8228,143 @@ mod tests {
             }))
             .await;
         assert!(result.contains("No dependents found"), "got: {result}");
+    }
+
+    #[tokio::test]
+    async fn test_find_dependents_mermaid_includes_symbol_names_in_edges() {
+        // dep_file imports from src/target.rs (stem "target") and uses TargetType.
+        // find_dependents_for_file should prefer the symbol-level TypeUsage ref,
+        // so the mermaid edge label should include the symbol name "TargetType".
+        let target_sym = make_symbol("TargetType", SymbolKind::Struct, 0, 2);
+        let import_ref = make_ref("target", None, ReferenceKind::Import, 0, None);
+        let usage_ref = make_ref("TargetType", None, ReferenceKind::TypeUsage, 1, Some(0));
+        let dep_sym = make_symbol("consumer", SymbolKind::Function, 0, 1);
+        let target_file = make_file(
+            "src/target.rs",
+            b"pub struct TargetType {}\n",
+            vec![target_sym],
+        );
+        let dep_file = make_file_with_refs(
+            "src/dep.rs",
+            b"use target::TargetType;\nfn consumer() { TargetType }\n",
+            vec![dep_sym],
+            vec![import_ref, usage_ref],
+        );
+        let server = make_server(make_live_index_ready(vec![target_file, dep_file]));
+
+        let result = server
+            .find_dependents(Parameters(super::FindDependentsInput {
+                path: "src/target.rs".to_string(),
+                compact: None,
+                format: Some("mermaid".to_string()),
+                limit: None,
+                max_per_file: None,
+            }))
+            .await;
+
+        assert!(
+            result.contains("TargetType"),
+            "mermaid edge should include symbol name: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_find_dependents_excludes_non_pub_name_collision() {
+        // target.rs defines a non-pub `run` function.
+        // other.rs imports from target (triggering the symbol_refs path) AND calls
+        // its own local `run` — same name, different function.
+        // Without the pub filter, the "run" Call ref would be falsely attributed to
+        // target.rs's symbol. With the pub filter, symbol_refs is empty and the
+        // result falls back to the import ref — "run" must not appear as attributed.
+        let target_sym = make_symbol("run", SymbolKind::Function, 0, 1);
+        let target_file = make_file(
+            "src/target.rs",
+            b"fn run() { internal }\n",
+            vec![target_sym],
+        );
+
+        let other_sym = make_symbol("main", SymbolKind::Function, 2, 4);
+        let other_import = make_ref(
+            "target",
+            Some("crate::target"),
+            ReferenceKind::Import,
+            0,
+            None,
+        );
+        let other_call = make_ref("run", None, ReferenceKind::Call, 3, Some(0));
+        let other_file = make_file_with_refs(
+            "src/other.rs",
+            b"use crate::target;\nfn run() {}\nfn main() {\n    run();\n}\n",
+            vec![other_sym],
+            vec![other_import, other_call],
+        );
+
+        let server = make_server(make_live_index_ready(vec![target_file, other_file]));
+
+        let result = server
+            .find_dependents(Parameters(super::FindDependentsInput {
+                path: "src/target.rs".to_string(),
+                compact: None,
+                format: None,
+                limit: None,
+                max_per_file: None,
+            }))
+            .await;
+
+        // other.rs still appears as a dependent (via the import), but the
+        // non-pub "run" symbol must NOT be surfaced as an attributed reference.
+        assert!(
+            result.contains("src/other.rs"),
+            "other.rs should appear via the import ref: {result}"
+        );
+        assert!(
+            !result.contains("run"),
+            "non-pub 'run' collision must not be attributed as a symbol reference: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_find_dependents_includes_pub_symbol_references() {
+        let target_sym = make_symbol("PublicApi", SymbolKind::Struct, 0, 1);
+        let target_file = make_file(
+            "src/target.rs",
+            b"pub struct PublicApi {}\n",
+            vec![target_sym],
+        );
+
+        let consumer_sym = make_symbol("use_it", SymbolKind::Function, 1, 3);
+        let consumer_import = ReferenceRecord {
+            name: "target".to_string(),
+            qualified_name: Some("crate::target".to_string()),
+            kind: ReferenceKind::Import,
+            byte_range: (0, 20),
+            line_range: (0, 0),
+            enclosing_symbol_index: None,
+        };
+        let consumer_ref = make_ref("PublicApi", None, ReferenceKind::TypeUsage, 2, Some(0));
+        let consumer_file = make_file_with_refs(
+            "src/consumer.rs",
+            b"use crate::target;\nfn use_it() {\n    PublicApi {}\n}\n",
+            vec![consumer_sym],
+            vec![consumer_import, consumer_ref],
+        );
+
+        let server = make_server(make_live_index_ready(vec![target_file, consumer_file]));
+
+        let result = server
+            .find_dependents(Parameters(super::FindDependentsInput {
+                path: "src/target.rs".to_string(),
+                compact: None,
+                format: None,
+                limit: None,
+                max_per_file: None,
+            }))
+            .await;
+
+        assert!(
+            result.contains("src/consumer.rs"),
+            "pub symbol with import should be a real dependent: {result}"
+        );
     }
 
     #[tokio::test]
@@ -8374,6 +8796,7 @@ mod tests {
             kind: None,
             symbol_line: None,
             new_body: "fn hello() {\n    println!(\"HELLO\");\n}".to_string(),
+            dry_run: None,
         };
         let result = server.replace_symbol_body(Parameters(input)).await;
         assert!(result.contains("replaced"), "result was: {result}");
@@ -8402,6 +8825,7 @@ mod tests {
             kind: None,
             symbol_line: None,
             new_body: "fn inner() {\n    new_body();\n}".to_string(),
+            dry_run: None,
         };
         let result = server.replace_symbol_body(Parameters(input)).await;
         assert!(result.contains("replaced"), "result: {result}");
@@ -8425,6 +8849,7 @@ mod tests {
             kind: None,
             symbol_line: None,
             new_body: "fn foo() {}".to_string(),
+            dry_run: None,
         };
         let result = server.replace_symbol_body(Parameters(input)).await;
         assert!(
@@ -8445,6 +8870,7 @@ mod tests {
             symbol_line: None,
             content: "fn world() {\n    println!(\"world\");\n}".to_string(),
             position: None, // defaults to "after"
+            dry_run: None,
         };
         let result = server.insert_symbol(Parameters(input)).await;
         assert!(result.contains("inserted"), "result: {result}");
@@ -8471,6 +8897,7 @@ mod tests {
             symbol_line: None,
             content: "fn hello() {\n    println!(\"hello\");\n}".to_string(),
             position: Some("before".to_string()),
+            dry_run: None,
         };
         let result = server.insert_symbol(Parameters(input)).await;
         assert!(result.contains("inserted"), "result: {result}");
@@ -8492,6 +8919,7 @@ mod tests {
             name: "hello".to_string(),
             kind: None,
             symbol_line: None,
+            dry_run: None,
         };
         let result = server.delete_symbol(Parameters(input)).await;
         assert!(result.contains("deleted"), "result: {result}");
@@ -8553,6 +8981,7 @@ mod tests {
             old_text: "\"hello\"".to_string(),
             new_text: "\"HELLO\"".to_string(),
             replace_all: false,
+            dry_run: None,
         };
         let result = server.edit_within_symbol(Parameters(input)).await;
         assert!(result.contains("edited within"), "result: {result}");
@@ -8576,9 +9005,120 @@ mod tests {
             old_text: "nonexistent".to_string(),
             new_text: "replacement".to_string(),
             replace_all: false,
+            dry_run: None,
         };
         let result = server.edit_within_symbol(Parameters(input)).await;
         assert!(result.contains("not found within"), "result: {result}");
+    }
+
+    #[tokio::test]
+    async fn test_replace_symbol_body_dry_run_skips_write() {
+        let original = b"fn foo() { old }\n";
+        let (_dir, server, file_path) = setup_edit_test(original);
+
+        let result = server
+            .replace_symbol_body(Parameters(crate::protocol::edit::ReplaceSymbolBodyInput {
+                path: "src/lib.rs".to_string(),
+                name: "foo".to_string(),
+                kind: None,
+                symbol_line: None,
+                new_body: "fn foo() { new }".to_string(),
+                dry_run: Some(true),
+            }))
+            .await;
+
+        assert!(
+            result.contains("[DRY RUN]"),
+            "should show dry run: {result}"
+        );
+        let on_disk = std::fs::read_to_string(&file_path).unwrap();
+        assert!(
+            on_disk.contains("old"),
+            "file should be unchanged: {on_disk}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_insert_symbol_dry_run_skips_write() {
+        let original = b"fn anchor() {}\n";
+        let (_dir, server, file_path) = setup_edit_test(original);
+
+        let result = server
+            .insert_symbol(Parameters(crate::protocol::edit::InsertSymbolInput {
+                path: "src/lib.rs".to_string(),
+                name: "anchor".to_string(),
+                kind: None,
+                symbol_line: None,
+                content: "fn new_fn() {}".to_string(),
+                position: Some("after".to_string()),
+                dry_run: Some(true),
+            }))
+            .await;
+
+        assert!(
+            result.contains("[DRY RUN]"),
+            "should show dry run: {result}"
+        );
+        let on_disk = std::fs::read_to_string(&file_path).unwrap();
+        assert!(
+            !on_disk.contains("new_fn"),
+            "file should be unchanged: {on_disk}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_delete_symbol_dry_run_skips_write() {
+        let original = b"fn target() {}\nfn keep() {}\n";
+        let (_dir, server, file_path) = setup_edit_test(original);
+
+        let result = server
+            .delete_symbol(Parameters(crate::protocol::edit::DeleteSymbolInput {
+                path: "src/lib.rs".to_string(),
+                name: "target".to_string(),
+                kind: None,
+                symbol_line: None,
+                dry_run: Some(true),
+            }))
+            .await;
+
+        assert!(
+            result.contains("[DRY RUN]"),
+            "should show dry run: {result}"
+        );
+        let on_disk = std::fs::read_to_string(&file_path).unwrap();
+        assert!(
+            on_disk.contains("target"),
+            "file should be unchanged: {on_disk}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_edit_within_symbol_dry_run_skips_write() {
+        let original = b"fn foo() { old_text }\n";
+        let (_dir, server, file_path) = setup_edit_test(original);
+
+        let result = server
+            .edit_within_symbol(Parameters(crate::protocol::edit::EditWithinSymbolInput {
+                path: "src/lib.rs".to_string(),
+                name: "foo".to_string(),
+                kind: None,
+                symbol_line: None,
+                old_text: "old_text".to_string(),
+                new_text: "new_text".to_string(),
+                replace_all: false,
+                dry_run: Some(true),
+            }))
+            .await;
+
+        assert!(
+            result.contains("[DRY RUN]"),
+            "should show dry run: {result}"
+        );
+        let on_disk = std::fs::read_to_string(&file_path).unwrap();
+        assert!(
+            on_disk.contains("old_text"),
+            "file should be unchanged: {on_disk}"
+        );
     }
 
     // ── Tier 2 batch tool integration tests ──
@@ -9204,5 +9744,36 @@ mod tests {
         }
         let t: T = serde_json::from_str(r#"{"items": "[\"x\"]"}"#).unwrap();
         assert_eq!(t.items, vec!["x".to_string()]);
+    }
+
+    #[test]
+    fn test_diff_symbols_compact_shows_omission_note() {
+        let dir = init_git_repo();
+        let a_path = dir.path().join("a.rs");
+        let b_path = dir.path().join("b.rs");
+        std::fs::write(&a_path, "fn old_func() {}\n").unwrap();
+        std::fs::write(&b_path, "// comment\n").unwrap();
+        run_git(dir.path(), &["add", "."]);
+        run_git(dir.path(), &["commit", "-m", "base"]);
+
+        std::fs::write(&a_path, "fn old_func() {}\nfn new_func() {}\n").unwrap();
+        std::fs::write(&b_path, "// changed comment\n").unwrap();
+        run_git(dir.path(), &["add", "."]);
+        run_git(dir.path(), &["commit", "-m", "changes"]);
+
+        let repo = crate::git::GitRepo::open(dir.path()).expect("open git repo");
+
+        let result = super::format::diff_symbols_result_view(
+            "HEAD~1",
+            "HEAD",
+            &["a.rs", "b.rs"],
+            &repo,
+            true,
+        );
+
+        assert!(
+            result.contains("1 file(s) with only non-symbol changes omitted"),
+            "compact mode should note omitted files: {result}"
+        );
     }
 }

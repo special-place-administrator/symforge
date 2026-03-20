@@ -139,6 +139,7 @@ impl SymForgeServer {
                     detail: Some("full".to_string()),
                     path: None,
                     depth: None,
+                    max_files: None,
                 }))
                 .await
             }
@@ -147,6 +148,7 @@ impl SymForgeServer {
                     detail: None,
                     path: None,
                     depth: None,
+                    max_files: None,
                 }))
                 .await
             }

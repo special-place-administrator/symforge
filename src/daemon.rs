@@ -1475,6 +1475,7 @@ async fn execute_tool_call(
                 detail: Some("full".to_string()),
                 path: None,
                 depth: None,
+                max_files: None,
             };
             Ok(server.get_repo_map(Parameters(merged)).await)
         }
@@ -1555,6 +1556,7 @@ async fn execute_tool_call(
                 detail: Some("tree".to_string()),
                 path: tree_input.path,
                 depth: tree_input.depth,
+                max_files: None,
             };
             Ok(server.get_repo_map(Parameters(merged)).await)
         }
