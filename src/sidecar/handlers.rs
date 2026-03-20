@@ -841,6 +841,13 @@ fn symbol_context_text(
         }
     }
 
+    if lines.is_empty() {
+        lines.push("No references found in the index.".to_string());
+        lines.push(
+            "Tip: this symbol may only be used via dynamic dispatch, reflection, or external entry points.".to_string(),
+        );
+    }
+
     if total < grand_total {
         lines.push(format!(
             "... (showing {} of {} matches — use `path` or `file` to narrow)",

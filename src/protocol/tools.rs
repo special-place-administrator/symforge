@@ -1839,6 +1839,36 @@ impl SymForgeServer {
             return result;
         }
         let file_path_hint = params.0.path.as_deref().or(params.0.file.as_deref());
+        // Auto-resolve path from index when not provided
+        let resolved_path: Option<String>;
+        let file_path_hint = if file_path_hint.is_some() {
+            resolved_path = None;
+            file_path_hint
+        } else {
+            let guard = self.index.read();
+            let candidates: Vec<String> = guard
+                .all_files()
+                .filter_map(|(path, file)| {
+                    if file.symbols.iter().any(|s| s.name == params.0.name) {
+                        Some(path.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .take(5)
+                .collect();
+            drop(guard);
+            if candidates.len() == 1 {
+                resolved_path = Some(candidates.into_iter().next().unwrap());
+                resolved_path.as_deref()
+            } else if candidates.len() > 1 {
+                resolved_path = Some(candidates[0].clone());
+                resolved_path.as_deref()
+            } else {
+                resolved_path = None;
+                None
+            }
+        };
         let verbosity = params.0.verbosity.as_deref().unwrap_or("full");
         let max_tokens = params.0.max_tokens;
 
@@ -1901,6 +1931,25 @@ impl SymForgeServer {
                     "find_references (usages)",
                     "edit_within_symbol / replace_symbol_body (edits)",
                 ]));
+                // Add disambiguation note when path was auto-resolved from multiple candidates
+                if params.0.path.is_none() && params.0.file.is_none() {
+                    if let Some(ref resolved) = resolved_path {
+                        let guard = self.index.read();
+                        let count = guard
+                            .all_files()
+                            .filter(|(_, file)| {
+                                file.symbols.iter().any(|s| s.name == params.0.name)
+                            })
+                            .count();
+                        drop(guard);
+                        if count > 1 {
+                            output.push_str(&format!(
+                                "\n\nNote: {} symbols named \"{}\" found — showing from {}. Specify path for precision.",
+                                count, params.0.name, resolved
+                            ));
+                        }
+                    }
+                }
                 let saved = raw_chars.saturating_sub(output.len());
                 let footer = format::compact_savings_footer(output.len(), raw_chars);
                 self.record_read_savings((saved / 4) as u64);
