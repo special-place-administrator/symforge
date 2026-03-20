@@ -193,7 +193,7 @@ fn test_ruby_grammar_loads_and_parses() {
         result
             .symbols
             .iter()
-            .any(|s| s.kind == SymbolKind::Function && s.name == "speak"),
+            .any(|s| s.kind == SymbolKind::Method && s.name == "speak"),
         "should extract speak method, symbols: {:?}",
         result.symbols
     );

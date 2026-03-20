@@ -343,6 +343,19 @@ pub struct PreUpdateSymbol {
 /// This is intentionally a thin compatibility shell over the current `RwLock<LiveIndex>` so the
 /// project can later attach published read snapshots or other state-machine metadata here without
 /// another repo-wide alias migration.
+///
+/// # Lock ordering
+///
+/// When multiple locks must be held simultaneously, always acquire them in this order to prevent
+/// deadlocks:
+///
+/// 1. `live`
+/// 2. `pre_update_symbols`
+/// 3. `published_state`
+/// 4. `published_repo_outline`
+///
+/// `git_temporal` is an independently locked side-table and may be acquired in any position
+/// relative to the others provided it is **not** held while acquiring `live`.
 pub struct SharedIndexHandle {
     live: RwLock<LiveIndex>,
     published_state: RwLock<Arc<PublishedIndexState>>,

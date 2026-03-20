@@ -23,8 +23,8 @@ fn walk_node(
     symbols: &mut Vec<SymbolRecord>,
 ) {
     let kind = match node.kind() {
-        "method" => Some(SymbolKind::Function),
-        "singleton_method" => Some(SymbolKind::Method),
+        "method" => Some(SymbolKind::Method),
+        "singleton_method" => Some(SymbolKind::Function),
         "class" => Some(SymbolKind::Class),
         "module" => Some(SymbolKind::Module),
         _ => None,
@@ -70,7 +70,7 @@ mod tests {
     fn test_ruby_method_definition() {
         let source = "def greet\n  puts 'hello'\nend";
         let symbols = parse_ruby(source);
-        let func = symbols.iter().find(|s| s.kind == SymbolKind::Function);
+        let func = symbols.iter().find(|s| s.kind == SymbolKind::Method);
         assert!(func.is_some(), "should extract method, got: {:?}", symbols);
         assert_eq!(func.unwrap().name, "greet");
     }

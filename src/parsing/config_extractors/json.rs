@@ -132,6 +132,7 @@ impl ConfigExtractor for JsonExtractor {
                     &line_starts,
                     arr,
                     "",
+                    (0, content.len() as u32),
                     0,
                     &mut symbols,
                     &mut sort_order,
@@ -232,6 +233,7 @@ fn walk_object(
                         line_starts,
                         child_arr,
                         &key_path,
+                        byte_range,
                         depth + 1,
                         symbols,
                         sort_order,
@@ -248,6 +250,7 @@ fn walk_array(
     line_starts: &[u32],
     arr: &[serde_json::Value],
     parent_path: &str,
+    parent_byte_range: (u32, u32),
     depth: u32,
     symbols: &mut Vec<SymbolRecord>,
     sort_order: &mut u32,
@@ -259,13 +262,15 @@ fn walk_array(
 
         let elem_path = join_array_index(parent_path, i);
 
-        // For array elements we don't have a key to search for, so we use a
-        // simple (0,0) placeholder and then try to refine below.
-        let byte_start = 0u32;
-        let byte_end = content.len() as u32;
-        let byte_range = (byte_start, byte_end);
-        let start_line = byte_to_line(line_starts, byte_start);
-        let end_line = byte_to_line(line_starts, byte_end.saturating_sub(1).max(byte_start));
+        // TODO: compute exact per-element byte ranges by scanning for element
+        // boundaries in the raw bytes. For now, fall back to the parent array's
+        // range, which is strictly better than the full-file span.
+        let byte_range = parent_byte_range;
+        let start_line = byte_to_line(line_starts, byte_range.0);
+        let end_line = byte_to_line(
+            line_starts,
+            byte_range.1.saturating_sub(1).max(byte_range.0),
+        );
 
         symbols.push(SymbolRecord {
             name: elem_path.clone(),
@@ -298,6 +303,7 @@ fn walk_array(
                         line_starts,
                         child_arr,
                         &elem_path,
+                        byte_range,
                         depth + 1,
                         symbols,
                         sort_order,

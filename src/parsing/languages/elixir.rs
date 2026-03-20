@@ -8,7 +8,9 @@ fn is_elixir_doc(node: &tree_sitter::Node, source: &str) -> bool {
     if end > source.len() {
         return false;
     }
-    let text = source[start..end].trim_start();
+    let text = std::str::from_utf8(&source.as_bytes()[start..end])
+        .unwrap_or("")
+        .trim_start();
     text.starts_with("@doc") || text.starts_with("@moduledoc") || text.starts_with("@typedoc")
 }
 

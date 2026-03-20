@@ -464,10 +464,23 @@ async fn handle_new_file_impact(
     // we look up the root from the existing index as a heuristic.
     // For new files, we try to find them relative to cwd.
     let abs_path = resolve_repo_root(&state)?.join(path);
-    let bytes = std::fs::read(&abs_path).map_err(|_| StatusCode::NOT_FOUND)?;
-
-    // Parse the file.
-    let result = crate::parsing::process_file(path, &bytes, language.clone());
+    let path_owned = path.to_string();
+    let lang_clone = language.clone();
+    let (bytes, result, mtime_secs) =
+        tokio::task::spawn_blocking(move || -> Result<_, StatusCode> {
+            let bytes = std::fs::read(&abs_path).map_err(|_| StatusCode::NOT_FOUND)?;
+            let result = crate::parsing::process_file(&path_owned, &bytes, lang_clone);
+            let mtime_secs = std::fs::metadata(&abs_path)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            Ok((bytes, result, mtime_secs))
+        })
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(|e| e)?;
 
     // Build symbol kind breakdown.
     let mut kind_counts: std::collections::HashMap<String, usize> =
@@ -488,12 +501,6 @@ async fn handle_new_file_impact(
     };
 
     // Index the file.
-    let mtime_secs = std::fs::metadata(&abs_path)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
     let indexed = crate::live_index::store::IndexedFile::from_parse_result(result, bytes)
         .with_mtime(mtime_secs);
     state.index.update_file(path.to_string(), indexed);
@@ -582,9 +589,39 @@ async fn handle_edit_impact(
 
     // Read file from disk and re-index.
     let abs_path = resolve_repo_root(&state)?.join(path);
-    let bytes = match std::fs::read(&abs_path) {
-        Ok(b) => b,
-        Err(_) => {
+    let path_owned = path.to_string();
+
+    enum ReadOutcome {
+        Ok {
+            bytes: Vec<u8>,
+            result: crate::domain::FileProcessingResult,
+            mtime_secs: u64,
+        },
+        NotFound,
+    }
+
+    let outcome = tokio::task::spawn_blocking(move || match std::fs::read(&abs_path) {
+        Ok(bytes) => {
+            let result = crate::parsing::process_file(&path_owned, &bytes, language);
+            let mtime_secs = std::fs::metadata(&abs_path)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            ReadOutcome::Ok {
+                bytes,
+                result,
+                mtime_secs,
+            }
+        }
+        Err(_) => ReadOutcome::NotFound,
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let (bytes, result, mtime_secs) = match outcome {
+        ReadOutcome::NotFound => {
             // File not on disk — remove it from the index so stale data is purged.
             let prev_symbol_count = {
                 let guard = state.index.read();
@@ -602,10 +639,15 @@ async fn handle_edit_impact(
             );
             return Ok(text);
         }
+        ReadOutcome::Ok {
+            bytes,
+            result,
+            mtime_secs,
+        } => (bytes, result, mtime_secs),
     };
-    let file_bytes = (bytes.len() as u64).max(file_bytes_pre);
 
-    let result = crate::parsing::process_file(path, &bytes, language);
+    let file_bytes: u64 = (bytes.len() as u64).max(file_bytes_pre);
+
     let post_symbols: Vec<SymbolSnapshot> = result
         .symbols
         .iter()
@@ -617,12 +659,6 @@ async fn handle_edit_impact(
         })
         .collect();
 
-    let mtime_secs = std::fs::metadata(&abs_path)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
     let indexed = crate::live_index::store::IndexedFile::from_parse_result(result, bytes)
         .with_mtime(mtime_secs);
     state.index.update_file(path.to_string(), indexed);

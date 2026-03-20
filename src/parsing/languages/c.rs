@@ -4,7 +4,7 @@ use super::{DocCommentSpec, collect_symbols, push_named_symbol, walk_children};
 
 pub(super) const DOC_SPEC: DocCommentSpec = DocCommentSpec {
     comment_node_types: &["comment"],
-    doc_prefixes: Some(&["///", "/**", "//!", "/*!"]),
+    doc_prefixes: Some(&["///", "/**", "/*!"]),
     custom_doc_check: None,
 };
 use crate::domain::{SymbolKind, SymbolRecord};

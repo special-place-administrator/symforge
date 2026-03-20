@@ -2855,6 +2855,7 @@ impl SymForgeServer {
                                 s.kind,
                                 crate::domain::SymbolKind::Class
                                     | crate::domain::SymbolKind::Struct
+                                    | crate::domain::SymbolKind::Enum
                             )
                     })
                 });
@@ -3591,6 +3592,13 @@ impl SymForgeServer {
             Some(f) => f,
             None => return format::not_found_file(&params.0.path),
         };
+        if let Some(warning) = Self::check_edit_capability(
+            &file.language,
+            crate::parsing::config_extractors::EditCapability::StructuralEditSafe,
+            "insert_symbol",
+        ) {
+            return warning;
+        }
         let (_, sym) = match edit::resolve_or_error(
             &file,
             &params.0.name,
@@ -3600,13 +3608,6 @@ impl SymForgeServer {
             Ok(s) => s,
             Err(e) => return e,
         };
-        if let Some(warning) = Self::check_edit_capability(
-            &file.language,
-            crate::parsing::config_extractors::EditCapability::StructuralEditSafe,
-            "insert_symbol",
-        ) {
-            return warning;
-        }
         if params.0.dry_run == Some(true) {
             return format!(
                 "[DRY RUN] Would insert {} `{}` in {} ({} bytes of content)",
@@ -3791,16 +3792,22 @@ impl SymForgeServer {
                 }
             }
         };
+        if params.0.dry_run == Some(true) {
+            if count == 0 {
+                return format!(
+                    "Error: `{}` not found within symbol `{}`",
+                    params.0.old_text, params.0.name
+                );
+            }
+            return format!(
+                "[DRY RUN] Would edit within `{}` in {} ({} replacement(s))",
+                params.0.name, params.0.path, count
+            );
+        }
         if count == 0 {
             return format!(
                 "Error: `{}` not found within symbol `{}`",
                 params.0.old_text, params.0.name
-            );
-        }
-        if params.0.dry_run == Some(true) {
-            return format!(
-                "[DRY RUN] Would edit within `{}` in {} ({} replacement(s))",
-                params.0.name, params.0.path, count
             );
         }
         let old_sym_bytes = sym_end - sym_start;

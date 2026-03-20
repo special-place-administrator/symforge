@@ -305,25 +305,19 @@ impl DaemonState {
         // Slow path: project not loaded — load unlocked, then re-check under write lock.
         let new_project = ProjectInstance::load(&canonical_root)?;
 
-        let needs_activation = {
+        {
             let mut projects = self.projects.write();
             if projects.contains_key(&project_id) {
                 // Another thread won the race — discard our loaded instance.
                 // Instance is Inactive with no spawned tasks, safe to drop.
-                false
             } else {
-                // We won — insert as Inactive. activate() handles all transitions.
+                // We won — insert as Inactive, then activate under the same lock
+                // to avoid a second write-lock acquisition.
                 projects.insert(project_id.clone(), new_project);
-                true
-            }
-        };
-
-        // Activate outside the write lock if we inserted.
-        if needs_activation {
-            let mut projects = self.projects.write();
-            if let Some(project) = projects.get_mut(&project_id) {
-                if project.activation_state == ActivationState::Inactive {
-                    project.activate();
+                if let Some(project) = projects.get_mut(&project_id) {
+                    if project.activation_state == ActivationState::Inactive {
+                        project.activate();
+                    }
                 }
             }
         }
@@ -731,7 +725,12 @@ pub async fn connect_or_spawn_session(
 ) -> anyhow::Result<DaemonSessionClient> {
     let port = ensure_daemon_running().await?;
     let base_url = format!("http://127.0.0.1:{port}");
-    let opened = reqwest::Client::new()
+    let http_client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(60))
+        .build()
+        .context("building reqwest client for connect_or_spawn_session")?;
+    let opened = http_client
         .post(format!("{base_url}/v1/sessions/open"))
         .json(&OpenProjectRequest {
             project_root: project_root.display().to_string(),
@@ -818,7 +817,12 @@ async fn wait_for_daemon_ready(identity: &DaemonIdentity) -> anyhow::Result<u16>
 }
 
 async fn daemon_health(port: u16) -> Option<DaemonHealth> {
-    reqwest::Client::new()
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(10))
+        .build()
+        .ok()?;
+    client
         .get(format!("http://127.0.0.1:{port}/health"))
         .send()
         .await
