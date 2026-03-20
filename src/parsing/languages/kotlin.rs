@@ -22,8 +22,8 @@ fn walk_node(
     sort_order: &mut u32,
     symbols: &mut Vec<SymbolRecord>,
 ) {
-    // Note: tree-sitter-kotlin-sg maps both 'class' and 'interface' keywords to
-    // 'class_declaration'. We use Class for both since the grammar doesn't distinguish.
+    // NOTE: tree-sitter-kotlin-sg maps enum class, interface, and class to class_declaration.
+    // All emit SymbolKind::Class.
     let kind = match node.kind() {
         "function_declaration" => Some(SymbolKind::Function),
         "class_declaration" => Some(SymbolKind::Class),

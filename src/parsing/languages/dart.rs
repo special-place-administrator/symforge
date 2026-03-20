@@ -61,6 +61,19 @@ mod tests {
     }
 
     #[test]
+    fn test_dart_top_level_function() {
+        let source = "void main() {}";
+        let symbols = parse_dart(source);
+        let func = symbols.iter().find(|s| s.kind == SymbolKind::Function);
+        assert!(
+            func.is_some(),
+            "should extract top-level function, got: {:?}",
+            symbols
+        );
+        assert_eq!(func.unwrap().name, "main");
+    }
+
+    #[test]
     fn test_dart_class_definition() {
         let source = "class Animal { void speak() {} }";
         let symbols = parse_dart(source);

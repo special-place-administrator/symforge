@@ -637,7 +637,9 @@ pub fn extract_references(
         }
     };
 
-    let _ = ts_language; // used only to initialize query once
+    // Safety: the query and parse tree use the same grammar version because both are produced by
+    // the same linked tree-sitter crate. The OnceLock ensures the query is compiled once and reused.
+    let _ = ts_language;
 
     let capture_names = query.capture_names();
     let mut cursor = QueryCursor::new();

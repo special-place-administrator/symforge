@@ -222,7 +222,7 @@ fn scan_angular_text(
 
         // @else, @empty — intentionally NOT extracted (subordinate branches)
 
-        offset += line.len() as u32 + 1; // +1 for the '\n'
+        offset = offset.saturating_add(line.len() as u32 + 1); // +1 for the '\n'
     }
 }
 

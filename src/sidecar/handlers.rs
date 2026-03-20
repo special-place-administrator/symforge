@@ -903,10 +903,17 @@ fn symbol_context_text(
     }
 
     if total < grand_total {
-        lines.push(format!(
-            "... (showing {} of {} matches — use `path` or `file` to narrow)",
-            total, grand_total
-        ));
+        if params.file.is_some() {
+            lines.push(format!(
+                "... (showing {} of {} matches — use `path` to narrow further)",
+                total, grand_total
+            ));
+        } else {
+            lines.push(format!(
+                "... (showing {} of {} matches — use `path` or `file` to narrow)",
+                total, grand_total
+            ));
+        }
     }
 
     // Apply budget (100 tokens = 400 bytes).
@@ -943,6 +950,7 @@ pub async fn workflow_repo_start_handler(
 }
 
 pub(crate) fn repo_map_text(state: &SidecarState) -> Result<String, StatusCode> {
+    // Single lock acquisition covers both the directory stats and key-types passes.
     let guard = state.index.read();
 
     let total_files = guard.file_count();
@@ -967,8 +975,6 @@ pub(crate) fn repo_map_text(state: &SidecarState) -> Result<String, StatusCode> 
         *dir_file_counts.entry(dir.clone()).or_insert(0) += 1;
         *dir_symbol_counts.entry(dir).or_insert(0) += file.symbols.len();
     }
-
-    drop(guard);
 
     // Build header.
     let mut lang_parts: Vec<String> = lang_counts
@@ -1001,7 +1007,6 @@ pub(crate) fn repo_map_text(state: &SidecarState) -> Result<String, StatusCode> 
 
     // Key entry points: top-level structs/traits/interfaces/enums in src/ (depth 0, limit 10).
     {
-        let guard = state.index.read();
         let mut entry_points: Vec<(String, String, String)> = Vec::new(); // (kind, name, path)
         for (path, file) in guard.all_files() {
             // Only source code, skip docs/tests/vendor
@@ -1045,6 +1050,8 @@ pub(crate) fn repo_map_text(state: &SidecarState) -> Result<String, StatusCode> 
             }
         }
     }
+
+    drop(guard);
 
     // Apply budget (1000 tokens = 4000 bytes).
     // Medium repos (up to ~70 directories) fit without truncation.

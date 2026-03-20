@@ -1111,7 +1111,9 @@ fn compute_importance_score(
         })
         .max()
         .unwrap_or(0);
-    let caller_norm = (max_callers as f32 / 20.0).min(1.0);
+    // Calibrated for medium repos; high-caller utilities saturate at 1.0.
+    const CALLER_COUNT_NORMALIZER: f32 = 20.0;
+    let caller_norm = (max_callers as f32 / CALLER_COUNT_NORMALIZER).min(1.0);
 
     // Find max kind priority among enclosing symbols
     let max_kind = file_matches
@@ -1123,6 +1125,14 @@ fn compute_importance_score(
 
     // Composite score
     0.30 * match_count_norm + 0.40 * caller_norm + 0.15 * churn_score + 0.15 * max_kind
+}
+
+fn compute_test_ranges(file: &crate::live_index::IndexedFile) -> Vec<(u32, u32)> {
+    file.symbols
+        .iter()
+        .filter(|s| s.name == "tests" && s.kind == SymbolKind::Module)
+        .map(|s| s.line_range)
+        .collect()
 }
 
 fn collect_text_matches<F>(
@@ -1148,11 +1158,7 @@ where
         // Pre-compute Rust test module line ranges for noise filtering.
         let test_ranges: Vec<(u32, u32)> =
             if !options.noise_policy.include_tests && file.language == LanguageId::Rust {
-                file.symbols
-                    .iter()
-                    .filter(|s| s.name == "tests" && s.kind == SymbolKind::Module)
-                    .map(|s| s.line_range)
-                    .collect()
+                compute_test_ranges(&file)
             } else {
                 Vec::new()
             };
@@ -1223,11 +1229,7 @@ where
         // Pre-compute Rust test module line ranges for noise filtering.
         let test_ranges: Vec<(u32, u32)> =
             if !options.noise_policy.include_tests && file.language == LanguageId::Rust {
-                file.symbols
-                    .iter()
-                    .filter(|s| s.name == "tests" && s.kind == SymbolKind::Module)
-                    .map(|s| s.line_range)
-                    .collect()
+                compute_test_ranges(&file)
             } else {
                 Vec::new()
             };

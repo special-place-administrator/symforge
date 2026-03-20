@@ -3574,12 +3574,12 @@ impl SymForgeServer {
         &self,
         params: Parameters<edit::InsertSymbolInput>,
     ) -> String {
+        if let Some(result) = self.proxy_tool_call("insert_symbol", &params.0).await {
+            return result;
+        }
         let position = params.0.position.as_deref().unwrap_or("after");
         if position != "before" && position != "after" {
             return format!("Error: position must be 'before' or 'after', got '{position}'");
-        }
-        if let Some(result) = self.proxy_tool_call("insert_symbol", &params.0).await {
-            return result;
         }
         let repo_root = match self.capture_repo_root() {
             Some(root) => root,

@@ -439,6 +439,9 @@ pub(crate) fn process_events(
 
     // Evict burst trackers that have been idle longer than 2 × QUIET_SECS to
     // prevent the map from growing unbounded over the lifetime of the watcher.
+    // NOTE: eviction only runs after file-change events, not during overflow
+    // reconciliation, so trackers for paths not recently seen are cleaned up
+    // lazily on the next incoming event.
     let evict_threshold = Duration::from_secs(BurstTracker::QUIET_SECS * 2);
     burst_trackers.retain(|_, tracker| tracker.last_event_at.elapsed() < evict_threshold);
 }

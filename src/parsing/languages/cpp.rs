@@ -27,8 +27,7 @@ fn walk_node(
         "type_definition" => Some(SymbolKind::Type),
         "class_specifier" => Some(SymbolKind::Class),
         "namespace_definition" => Some(SymbolKind::Module),
-        // template_declaration: extract the inner symbol, not the template itself
-        "template_declaration" => None,
+        // template_declaration: handled by walk_children recursion into inner symbol
         _ => None,
     };
 

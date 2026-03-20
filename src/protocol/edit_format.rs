@@ -47,7 +47,7 @@ pub(crate) fn format_stale_warnings(
         return String::new();
     }
     let mut out = format!(
-        "\n⚠ Signature of `{name}` may have changed — {} reference(s) to check:\n",
+        "\n[!] Signature of `{name}` may have changed — {} reference(s) to check:\n",
         refs.len()
     );
     for (ref_path, line, enclosing) in refs {

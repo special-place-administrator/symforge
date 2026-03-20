@@ -39,12 +39,6 @@ struct InitPaths {
 }
 
 impl InitPaths {
-    #[allow(dead_code)]
-
-    fn from_home(home: &std::path::Path) -> Self {
-        Self::from_home_and_working_dir(home, &std::env::current_dir().unwrap_or_default())
-    }
-
     fn from_home_and_working_dir(home: &std::path::Path, working_dir: &std::path::Path) -> Self {
         Self {
             claude_settings: home.join(".claude").join("settings.json"),

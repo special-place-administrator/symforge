@@ -840,72 +840,6 @@ pub fn repo_outline(index: &LiveIndex, project_name: &str) -> String {
     repo_outline_view(&view, project_name)
 }
 
-#[allow(dead_code)]
-fn repo_outline_display_labels(
-    files: &[RepoOutlineFileView],
-) -> std::collections::HashMap<String, String> {
-    fn basename(path: &str) -> &str {
-        path.rsplit('/').next().unwrap_or(path)
-    }
-
-    let mut by_basename: std::collections::HashMap<&str, Vec<&str>> =
-        std::collections::HashMap::new();
-    for file in files {
-        by_basename
-            .entry(basename(&file.relative_path))
-            .or_default()
-            .push(file.relative_path.as_str());
-    }
-
-    let mut labels = std::collections::HashMap::with_capacity(files.len());
-    for paths in by_basename.into_values() {
-        let split_paths: Vec<Vec<&str>> = paths
-            .iter()
-            .map(|path| {
-                path.split('/')
-                    .filter(|segment| !segment.is_empty())
-                    .collect()
-            })
-            .collect();
-        let max_depth = split_paths.iter().map(Vec::len).max().unwrap_or(1);
-        let mut resolved: Vec<Option<String>> = vec![None; split_paths.len()];
-
-        for depth in 1..=max_depth {
-            let mut candidate_counts: std::collections::HashMap<String, usize> =
-                std::collections::HashMap::new();
-            for parts in &split_paths {
-                let start = parts.len().saturating_sub(depth);
-                let candidate = parts[start..].join("/");
-                *candidate_counts.entry(candidate).or_insert(0) += 1;
-            }
-
-            for (idx, parts) in split_paths.iter().enumerate() {
-                if resolved[idx].is_some() {
-                    continue;
-                }
-                let start = parts.len().saturating_sub(depth);
-                let candidate = parts[start..].join("/");
-                if candidate_counts.get(&candidate) == Some(&1) || depth == max_depth {
-                    resolved[idx] = Some(candidate);
-                }
-            }
-
-            if resolved.iter().all(Option::is_some) {
-                break;
-            }
-        }
-
-        for (path, label) in paths.iter().zip(resolved.into_iter()) {
-            labels.insert(
-                (*path).to_string(),
-                label.unwrap_or_else(|| (*path).to_string()),
-            );
-        }
-    }
-
-    labels
-}
-
 pub fn repo_outline_view(view: &RepoOutlineView, project_name: &str) -> String {
     let mut lines = Vec::new();
     lines.push(format!(
@@ -1116,7 +1050,7 @@ pub fn what_changed_timestamp_view(view: &WhatChangedTimestampView, since_ts: i6
     if since_ts < view.loaded_secs {
         // Entire index is newer — list all files
         if view.paths.is_empty() {
-            return "No changes detected since last index load.".to_string();
+            return "Index is empty — no files tracked.".to_string();
         }
         view.paths.join("\n")
     } else {

@@ -16,6 +16,8 @@ use crate::live_index::store::IndexedFile;
 
 /// Validate that a user-supplied relative path stays within the repo root.
 /// Returns the canonicalized absolute path on success.
+///
+/// NOTE: Requires the target path to exist on disk (canonicalize).
 pub(crate) fn safe_repo_path(repo_root: &Path, relative_path: &str) -> Result<PathBuf, String> {
     let full_path = repo_root.join(relative_path);
     let canon_root = repo_root
@@ -263,7 +265,12 @@ pub(crate) fn detect_indentation(content: &[u8], byte_offset: u32) -> Vec<u8> {
 /// Prefix each non-empty line of `text` with `indent`, using the given line ending.
 pub(crate) fn apply_indentation(text: &str, indent: &[u8], line_ending: LineEnding) -> Vec<u8> {
     let mut result = Vec::new();
-    for (i, line) in text.lines().enumerate() {
+    // Use split('\n') instead of lines() so that trailing newlines produce a trailing
+    // empty element, preserving them. str::lines() silently strips all trailing newlines.
+    let parts: Vec<&str> = text.split('\n').collect();
+    for (i, line) in parts.iter().enumerate() {
+        // Strip '\r' left behind by split('\n') on CRLF input; re-emit via line_ending.
+        let line = line.strip_suffix('\r').unwrap_or(line);
         if i > 0 {
             result.extend_from_slice(line_ending.as_bytes());
         }
@@ -271,9 +278,6 @@ pub(crate) fn apply_indentation(text: &str, indent: &[u8], line_ending: LineEndi
             result.extend_from_slice(indent);
             result.extend_from_slice(line.as_bytes());
         }
-    }
-    if text.ends_with('\n') || text.ends_with("\r\n") {
-        result.extend_from_slice(line_ending.as_bytes());
     }
     result
 }
@@ -410,6 +414,7 @@ pub(crate) fn extend_past_orphaned_docs(
             }
         }
         if found_comments {
+            // split('\n') leaves \r in slices for CRLF; +1 accounts for the \n separator
             return lines[..i].iter().map(|l| l.len() + 1).sum();
         }
     }
@@ -796,6 +801,26 @@ pub(crate) fn execute_batch_edit(
         };
 
         let mut content = file.content.clone();
+
+        // TOCTOU guard: symbol byte ranges were resolved from the index snapshot above.
+        // If the watcher updated the file between that snapshot and now, a range could
+        // be out of bounds. Detect this early and ask the caller to retry.
+        for &ri in indices {
+            let r = &resolved[ri];
+            if r.sym.byte_range.1 as usize > content.len() {
+                return Err(format!(
+                    "Symbol `{}` byte range ({},{}) is out of bounds for file `{}` \
+                     (content length {}). The file may have been modified concurrently — \
+                     please retry.",
+                    r.sym.name,
+                    r.sym.byte_range.0,
+                    r.sym.byte_range.1,
+                    path,
+                    content.len(),
+                ));
+            }
+        }
+
         let language = resolved[indices[0]].language.clone();
         let line_ending = detect_line_ending(&content);
         let mut file_summaries: Vec<String> = Vec::new();
