@@ -102,12 +102,15 @@ pub fn check_stale(bind_host: &str) -> bool {
     } else {
         format!("{bind_host}:{port}")
     };
-    match TcpStream::connect_timeout(
-        &addr
-            .parse()
-            .unwrap_or_else(|_| "127.0.0.1:0".parse().unwrap()),
-        Duration::from_millis(200),
-    ) {
+    let sock_addr = match addr.parse() {
+        Ok(a) => a,
+        Err(_) => {
+            // Cannot determine staleness when the address is unparseable —
+            // default to "not stale" to avoid deleting a live sidecar's files.
+            return false;
+        }
+    };
+    match TcpStream::connect_timeout(&sock_addr, Duration::from_millis(200)) {
         Ok(_) => false, // Connection succeeded — sidecar is still alive.
         Err(_) => {
             // Connection refused or timed out — files are stale.

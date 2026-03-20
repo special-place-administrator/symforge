@@ -17,7 +17,7 @@
 //! - Mega-commit filter: commits touching >50 files are excluded from
 //!   co-change analysis to avoid pollution from bulk reformats/merges.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -322,7 +322,10 @@ impl GitTemporalIndex {
         for (idx, commit) in commits.iter().enumerate() {
             let weight = (-decay_lambda * commit.days_ago).exp();
 
-            for file_path in &commit.files {
+            // Dedup file paths per commit to avoid inflating Jaccard denominators
+            // (renames or merges can list the same file twice in a single commit).
+            let unique_files: HashSet<&String> = commit.files.iter().collect();
+            for file_path in unique_files {
                 file_commit_indices
                     .entry(file_path.clone())
                     .or_default()
@@ -580,7 +583,7 @@ fn load_commits(repo_root: &Path) -> Result<Vec<ParsedCommit>, String> {
 
 /// Truncate a message to `max_len` characters, appending "..." if truncated.
 fn truncate_message(msg: &str, max_len: usize) -> String {
-    if msg.len() <= max_len {
+    if msg.chars().count() <= max_len {
         msg.to_string()
     } else {
         let truncated: String = msg.chars().take(max_len.saturating_sub(3)).collect();

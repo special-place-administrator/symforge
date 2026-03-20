@@ -43,11 +43,16 @@ pub struct DiscoveredEntry {
 pub fn discover_files(root: &Path) -> Result<Vec<DiscoveredFile>> {
     use ignore::WalkBuilder;
 
-    let mut files: Vec<DiscoveredFile> = WalkBuilder::new(root)
+    // Canonicalize root so that strip_prefix succeeds even when the walker
+    // resolves symlinks to their canonical targets.
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+
+    let mut files: Vec<DiscoveredFile> = WalkBuilder::new(&root)
         .build()
         .filter_map(|entry_result| {
             let entry = entry_result.ok()?;
-            let path = entry.path().to_path_buf();
+            let path = std::fs::canonicalize(entry.path())
+                .unwrap_or_else(|_| entry.path().to_path_buf());
 
             // Use the already-known file_type from the walker instead of
             // path.is_file() which would issue a redundant stat() syscall.
@@ -59,7 +64,7 @@ pub fn discover_files(root: &Path) -> Result<Vec<DiscoveredFile>> {
             let language = LanguageId::from_extension(ext)?;
 
             // Compute relative path from root
-            let relative = path.strip_prefix(root).ok()?;
+            let relative = path.strip_prefix(&root).ok()?;
             // Normalize backslashes to forward slashes
             let relative_path = relative.to_string_lossy().replace('\\', "/");
 
@@ -92,11 +97,16 @@ pub fn discover_files(root: &Path) -> Result<Vec<DiscoveredFile>> {
 pub fn discover_all_files(root: &Path) -> Result<Vec<DiscoveredEntry>> {
     use ignore::WalkBuilder;
 
-    let mut entries: Vec<DiscoveredEntry> = WalkBuilder::new(root)
+    // Canonicalize root so that strip_prefix succeeds even when the walker
+    // resolves symlinks to their canonical targets.
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+
+    let mut entries: Vec<DiscoveredEntry> = WalkBuilder::new(&root)
         .build()
         .filter_map(|entry_result| {
             let entry = entry_result.ok()?;
-            let path = entry.path().to_path_buf();
+            let path = std::fs::canonicalize(entry.path())
+                .unwrap_or_else(|_| entry.path().to_path_buf());
 
             if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
                 return None;
@@ -111,7 +121,7 @@ pub fn discover_all_files(root: &Path) -> Result<Vec<DiscoveredEntry>> {
                 .unwrap_or_else(|| std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0));
 
             // Compute relative path from root
-            let relative = path.strip_prefix(root).ok()?;
+            let relative = path.strip_prefix(&root).ok()?;
             let relative_path = relative.to_string_lossy().replace('\\', "/");
 
             // Attempt language detection; None for unknown/denylisted extensions.

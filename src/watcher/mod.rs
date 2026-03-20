@@ -589,19 +589,17 @@ pub async fn run_watcher(
                                     info.last_reconcile_at = Some(SystemTime::now());
                                 });
                             }
-                            session_errors += errors.len() as u32;
+                            session_errors +=
+                                u32::try_from(errors.len()).unwrap_or(u32::MAX);
                             if session_errors >= MAX_SESSION_ERRORS {
                                 warn!("watcher: too many session errors, restarting watcher");
                                 break;
                             }
                         }
                         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                            // No event within the poll window — yield to tokio so other
-                            // tasks can run. This is critical: run_watcher is an async fn
-                            // running on a tokio worker thread; using blocking recv() would
-                            // starve the executor. recv_timeout + yield_now is the safe
-                            // pattern for mixing std::sync::mpsc with async tokio.
-                            tokio::task::yield_now().await;
+                            // No event within the poll window — block_in_place already
+                            // informed tokio that this thread was blocking, so the
+                            // executor can compensate. No explicit yield needed.
                         }
                         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                             // Channel closed — debouncer dropped or OS watcher died

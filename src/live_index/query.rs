@@ -1525,7 +1525,7 @@ impl LiveIndex {
                         trait_name: trait_name.clone(),
                         implementor: implementor.clone(),
                         file_path: file_path.clone(),
-                        line: reference.line_range.0,
+                        line: reference.line_range.0 + 1,
                     });
                 }
             }
@@ -1771,7 +1771,7 @@ impl LiveIndex {
         };
 
         let start = sym_rec.effective_start() as usize;
-        let end = sym_rec.byte_range.1 as usize;
+        let end = sym_rec.item_end() as usize;
         let clamped_end = end.min(file.content.len());
         let clamped_start = start.min(clamped_end);
         let body = String::from_utf8_lossy(&file.content[clamped_start..clamped_end]).into_owned();
@@ -1992,7 +1992,7 @@ impl LiveIndex {
                                 && kind_filter
                                     .map(|k| s.kind.to_string().eq_ignore_ascii_case(k))
                                     .unwrap_or(true)
-                                && symbol_line.map(|l| s.line_range.0 == l).unwrap_or(true)
+                                && symbol_line.map(|l| s.line_range.0 + 1 == l).unwrap_or(true)
                         })
                         .map(|s| s.depth)
                         .unwrap_or(0);
@@ -2085,23 +2085,35 @@ impl LiveIndex {
 
         // 2b. Build parent chain: all enclosing symbols sorted by depth
         // (outermost first), e.g. [module, class, method].
-        let mut parent_chain: Vec<EnclosingSymbolView> = file
-            .symbols
-            .iter()
-            .filter(|s| s.line_range.0 <= target_line_0 && s.line_range.1 >= target_line_0)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .map(|s| (s.depth, s))
-            .collect::<Vec<_>>()
-            .into_iter()
-            .collect::<std::collections::BTreeMap<_, _>>()
-            .into_values()
-            .map(|s| EnclosingSymbolView {
-                name: s.name.clone(),
-                kind_label: s.kind.to_string(),
-                line_range: (s.line_range.0 + 1, s.line_range.1 + 1),
-            })
-            .collect();
+        let mut parent_chain: Vec<EnclosingSymbolView> = {
+            let mut by_depth: std::collections::BTreeMap<u32, &SymbolRecord> =
+                std::collections::BTreeMap::new();
+            for s in file
+                .symbols
+                .iter()
+                .filter(|s| s.line_range.0 <= target_line_0 && s.line_range.1 >= target_line_0)
+            {
+                by_depth
+                    .entry(s.depth)
+                    .and_modify(|existing| {
+                        // Keep the tightest (smallest) range at each depth.
+                        let existing_span = existing.line_range.1 - existing.line_range.0;
+                        let new_span = s.line_range.1 - s.line_range.0;
+                        if new_span < existing_span {
+                            *existing = s;
+                        }
+                    })
+                    .or_insert(s);
+            }
+            by_depth
+                .into_values()
+                .map(|s| EnclosingSymbolView {
+                    name: s.name.clone(),
+                    kind_label: s.kind.to_string(),
+                    line_range: (s.line_range.0 + 1, s.line_range.1 + 1),
+                })
+                .collect()
+        };
         parent_chain.sort_by_key(|v| v.line_range.0);
 
         // 3. Find siblings (same depth as enclosing, or depth 0).

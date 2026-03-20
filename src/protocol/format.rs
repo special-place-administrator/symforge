@@ -290,11 +290,16 @@ pub fn is_noise_line(line: &str) -> bool {
         || trimmed.starts_with("require(")
         || trimmed.starts_with("#include")
         || trimmed.starts_with("//")
-        || trimmed.starts_with('#')
+        || trimmed.starts_with("# ")
+        || trimmed == "#"
+        || trimmed.starts_with("#!")
         || trimmed.starts_with("/*")
-        || trimmed.starts_with('*')
+        || trimmed.starts_with("* ")
+        || trimmed.starts_with("*/")
         || trimmed.starts_with("--")
-        || line.contains("require(")
+        || (trimmed.starts_with("const ") && trimmed.contains("require("))
+        || (trimmed.starts_with("let ") && trimmed.contains("require("))
+        || (trimmed.starts_with("var ") && trimmed.contains("require("))
 }
 
 pub fn search_text_result_view(

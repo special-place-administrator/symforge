@@ -3569,7 +3569,7 @@ impl SymForgeServer {
             &params.0.name,
             &sym.kind.to_string(),
             old_bytes,
-            params.0.new_body.len(),
+            indented.len(),
         );
         result.push_str(&edit_format::format_stale_warnings(
             &params.0.path,
@@ -3778,27 +3778,31 @@ impl SymForgeServer {
             Ok(s) => s,
             Err(e) => return e,
         };
-        let sym_start = sym.byte_range.0 as usize;
+        let sym_start = sym.effective_start() as usize;
         let sym_end = sym.byte_range.1 as usize;
         let body = &file.content[sym_start..sym_end];
         let body_str = match std::str::from_utf8(body) {
             Ok(s) => s,
             Err(_) => return "Error: symbol body is not valid UTF-8.".to_string(),
         };
-        // Normalize replacement text to match file line endings.
+        // Normalize both old_text and new_text to match file line endings.
         let line_ending = edit::detect_line_ending(&file.content);
+        let normalized_old =
+            edit::normalize_line_endings(params.0.old_text.as_bytes(), line_ending);
+        let normalized_old_str =
+            String::from_utf8(normalized_old).unwrap_or_else(|_| params.0.old_text.clone());
         let normalized_new =
             edit::normalize_line_endings(params.0.new_text.as_bytes(), line_ending);
         let normalized_new_str =
             String::from_utf8(normalized_new).unwrap_or_else(|_| params.0.new_text.clone());
         let (new_body, count) = if params.0.replace_all {
-            let replaced = body_str.replace(&params.0.old_text, &normalized_new_str);
-            let count = body_str.matches(&params.0.old_text).count();
+            let replaced = body_str.replace(&normalized_old_str, &normalized_new_str);
+            let count = body_str.matches(&normalized_old_str).count();
             (replaced, count)
         } else {
-            match body_str.find(&params.0.old_text) {
+            match body_str.find(&normalized_old_str) {
                 Some(_) => (
-                    body_str.replacen(&params.0.old_text, &normalized_new_str, 1),
+                    body_str.replacen(&normalized_old_str, &normalized_new_str, 1),
                     1,
                 ),
                 None => {
@@ -3828,7 +3832,8 @@ impl SymForgeServer {
             );
         }
         let old_sym_bytes = sym_end - sym_start;
-        let new_content = edit::apply_splice(&file.content, sym.byte_range, new_body.as_bytes());
+        let effective_range = (sym.effective_start(), sym.byte_range.1);
+        let new_content = edit::apply_splice(&file.content, effective_range, new_body.as_bytes());
         let abs_path = match edit::safe_repo_path(&repo_root, &params.0.path) {
             Ok(p) => p,
             Err(e) => return format!("Error: {e}"),

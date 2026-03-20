@@ -885,7 +885,55 @@ fn sync_http_get_with_timeout(
         anyhow::bail!("HTTP {status_code} from {path}");
     }
 
-    Ok(body.to_string())
+    // Check for chunked transfer-encoding. The sidecar uses hyper which may
+    // send chunked responses. Since we use Connection: close and read_to_string,
+    // the raw body includes chunk framing that must be decoded.
+    let is_chunked = headers
+        .lines()
+        .any(|line| {
+            let lower = line.to_lowercase();
+            lower.starts_with("transfer-encoding:") && lower.contains("chunked")
+        });
+
+    if is_chunked {
+        Ok(decode_chunked_body(body))
+    } else {
+        Ok(body.to_string())
+    }
+}
+
+/// Decode a chunked transfer-encoding body into a plain string.
+/// Each chunk is: `<hex-size>\r\n<data>\r\n`, terminated by `0\r\n\r\n`.
+fn decode_chunked_body(raw: &str) -> String {
+    let mut result = String::new();
+    let mut remainder = raw;
+    loop {
+        // Find chunk size line
+        let size_end = match remainder.find("\r\n") {
+            Some(pos) => pos,
+            None => break,
+        };
+        let size_str = remainder[..size_end].trim();
+        let chunk_size = match usize::from_str_radix(size_str, 16) {
+            Ok(0) => break, // Terminal chunk
+            Ok(n) => n,
+            Err(_) => break, // Malformed — return what we have
+        };
+        let data_start = size_end + 2; // skip \r\n
+        if data_start + chunk_size > remainder.len() {
+            // Incomplete chunk — append what's available
+            result.push_str(&remainder[data_start..]);
+            break;
+        }
+        result.push_str(&remainder[data_start..data_start + chunk_size]);
+        // Skip past chunk data + trailing \r\n
+        let next = data_start + chunk_size + 2;
+        if next > remainder.len() {
+            break;
+        }
+        remainder = &remainder[next..];
+    }
+    result
 }
 
 // ---------------------------------------------------------------------------

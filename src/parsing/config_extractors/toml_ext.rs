@@ -98,6 +98,7 @@ fn walk_table(
     if depth >= MAX_DEPTH {
         return;
     }
+    let mut search_from: usize = 0;
     for (key, item) in table.iter() {
         let key_path = join_key_path(parent_path, key);
         walk_item(
@@ -109,6 +110,7 @@ fn walk_table(
             line_starts,
             symbols,
             sort_order,
+            &mut search_from,
         );
     }
 }
@@ -122,12 +124,16 @@ fn walk_item(
     line_starts: &[u32],
     symbols: &mut Vec<SymbolRecord>,
     sort_order: &mut u32,
+    search_from: &mut usize,
 ) {
     match item {
         toml_edit::Item::None => {}
 
         toml_edit::Item::Value(value) => {
-            let (start, end) = find_key_value_bytes(raw, raw_key);
+            let (start, end) = find_key_value_bytes(raw, raw_key, *search_from);
+            if end > *search_from {
+                *search_from = end;
+            }
             symbols.push(make_symbol(
                 key_path,
                 depth,
@@ -151,6 +157,7 @@ fn walk_item(
                             line_starts,
                             symbols,
                             sort_order,
+                            search_from,
                         );
                     }
                 }
@@ -364,10 +371,10 @@ fn trim_trailing_whitespace(s: &[u8]) -> &[u8] {
 // Raw byte span finders (used by toml_edit walker)
 // ---------------------------------------------------------------------------
 
-fn find_key_value_bytes(raw: &[u8], key: &str) -> (usize, usize) {
+fn find_key_value_bytes(raw: &[u8], key: &str, search_from: usize) -> (usize, usize) {
     let key_bytes = key.as_bytes();
     let len = raw.len();
-    let mut i = 0;
+    let mut i = search_from;
     while i < len {
         let line_start = i;
         let line_end = raw[i..]
@@ -388,11 +395,21 @@ fn find_key_value_bytes(raw: &[u8], key: &str) -> (usize, usize) {
 }
 
 fn find_table_header_bytes(raw: &[u8], key_path: &str) -> (usize, usize) {
-    find_header_pattern(raw, &format!("[{}]", key_path))
+    // key_path has been through join_key_path which escapes dots as ~1 and ~ as ~0.
+    // Unescape before building the bracket pattern for raw-text search.
+    let unescaped = unescape_key_path(key_path);
+    find_header_pattern(raw, &format!("[{}]", unescaped))
+}
+
+/// Reverse the escaping applied by `join_key_path`: `~1` -> `.`, `~0` -> `~`.
+fn unescape_key_path(s: &str) -> String {
+    // Must replace ~1 first, then ~0, to avoid double-unescaping.
+    s.replace("~1", ".").replace("~0", "~")
 }
 
 fn find_array_table_header_bytes(raw: &[u8], key_path: &str, index: usize) -> (usize, usize) {
-    let pattern = format!("[[{}]]", key_path);
+    let unescaped = unescape_key_path(key_path);
+    let pattern = format!("[[{}]]", unescaped);
     let pattern_bytes = pattern.as_bytes();
     let len = raw.len();
     let mut i = 0;
@@ -445,17 +462,32 @@ fn trim_leading_whitespace(s: &[u8]) -> &[u8] {
 }
 
 fn line_starts_with_key(line: &[u8], key: &[u8]) -> bool {
-    if line.len() < key.len() {
-        return false;
+    // Check unquoted form: key =
+    if line.len() >= key.len() && line.starts_with(key) {
+        let after = &line[key.len()..];
+        if after
+            .first()
+            .map(|&b| b == b' ' || b == b'\t' || b == b'=')
+            .unwrap_or(false)
+        {
+            return true;
+        }
     }
-    if !line.starts_with(key) {
-        return false;
+    // Check quoted form: "key" =
+    if line.first() == Some(&b'"') {
+        let expected_len = 1 + key.len() + 1; // opening quote + key + closing quote
+        if line.len() >= expected_len
+            && line[1..].starts_with(key)
+            && line[1 + key.len()] == b'"'
+        {
+            let after = &line[expected_len..];
+            return after
+                .first()
+                .map(|&b| b == b' ' || b == b'\t' || b == b'=')
+                .unwrap_or(false);
+        }
     }
-    let after = &line[key.len()..];
-    after
-        .first()
-        .map(|&b| b == b' ' || b == b'\t' || b == b'=')
-        .unwrap_or(false)
+    false
 }
 
 fn make_symbol(

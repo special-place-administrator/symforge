@@ -133,12 +133,20 @@ function createLauncher(overrides = {}) {
     const home = osMod.homedir();
     if (fsMod.existsSync(pathMod.join(home, ".claude"))) clients.push("claude");
     if (fsMod.existsSync(pathMod.join(home, ".codex"))) clients.push("codex");
-    if (clients.length === 0 || clients.length >= 2) return "all";
+    if (fsMod.existsSync(pathMod.join(home, ".gemini"))) clients.push("gemini");
+    if (clients.length === 0) return null;
+    if (clients.length >= 2) return "all";
     return clients[0];
   }
 
   function runAutoInit() {
     const client = detectClients();
+    if (client === null) {
+      consoleMod.error(
+        "symforge: auto-init skipped — no supported clients detected."
+      );
+      return;
+    }
     consoleMod.error(`symforge: auto-configuring for ${client}...`);
     try {
       const output = execFileSyncFn(binPath, ["init", "--client", client], {

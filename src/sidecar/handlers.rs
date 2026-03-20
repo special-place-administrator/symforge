@@ -468,14 +468,17 @@ async fn handle_new_file_impact(
     let lang_clone = language.clone();
     let (bytes, result, mtime_secs) =
         tokio::task::spawn_blocking(move || -> Result<_, StatusCode> {
-            let bytes = std::fs::read(&abs_path).map_err(|_| StatusCode::NOT_FOUND)?;
-            let result = crate::parsing::process_file(&path_owned, &bytes, lang_clone);
+            // Read mtime BEFORE content to avoid TOCTOU: if the file changes
+            // between reads, the recorded mtime will be older than the content,
+            // ensuring the watcher re-indexes on the next pass.
             let mtime_secs = std::fs::metadata(&abs_path)
                 .and_then(|m| m.modified())
                 .ok()
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
+            let bytes = std::fs::read(&abs_path).map_err(|_| StatusCode::NOT_FOUND)?;
+            let result = crate::parsing::process_file(&path_owned, &bytes, lang_clone);
             Ok((bytes, result, mtime_secs))
         })
         .await
@@ -600,22 +603,27 @@ async fn handle_edit_impact(
         NotFound,
     }
 
-    let outcome = tokio::task::spawn_blocking(move || match std::fs::read(&abs_path) {
-        Ok(bytes) => {
-            let result = crate::parsing::process_file(&path_owned, &bytes, language);
-            let mtime_secs = std::fs::metadata(&abs_path)
-                .and_then(|m| m.modified())
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            ReadOutcome::Ok {
-                bytes,
-                result,
-                mtime_secs,
+    let outcome = tokio::task::spawn_blocking(move || {
+        // Read mtime BEFORE content to avoid TOCTOU: if the file changes
+        // between reads, the recorded mtime will be older than the content,
+        // ensuring the watcher re-indexes on the next pass.
+        let mtime_secs = std::fs::metadata(&abs_path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        match std::fs::read(&abs_path) {
+            Ok(bytes) => {
+                let result = crate::parsing::process_file(&path_owned, &bytes, language);
+                ReadOutcome::Ok {
+                    bytes,
+                    result,
+                    mtime_secs,
+                }
             }
+            Err(_) => ReadOutcome::NotFound,
         }
-        Err(_) => ReadOutcome::NotFound,
     })
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;

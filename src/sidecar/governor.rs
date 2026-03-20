@@ -113,12 +113,13 @@ pub fn classify_tool(tool_name: &str) -> ToolWeight {
         // Heavy: write operations and full indexing — exclusive access
         "index_folder" | "batch_edit" | "batch_rename" | "batch_insert" => ToolWeight::Heavy,
 
-        // Medium: operations that scan many files or do single-file edits
-        "replace_symbol_body"
-        | "edit_within_symbol"
-        | "insert_symbol"
-        | "delete_symbol"
-        | "analyze_file_impact" => ToolWeight::Medium,
+        // Heavy: single-file write operations — must serialize with other writers
+        "replace_symbol_body" | "edit_within_symbol" | "insert_symbol" | "delete_symbol" => {
+            ToolWeight::Heavy
+        }
+
+        // Medium: operations that scan many files but only read
+        "analyze_file_impact" => ToolWeight::Medium,
 
         // Light: everything else (reads, searches, lookups)
         _ => ToolWeight::Light,
@@ -473,7 +474,7 @@ mod tests {
         assert_eq!(classify_tool("batch_rename"), ToolWeight::Heavy);
         assert_eq!(classify_tool("index_folder"), ToolWeight::Heavy);
         assert_eq!(classify_tool("analyze_file_impact"), ToolWeight::Medium);
-        assert_eq!(classify_tool("replace_symbol_body"), ToolWeight::Medium);
+        assert_eq!(classify_tool("replace_symbol_body"), ToolWeight::Heavy);
     }
 
     #[test]

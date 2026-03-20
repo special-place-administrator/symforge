@@ -67,7 +67,12 @@ impl ConfigExtractor for MarkdownExtractor {
 
             while i < raw.len() {
                 lines.push((byte_offset, raw[i]));
-                byte_offset += raw[i].len() + 1;
+                byte_offset += raw[i].len();
+                // Only add 1 for the newline delimiter if this isn't the last
+                // segment or the original text actually ends with a newline.
+                if i + 1 < raw.len() || text.ends_with('\n') {
+                    byte_offset += 1;
+                }
                 i += 1;
             }
         }

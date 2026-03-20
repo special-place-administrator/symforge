@@ -303,7 +303,10 @@ fn walk_array(
 /// past the value (tracking braces, brackets, and strings).
 fn find_key_value_range(content: &[u8], key: &str, search_from: &mut usize) -> (usize, usize) {
     // Build the needle: `"key"` (we search for the quoted key).
-    let needle = format!("\"{}\"", key);
+    // Escape backslashes and double-quotes within the key so that keys like
+    // `a"b` or `a\b` match their JSON-encoded form (`"a\"b"`, `"a\\b"`).
+    let escaped_key = key.replace('\\', "\\\\").replace('"', "\\\"");
+    let needle = format!("\"{}\"", escaped_key);
     let needle_bytes = needle.as_bytes();
 
     // Search forward from the current cursor.
