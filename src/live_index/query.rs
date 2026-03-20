@@ -431,32 +431,28 @@ pub(crate) fn resolve_symbol_selector<'a>(
             SymbolSelectorMatch::Selected(idx, symbol)
         }
         _ => {
-            // Container-vs-member heuristic: when the user did NOT specify
-            // symbol_kind, and ambiguity is between a single container kind
-            // (class, struct, enum, trait, interface, module) and member kinds
-            // (function, method, impl), default to the container.  This
-            // resolves the very common C#/Java/Kotlin pattern where the
-            // class and its constructor share the same name.
+            // Kind-tier disambiguation: when the user did NOT specify
+            // symbol_kind, group candidates by kind tier and auto-select
+            // if the highest tier has exactly one candidate.  This resolves
+            // the common C#/Java/Kotlin pattern where a class and its
+            // constructor share the same name (class=tier 1, constructor
+            // mapped to Function=tier 3).
             if symbol_kind.is_none() {
-                let container_indices: Vec<usize> = candidates
+                let min_tier = candidates
+                    .iter()
+                    .map(|(_, sym)| kind_disambiguation_tier(&sym.kind))
+                    .min()
+                    .unwrap(); // safe: candidates.len() >= 2
+
+                let top_tier: Vec<usize> = candidates
                     .iter()
                     .enumerate()
-                    .filter(|(_, (_, sym))| {
-                        matches!(
-                            sym.kind,
-                            SymbolKind::Class
-                                | SymbolKind::Struct
-                                | SymbolKind::Enum
-                                | SymbolKind::Trait
-                                | SymbolKind::Interface
-                                | SymbolKind::Module
-                        )
-                    })
+                    .filter(|(_, (_, sym))| kind_disambiguation_tier(&sym.kind) == min_tier)
                     .map(|(i, _)| i)
                     .collect();
 
-                if container_indices.len() == 1 {
-                    let (idx, symbol) = candidates.remove(container_indices[0]);
+                if top_tier.len() == 1 {
+                    let (idx, symbol) = candidates.remove(top_tier[0]);
                     return SymbolSelectorMatch::Selected(idx, symbol);
                 }
             }
