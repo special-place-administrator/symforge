@@ -669,6 +669,8 @@ pub struct HealthStats {
     pub last_reconcile_at: Option<SystemTime>,
     /// Sorted, deduplicated list of files with partial-parse status.
     pub partial_parse_files: Vec<String>,
+    /// Sorted, deduplicated list of files with failed parse status and their error messages.
+    pub failed_files: Vec<(String, String)>,
     /// Admission tier counts: (Tier1 indexed, Tier2 metadata-only, Tier3 hard-skipped).
     pub tier_counts: (usize, usize, usize),
 }
@@ -2246,6 +2248,19 @@ impl LiveIndex {
         partial_parse_files.sort();
         partial_parse_files.dedup();
 
+        let mut failed_files: Vec<(String, String)> = self
+            .files
+            .iter()
+            .filter_map(|(path, f)| {
+                if let ParseStatus::Failed { error } = &f.parse_status {
+                    Some((path.clone(), error.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        failed_files.sort_by(|a, b| a.0.cmp(&b.0));
+
         HealthStats {
             file_count: self.files.len(),
             symbol_count,
@@ -2262,6 +2277,7 @@ impl LiveIndex {
             stale_files_found: 0,
             last_reconcile_at: None,
             partial_parse_files,
+            failed_files,
             tier_counts: self.tier_counts(),
         }
     }

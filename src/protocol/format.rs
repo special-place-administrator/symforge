@@ -1007,6 +1007,7 @@ pub fn health_report_from_published_state(
         stale_files_found: watcher.stale_files_found,
         last_reconcile_at: watcher.last_reconcile_at,
         partial_parse_files: vec![],
+        failed_files: vec![],
         tier_counts: published.tier_counts,
     };
     // Preserve the existing formatter shape by reusing HealthStats.
@@ -1084,6 +1085,19 @@ pub fn health_report_from_stats(status: &str, stats: &HealthStats) -> String {
             output.push_str(&format!(
                 "  ... and {} more partial files\n",
                 stats.partial_parse_files.len() - 10
+            ));
+        }
+    }
+
+    if !stats.failed_files.is_empty() {
+        output.push_str(&format!("\nFailed files ({}):\n", stats.failed_files.len()));
+        for (i, (path, error)) in stats.failed_files.iter().take(10).enumerate() {
+            output.push_str(&format!("  {}. {} — {}\n", i + 1, path, error));
+        }
+        if stats.failed_files.len() > 10 {
+            output.push_str(&format!(
+                "  ... and {} more failed files\n",
+                stats.failed_files.len() - 10
             ));
         }
     }
@@ -3912,6 +3926,7 @@ mod tests {
                 "src/b.rs".to_string(),
                 "src/c.rs".to_string(),
             ],
+            failed_files: vec![],
             tier_counts: (3, 0, 0),
         };
         let report = health_report_from_stats("Ready", &stats);
@@ -3951,6 +3966,7 @@ mod tests {
             stale_files_found: 0,
             last_reconcile_at: None,
             partial_parse_files,
+            failed_files: vec![],
             tier_counts: (50, 0, 0),
         };
         let report = health_report_from_stats("Ready", &stats);
@@ -3987,6 +4003,7 @@ mod tests {
             stale_files_found: 0,
             last_reconcile_at: None,
             partial_parse_files: vec![],
+            failed_files: vec![],
             tier_counts: (8200, 1280, 20),
         };
         let report = health_report_from_stats("Ready", &stats);
@@ -4029,6 +4046,7 @@ mod tests {
             stale_files_found: 5,
             last_reconcile_at: Some(SystemTime::now()),
             partial_parse_files: vec![],
+            failed_files: vec![],
             tier_counts: (1, 0, 0),
         };
 
