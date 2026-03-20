@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.0](https://github.com/special-place-administrator/symforge/compare/v1.6.0...v1.7.0) (2026-03-20)
+
+
+### Features
+
+* daemon fallback, callee dedup, token budget, search defaults ([d13e76b](https://github.com/special-place-administrator/symforge/commit/d13e76b77308b16d42bf721400f10ef6215cc896))
+
 ## [1.6.0](https://github.com/special-place-administrator/symforge/compare/v1.5.0...v1.6.0) (2026-03-19)
 
 
