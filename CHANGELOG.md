@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.6](https://github.com/special-place-administrator/symforge/compare/v2.0.5...v2.0.6) (2026-03-20)
+
+
+### Bug Fixes
+
+* Swift enum/extension/protocol detection and Angular template robustness ([af34df2](https://github.com/special-place-administrator/symforge/commit/af34df266b7cb34ba4dbd24853b585554bba7308))
+
 ## [2.0.5](https://github.com/special-place-administrator/symforge/compare/v2.0.4...v2.0.5) (2026-03-20)
 
 
