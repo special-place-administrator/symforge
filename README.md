@@ -70,6 +70,8 @@ The server does the graph traversal, the agent gets a focused answer. The index 
 - **Persistent snapshots** — the index serializes to `.symforge/index.bin` for fast restarts (~88ms for a 326-file project).
 - **Daemon mode** — multiple terminal sessions share one index via a local loopback daemon. No redundant re-indexing.
 - **Non-poisoning locks** — all shared state uses `parking_lot::RwLock`, which never poisons. A panicked thread releases its lock instead of crashing the daemon.
+- **Panic-safe index mutations** — all index write operations (`update_file`, `add_file`, `remove_file`) are wrapped in `catch_unwind`. If any dependency or code path panics mid-mutation, the index auto-repairs auxiliary indices (reverse refs, trigram, path lookups) from the always-consistent primary store. Files never vanish from the index, even under concurrent agent stress.
+- **Insert-first ordering** — new file data is written to the primary store before auxiliary indices are updated. This guarantees the file is always discoverable even if auxiliary index updates are interrupted.
 
 ## Token Savings — Measured
 
@@ -102,7 +104,7 @@ Token savings and owned-workflow hook adoption are tracked per session and repor
 |------|---------|
 | `health` | Index status, file counts, load time, watcher state, session token savings, hook adoption metrics, git temporal status |
 | `get_repo_map` | Start here. Adjustable detail: compact overview (~500 tokens), `detail='full'` for complete symbol outline, `detail='tree'` for browsable file tree with symbol counts |
-| `explore` | Concept-driven exploration — "how does authentication work?" returns related symbols, patterns, and files. Multi-term queries score symbols by how many terms match. Set `depth=2` for signatures and dependents, `depth=3` for implementations and type chains |
+| `explore` | Concept-driven exploration — "how does authentication work?" returns related symbols, patterns, and files. Multi-term queries score symbols by how many terms match. Set `depth=2` for signatures and dependents, `depth=3` for implementations and type chains. Vendor/generated files hidden by default; set `include_noise=true` to include |
 
 ### Reading Code
 
@@ -117,8 +119,8 @@ Token savings and owned-workflow hook adoption are tracked per session and repor
 
 | Tool | Purpose |
 |------|---------|
-| `search_symbols` | Find symbols by name, filtered by kind/language/path/scope. Auto-disambiguates cross-kind matches (e.g., C# class vs constructor) using kind-tier priority |
-| `search_text` | Full-text search with enclosing symbol context, `group_by` modes, `follow_refs` for inline callers. Set `ranked=true` for semantic re-ranking by caller connectivity, git churn, and symbol kind. Auto-corrects double-escaped regex patterns common in LLM tool calls |
+| `search_symbols` | Find symbols by name, filtered by kind/language/path/scope. Auto-disambiguates cross-kind matches (e.g., C# class vs constructor) using kind-tier priority. Test and generated files hidden by default (`include_tests`, `include_generated`); symbols inside inline `mod tests` blocks are also filtered |
+| `search_text` | Full-text search with enclosing symbol context, `group_by` modes, `follow_refs` for inline callers. Set `ranked=true` for semantic re-ranking by caller connectivity, git churn, and symbol kind. Test/generated noise hidden by default (`include_tests`, `include_generated`). Auto-corrects double-escaped regex patterns common in LLM tool calls |
 | `search_files` | Ranked file path discovery. `changed_with=path` for git co-change coupling. `resolve=true` for exact path resolution from partial hints |
 
 ### References and Dependencies
@@ -126,7 +128,7 @@ Token savings and owned-workflow hook adoption are tracked per session and repor
 | Tool | Purpose |
 |------|---------|
 | `find_references` | Two modes: (1) Default — call sites, imports, type usages grouped by file. (2) `mode='implementations'` — trait/interface implementors bidirectionally with `direction` control |
-| `find_dependents` | File-level dependency graph — which files import the given file. Supports Mermaid/Graphviz output |
+| `find_dependents` | File-level dependency graph — which files import the given file. Supports text, Mermaid, and Graphviz output with true reference counts per file. Set `compact=true` for 60-75% smaller output |
 | `inspect_match` | Deep-dive a `search_text` match — full symbol context with callers and type dependencies |
 
 ### Git Intelligence
