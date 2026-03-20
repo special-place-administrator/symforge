@@ -103,8 +103,8 @@ Token savings and owned-workflow hook adoption are tracked per session and repor
 | Tool | Purpose |
 |------|---------|
 | `health` | Index status, file counts, load time, watcher state, session token savings, hook adoption metrics, git temporal status |
-| `get_repo_map` | Start here. Adjustable detail: compact overview (~500 tokens), `detail='full'` for complete symbol outline, `detail='tree'` for browsable file tree with symbol counts |
-| `explore` | Concept-driven exploration — "how does authentication work?" returns related symbols, patterns, and files. Multi-term queries score symbols by how many terms match. Set `depth=2` for signatures and dependents, `depth=3` for implementations and type chains. Vendor/generated files hidden by default; set `include_noise=true` to include |
+| `get_repo_map` | Start here. Adjustable detail: compact overview (~500 tokens), `detail='full'` for complete symbol outline (paginated via `max_files`, default 200), `detail='tree'` for browsable file tree with symbol counts |
+| `explore` | Concept-driven exploration — "how does authentication work?" returns related symbols, patterns, and files. Multi-term queries score symbols by how many terms match. Set `depth=2` for signatures and dependents, `depth=3` for implementations and type chains. Filter with `language` and `path_prefix` to reduce config noise. Vendor/generated files hidden by default; set `include_noise=true` to include |
 
 ### Reading Code
 
@@ -113,7 +113,7 @@ Token savings and owned-workflow hook adoption are tracked per session and repor
 | `get_file_content` | Read files with line ranges, `around_line`, `around_match`, `around_symbol`, or chunked paging |
 | `get_file_context` | Rich file summary: symbol outline, imports, consumers, references, git activity. Use `sections=['outline']` for symbol-only outline |
 | `get_symbol` | Look up symbol(s) by file path and name. Single mode or batch mode with `targets[]` array for multiple symbols or byte-range code slices |
-| `get_symbol_context` | Three modes: (1) Default — definition + callers + callees + type usages. (2) `bundle=true` — symbol body + all referenced type definitions, resolved recursively. (3) `sections=[...]` — trace analysis with dependents, siblings, implementations, git activity. Supports `verbosity` levels (`signature`, `compact`, `full`) |
+| `get_symbol_context` | Three modes: (1) Default — definition + callers + callees + type usages (auto-resolves `path` from index when omitted). (2) `bundle=true` — symbol body + all referenced type definitions, resolved recursively. (3) `sections=[...]` — trace analysis with dependents, siblings, implementations, git activity. Supports `verbosity` levels (`signature`, `compact`, `full`) |
 
 ### Searching
 
@@ -127,7 +127,7 @@ Token savings and owned-workflow hook adoption are tracked per session and repor
 
 | Tool | Purpose |
 |------|---------|
-| `find_references` | Two modes: (1) Default — call sites, imports, type usages grouped by file. (2) `mode='implementations'` — trait/interface implementors bidirectionally with `direction` control |
+| `find_references` | Two modes: (1) Default — call sites, imports, type usages grouped by file. (2) `mode='implementations'` — trait/interface implementors bidirectionally with `direction` control. Explains when a class/struct has no implementations and suggests `mode='references'` instead |
 | `find_dependents` | File-level dependency graph — which files import the given file. Supports text, Mermaid, and Graphviz output with true reference counts per file. Set `compact=true` for 60-75% smaller output |
 | `inspect_match` | Deep-dive a `search_text` match — full symbol context with callers and type dependencies |
 
@@ -149,10 +149,10 @@ Token savings and owned-workflow hook adoption are tracked per session and repor
 
 | Tool | Purpose |
 |------|---------|
-| `replace_symbol_body` | Replace a symbol's entire definition by name. Includes attached doc comments. Auto-indents. Reports stale references on signature changes |
-| `insert_symbol` | Insert code before or after a named symbol. Set `position='before'` or `'after'` (default). Inserts above doc comments when targeting a documented symbol. Auto-indented |
-| `delete_symbol` | Remove a symbol and its attached doc comments entirely by name. Cleans up surrounding blank lines |
-| `edit_within_symbol` | Find-and-replace scoped to a symbol's byte range (including doc comments) — won't affect code outside it |
+| `replace_symbol_body` | Replace a symbol's entire definition by name. Includes attached doc comments. Auto-indents. Reports stale references on signature changes. Set `dry_run=true` to preview without writing |
+| `insert_symbol` | Insert code before or after a named symbol. Set `position='before'` or `'after'` (default). Inserts above doc comments when targeting a documented symbol. Auto-indented. Set `dry_run=true` to preview |
+| `delete_symbol` | Remove a symbol and its attached doc comments entirely by name. Cleans up surrounding blank lines. Set `dry_run=true` to preview |
+| `edit_within_symbol` | Find-and-replace scoped to a symbol's byte range (including doc comments) — won't affect code outside it. Set `dry_run=true` to preview |
 
 ### Editing — Batch Operations
 
@@ -231,7 +231,7 @@ Native Rust parsers for config files:
 
 | Format | Extensions | Symbols extracted |
 |--------|-----------|-------------------|
-| JSON | `.json` | Nested key paths (dot notation) |
+| JSON | `.json` | Nested key paths (dot notation). JSONC comments (`//` and `/* */`) are stripped before parsing — tsconfig.json and similar files work out of the box |
 | TOML | `.toml` | Table headers, key paths, array-of-tables |
 | YAML | `.yaml`, `.yml` | Nested key paths |
 | Markdown | `.md` | Section headers (dot-joined hierarchy) |
