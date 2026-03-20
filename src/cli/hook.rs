@@ -1759,28 +1759,31 @@ mod tests {
 
     #[test]
     fn hook_verbose_returns_false_when_unset() {
-        std::env::remove_var("SYMFORGE_HOOK_VERBOSE");
+        // SAFETY: test-only env manipulation; tests run with --test-threads=1.
+        unsafe { std::env::remove_var("SYMFORGE_HOOK_VERBOSE") };
         assert!(!is_hook_verbose());
     }
 
     #[test]
     fn hook_verbose_returns_true_when_set_to_1() {
-        std::env::set_var("SYMFORGE_HOOK_VERBOSE", "1");
+        // SAFETY: test-only env manipulation; tests run with --test-threads=1.
+        unsafe { std::env::set_var("SYMFORGE_HOOK_VERBOSE", "1") };
         let result = is_hook_verbose();
-        std::env::remove_var("SYMFORGE_HOOK_VERBOSE");
+        unsafe { std::env::remove_var("SYMFORGE_HOOK_VERBOSE") };
         assert!(result);
     }
 
     #[test]
     fn hook_verbose_returns_false_for_other_values() {
         for val in &["0", "true", "yes", "2", ""] {
-            std::env::set_var("SYMFORGE_HOOK_VERBOSE", val);
+            // SAFETY: test-only env manipulation; tests run with --test-threads=1.
+            unsafe { std::env::set_var("SYMFORGE_HOOK_VERBOSE", val) };
             assert!(
                 !is_hook_verbose(),
                 "should be false for SYMFORGE_HOOK_VERBOSE={val}"
             );
         }
-        std::env::remove_var("SYMFORGE_HOOK_VERBOSE");
+        unsafe { std::env::remove_var("SYMFORGE_HOOK_VERBOSE") };
     }
 
     // ---- HOOK-01: adoption log detail fields ----
