@@ -8,9 +8,88 @@ use super::{optional_u32, parse_diagnostic};
 
 pub struct JsonExtractor;
 
+/// Strip `//` line comments and `/* … */` block comments from JSON bytes,
+/// producing valid JSON that `serde_json` can parse. String literals are
+/// respected — comments inside `"…"` are left untouched. Newlines inside
+/// block comments are preserved so that line numbers stay accurate.
+fn strip_json_comments(input: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(input.len());
+    let len = input.len();
+    let mut i = 0;
+
+    while i < len {
+        let b = input[i];
+
+        // --- string literal: copy verbatim until closing quote ---
+        if b == b'"' {
+            out.push(b);
+            i += 1;
+            while i < len {
+                let c = input[i];
+                out.push(c);
+                i += 1;
+                if c == b'"' {
+                    break;
+                }
+                if c == b'\\' && i < len {
+                    // escaped char — copy next byte unconditionally
+                    out.push(input[i]);
+                    i += 1;
+                }
+            }
+            continue;
+        }
+
+        // --- possible comment start ---
+        if b == b'/' && i + 1 < len {
+            let next = input[i + 1];
+
+            // line comment: replace with spaces until newline
+            if next == b'/' {
+                i += 2; // skip "//"
+                out.push(b' ');
+                out.push(b' ');
+                while i < len && input[i] != b'\n' {
+                    out.push(b' ');
+                    i += 1;
+                }
+                continue;
+            }
+
+            // block comment: replace with spaces, preserve newlines
+            if next == b'*' {
+                i += 2; // skip "/*"
+                out.push(b' ');
+                out.push(b' ');
+                while i < len {
+                    if input[i] == b'*' && i + 1 < len && input[i + 1] == b'/' {
+                        out.push(b' ');
+                        out.push(b' ');
+                        i += 2;
+                        break;
+                    }
+                    if input[i] == b'\n' {
+                        out.push(b'\n');
+                    } else {
+                        out.push(b' ');
+                    }
+                    i += 1;
+                }
+                continue;
+            }
+        }
+
+        // --- ordinary byte ---
+        out.push(b);
+        i += 1;
+    }
+
+    out
+}
 impl ConfigExtractor for JsonExtractor {
     fn extract(&self, content: &[u8]) -> ExtractionResult {
-        let value: serde_json::Value = match serde_json::from_slice(content) {
+        let stripped = strip_json_comments(content);
+        let value: serde_json::Value = match serde_json::from_slice(&stripped) {
             Ok(v) => v,
             Err(e) => {
                 return ExtractionResult {
@@ -460,5 +539,49 @@ mod tests {
             JsonExtractor.edit_capability(),
             EditCapability::TextEditSafe
         );
+    }
+
+    #[test]
+    fn test_jsonc_line_comments() {
+        let content = b"{\n  // This is a comment\n  \"name\": \"test\"\n}";
+        let result = JsonExtractor.extract(content);
+        assert!(
+            matches!(result.outcome, ExtractionOutcome::Ok),
+            "JSONC with line comments should parse OK"
+        );
+        assert!(result.symbols.iter().any(|s| s.name == "name"));
+    }
+
+    #[test]
+    fn test_jsonc_block_comments() {
+        let content = b"{\n  /* block comment */\n  \"name\": \"test\"\n}";
+        let result = JsonExtractor.extract(content);
+        assert!(
+            matches!(result.outcome, ExtractionOutcome::Ok),
+            "JSONC with block comments should parse OK"
+        );
+        assert!(result.symbols.iter().any(|s| s.name == "name"));
+    }
+
+    #[test]
+    fn test_jsonc_trailing_commas_still_fail() {
+        let content = br#"{"a": 1,}"#;
+        let result = JsonExtractor.extract(content);
+        assert!(
+            matches!(result.outcome, ExtractionOutcome::Failed(_)),
+            "Trailing commas should still fail"
+        );
+    }
+
+    #[test]
+    fn test_jsonc_comments_inside_strings_preserved() {
+        let content = br#"{"url": "https://example.com", "pattern": "// not a comment"}"#;
+        let result = JsonExtractor.extract(content);
+        assert!(
+            matches!(result.outcome, ExtractionOutcome::Ok),
+            "Comments inside strings should not be stripped"
+        );
+        assert!(result.symbols.iter().any(|s| s.name == "url"));
+        assert!(result.symbols.iter().any(|s| s.name == "pattern"));
     }
 }
