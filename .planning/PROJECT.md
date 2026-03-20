@@ -30,10 +30,10 @@ Every tool that SymForge advertises must work correctly, and hooks must reliably
 
 ### Active
 
-- [ ] validate_file_syntax tool dispatch wiring (P0 — tool registered but broken at runtime)
-- [ ] search_text ranked mode over-filtering fix (P1 — ranked returns fewer results than unranked)
+- [ ] search_text ranked mode over-filtering (P1 — ranked returns fewer results than unranked)
+- [ ] max_tokens budget enforcement in get_symbol_context default/trace modes (P1 — budget param ignored outside bundle mode)
 - [ ] C# class/constructor symbol disambiguation (P1 — every C# class triggers ambiguity error)
-- [ ] Hook bootstrap diagnostics when sidecar.port missing (P2 — fail-open is correct but opaque)
+- [ ] Hook bootstrap diagnostics enrichment (P2 — fail-open correct but no-sidecar log entries lack context)
 - [ ] Codex ceiling documentation (P3 — clarify what SymForge can/cannot do in Codex)
 
 ### Out of Scope
@@ -45,7 +45,7 @@ Every tool that SymForge advertises must work correctly, and hooks must reliably
 
 ## Context
 
-An AI code reviewer tested SymForge 1.6.0 and found 6 bugs + 3 RTK adoption gaps. Commit `d13e76b` ("daemon fallback, callee dedup, token budget, search defaults") already addressed 4 of the 9 items. The remaining 5 items are the scope of this milestone.
+An AI code reviewer tested SymForge 1.6.0 and found 6 bugs + 3 RTK adoption gaps. Commit `d13e76b` already fixed: validate_file_syntax dispatch, search_text regex defaults, callee deduplication, and daemon fallback. Verified in codebase 2026-03-20. The remaining 5 items are the scope of this milestone.
 
 Key source files:
 - `src/daemon.rs` — Daemon dispatch, backward-compat aliases
