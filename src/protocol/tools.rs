@@ -9205,4 +9205,35 @@ mod tests {
         let t: T = serde_json::from_str(r#"{"items": "[\"x\"]"}"#).unwrap();
         assert_eq!(t.items, vec!["x".to_string()]);
     }
+
+    #[test]
+    fn test_diff_symbols_compact_shows_omission_note() {
+        let dir = init_git_repo();
+        let a_path = dir.path().join("a.rs");
+        let b_path = dir.path().join("b.rs");
+        std::fs::write(&a_path, "fn old_func() {}\n").unwrap();
+        std::fs::write(&b_path, "// comment\n").unwrap();
+        run_git(dir.path(), &["add", "."]);
+        run_git(dir.path(), &["commit", "-m", "base"]);
+
+        std::fs::write(&a_path, "fn old_func() {}\nfn new_func() {}\n").unwrap();
+        std::fs::write(&b_path, "// changed comment\n").unwrap();
+        run_git(dir.path(), &["add", "."]);
+        run_git(dir.path(), &["commit", "-m", "changes"]);
+
+        let repo = crate::git::GitRepo::open(dir.path()).expect("open git repo");
+
+        let result = super::format::diff_symbols_result_view(
+            "HEAD~1",
+            "HEAD",
+            &["a.rs", "b.rs"],
+            &repo,
+            true,
+        );
+
+        assert!(
+            result.contains("1 file(s) with only non-symbol changes omitted"),
+            "compact mode should note omitted files: {result}"
+        );
+    }
 }

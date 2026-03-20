@@ -6281,6 +6281,7 @@ pub fn diff_symbols_result_view(
     let mut total_added = 0usize;
     let mut total_removed = 0usize;
     let mut total_modified = 0usize;
+    let mut files_with_changes = 0usize;
 
     for file_path in changed_files {
         // Get content at base and target refs
@@ -6334,6 +6335,7 @@ pub fn diff_symbols_result_view(
         total_added += file_added.len();
         total_removed += file_removed.len();
         total_modified += file_modified.len();
+        files_with_changes += 1;
 
         if compact {
             // Compact mode: one line per file with counts only
@@ -6384,6 +6386,13 @@ pub fn diff_symbols_result_view(
         lines.push(format!(
             "Note: {} file(s) changed but no symbol boundaries were affected (changes in comments, whitespace, or non-symbol code).",
             changed_files.len()
+        ));
+    }
+
+    if compact && files_with_changes > 0 && changed_files.len() > files_with_changes {
+        let omitted = changed_files.len() - files_with_changes;
+        lines.push(format!(
+            "({omitted} file(s) with only non-symbol changes omitted)"
         ));
     }
 
