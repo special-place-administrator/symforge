@@ -4675,7 +4675,7 @@ mod tests {
         let (key, file) = make_file("src/lib.rs", b"", vec![]);
         let index = make_index(vec![(key, file)]);
         let result = not_found_symbol(&index, "src/lib.rs", "foo");
-        assert!(result.contains("No symbols in that file"));
+        assert!(result.contains("no indexed symbols"));
     }
 
     // ─── find_references_result tests ─────────────────────────────────────
