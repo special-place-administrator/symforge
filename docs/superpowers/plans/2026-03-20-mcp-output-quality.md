@@ -30,8 +30,8 @@ In `src/protocol/tools.rs`, inside `mod tests`, add:
 #[test]
 fn test_diff_symbols_compact_shows_omission_note() {
     // File A: has symbol changes. File B: only non-symbol changes.
-    let dir = tempfile::tempdir().unwrap();
-    let repo = init_git_repo(dir.path());
+    // init_git_repo() takes no args and returns TempDir.
+    let dir = init_git_repo();
 
     // Create base commit with two files
     let a_path = dir.path().join("a.rs");
@@ -46,6 +46,9 @@ fn test_diff_symbols_compact_shows_omission_note() {
     std::fs::write(&b_path, "// changed comment\n").unwrap();
     run_git(dir.path(), &["add", "."]);
     run_git(dir.path(), &["commit", "-m", "changes"]);
+
+    // Open GitRepo from the temp dir (init_git_repo returns TempDir, not GitRepo)
+    let repo = crate::git::GitRepo::open(dir.path()).expect("open git repo");
 
     let result = super::format::diff_symbols_result_view(
         "HEAD~1",
@@ -235,9 +238,7 @@ lines.push(format!("  {}: {}{}", line_match.line_number, line_match.line, annota
 
 Do NOT annotate in the `symbol` group_by branch (it shows counts, not individual lines) or in the `context` branch (rendered_lines).
 
-- [ ] **Step 5: Update all call sites**
-
-There are 3 call sites for `search_text_result_view`:
+- [ ] **Step 5: Update ALL call sites (there are 4, not 3)**
 
 1. `src/protocol/tools.rs` L2178 (main call):
 ```rust
@@ -262,7 +263,19 @@ let mut output = format::search_text_result_view(
 );
 ```
 
-3. Search for any other call sites with: `search_text_result_view(` — update them all to pass `None` if they don't have terms.
+3. `src/protocol/format.rs` L280 (production wrapper — **critical, will cause compile error if missed**):
+```rust
+// Before:
+search_text_result_view(result, None)
+// After:
+search_text_result_view(result, None, None)
+```
+
+4. `src/protocol/format.rs` L3530 and L3613 (two test calls in format.rs):
+```rust
+// Both need None appended:
+search_text_result_view(..., None, None)
+```
 
 - [ ] **Step 6: Run test to verify it passes**
 
@@ -326,7 +339,8 @@ In `src/protocol/tools.rs`, inside `mod tests`, add:
 #[tokio::test]
 async fn test_find_dependents_mermaid_includes_symbol_names_in_edges() {
     let target_sym = make_symbol("TargetType", SymbolKind::Struct, 0, 2);
-    let dep_ref = make_ref("TargetType", ReferenceKind::TypeUsage, 0, 0);
+    // make_ref signature: (name, qualified_name, kind, line, enclosing_symbol_index)
+    let dep_ref = make_ref("TargetType", None, ReferenceKind::TypeUsage, 0, Some(0));
     let dep_sym = make_symbol("consumer", SymbolKind::Function, 0, 1);
     let target_file = make_file("src/target.rs", b"struct TargetType {}\n", vec![target_sym]);
     let dep_file = make_file_with_refs(
@@ -451,9 +465,29 @@ for file in view.files.iter().take(limits.max_files) {
 }
 ```
 
-- [ ] **Step 7: Fix any compile errors from existing tests**
+- [ ] **Step 7: Fix existing tests that construct `DependentLineView`**
 
-Any existing test that constructs `DependentLineView` directly needs `name: "...".to_string()` added. Search for `DependentLineView {` in tests and update.
+Two tests in `src/protocol/format.rs` construct `DependentLineView` directly and will break:
+
+1. `test_find_dependents_mermaid_shows_true_ref_count_not_capped` (L4955): Add `name` field and update assertion.
+```rust
+// Change DependentLineView construction (inside the .map closure):
+DependentLineView {
+    line_number: i,
+    line_content: format!("use crate::db; // ref {i}"),
+    kind: "import".to_string(),
+    name: "db".to_string(),  // <-- add this
+}
+// Change assertion from:
+//   result.contains("5 refs")
+// To:
+//   result.contains("db")
+// Because the edge label now shows the symbol name instead of "5 refs".
+```
+
+2. `test_find_dependents_dot_shows_true_ref_count_not_capped` (L4981): Same changes — add `name: "db".to_string()` and update assertion from `"5 refs"` to `"db"`.
+
+Also search for any other `DependentLineView {` constructions across the codebase and add the `name` field.
 
 - [ ] **Step 8: Run tests**
 
@@ -675,14 +709,18 @@ async fn test_find_dependents_excludes_non_pub_name_collision() {
         vec![target_sym],
     );
 
-    // other.rs also has a call to "run" but it's a local call, not importing target.rs
-    let other_sym = make_symbol("main", SymbolKind::Function, 0, 2);
-    let other_ref = make_ref("run", ReferenceKind::Call, 1, 1);
+    // other.rs imports target (so matching_imports is non-empty, triggering the
+    // symbol_refs path) but the call to "run" is actually to its own local fn.
+    // Without the visibility filter, this would be a false positive.
+    let other_sym = make_symbol("main", SymbolKind::Function, 2, 4);
+    // make_ref signature: (name, qualified_name, kind, line, enclosing_symbol_index)
+    let other_import = make_ref("target", Some("crate::target"), ReferenceKind::Import, 0, None);
+    let other_ref = make_ref("run", None, ReferenceKind::Call, 3, Some(0));
     let other_file = make_file_with_refs(
         "src/other.rs",
-        b"fn main() {\n    run();\n}\n",
+        b"use crate::target;\nfn run() {}\nfn main() {\n    run();\n}\n",
         vec![other_sym],
-        vec![other_ref],
+        vec![other_import, other_ref],
     );
 
     let server = make_server(make_live_index_ready(vec![target_file, other_file]));
@@ -723,7 +761,8 @@ async fn test_find_dependents_includes_pub_symbol_references() {
         line_range: (0, 0),
         enclosing_symbol_index: None,
     };
-    let consumer_ref = make_ref("PublicApi", ReferenceKind::TypeUsage, 2, 2);
+    // make_ref signature: (name, qualified_name, kind, line, enclosing_symbol_index)
+    let consumer_ref = make_ref("PublicApi", None, ReferenceKind::TypeUsage, 2, Some(0));
     let consumer_file = make_file_with_refs(
         "src/consumer.rs",
         b"use crate::target;\nfn use_it() {\n    PublicApi {}\n}\n",
