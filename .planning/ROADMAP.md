@@ -25,10 +25,10 @@ Decimal phases appear between their surrounding integers in numeric order.
   1. Looking up a C# class by name returns the class definition even when a same-named constructor exists
   2. `resolve_symbol_selector` applies kind-tier priority (class > constructor > method > other) to auto-disambiguate cross-kind matches
   3. Two symbols at the same priority tier still produce an Ambiguous error with candidates listed
-**Plans**: TBD
+**Plans**: 1 plan
 
 Plans:
-- [ ] 01-01: TBD
+- [ ] 01-01-PLAN.md — Add kind-tier disambiguation to resolve_symbol_selector with comprehensive tests
 
 ### Phase 2: Diagnostics & Documentation
 **Goal**: Users can diagnose hook failures and understand SymForge's limits in Codex
