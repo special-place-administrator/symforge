@@ -138,3 +138,7 @@ Direct file reads are still appropriate for:
 
 Do not default to broad raw file reads for source-code inspection when
 SymForge can answer the question more directly.
+
+## Codex Integration
+
+For Codex-specific integration guidance and limitations, see [docs/codex-integration-ceiling.md](docs/codex-integration-ceiling.md).

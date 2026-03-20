@@ -1755,6 +1755,146 @@ mod tests {
         assert_eq!(snapshot.total_attempts(), 3);
     }
 
+    // ---- HOOK-02: is_hook_verbose ----
+
+    #[test]
+    fn hook_verbose_returns_false_when_unset() {
+        std::env::remove_var("SYMFORGE_HOOK_VERBOSE");
+        assert!(!is_hook_verbose());
+    }
+
+    #[test]
+    fn hook_verbose_returns_true_when_set_to_1() {
+        std::env::set_var("SYMFORGE_HOOK_VERBOSE", "1");
+        let result = is_hook_verbose();
+        std::env::remove_var("SYMFORGE_HOOK_VERBOSE");
+        assert!(result);
+    }
+
+    #[test]
+    fn hook_verbose_returns_false_for_other_values() {
+        for val in &["0", "true", "yes", "2", ""] {
+            std::env::set_var("SYMFORGE_HOOK_VERBOSE", val);
+            assert!(
+                !is_hook_verbose(),
+                "should be false for SYMFORGE_HOOK_VERBOSE={val}"
+            );
+        }
+        std::env::remove_var("SYMFORGE_HOOK_VERBOSE");
+    }
+
+    // ---- HOOK-01: adoption log detail fields ----
+
+    #[test]
+    fn adoption_log_missing_port_includes_reason_and_project_root() {
+        let tmp = TempDir::new().unwrap();
+        let log_path = tmp.path().join("hook-adoption.log");
+        let detail = NoSidecarDetail {
+            reason: "sidecar_port_missing",
+            searched_path: "/repo/.symforge/sidecar.port",
+            suggestion: "start_mcp_session",
+            project_root: "/repo",
+        };
+        append_hook_adoption_event_with_detail(
+            &log_path,
+            Some("sess-1"),
+            "source-read",
+            "no-sidecar",
+            Some(detail),
+        )
+        .unwrap();
+        let content = std::fs::read_to_string(&log_path).unwrap();
+        assert!(
+            content.contains("reason=sidecar_port_missing"),
+            "missing reason field"
+        );
+        assert!(
+            content.contains("project_root=/repo"),
+            "missing project_root field"
+        );
+        assert!(content.contains("searched_path=/repo/.symforge/sidecar.port"));
+        assert!(content.contains("suggestion=start_mcp_session"));
+    }
+
+    #[test]
+    fn adoption_log_stale_port_has_distinct_reason() {
+        let tmp = TempDir::new().unwrap();
+        let log_path = tmp.path().join("hook-adoption.log");
+        let detail = NoSidecarDetail {
+            reason: "sidecar_port_stale",
+            searched_path: "/repo/.symforge/sidecar.port",
+            suggestion: "restart_sidecar",
+            project_root: "/repo",
+        };
+        append_hook_adoption_event_with_detail(
+            &log_path,
+            Some("sess-2"),
+            "source-read",
+            "no-sidecar",
+            Some(detail),
+        )
+        .unwrap();
+        let content = std::fs::read_to_string(&log_path).unwrap();
+        assert!(
+            content.contains("reason=sidecar_port_stale"),
+            "should have stale reason"
+        );
+        assert!(content.contains("project_root=/repo"));
+    }
+
+    #[test]
+    fn adoption_log_without_detail_has_no_reason_or_project_root() {
+        let tmp = TempDir::new().unwrap();
+        let log_path = tmp.path().join("hook-adoption.log");
+        append_hook_adoption_event_with_detail(
+            &log_path,
+            Some("sess-3"),
+            "source-read",
+            "routed",
+            None,
+        )
+        .unwrap();
+        let content = std::fs::read_to_string(&log_path).unwrap();
+        assert!(
+            !content.contains("reason="),
+            "should have no reason without detail"
+        );
+        assert!(
+            !content.contains("project_root="),
+            "should have no project_root without detail"
+        );
+    }
+
+    // ---- HOOK-03: one-time sidecar hint ----
+
+    #[test]
+    fn sidecar_hint_creates_marker_file() {
+        let tmp = TempDir::new().unwrap();
+        let marker = tmp.path().join(HOOK_HINT_MARKER);
+        assert!(!marker.exists());
+        maybe_emit_sidecar_hint(tmp.path());
+        assert!(marker.exists(), "marker file should be created");
+    }
+
+    #[test]
+    fn sidecar_hint_skips_when_marker_fresh() {
+        let tmp = TempDir::new().unwrap();
+        let marker = tmp.path().join(HOOK_HINT_MARKER);
+        std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        std::fs::write(&marker, "").unwrap();
+        // Marker was just created — should be fresh.
+        // We can't easily capture stderr in a unit test, but we can verify
+        // the marker file's mtime is NOT updated (proving the function returned early).
+        let mtime_before = std::fs::metadata(&marker).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        maybe_emit_sidecar_hint(tmp.path());
+        let mtime_after = std::fs::metadata(&marker).unwrap().modified().unwrap();
+        assert_eq!(
+            mtime_before, mtime_after,
+            "marker mtime should not change when fresh"
+        );
+    }
+
     // --- helpers ---
 
     fn make_input(

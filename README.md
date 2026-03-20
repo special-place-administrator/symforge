@@ -493,6 +493,10 @@ python execution/version_sync.py check    # version consistency
 
 This project was originally called `Tokenizor`. The rename to `SymForge` is complete, but a few historical docs and paths may still mention the old name.
 
+## Codex Integration
+
+For Codex integration details and known limitations, see [Codex Integration Ceiling](docs/codex-integration-ceiling.md).
+
 ## License
 
 SymForge is licensed under [PolyForm Noncommercial License 1.0.0](./LICENSE). The official license text is also available from the [PolyForm Project](https://polyformproject.org/licenses/noncommercial/1.0.0/).
