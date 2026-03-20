@@ -30,6 +30,8 @@ Decimal phases appear between their surrounding integers in numeric order.
 Plans:
 - [x] 01-01-PLAN.md — Add kind-tier disambiguation to resolve_symbol_selector with comprehensive tests
 
+**Note:** SYMB-01/02/03 were verified as already implemented in the existing codebase; tests added in `tests/symbol_disambiguation.rs` to lock the behavior.
+
 ### Phase 2: Diagnostics & Documentation
 **Goal**: Users can diagnose hook failures and understand SymForge's limits in Codex
 **Depends on**: Nothing (independent, but ordered last as lowest severity)
