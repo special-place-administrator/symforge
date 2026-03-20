@@ -150,7 +150,7 @@ async fn run_local_mcp_server_async(
         let index = if let Some(snapshot) = persist::load_snapshot(&root) {
             let file_count = snapshot.files.len();
             // Extract mtime map before consuming snapshot
-            let snapshot_mtimes: std::collections::HashMap<String, i64> = snapshot
+            let snapshot_mtimes: std::collections::HashMap<String, u64> = snapshot
                 .files
                 .iter()
                 .map(|(k, v)| (k.clone(), v.mtime_secs))

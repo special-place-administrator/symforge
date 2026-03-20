@@ -522,6 +522,13 @@ impl SharedIndexHandle {
         self.publish_locked(&live);
     }
 
+    /// Publish a new read snapshot from the current `live` index.
+    ///
+    /// # Lock ordering — CALLER MUST hold `self.live` (read or write) first.
+    ///
+    /// This method acquires `published_state` and `published_repo_outline` (steps
+    /// 3–4 in the struct-level ordering). Acquiring `live` after calling this
+    /// method will deadlock.
     fn publish_locked(&self, live: &LiveIndex) {
         let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
         let published_state = Arc::new(PublishedIndexState::capture(generation, live));

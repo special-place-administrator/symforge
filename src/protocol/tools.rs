@@ -933,11 +933,12 @@ fn search_text_options_from_input(
 /// Returns `Some(fixed)` if the pattern contains likely double-escaped sequences,
 /// `None` otherwise.
 fn fix_common_double_escapes(pattern: &str) -> Option<String> {
-    let re = regex::Regex::new(r"\\\\([sdwbntSDWB])").unwrap();
-    if !re.is_match(pattern) {
+    static RE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"\\\\([sdwbntSDWB])").expect("static regex"));
+    if !RE.is_match(pattern) {
         return None;
     }
-    Some(re.replace_all(pattern, r"\$1").to_string())
+    Some(RE.replace_all(pattern, r"\$1").to_string())
 }
 
 fn enrich_with_callers(
@@ -2514,7 +2515,7 @@ impl SymForgeServer {
             return result;
         }
         let published = self.index.published_state();
-        let watcher_guard = self.watcher_info.lock().unwrap();
+        let watcher_guard = self.watcher_info.lock().unwrap_or_else(|e| e.into_inner());
         let mut result = format::health_report_from_published_state(&published, &watcher_guard);
 
         // Append token savings section if the sidecar's TokenStats are available.
@@ -2570,6 +2571,12 @@ impl SymForgeServer {
             return result;
         }
         let root = PathBuf::from(&params.0.path);
+        if !root.exists() {
+            return format!("Path does not exist: {}", params.0.path);
+        }
+        if !root.is_dir() {
+            return format!("Path is not a directory: {}", params.0.path);
+        }
         match self.index.reload(&root) {
             Ok(()) => {
                 let published = self.index.published_state();

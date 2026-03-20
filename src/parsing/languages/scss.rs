@@ -96,8 +96,11 @@ fn walk_node(
             }
             walk_children(node, source, depth + 1, sort_order, symbols);
         }
-        // Skip @include, @use, @forward — call sites / imports, not definitions.
-        "include_statement" | "use_statement" | "forward_statement" | "at_rule" => {}
+        // Skip @include, @use, @forward, @extend — call sites / imports, not definitions.
+        // @extend is an extend_statement node; silenced because it references a
+        // definition elsewhere, similar to @include.
+        "include_statement" | "use_statement" | "forward_statement" | "extend_statement"
+        | "at_rule" => {}
         "media_statement" => {
             let name = at_rule_name(node, source);
             if !name.is_empty() {

@@ -218,7 +218,17 @@ pub(crate) fn maybe_reindex(
     shared: &SharedIndex,
     language: LanguageId,
 ) -> ReindexResult {
-    // 1. Read file bytes and mtime
+    // 1. Read mtime BEFORE content to avoid TOCTOU: if the file is written
+    //    between stat and read, we get an mtime that is older-or-equal to the
+    //    content we actually parsed, so a future watcher event will correctly
+    //    detect staleness. The reverse order (read then stat) can record a
+    //    newer mtime paired with older content, permanently hiding the change.
+    let mtime_secs = std::fs::metadata(abs_path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     let bytes = match std::fs::read(abs_path) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -232,12 +242,6 @@ pub(crate) fn maybe_reindex(
             return ReindexResult::ReadError(e.to_string());
         }
     };
-    let mtime_secs = std::fs::metadata(abs_path)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
 
     // 2. Compute hash and check against existing entry (read lock, dropped before parse)
     let new_hash = hash::digest_hex(&bytes);

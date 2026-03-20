@@ -24,10 +24,41 @@ fn walk_node(
     symbols: &mut Vec<SymbolRecord>,
 ) {
     let kind = match node.kind() {
-        "function_declaration" => Some(SymbolKind::Function),
+        "function_declaration" | "generator_function_declaration" => Some(SymbolKind::Function),
         "class_declaration" => Some(SymbolKind::Class),
         "method_definition" => Some(SymbolKind::Method),
-        "export_statement" => None, // recurse into children
+        "public_field_definition" | "field_definition" => Some(SymbolKind::Variable),
+        "export_statement" => {
+            // `export default <anonymous-expr>` — emit a "default" symbol since
+            // recursion alone won't extract anonymous arrow/function/class expressions.
+            let mut cursor = node.walk();
+            let has_default = node.children(&mut cursor).any(|c| c.kind() == "default");
+            if has_default {
+                let mut cursor2 = node.walk();
+                for child in node.children(&mut cursor2) {
+                    match child.kind() {
+                        "arrow_function" | "function_expression" | "generator_function" => {
+                            push_symbol(
+                                node, source, "default".to_string(), SymbolKind::Function,
+                                depth, sort_order, symbols, &DOC_SPEC,
+                            );
+                            break;
+                        }
+                        "class" => {
+                            push_symbol(
+                                node, source, "default".to_string(), SymbolKind::Class,
+                                depth, sort_order, symbols, &DOC_SPEC,
+                            );
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            // Recurse into children for named declarations (export function foo, etc.)
+            walk_children(node, source, depth, sort_order, symbols, None, walk_node);
+            return;
+        }
         "lexical_declaration" | "variable_declaration" => {
             extract_variable_declarations(node, source, depth, sort_order, symbols);
             return; // children handled inline
@@ -68,7 +99,7 @@ fn extract_variable_declarations(
                 SymbolKind::Variable
             };
             push_symbol(
-                node, source, name, kind, depth, sort_order, symbols, &DOC_SPEC,
+                &child, source, name, kind, depth, sort_order, symbols, &DOC_SPEC,
             );
         }
     }

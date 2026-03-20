@@ -101,6 +101,23 @@ fn walk_node(
             );
             // Do NOT recurse — skip inner keyframe steps.
         }
+        // @import, @layer, @container — extract as Module symbols.
+        "import_statement" | "layer_statement" | "container_query_statement" => {
+            let name = at_rule_name(node, source);
+            if !name.is_empty() {
+                push_symbol(
+                    node,
+                    source,
+                    name,
+                    SymbolKind::Module,
+                    depth,
+                    sort_order,
+                    symbols,
+                    &NO_DOC_SPEC,
+                );
+            }
+            walk_children(node, source, depth + 1, sort_order, symbols);
+        }
         _ => {
             // Recurse into children for any other node type.
             walk_children(node, source, depth, sort_order, symbols);

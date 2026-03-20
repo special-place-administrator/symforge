@@ -52,7 +52,7 @@ pub struct IndexedFileSnapshot {
     pub alias_map: HashMap<String, String>,
     /// Seconds since UNIX epoch of the file's last modification time at index time.
     /// Used by stat_check_files for mtime comparison.
-    pub mtime_secs: i64,
+    pub mtime_secs: u64,
 }
 
 // ── Result type for stat checking ─────────────────────────────────────────────
@@ -181,7 +181,7 @@ pub fn snapshot_to_live_index(snapshot: IndexSnapshot) -> LiveIndex {
             content_hash: snap_file.content_hash,
             references: snap_file.references,
             alias_map: snap_file.alias_map,
-            mtime_secs: snap_file.mtime_secs as u64,
+            mtime_secs: snap_file.mtime_secs,
         };
         files.insert(path, Arc::new(indexed_file));
     }
@@ -216,7 +216,7 @@ pub fn snapshot_to_live_index(snapshot: IndexSnapshot) -> LiveIndex {
 /// Files with `ENOENT` go to `deleted`. Files on disk not in the index go to `new_files`.
 pub fn stat_check_files(
     index: &LiveIndex,
-    snapshot_mtimes: &HashMap<String, i64>,
+    snapshot_mtimes: &HashMap<String, u64>,
     root: &Path,
 ) -> StatCheckResult {
     let verify_view = capture_verify_view(index);
@@ -225,7 +225,7 @@ pub fn stat_check_files(
 
 fn stat_check_files_from_view(
     verify_view: &VerifyIndexView,
-    snapshot_mtimes: &HashMap<String, i64>,
+    snapshot_mtimes: &HashMap<String, u64>,
     root: &Path,
 ) -> StatCheckResult {
     let known_paths: std::collections::HashSet<&str> = verify_view
@@ -249,7 +249,7 @@ fn stat_check_files_from_view(
                     .modified()
                     .ok()
                     .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs() as i64)
+                    .map(|d| d.as_secs())
                     .unwrap_or(0);
 
                 let stored_mtime = snapshot_mtimes
@@ -383,7 +383,7 @@ fn build_snapshot(snapshot_input: SnapshotBuildInput, project_root: &Path) -> In
             .ok()
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-            .map(|d| d.as_secs() as i64)
+            .map(|d| d.as_secs())
             .unwrap_or(0);
 
         snap_files.insert(
@@ -418,7 +418,7 @@ fn build_snapshot(snapshot_input: SnapshotBuildInput, project_root: &Path) -> In
 pub async fn background_verify(
     index: crate::live_index::store::SharedIndex,
     root: std::path::PathBuf,
-    snapshot_mtimes: HashMap<String, i64>,
+    snapshot_mtimes: HashMap<String, u64>,
 ) {
     index.mark_snapshot_verify_running();
 
@@ -750,7 +750,7 @@ mod tests {
             .unwrap()
             .duration_since(UNIX_EPOCH)
             .unwrap()
-            .as_secs() as i64;
+            .as_secs();
 
         assert_eq!(
             snapshot.files.get("src/main.rs").unwrap().mtime_secs,
@@ -1040,8 +1040,8 @@ mod tests {
             .unwrap()
             .duration_since(UNIX_EPOCH)
             .unwrap()
-            .as_secs() as i64;
-        let mut mtimes = HashMap::new();
+            .as_secs();
+        let mut mtimes: HashMap<String, u64> = HashMap::new();
         mtimes.insert("a.rs".to_string(), mtime);
 
         let result = stat_check_files(&index, &mtimes, tmp.path());

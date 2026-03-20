@@ -20,6 +20,16 @@ use crate::live_index::store::IndexedFile;
 /// NOTE: Requires the target path to exist on disk (canonicalize).
 pub(crate) fn safe_repo_path(repo_root: &Path, relative_path: &str) -> Result<PathBuf, String> {
     let full_path = repo_root.join(relative_path);
+
+    // Lexical containment check — catches traversals like "../secret" even when
+    // the target path doesn't exist on disk (where canonicalize would just fail).
+    let has_parent_traversal = std::path::Path::new(relative_path)
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir));
+    if has_parent_traversal {
+        return Err(format!("path '{relative_path}' is outside the repository"));
+    }
+
     let canon_root = repo_root
         .canonicalize()
         .map_err(|e| format!("cannot resolve repo root: {e}"))?;

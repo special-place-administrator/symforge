@@ -157,7 +157,7 @@ fn scan_template_refs(
 /// runtime, so Angular constructs are detected via line-by-line text scanning.
 fn scan_angular_text(
     node: &Node,
-    source: &str,
+    _source: &str,
     text: &str,
     depth: u32,
     sort_order: &mut u32,
@@ -166,8 +166,14 @@ fn scan_angular_text(
 ) {
     // A single text node may contain multiple Angular constructs.
     // Scan line by line to detect each one independently.
+    //
+    // We construct SymbolRecord directly (instead of calling push_symbol) so
+    // that each construct gets its own per-line byte_range and line_range,
+    // rather than sharing the enclosing text node's span.
     let node_start = node.start_byte() as u32;
+    let start_line = node.start_position().row as u32;
     let mut offset = 0u32;
+    let mut line_idx = 0u32;
 
     for line in text.split('\n') {
         let line_start = node_start + offset;
@@ -180,16 +186,18 @@ fn scan_angular_text(
                 if rest.starts_with(|c: char| c == ' ' || c == '(' || c == '{') {
                     let byte_key = (line_start, line_start + line.len() as u32);
                     if emitted.insert(byte_key) {
-                        push_symbol(
-                            node,
-                            source,
-                            keyword.to_string(),
-                            SymbolKind::Module,
+                        let current_line = start_line + line_idx;
+                        symbols.push(SymbolRecord {
+                            name: keyword.to_string(),
+                            kind: SymbolKind::Module,
                             depth,
-                            sort_order,
-                            symbols,
-                            &NO_DOC_SPEC,
-                        );
+                            sort_order: *sort_order,
+                            byte_range: byte_key,
+                            line_range: (current_line, current_line),
+                            doc_byte_range: None,
+                            item_byte_range: Some(byte_key),
+                        });
+                        *sort_order += 1;
                     }
                     break; // Only one keyword per line
                 }
@@ -206,16 +214,18 @@ fn scan_angular_text(
             if !name.is_empty() {
                 let byte_key = (line_start, line_start + line.len() as u32);
                 if emitted.insert(byte_key) {
-                    push_symbol(
-                        node,
-                        source,
+                    let current_line = start_line + line_idx;
+                    symbols.push(SymbolRecord {
                         name,
-                        SymbolKind::Variable,
+                        kind: SymbolKind::Variable,
                         depth,
-                        sort_order,
-                        symbols,
-                        &NO_DOC_SPEC,
-                    );
+                        sort_order: *sort_order,
+                        byte_range: byte_key,
+                        line_range: (current_line, current_line),
+                        doc_byte_range: None,
+                        item_byte_range: Some(byte_key),
+                    });
+                    *sort_order += 1;
                 }
             }
         }
@@ -223,6 +233,7 @@ fn scan_angular_text(
         // @else, @empty — intentionally NOT extracted (subordinate branches)
 
         offset = offset.saturating_add(line.len() as u32 + 1); // +1 for the '\n'
+        line_idx += 1;
     }
 }
 

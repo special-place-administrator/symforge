@@ -96,7 +96,12 @@ pub fn check_stale(bind_host: &str) -> bool {
         Err(_) => return false, // No port file — nothing to clean up.
     };
 
-    let addr = format!("{bind_host}:{port}");
+    // Bracket IPv6 addresses for correct SocketAddr parsing (e.g. "[::1]:8080").
+    let addr = if bind_host.contains(':') {
+        format!("[{bind_host}]:{port}")
+    } else {
+        format!("{bind_host}:{port}")
+    };
     match TcpStream::connect_timeout(
         &addr
             .parse()
