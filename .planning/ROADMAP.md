@@ -42,11 +42,12 @@ Plans:
   3. The first `NoSidecar` event in a session writes a one-time hint explaining how to start the sidecar
   4. A `docs/codex-ceiling.md` file documents what works (MCP tools), what doesn't (hooks/sidecar), and what requires Codex changes
   5. README or CLAUDE.md links to the Codex ceiling doc for client-specific guidance
-**Plans**: TBD
+**Plans**: 1 plan
 
 Plans:
-- [ ] 02-01: TBD
-- [ ] 02-02: TBD
+- [ ] 02-01-PLAN.md — Commit hook diagnostics (Kilo Code impl), add tests, mark DOCS complete
+
+**Note:** HOOK-01/02/03 implementation completed by Kilo Code agent (uncommitted). DOCS-01/02 completed by Kilo Code (docs/codex-integration-ceiling.md + CLAUDE.md reference). This plan commits, tests, and finalizes.
 
 ## Progress
 
@@ -56,4 +57,4 @@ Phases execute in numeric order: 1 → 2
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Symbol Disambiguation | 1/1 | Complete | 2026-03-20 |
-| 2. Diagnostics & Documentation | 0/2 | Not started | - |
+| 2. Diagnostics & Documentation | 0/1 | Not started | - |
