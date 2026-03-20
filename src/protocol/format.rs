@@ -3588,8 +3588,11 @@ mod tests {
         let index = make_index(vec![(key, file)]);
 
         let live_result = search_text_result(&index, "let");
-        let captured_result =
-            search_text_result_view(search::search_text(&index, Some("let"), None, false), None, None);
+        let captured_result = search_text_result_view(
+            search::search_text(&index, Some("let"), None, false),
+            None,
+            None,
+        );
 
         assert_eq!(captured_result, live_result);
     }
@@ -4955,24 +4958,27 @@ mod tests {
 
     #[test]
     fn test_find_dependents_mermaid_shows_flowchart() {
-            let content_b = b"use crate::db;\n";
-            let r = make_ref("db", ReferenceKind::Import, 1, None);
-            let (key_b, file_b) = make_file_with_refs("src/handler.rs", content_b, vec![], vec![r]);
-            let (key_a, file_a) = make_file("src/db.rs", b"pub fn connect() {}", vec![]);
-            let index = make_index_with_reverse(vec![(key_a, file_a), (key_b, file_b)]);
-            let view = index.capture_find_dependents_view("src/db.rs");
-            let result = find_dependents_mermaid(&view, "src/db.rs", &OutputLimits::default());
-            assert!(
-                result.starts_with("flowchart LR"),
-                "should start with flowchart, got: {result}"
-            );
-            assert!(result.contains("src/db.rs"), "should mention target file");
-            assert!(
-                result.contains("src/handler.rs"),
-                "should mention dependent"
-            );
-            assert!(result.contains("db"), "should show symbol name in edge label");
-        }
+        let content_b = b"use crate::db;\n";
+        let r = make_ref("db", ReferenceKind::Import, 1, None);
+        let (key_b, file_b) = make_file_with_refs("src/handler.rs", content_b, vec![], vec![r]);
+        let (key_a, file_a) = make_file("src/db.rs", b"pub fn connect() {}", vec![]);
+        let index = make_index_with_reverse(vec![(key_a, file_a), (key_b, file_b)]);
+        let view = index.capture_find_dependents_view("src/db.rs");
+        let result = find_dependents_mermaid(&view, "src/db.rs", &OutputLimits::default());
+        assert!(
+            result.starts_with("flowchart LR"),
+            "should start with flowchart, got: {result}"
+        );
+        assert!(result.contains("src/db.rs"), "should mention target file");
+        assert!(
+            result.contains("src/handler.rs"),
+            "should mention dependent"
+        );
+        assert!(
+            result.contains("db"),
+            "should show symbol name in edge label"
+        );
+    }
 
     #[test]
     fn test_find_dependents_mermaid_empty() {
@@ -5015,55 +5021,55 @@ mod tests {
 
     #[test]
     fn test_find_dependents_mermaid_shows_true_ref_count_not_capped() {
-            // Construct a view directly with 5 lines, but set max_per_file=2.
-            // The mermaid label should show symbol names (all "db"), not just "5 refs".
-            use crate::live_index::query::{DependentFileView, DependentLineView, FindDependentsView};
-            let lines: Vec<DependentLineView> = (1..=5)
-                .map(|i| DependentLineView {
-                    line_number: i,
-                    line_content: format!("use crate::db; // ref {i}"),
-                    kind: "import".to_string(),
-                    name: "db".to_string(),
-                })
-                .collect();
-            let view = FindDependentsView {
-                files: vec![DependentFileView {
-                    file_path: "src/handler.rs".to_string(),
-                    lines,
-                }],
-            };
-            let limits = OutputLimits::new(20, 2); // max_per_file=2, but 5 actual refs
-            let result = find_dependents_mermaid(&view, "src/db.rs", &limits);
-            assert!(
-                result.contains("db"),
-                "mermaid label should include symbol name 'db'. Got: {result}"
-            );
-        }
+        // Construct a view directly with 5 lines, but set max_per_file=2.
+        // The mermaid label should show symbol names (all "db"), not just "5 refs".
+        use crate::live_index::query::{DependentFileView, DependentLineView, FindDependentsView};
+        let lines: Vec<DependentLineView> = (1..=5)
+            .map(|i| DependentLineView {
+                line_number: i,
+                line_content: format!("use crate::db; // ref {i}"),
+                kind: "import".to_string(),
+                name: "db".to_string(),
+            })
+            .collect();
+        let view = FindDependentsView {
+            files: vec![DependentFileView {
+                file_path: "src/handler.rs".to_string(),
+                lines,
+            }],
+        };
+        let limits = OutputLimits::new(20, 2); // max_per_file=2, but 5 actual refs
+        let result = find_dependents_mermaid(&view, "src/db.rs", &limits);
+        assert!(
+            result.contains("db"),
+            "mermaid label should include symbol name 'db'. Got: {result}"
+        );
+    }
 
     #[test]
     fn test_find_dependents_dot_shows_true_ref_count_not_capped() {
-            use crate::live_index::query::{DependentFileView, DependentLineView, FindDependentsView};
-            let lines: Vec<DependentLineView> = (1..=5)
-                .map(|i| DependentLineView {
-                    line_number: i,
-                    line_content: format!("use crate::db; // ref {i}"),
-                    kind: "import".to_string(),
-                    name: "db".to_string(),
-                })
-                .collect();
-            let view = FindDependentsView {
-                files: vec![DependentFileView {
-                    file_path: "src/handler.rs".to_string(),
-                    lines,
-                }],
-            };
-            let limits = OutputLimits::new(20, 2);
-            let result = find_dependents_dot(&view, "src/db.rs", &limits);
-            assert!(
-                result.contains("db"),
-                "dot label should include symbol name 'db'. Got: {result}"
-            );
-        }
+        use crate::live_index::query::{DependentFileView, DependentLineView, FindDependentsView};
+        let lines: Vec<DependentLineView> = (1..=5)
+            .map(|i| DependentLineView {
+                line_number: i,
+                line_content: format!("use crate::db; // ref {i}"),
+                kind: "import".to_string(),
+                name: "db".to_string(),
+            })
+            .collect();
+        let view = FindDependentsView {
+            files: vec![DependentFileView {
+                file_path: "src/handler.rs".to_string(),
+                lines,
+            }],
+        };
+        let limits = OutputLimits::new(20, 2);
+        let result = find_dependents_dot(&view, "src/db.rs", &limits);
+        assert!(
+            result.contains("db"),
+            "dot label should include symbol name 'db'. Got: {result}"
+        );
+    }
 
     // ─── context_bundle_result tests ──────────────────────────────────────
 
@@ -6067,6 +6073,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_extract_declaration_name_csharp_const() {
+        // C# const: `const string Foo = "bar"` — name is Foo, not string
+        assert_eq!(
+            super::extract_declaration_name("const string ConnectionString = \"...\";"),
+            Some("ConnectionString".to_string())
+        );
+        assert_eq!(
+            super::extract_declaration_name("const int MaxRetries = 3;"),
+            Some("MaxRetries".to_string())
+        );
+        // Rust const should still work (type after colon, not before name)
+        assert_eq!(
+            super::extract_declaration_name("const MAX_SIZE: usize = 100;"),
+            Some("MAX_SIZE".to_string())
+        );
+    }
+
     // ─── extract_signature / apply_verbosity tests (U6) ──────────────────────
 
     #[test]
@@ -6491,6 +6515,34 @@ fn extract_symbol_signatures(content: &str) -> Vec<(String, String)> {
     symbols
 }
 
+/// Check if a word is a well-known type keyword that would appear between
+/// `const` and the actual variable name in C#, Java, or TypeScript.
+fn is_likely_type_keyword(word: &str) -> bool {
+    matches!(
+        word,
+        "string"
+            | "String"
+            | "int"
+            | "Int32"
+            | "Int64"
+            | "bool"
+            | "Boolean"
+            | "float"
+            | "double"
+            | "decimal"
+            | "char"
+            | "byte"
+            | "long"
+            | "short"
+            | "uint"
+            | "object"
+            | "var"
+            | "number"
+            | "bigint"
+            | "any"
+    )
+}
+
 /// Try to extract a declaration name from a line of code.
 pub(crate) fn extract_declaration_name(line: &str) -> Option<String> {
     // Strip leading visibility modifier generically: pub, pub(crate), pub(super), pub(in path).
@@ -6536,9 +6588,22 @@ pub(crate) fn extract_declaration_name(line: &str) -> Option<String> {
                 .chars()
                 .take_while(|c| c.is_alphanumeric() || *c == '_')
                 .collect();
-            if !name.is_empty() {
-                return Some(name);
+            if name.is_empty() {
+                continue;
             }
+            // For `const`, the first word might be a type name (C#: `const string Foo`).
+            // If it looks like a well-known type, skip it and take the next identifier.
+            if *kw == "const " && is_likely_type_keyword(&name) {
+                let after_type = &rest[name.len()..].trim_start();
+                let real_name: String = after_type
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                if !real_name.is_empty() {
+                    return Some(real_name);
+                }
+            }
+            return Some(name);
         }
     }
     None
