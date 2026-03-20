@@ -483,6 +483,9 @@ pub struct GetRepoMapInput {
     /// Max depth levels to expand (only used when detail="tree", default: 2, max: 5).
     #[serde(default, deserialize_with = "lenient_u32")]
     pub depth: Option<u32>,
+    /// Maximum number of files to include in the output (only used when detail="full", default: 200).
+    #[serde(default, deserialize_with = "lenient_u32")]
+    pub max_files: Option<u32>,
 }
 
 /// Input for `get_file_tree` (backward compat).
@@ -626,6 +629,10 @@ pub struct ExploreInput {
     /// By default these are hidden to reduce noise (default false).
     #[serde(default, deserialize_with = "lenient_bool")]
     pub include_noise: Option<bool>,
+    /// Optional canonical language name filter (e.g., "Rust", "TypeScript", "C#").
+    pub language: Option<String>,
+    /// Optional relative path prefix scope (e.g., "src/", "backend/").
+    pub path_prefix: Option<String>,
 }
 
 /// Input for `get_co_changes`.
@@ -1635,9 +1642,43 @@ impl SymForgeServer {
                         total_symbols: filtered_symbols,
                         files: filtered_files,
                     };
-                    format::repo_outline_view(&filtered_view, &self.project_name)
+                    let max_files = params.0.max_files.unwrap_or(200) as usize;
+                    if filtered_view.files.len() > max_files {
+                        let remaining = filtered_view.files.len() - max_files;
+                        let truncated_files: Vec<_> = filtered_view.files.iter().take(max_files).cloned().collect();
+                        let truncated_view = crate::live_index::query::RepoOutlineView {
+                            total_files: filtered_view.total_files,
+                            total_symbols: filtered_view.total_symbols,
+                            files: truncated_files,
+                        };
+                        let mut output = format::repo_outline_view(&truncated_view, &self.project_name);
+                        output.push_str(&format!(
+                            "\n\n... and {} more files (increase max_files= to see more)",
+                            remaining
+                        ));
+                        output
+                    } else {
+                        format::repo_outline_view(&filtered_view, &self.project_name)
+                    }
                 } else {
-                    format::repo_outline_view(&view, &self.project_name)
+                    let max_files = params.0.max_files.unwrap_or(200) as usize;
+                    if view.files.len() > max_files {
+                        let truncated_files: Vec<_> = view.files.iter().take(max_files).cloned().collect();
+                        let remaining = view.files.len() - max_files;
+                        let truncated_view = crate::live_index::query::RepoOutlineView {
+                            total_files: view.total_files,
+                            total_symbols: view.total_symbols,
+                            files: truncated_files,
+                        };
+                        let mut output = format::repo_outline_view(&truncated_view, &self.project_name);
+                        output.push_str(&format!(
+                            "\n\n... and {} more files (use path= to scope or increase max_files=)",
+                            remaining
+                        ));
+                        output
+                    } else {
+                        format::repo_outline_view(&view, &self.project_name)
+                    }
                 }
             }
             "tree" => {
@@ -2780,7 +2821,31 @@ impl SymForgeServer {
             };
             let cap = input.limit.unwrap_or(200).min(500);
             let limits = format::OutputLimits::new(cap, cap);
-            return format::find_implementations_result_view(&view, &input.name, &limits);
+            let result = format::find_implementations_result_view(&view, &input.name, &limits);
+            if view.entries.is_empty() {
+                // Check if the symbol is a class/struct (not an interface/trait)
+                let guard = self.index.read();
+                let is_concrete = guard.all_files().any(|(_, file)| {
+                    file.symbols.iter().any(|s| {
+                        s.name == input.name
+                            && matches!(
+                                s.kind,
+                                crate::domain::SymbolKind::Class
+                                    | crate::domain::SymbolKind::Struct
+                            )
+                    })
+                });
+                drop(guard);
+                if is_concrete {
+                    return format!(
+                        "No implementations found for \"{}\" — it is a class/struct, not an \
+                         interface/trait.\nUse find_references with mode=\"references\" to find \
+                         callers and usages instead.",
+                        input.name
+                    );
+                }
+            }
+            return result;
         }
 
         // Default: references mode
@@ -2886,6 +2951,10 @@ impl SymForgeServer {
         if let Some(result) = self.proxy_tool_call("explore", &params.0).await {
             return result;
         }
+        let lang_filter = match parse_language_filter(params.0.language.as_deref()) {
+            Ok(f) => f,
+            Err(e) => return e,
+        };
         let limit = params.0.limit.unwrap_or(10) as usize;
         let guard = self.index.read();
         loading_guard!(guard);
@@ -2987,14 +3056,40 @@ impl SymForgeServer {
             }
         }
 
+        // Filter Phase 1 results by language and path_prefix
+        if lang_filter.is_some() || params.0.path_prefix.is_some() {
+            match_counts.retain(|(_, _, path), _| {
+                if let Some(ref prefix) = params.0.path_prefix {
+                    if !path.starts_with(prefix.as_str()) {
+                        return false;
+                    }
+                }
+                if let Some(ref lang) = lang_filter {
+                    let ext = path.rsplit('.').next().unwrap_or("");
+                    if crate::domain::index::LanguageId::from_extension(ext).as_ref()
+                        != Some(lang)
+                    {
+                        return false;
+                    }
+                }
+                true
+            });
+        }
+
         // Phase 2: Text search — collect text hits and inject enclosing symbols into match_counts
         let mut text_hits: Vec<(String, String, usize)> = Vec::new(); // (path, line, line_number)
         for tq in &all_text_queries {
-            let options = search::TextSearchOptions {
+            let mut options = search::TextSearchOptions {
                 total_limit: limit.min(50),
                 max_per_file: limit, // need enough matches per file for enclosing symbol extraction
                 ..search::TextSearchOptions::for_current_code_search()
             };
+            if let Some(ref prefix) = params.0.path_prefix {
+                options.path_scope = search::PathScope::Prefix(prefix.clone());
+            }
+            if let Some(ref lang) = lang_filter {
+                options.language_filter = Some(lang.clone());
+            }
             let result = search::search_text_with_options(&guard, Some(tq), None, false, &options);
             if let Ok(r) = result {
                 for file in &r.files {
@@ -3010,6 +3105,11 @@ impl SymForgeServer {
                     }
                 }
             }
+        }
+
+        // Filter text hits by path_prefix (language already handled via TextSearchOptions)
+        if let Some(ref prefix) = params.0.path_prefix {
+            text_hits.retain(|(path, _, _)| path.starts_with(prefix.as_str()));
         }
 
         // Phase 3: Filter noise, weight by kind and path, sort, truncate to limit.
@@ -4132,6 +4232,7 @@ mod tests {
                 detail: Some("full".to_string()),
                 path: None,
                 depth: None,
+                max_files: None,
             }))
             .await;
         assert!(
@@ -4148,6 +4249,7 @@ mod tests {
                 detail: Some("full".to_string()),
                 path: None,
                 depth: None,
+                max_files: None,
             }))
             .await;
         assert_eq!(result, crate::protocol::format::empty_guard_message());
@@ -4195,6 +4297,7 @@ mod tests {
                 detail: Some("full".to_string()),
                 path: None,
                 depth: None,
+                max_files: None,
             }))
             .await;
         assert!(
@@ -4216,6 +4319,7 @@ mod tests {
                 detail: None,
                 path: None,
                 depth: None,
+                max_files: None,
             }))
             .await;
 
@@ -4237,7 +4341,7 @@ mod tests {
     async fn test_get_file_context_returns_outline_and_key_references() {
         let callee = make_symbol("target", SymbolKind::Function, 1, 3);
         let caller = make_symbol("caller", SymbolKind::Function, 1, 3);
-        let target_file = make_file("src/target.rs", b"fn target() {}", vec![callee]);
+        let target_file = make_file("src/target.rs", b"pub fn target() {}", vec![callee]);
         let caller_file = make_file_with_refs(
             "src/caller.rs",
             b"use crate::target;\nfn caller() { target(); }",
@@ -7203,6 +7307,8 @@ mod tests {
                 limit: Some(5),
                 depth: None,
                 include_noise: None,
+                language: None,
+                path_prefix: None,
             }))
             .await;
         assert!(
@@ -7227,6 +7333,8 @@ mod tests {
                 limit: Some(5),
                 depth: None,
                 include_noise: None,
+                language: None,
+                path_prefix: None,
             }))
             .await;
         assert!(
@@ -7244,6 +7352,8 @@ mod tests {
                 limit: None,
                 depth: None,
                 include_noise: None,
+                language: None,
+                path_prefix: None,
             }))
             .await;
         assert!(
@@ -7273,6 +7383,8 @@ mod tests {
                 limit: Some(5),
                 depth: Some(2),
                 include_noise: None,
+                language: None,
+                path_prefix: None,
             }))
             .await;
         assert!(
@@ -7306,6 +7418,8 @@ mod tests {
                 limit: Some(10),
                 depth: None,
                 include_noise: None,
+                language: None,
+                path_prefix: None,
             }))
             .await;
         assert!(
@@ -7335,6 +7449,8 @@ mod tests {
                 limit: Some(10),
                 depth: None,
                 include_noise: None,
+                language: None,
+                path_prefix: None,
             }))
             .await;
         assert!(
@@ -7364,6 +7480,8 @@ mod tests {
                 limit: Some(10),
                 depth: None,
                 include_noise: None,
+                language: None,
+                path_prefix: None,
             }))
             .await;
         assert!(
@@ -7393,6 +7511,8 @@ mod tests {
                 limit: Some(10),
                 depth: None,
                 include_noise: None,
+                language: None,
+                path_prefix: None,
             }))
             .await;
         assert!(
@@ -7435,6 +7555,8 @@ mod tests {
                 limit: Some(10),
                 depth: None,
                 include_noise: None,
+                language: None,
+                path_prefix: None,
             }))
             .await;
         assert!(
@@ -7497,6 +7619,8 @@ mod tests {
                 limit: Some(10),
                 depth: None,
                 include_noise: None,
+                language: None,
+                path_prefix: None,
             }))
             .await;
         assert!(
@@ -7770,6 +7894,7 @@ mod tests {
                 detail: Some("tree".to_string()),
                 path: None,
                 depth: None,
+                max_files: None,
             }))
             .await;
         assert!(
@@ -7790,6 +7915,7 @@ mod tests {
                 detail: Some("tree".to_string()),
                 path: None,
                 depth: None,
+                max_files: None,
             }))
             .await;
         assert_eq!(result, crate::protocol::format::empty_guard_message());
