@@ -1,144 +1,69 @@
-# CLAUDE.md — SymForge
+# CLAUDE.md — Global Operating System
 
-## Git & GitHub CLI
+> Follow precisely. This is the minimal always-loaded instruction set.
+> Reference content lives in `~/.claude/skills/` and loads on demand.
 
-**CRITICAL: The `GITHUB_TOKEN` env var is a limited fine-grained PAT injected by Claude Code. It CANNOT create PRs, trigger workflows, or manage releases.**
+---
 
-Prefix ALL `gh` commands with `GITHUB_TOKEN=` to use the keyring token (has `repo` + `workflow` scopes):
+### 1. Plan Node Default
+- Enter plan mode for ANY non-trivial task (3+ steps or architectural decisions)
+- If something goes sideways, STOP and re-plan immediately - don't keep pushing
+- Use plan mode for verification steps, not just building
+- Write detailed specs upfront to reduce ambiguity
 
-```bash
-GITHUB_TOKEN= gh pr create ...
-GITHUB_TOKEN= gh workflow run ...
-GITHUB_TOKEN= gh run list ...
-GITHUB_TOKEN= gh run view ...
-```
+---
 
-## Deployment Workflow
+### 2. Subagent Strategy
+- Use subagents liberally to keep main context window clean
+- Offload research, exploration, and parallel analysis to subagents
+- For complex problems, throw more compute at it via subagents
+- One task per subagent for focused execution
 
-**Never manually create tags or specify tag numbers in workflow_dispatch. Release-please handles versioning.**
+---
 
-### Standard release flow:
+### 3. Self-Improvement Loop
+- After ANY correction from the user: update `tasks/lessons.md` with the pattern
+- Write rules for yourself that prevent the same mistake
+- Ruthlessly iterate on these lessons until mistake rate drops
+- Review lessons at session start for relevant project
 
-```
-1. Feature branch work complete, tests pass
-   cargo test && cargo fmt -- --check
+---
 
-2. Create PR to main
-   GITHUB_TOKEN= gh pr create --title "feat: description" --body "..." --base main
+### 4. Verification Before Done
+- Never mark a task complete without proving it works
+- Diff behavior between main and your changes when relevant
+- Ask yourself: "Would a staff engineer approve this?"
+- Run tests, check logs, demonstrate correctness
 
-3. Merge PR (from UI or CLI)
-   GITHUB_TOKEN= gh pr merge <number> --merge
+---
 
-4. Push to main triggers Release workflow automatically:
-   a. release-please creates release PR (e.g. "chore(main): release 0.19.0")
-   b. Auto-merge merges it using RELEASE_PLEASE_TOKEN (GitHub Actions secret)
-   c. Second workflow run: release-please creates tag + GitHub release
-   d. Build matrix: windows, linux, macos-arm64, macos-x64
-   e. npm publish to registry
+### 5. Demand Elegance (Balanced)
+- For non-trivial changes: pause and ask "is there a more elegant way?"
+- If a fix feels hacky: "Knowing everything I know now, implement the elegant solution"
+- Skip this for simple, obvious fixes - don't over-engineer
+- Challenge your own work before presenting it
 
-5. Monitor
-   GITHUB_TOKEN= gh run list -L 5
-   GITHUB_TOKEN= gh run view <run-id> --log-failed
-```
+---
 
-### workflow_dispatch with tag input:
-- ONLY for rebuilding an EXISTING release (tag must already exist)
-- Do NOT use this to create new releases
+### 6. Autonomous Bug Fixing
+- When given a bug report: just fix it. Don't ask for hand-holding
+- Point at logs, errors, failing tests - then resolve them
+- Zero context switching required from the user
+- Go fix failing CI tests without being told how
 
-### CI failures:
-- `cargo fmt` differences between local and CI are common
-- Fix: `cargo fmt && git add -A && git commit -m "style: fix rustfmt formatting" && git push`
-- Always run `cargo fmt -- --check` before pushing
+---
 
-## Build & Test
+## Task Management
+1. **Plan First**: Write plan to `tasks/todo.md` with checkable items
+2. **Verify Plan**: Check in before starting implementation
+3. **Track Progress**: Mark items complete as you go
+4. **Explain Changes**: High-level summary at each step
+5. **Document Results**: Add review section to `tasks/todo.md`
+6. **Capture Lessons**: Update `tasks/lessons.md` after corrections
 
-```bash
-cargo test --all-targets -- --test-threads=1   # match CI config
-cargo fmt -- --check                            # match CI check
-cargo check                                     # quick compilation check
-```
+---
 
-## Architecture
-
-Rust MCP server providing symbol-aware code navigation and editing tools. Currently 24 tools exposed via MCP `tools/list`, with backward-compat aliases for removed tools in `src/daemon.rs`.
-
-Key source files:
-- `src/protocol/tools.rs` — Tool handlers, input structs, tests
-- `src/protocol/format.rs` — Output formatters
-- `src/daemon.rs` — Daemon proxy with backward-compat aliases
-- `src/cli/init.rs` — Tool name list for client init
-- `src/live_index/query.rs` — Index query functions
-- `src/protocol/resources.rs` — MCP resource handlers
-
-## Tool Consolidation Pattern
-
-When merging tools A into B:
-1. Add new params to B's input struct (with `#[serde(default)]`)
-2. Add mode branch in B's handler
-3. Remove `#[tool]` attribute from A (keep the method for internal use)
-4. Add backward-compat alias in `src/daemon.rs` `execute_tool_call`
-5. Remove A from `SYMFORGE_TOOL_NAMES` in `src/cli/init.rs`
-6. Update cross-reference descriptions in other tools
-7. Update tests: add new field initializers, add mode-specific tests
-
-## Tooling Preference
-
-When SymForge MCP is available, prefer its tools for repository and code
-inspection before falling back to direct file reads.
-
-Use SymForge first for:
-- symbol discovery
-- text/code search
-- file outlines and context
-- repository outlines
-- targeted symbol/source retrieval
-- surgical editing (symbol replacements, renames)
-- impact analysis (what changed, what breaks)
-- inspection of implementation code under `src/`, `tests/`, and similar
-  code-bearing directories
-
-Preferred tools for reading:
-- `search_text` — full-text search with enclosing symbol context
-- `search_symbols` — find symbols by name, kind, language, path
-- `search_files` — ranked file path discovery, co-change coupling
-- `get_file_context` — rich file summary with outline, imports, consumers
-- `get_file_content` — read files with line ranges or around a symbol
-- `get_repo_map` — repository overview at adjustable detail levels
-- `get_symbol` — look up symbols by name, batch mode supported
-- `get_symbol_context` — symbol body + callers + callees + type deps
-- `find_references` — call sites, imports, type usages, implementations
-- `find_dependents` — file-level dependency graph
-- `inspect_match` — deep-dive a search match with full symbol context
-- `analyze_file_impact` — re-read file, update index, report impact
-- `what_changed` — files changed since timestamp, ref, or uncommitted
-- `diff_symbols` — symbol-level diff between git refs
-- `explore` — concept-driven exploration across the codebase
-
-Preferred tools for editing:
-- `replace_symbol_body` — replace a symbol's entire definition by name
-- `edit_within_symbol` — scoped find-and-replace within a symbol's range
-- `insert_symbol` — insert code before or after a named symbol
-- `delete_symbol` — remove a symbol and its doc comments by name
-- `batch_edit` — multiple symbol-addressed edits atomically across files
-- `batch_rename` — rename a symbol and update all references project-wide
-- `batch_insert` — insert code before/after multiple symbols across files
-
-Default rule:
-- use SymForge to narrow and target code inspection first
-- use direct file reads only when exact full-file source or surrounding
-  context is still required after tool-based narrowing
-- use SymForge editing tools (`replace_symbol_body`, `batch_edit`,
-  `edit_within_symbol`) over text-based find-and-replace whenever
-  possible to ensure structural integrity and automatic re-indexing
-
-Direct file reads are still appropriate for:
-- exact document text in `docs/` or planning artifacts where literal
-  wording matters
-- configuration files where exact raw contents are the point of inspection
-
-Do not default to broad raw file reads for source-code inspection when
-SymForge can answer the question more directly.
-
-## Codex Integration
-
-For Codex-specific integration guidance and limitations, see [docs/codex-integration-ceiling.md](docs/codex-integration-ceiling.md).
+## Core Principles
+* **Simplicity First**: Make every change as simple as possible. Impact minimal code.
+* **No Laziness**: Find root causes. No temporary fixes. Senior developer standards.
+* **Minimal Impact**: Changes should only touch what's necessary. Avoid introducing bugs.
