@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.0.0](https://github.com/special-place-administrator/symforge/compare/v1.9.0...v2.0.0) (2026-03-20)
+
+
+### ⚠ BREAKING CHANGES
+
+* Line numbers in search_symbols, get_symbol_context, trace_symbol, inspect_match, and sidecar endpoints shift from 0-indexed to 1-indexed. Clients parsing these outputs numerically must account for the +1 change.
+
+### Bug Fixes
+
+* resolve 16 bugs across mtime propagation, line indexing, correctness, and concurrency ([8cfda64](https://github.com/special-place-administrator/symforge/commit/8cfda649bf2bd0a017fa72643bce088f817cd1bc))
+
 ## [1.9.0](https://github.com/special-place-administrator/symforge/compare/v1.8.1...v1.9.0) (2026-03-20)
 
 
