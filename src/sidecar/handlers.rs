@@ -87,7 +87,7 @@ const HOOK_RENDER_OPTIONS: RenderOptions = RenderOptions {
 
 const TOOL_RENDER_OPTIONS: RenderOptions = RenderOptions {
     include_savings_footer: false,
-    record_stats: false,
+    record_stats: true,
 };
 
 fn resolve_repo_root(state: &SidecarState) -> Result<std::path::PathBuf, StatusCode> {
@@ -494,7 +494,8 @@ async fn handle_new_file_impact(
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let indexed = crate::live_index::store::IndexedFile::from_parse_result(result, bytes).with_mtime(mtime_secs);
+    let indexed = crate::live_index::store::IndexedFile::from_parse_result(result, bytes)
+        .with_mtime(mtime_secs);
     state.index.update_file(path.to_string(), indexed);
 
     // Update symbol cache with empty pre-edit snapshot (it's new, no pre-state).
@@ -622,7 +623,8 @@ async fn handle_edit_impact(
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let indexed = crate::live_index::store::IndexedFile::from_parse_result(result, bytes).with_mtime(mtime_secs);
+    let indexed = crate::live_index::store::IndexedFile::from_parse_result(result, bytes)
+        .with_mtime(mtime_secs);
     state.index.update_file(path.to_string(), indexed);
 
     // Compute symbol diff using positional proximity for duplicate name+kind pairs.
@@ -705,7 +707,11 @@ async fn handle_edit_impact(
                 if !external.is_empty() {
                     callers_lines.push(format!("  Callers of {}():", sym.name));
                     for (caller_file, r) in &external {
-                        callers_lines.push(format!("    {}  line {}", caller_file, r.line_range.0 + 1));
+                        callers_lines.push(format!(
+                            "    {}  line {}",
+                            caller_file,
+                            r.line_range.0 + 1
+                        ));
                     }
                 }
             }

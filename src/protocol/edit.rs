@@ -1278,6 +1278,10 @@ pub struct BatchInsertInput {
     /// Target symbols to insert adjacent to.
     #[serde(deserialize_with = "super::tools::lenient_vec_required")]
     pub targets: Vec<InsertTarget>,
+    /// When true, validate and preview but skip disk writes and index mutation.
+    /// Returns per-target preview lines prefixed with `[DRY RUN]`.
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -1337,6 +1341,17 @@ pub(crate) fn execute_batch_insert(
             InsertPosition::Before => build_insert_before(&file.content, &sym, &input.content, le),
             InsertPosition::After => build_insert_after(&file.content, &sym, &input.content, le),
         };
+
+        if input.dry_run {
+            summaries.push(format!(
+                "[DRY RUN] Would insert {} `{}` in {} ({} bytes)",
+                position_label,
+                target.name,
+                target.path,
+                input.content.len()
+            ));
+            continue;
+        }
 
         let abs_path = match safe_repo_path(repo_root, &target.path) {
             Ok(p) => p,
@@ -2538,6 +2553,7 @@ mod tests {
                     symbol_line: None,
                 },
             ],
+            dry_run: false,
         };
 
         let summaries = execute_batch_insert(&handle, dir.path(), &input).unwrap();
@@ -2547,6 +2563,63 @@ mod tests {
         assert!(a.contains("logging"), "a.rs: {a}");
         let b = std::fs::read_to_string(src.join("b.rs")).unwrap();
         assert!(b.contains("logging"), "b.rs: {b}");
+    }
+
+    #[test]
+    fn test_execute_batch_insert_dry_run_previews_without_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("a.rs"), b"fn handler_a() {}\n").unwrap();
+        std::fs::write(src.join("b.rs"), b"fn handler_b() {}\n").unwrap();
+
+        let handle = crate::live_index::LiveIndex::empty();
+        for (path, content) in [
+            ("src/a.rs", b"fn handler_a() {}\n" as &[u8]),
+            ("src/b.rs", b"fn handler_b() {}\n"),
+        ] {
+            let result = crate::parsing::process_file(path, content, LanguageId::Rust);
+            let indexed = IndexedFile::from_parse_result(result, content.to_vec());
+            handle.update_file(path.to_string(), indexed);
+        }
+
+        let input = BatchInsertInput {
+            content: "fn logging() {}".to_string(),
+            position: InsertPosition::After,
+            targets: vec![
+                InsertTarget {
+                    path: "src/a.rs".to_string(),
+                    name: "handler_a".to_string(),
+                    kind: None,
+                    symbol_line: None,
+                },
+                InsertTarget {
+                    path: "src/b.rs".to_string(),
+                    name: "handler_b".to_string(),
+                    kind: None,
+                    symbol_line: None,
+                },
+            ],
+            dry_run: true,
+        };
+
+        let summaries = execute_batch_insert(&handle, dir.path(), &input).unwrap();
+        assert_eq!(summaries.len(), 2, "expected two preview lines");
+        for s in &summaries {
+            assert!(s.contains("[DRY RUN]"), "expected [DRY RUN] prefix in: {s}");
+        }
+
+        // Files must be unchanged.
+        let a = std::fs::read_to_string(src.join("a.rs")).unwrap();
+        assert!(
+            !a.contains("logging"),
+            "dry_run must not write to disk: {a}"
+        );
+        let b = std::fs::read_to_string(src.join("b.rs")).unwrap();
+        assert!(
+            !b.contains("logging"),
+            "dry_run must not write to disk: {b}"
+        );
     }
 
     // -- partial failure / atomicity --

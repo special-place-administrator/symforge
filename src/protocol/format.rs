@@ -6381,6 +6381,7 @@ pub fn diff_symbols_result_view(
     changed_files: &[&str],
     repo: &crate::git::GitRepo,
     compact: bool,
+    summary_only: bool,
 ) -> String {
     use std::collections::HashMap;
 
@@ -6448,43 +6449,45 @@ pub fn diff_symbols_result_view(
         total_modified += file_modified.len();
         files_with_changes += 1;
 
-        if compact {
-            // Compact mode: one line per file with counts only
-            let mut parts = Vec::new();
-            if !file_added.is_empty() {
-                parts.push(format!("+{}", file_added.len()));
-            }
-            if !file_removed.is_empty() {
-                parts.push(format!("-{}", file_removed.len()));
-            }
-            if !file_modified.is_empty() {
-                parts.push(format!("~{}", file_modified.len()));
-            }
-            lines.push(format!("  {} ({})", file_path, parts.join(", ")));
-        } else {
-            lines.push(format!("── {} ──", file_path));
-            if !file_added.is_empty() {
-                let mut sorted = file_added.clone();
-                sorted.sort_unstable();
-                for name in &sorted {
-                    lines.push(format!("  + {name}"));
+        if !summary_only {
+            if compact {
+                // Compact mode: one line per file with counts only
+                let mut parts = Vec::new();
+                if !file_added.is_empty() {
+                    parts.push(format!("+{}", file_added.len()));
                 }
-            }
-            if !file_removed.is_empty() {
-                let mut sorted = file_removed.clone();
-                sorted.sort_unstable();
-                for name in &sorted {
-                    lines.push(format!("  - {name}"));
+                if !file_removed.is_empty() {
+                    parts.push(format!("-{}", file_removed.len()));
                 }
-            }
-            if !file_modified.is_empty() {
-                let mut sorted = file_modified.clone();
-                sorted.sort_unstable();
-                for name in &sorted {
-                    lines.push(format!("  ~ {name}"));
+                if !file_modified.is_empty() {
+                    parts.push(format!("~{}", file_modified.len()));
                 }
+                lines.push(format!("  {} ({})", file_path, parts.join(", ")));
+            } else {
+                lines.push(format!("── {} ──", file_path));
+                if !file_added.is_empty() {
+                    let mut sorted = file_added.clone();
+                    sorted.sort_unstable();
+                    for name in &sorted {
+                        lines.push(format!("  + {name}"));
+                    }
+                }
+                if !file_removed.is_empty() {
+                    let mut sorted = file_removed.clone();
+                    sorted.sort_unstable();
+                    for name in &sorted {
+                        lines.push(format!("  - {name}"));
+                    }
+                }
+                if !file_modified.is_empty() {
+                    let mut sorted = file_modified.clone();
+                    sorted.sort_unstable();
+                    for name in &sorted {
+                        lines.push(format!("  ~ {name}"));
+                    }
+                }
+                lines.push(String::new());
             }
-            lines.push(String::new());
         }
     }
 

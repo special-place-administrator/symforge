@@ -664,6 +664,10 @@ pub struct DiffSymbolsInput {
     /// without listing individual symbols. Like `git diff --stat` vs `git diff`.
     #[serde(default, deserialize_with = "lenient_bool")]
     pub compact: Option<bool>,
+    /// When true, emit only the aggregate summary line (total added/removed/modified
+    /// counts) without any per-file detail. Useful for quick change-scope assessment.
+    #[serde(default, deserialize_with = "lenient_bool")]
+    pub summary_only: Option<bool>,
 }
 
 enum WhatChangedMode {
@@ -1952,7 +1956,11 @@ impl SymForgeServer {
                 let rendered = format::apply_verbosity(body, verbosity);
                 Some(format!(
                     "{}\n[{}, {}:{}-{}]",
-                    rendered, sym.kind, f.relative_path, sym.line_range.0 + 1, sym.line_range.1 + 1
+                    rendered,
+                    sym.kind,
+                    f.relative_path,
+                    sym.line_range.0 + 1,
+                    sym.line_range.1 + 1
                 ))
             });
 
@@ -3046,7 +3054,10 @@ impl SymForgeServer {
                             break;
                         }
                         let entry = (sym.name.clone(), sym.kind.to_string(), file_path.clone());
-                        *match_counts.entry(entry).or_default() += weight;
+                        // Cap path-boost: only seed symbols that have no prior
+                        // matches.  This prevents path-matching files from
+                        // dominating over content-matching files.
+                        match_counts.entry(entry).or_insert(weight.min(1));
                         injected += 1;
                     }
                 }
@@ -3108,10 +3119,11 @@ impl SymForgeServer {
                         if text_hits.len() < limit && !format::is_noise_line(&m.line) {
                             text_hits.push((file.path.clone(), m.line.clone(), m.line_number));
                         }
-                        // Inject enclosing symbol into match_counts
+                        // Inject enclosing symbol into match_counts.
+                        // Weight 2 so content matches outweigh path-only boosts.
                         if let Some(ref enc) = m.enclosing_symbol {
                             let entry = (enc.name.clone(), enc.kind.clone(), file.path.clone());
-                            *match_counts.entry(entry).or_default() += 1;
+                            *match_counts.entry(entry).or_default() += 2;
                         }
                     }
                 }
@@ -3394,6 +3406,7 @@ impl SymForgeServer {
             &changed_files,
             &repo,
             params.0.compact.unwrap_or(false),
+            params.0.summary_only.unwrap_or(false),
         );
         self.record_tool_savings((output.len() * 5 / 4) as u64, (output.len() / 4) as u64);
         output
@@ -9608,6 +9621,7 @@ mod tests {
                     symbol_line: None,
                 },
             ],
+            dry_run: false,
         };
         let result = server.batch_insert(Parameters(input)).await;
         assert!(result.contains("2 edit(s)"), "result: {result}");
@@ -9616,6 +9630,61 @@ mod tests {
         assert!(a.contains("logging"), "a.rs: {a}");
         let b = std::fs::read_to_string(src_dir.join("b.rs")).unwrap();
         assert!(b.contains("logging"), "b.rs: {b}");
+    }
+
+    #[tokio::test]
+    async fn test_batch_insert_dry_run_skips_write() {
+        use crate::protocol::edit::{BatchInsertInput, InsertPosition, InsertTarget};
+
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+
+        let a_content = b"fn handler_a() {}\n";
+        let b_content = b"fn handler_b() {}\n";
+        std::fs::write(src_dir.join("a.rs"), a_content).unwrap();
+        std::fs::write(src_dir.join("b.rs"), b_content).unwrap();
+
+        let mut files = vec![];
+        for (path, content) in [
+            ("src/a.rs", a_content as &[u8]),
+            ("src/b.rs", b_content as &[u8]),
+        ] {
+            let result = crate::parsing::process_file(path, content, LanguageId::Rust);
+            let indexed =
+                crate::live_index::store::IndexedFile::from_parse_result(result, content.to_vec());
+            files.push((path.to_string(), indexed));
+        }
+        let index = make_live_index_ready(files);
+        let server = make_server_with_root(index, Some(dir.path().to_path_buf()));
+
+        let input = BatchInsertInput {
+            content: "fn logging() {}".to_string(),
+            position: InsertPosition::After,
+            targets: vec![
+                InsertTarget {
+                    path: "src/a.rs".to_string(),
+                    name: "handler_a".to_string(),
+                    kind: None,
+                    symbol_line: None,
+                },
+                InsertTarget {
+                    path: "src/b.rs".to_string(),
+                    name: "handler_b".to_string(),
+                    kind: None,
+                    symbol_line: None,
+                },
+            ],
+            dry_run: true,
+        };
+        let result = server.batch_insert(Parameters(input)).await;
+        assert!(result.contains("[DRY RUN]"), "result: {result}");
+
+        // Files must be unchanged.
+        let a = std::fs::read_to_string(src_dir.join("a.rs")).unwrap();
+        assert!(!a.contains("logging"), "dry_run must not write: {a}");
+        let b = std::fs::read_to_string(src_dir.join("b.rs")).unwrap();
+        assert!(!b.contains("logging"), "dry_run must not write: {b}");
     }
 
     #[test]
@@ -9769,6 +9838,7 @@ mod tests {
             &["a.rs", "b.rs"],
             &repo,
             true,
+            false,
         );
 
         assert!(

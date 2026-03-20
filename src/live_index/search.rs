@@ -1185,8 +1185,18 @@ where
     let mut files: Vec<TextFileMatches> = Vec::new();
     let mut total_matches = 0usize;
 
-    for (path, _) in &path_counts {
-        if total_matches >= options.total_limit {
+    // When ranked, collect from all files (up to a safety cap) so the ranker
+    // can reorder across the full set.  The total_limit is applied *after*
+    // ranking to trim the final output.  Without this, high-match-count files
+    // exhaust the budget before diverse but important files are visited.
+    const RANKED_FILE_CAP: usize = 500;
+
+    for (file_idx, (path, _)) in path_counts.iter().enumerate() {
+        if options.ranked {
+            if file_idx >= RANKED_FILE_CAP {
+                break;
+            }
+        } else if total_matches >= options.total_limit {
             break;
         }
         let file = match index.get_file(path) {
@@ -1194,8 +1204,12 @@ where
             None => continue,
         };
         let content_str = String::from_utf8_lossy(&file.content);
-        let remaining_total = options.total_limit.saturating_sub(total_matches);
-        let per_file_limit = options.max_per_file.min(remaining_total);
+        let per_file_limit = if options.ranked {
+            options.max_per_file
+        } else {
+            let remaining_total = options.total_limit.saturating_sub(total_matches);
+            options.max_per_file.min(remaining_total)
+        };
 
         if per_file_limit == 0 {
             break;
@@ -1279,6 +1293,21 @@ where
                 .partial_cmp(&score_a)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+
+        // Truncate to total_limit *after* ranking so the most important files
+        // survive regardless of their raw match count.
+        let mut remaining = options.total_limit;
+        files.retain_mut(|f| {
+            if remaining == 0 {
+                return false;
+            }
+            if f.matches.len() > remaining {
+                f.matches.truncate(remaining);
+            }
+            remaining -= f.matches.len();
+            true
+        });
+        total_matches = files.iter().map(|f| f.matches.len()).sum();
     }
 
     TextSearchResult {
