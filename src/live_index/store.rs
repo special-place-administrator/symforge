@@ -643,6 +643,7 @@ pub(crate) struct ReloadData {
     pub load_duration: Duration,
     pub gitignore: Option<ignore::gitignore::Gitignore>,
     pub derived: DerivedIndices,
+    pub skipped_files: Vec<SkippedFile>,
 }
 
 /// Build a reverse index from a file map (standalone, no `&self` needed).
@@ -1084,6 +1085,7 @@ impl LiveIndex {
             load_duration,
             gitignore: discovery::load_gitignore(root),
             derived,
+            skipped_files: Vec::new(),
         })
     }
 
@@ -1104,6 +1106,7 @@ impl LiveIndex {
         self.files_by_basename = data.derived.files_by_basename;
         self.files_by_dir_component = data.derived.files_by_dir_component;
         self.gitignore = data.gitignore;
+        self.skipped_files = data.skipped_files;
     }
 
     /// Replaces all files, resets circuit breaker, and updates timestamps.

@@ -181,7 +181,7 @@ pub fn snapshot_to_live_index(snapshot: IndexSnapshot) -> LiveIndex {
             content_hash: snap_file.content_hash,
             references: snap_file.references,
             alias_map: snap_file.alias_map,
-            mtime_secs: 0, // snapshot predates mtime tracking; freshness guard will re-check
+            mtime_secs: snap_file.mtime_secs as u64,
         };
         files.insert(path, Arc::new(indexed_file));
     }
@@ -473,7 +473,13 @@ pub async fn background_verify(
             language,
             FileClassification::for_code_path(rel_path),
         );
-        let indexed_file = IndexedFile::from_parse_result(result, bytes);
+        let mtime_secs = std::fs::metadata(&abs_path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let indexed_file = IndexedFile::from_parse_result(result, bytes).with_mtime(mtime_secs);
 
         index.update_file(rel_path.clone(), indexed_file);
     }
@@ -513,7 +519,13 @@ pub async fn background_verify(
             language,
             FileClassification::for_code_path(rel_path),
         );
-        let indexed_file = IndexedFile::from_parse_result(result, bytes);
+        let mtime_secs = std::fs::metadata(&abs_path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let indexed_file = IndexedFile::from_parse_result(result, bytes).with_mtime(mtime_secs);
 
         index.update_file(rel_path.clone(), indexed_file);
     }

@@ -813,7 +813,7 @@ pub fn search_symbols_with_options(
                 name: sym.name.clone(),
                 path: path.clone(),
                 kind: sym.kind.to_string(),
-                line: sym.line_range.0,
+                line: sym.line_range.0 + 1,
             });
         }
     }
@@ -1161,7 +1161,7 @@ where
             }
             // Skip matches inside Rust #[cfg(test)] modules.
             if !test_ranges.is_empty() {
-                let line_num = (line_idx + 1) as u32;
+                let line_num = line_idx as u32;
                 if test_ranges
                     .iter()
                     .any(|&(start, end)| line_num >= start && line_num <= end)
@@ -1219,7 +1219,7 @@ where
             if is_match(line) {
                 // Skip matches inside Rust #[cfg(test)] modules.
                 if !test_ranges.is_empty() {
-                    let line_num = (line_idx + 1) as u32;
+                    let line_num = line_idx as u32;
                     if test_ranges
                         .iter()
                         .any(|&(start, end)| line_num >= start && line_num <= end)

@@ -1952,7 +1952,7 @@ impl SymForgeServer {
                 let rendered = format::apply_verbosity(body, verbosity);
                 Some(format!(
                     "{}\n[{}, {}:{}-{}]",
-                    rendered, sym.kind, f.relative_path, sym.line_range.0, sym.line_range.1
+                    rendered, sym.kind, f.relative_path, sym.line_range.0 + 1, sym.line_range.1 + 1
                 ))
             });
 

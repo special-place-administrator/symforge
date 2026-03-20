@@ -227,8 +227,8 @@ fn outline_text(
                 indent,
                 sym.kind.to_string(),
                 sym.name,
-                sym.line_range.0,
-                sym.line_range.1,
+                sym.line_range.0 + 1,
+                sym.line_range.1 + 1,
             ));
         }
     }
@@ -295,7 +295,7 @@ fn outline_text(
                 .filter(|(_, reference)| {
                     reference.kind != ReferenceKind::Import && reference.name == sym.name
                 })
-                .map(|(fp, r)| (fp.to_string(), r.line_range.0))
+                .map(|(fp, r)| (fp.to_string(), r.line_range.0 + 1))
                 .take(3)
                 .collect();
 
@@ -488,7 +488,13 @@ async fn handle_new_file_impact(
     };
 
     // Index the file.
-    let indexed = crate::live_index::store::IndexedFile::from_parse_result(result, bytes);
+    let mtime_secs = std::fs::metadata(&abs_path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let indexed = crate::live_index::store::IndexedFile::from_parse_result(result, bytes).with_mtime(mtime_secs);
     state.index.update_file(path.to_string(), indexed);
 
     // Update symbol cache with empty pre-edit snapshot (it's new, no pre-state).
@@ -610,7 +616,13 @@ async fn handle_edit_impact(
         })
         .collect();
 
-    let indexed = crate::live_index::store::IndexedFile::from_parse_result(result, bytes);
+    let mtime_secs = std::fs::metadata(&abs_path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let indexed = crate::live_index::store::IndexedFile::from_parse_result(result, bytes).with_mtime(mtime_secs);
     state.index.update_file(path.to_string(), indexed);
 
     // Compute symbol diff using positional proximity for duplicate name+kind pairs.
@@ -693,7 +705,7 @@ async fn handle_edit_impact(
                 if !external.is_empty() {
                     callers_lines.push(format!("  Callers of {}():", sym.name));
                     for (caller_file, r) in &external {
-                        callers_lines.push(format!("    {}  line {}", caller_file, r.line_range.0));
+                        callers_lines.push(format!("    {}  line {}", caller_file, r.line_range.0 + 1));
                     }
                 }
             }
