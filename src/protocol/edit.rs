@@ -807,11 +807,13 @@ pub(crate) fn execute_batch_edit(
                 EditOperation::Replace { new_body } => {
                     let old_bytes = (r.sym.byte_range.1 - r.sym.byte_range.0) as usize;
                     let effective = r.sym.effective_start() as usize;
-                    let line_start = content[..effective]
+                    let raw_line_start = content[..effective]
                         .iter()
                         .rposition(|&b| b == b'\n')
                         .map(|p| p + 1)
-                        .unwrap_or(0) as u32;
+                        .unwrap_or(0);
+                    let line_start =
+                        extend_past_orphaned_docs(&content, raw_line_start, &r.sym) as u32;
                     let indent = detect_indentation(&content, r.sym.byte_range.0);
                     let normalized = normalize_line_endings(new_body.as_bytes(), line_ending);
                     let normalized_str = std::str::from_utf8(&normalized).unwrap_or(new_body);

@@ -352,40 +352,49 @@ impl DaemonState {
     }
 
     pub fn close_session(&self, session_id: &str) -> Option<CloseSessionResponse> {
-        // Lock ordering: projects before sessions (matches open_project_session).
-        // We need the project_id from the session first, so peek with a read lock,
-        // then acquire projects.write(), then sessions.write() to remove.
-        let project_id = {
-            let sessions = self.sessions.read();
-            sessions.get(session_id)?.project_id.clone()
-        };
-
+        // Lock ordering: projects write first, then sessions write.
+        // Scan all projects instead of relying on session.project_id,
+        // which can be stale if index_folder_for_session reassigned concurrently.
         let mut project_removed = false;
-        let remaining_sessions = {
+        let (project_id, remaining_sessions) = {
             let mut projects = self.projects.write();
-            match projects.get_mut(&project_id) {
-                Some(project) => {
+            let owning_project_id = projects
+                .iter()
+                .find(|(_, project)| project.session_ids.contains(session_id))
+                .map(|(id, _)| id.clone());
+
+            match owning_project_id {
+                Some(pid) => {
+                    let project = projects.get_mut(&pid).unwrap();
                     project.session_ids.remove(session_id);
                     let remaining = project.session_ids.len();
                     if remaining == 0 {
-                        if let Some(removed) = projects.remove(&project_id) {
+                        if let Some(removed) = projects.remove(&pid) {
                             let mut watcher_task = removed.watcher_task;
                             abort_watcher_task(&mut watcher_task);
                         }
                         project_removed = true;
                     }
-                    remaining
+                    (pid, remaining)
                 }
-                None => 0,
+                None => {
+                    // Session not found in any project. Clean up session record only.
+                    let session = self.sessions.write().remove(session_id)?;
+                    return Some(CloseSessionResponse {
+                        session_id: session.session_id,
+                        project_id: session.project_id,
+                        remaining_sessions: 0,
+                        project_removed: false,
+                    });
+                }
             }
         };
 
-        // Now remove the session (projects lock fully released).
         let session = self.sessions.write().remove(session_id)?;
 
         Some(CloseSessionResponse {
             session_id: session.session_id,
-            project_id: session.project_id,
+            project_id,
             remaining_sessions,
             project_removed,
         })
@@ -456,21 +465,22 @@ impl DaemonState {
         let target_root = canonical_project_root(Path::new(&input.path))?;
         let target_project_id = project_key(&target_root);
 
-        let current_project_id = {
-            let sessions = self.sessions.read();
-            sessions
-                .get(session_id)
-                .map(|session| session.project_id.clone())
-                .ok_or_else(|| anyhow::anyhow!("unknown session '{session_id}'"))?
-        };
-
-        let needs_reassign = current_project_id != target_project_id;
-
         // All project-map mutations happen inside this block so the write guard
         // is fully released before we touch sessions.write() below — preventing
         // the lock-order inversion with close_session (sessions → projects).
-        let (file_count, symbol_count) = {
+        let (file_count, symbol_count, needs_reassign) = {
             let mut projects = self.projects.write();
+
+            // Re-read current_project_id under projects write lock to handle
+            // concurrent reassignment by another index_folder_for_session call.
+            let current_project_id = {
+                let sessions = self.sessions.read();
+                sessions
+                    .get(session_id)
+                    .map(|s| s.project_id.clone())
+                    .ok_or_else(|| anyhow::anyhow!("unknown session '{session_id}'"))?
+            };
+            let needs_reassign = current_project_id != target_project_id;
 
             if needs_reassign {
                 if !projects.contains_key(&target_project_id) {
@@ -505,7 +515,8 @@ impl DaemonState {
             let target_project = projects
                 .get_mut(&target_project_id)
                 .ok_or_else(|| anyhow::anyhow!("missing target project after reload"))?;
-            target_project.reload(&target_root)?
+            let counts = target_project.reload(&target_root)?;
+            (counts.0, counts.1, needs_reassign)
         }; // projects write lock released here
 
         // Update the session's project association *after* the projects lock is
@@ -526,13 +537,15 @@ impl DaemonState {
     }
 
     fn session_runtime(&self, session_id: &str) -> Option<SessionRuntime> {
-        let project_id = {
-            let sessions = self.sessions.read();
-            sessions.get(session_id)?.project_id.clone()
-        };
-
+        // Acquire projects read lock BEFORE sessions read lock so that
+        // the project_id we read from the session is still valid while
+        // we look it up in the projects map.
         let projects = self.projects.read();
-        let project = projects.get(&project_id)?;
+        let session = {
+            let sessions = self.sessions.read();
+            sessions.get(session_id)?.clone()
+        };
+        let project = projects.get(&session.project_id)?;
         Some(SessionRuntime {
             project_name: project.project_name.clone(),
             canonical_root: project.canonical_root.clone(),

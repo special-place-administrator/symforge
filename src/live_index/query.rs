@@ -2006,7 +2006,7 @@ impl LiveIndex {
                         .map(|s| SiblingSymbolView {
                             name: s.name.clone(),
                             kind_label: s.kind.to_string(),
-                            line_range: s.line_range,
+                            line_range: (s.line_range.0 + 1, s.line_range.1 + 1),
                         })
                         .collect()
                 })
@@ -2414,6 +2414,23 @@ impl LiveIndex {
     /// Check whether a file exports a public symbol with the given name.
     /// Uses a text scan of file content since SymbolRecord has no visibility field.
     fn has_pub_symbol(file: &IndexedFile, name: &str) -> bool {
+        let is_word_match = |content: &str, pattern: &str| -> bool {
+            let mut start = 0;
+            while let Some(pos) = content[start..].find(pattern) {
+                let abs_pos = start + pos;
+                let after = abs_pos + pattern.len();
+                if after >= content.len() {
+                    return true;
+                }
+                let ch = content.as_bytes()[after];
+                if !(ch.is_ascii_alphanumeric() || ch == b'_') {
+                    return true;
+                }
+                start = abs_pos + 1;
+            }
+            false
+        };
+
         match file.language {
             LanguageId::Rust => {
                 let content = String::from_utf8_lossy(&file.content);
@@ -2421,11 +2438,11 @@ impl LiveIndex {
                     "fn", "struct", "enum", "trait", "type", "const", "static", "mod",
                 ] {
                     let pattern = format!("pub {keyword} {name}");
-                    if content.contains(&pattern) {
+                    if is_word_match(&content, &pattern) {
                         return true;
                     }
                     let crate_pattern = format!("pub(crate) {keyword} {name}");
-                    if content.contains(&crate_pattern) {
+                    if is_word_match(&content, &crate_pattern) {
                         return true;
                     }
                 }
@@ -2433,14 +2450,14 @@ impl LiveIndex {
             }
             LanguageId::JavaScript | LanguageId::TypeScript => {
                 let content = String::from_utf8_lossy(&file.content);
-                content.contains(&format!("export {{ {name}"))
-                    || content.contains(&format!("export {name}"))
-                    || content.contains(&format!("export default {name}"))
-                    || content.contains(&format!("export function {name}"))
-                    || content.contains(&format!("export class {name}"))
-                    || content.contains(&format!("export const {name}"))
-                    || content.contains(&format!("export interface {name}"))
-                    || content.contains(&format!("export type {name}"))
+                is_word_match(&content, &format!("export {{ {name}"))
+                    || is_word_match(&content, &format!("export {name}"))
+                    || is_word_match(&content, &format!("export default {name}"))
+                    || is_word_match(&content, &format!("export function {name}"))
+                    || is_word_match(&content, &format!("export class {name}"))
+                    || is_word_match(&content, &format!("export const {name}"))
+                    || is_word_match(&content, &format!("export interface {name}"))
+                    || is_word_match(&content, &format!("export type {name}"))
             }
             // Python: all module-level symbols are importable, skip filter
             // Other languages: skip filter to avoid false negatives
