@@ -9,12 +9,15 @@
 ## Revision History
 
 - **v1:** 6 items across 2 PRs.
-- **v2 (current):** Spec review findings incorporated:
+- **v2:** Spec review findings incorporated:
   - **Item 2 dropped:** `ranked` only re-sorts, never filters — `suppressed_by_ranking` would always be 0.
   - **Item 3 revised:** Post-hoc term matching in formatter, not search pipeline change. The `is_match` closure is `FnMut(&str) -> bool` — per-term identity is lost at the closure boundary.
   - **Item 4 moved to PR 2:** `DependentLineView` lacks a `name` field — requires struct change in `query.rs`.
   - **Item 5 clarified:** Follows `BatchRenameInput` pattern (`Option<bool>` + `lenient_bool`). Dry-run byte sizes report raw input size, not projected indented size.
   - **Item 6 retargeted:** Fix in `query.rs` (`find_dependents_for_file`) to benefit all consumers, not just `get_file_context`. Existing test `test_get_file_context_ignores_generic_name_noise_without_real_dependency` referenced.
+- **v3 (current):** Second spec review findings:
+  - **Item 1 fixed:** `files_with_symbol_changes` is a symbol count, not file count. Introduced `files_with_changes` counter to track files that passed the symbol-change filter.
+  - **Item 6 clarified:** `SymbolRecord` has no `visibility` field. Visibility heuristic uses text scan of `IndexedFile.content` for `pub`/`export` keywords. Language-specific behavior documented.
 
 ---
 
@@ -28,10 +31,13 @@ Pure formatting changes in the output layer. No input struct changes, no query l
 
 **File:** `src/protocol/format.rs` — `diff_symbols_result_view` (L6266)
 
-**Change:** After the summary line, when `compact == true` and some files were filtered (i.e., `changed_files.len() > files_with_symbol_changes` where `files_with_symbol_changes > 0`), append:
+**Change:** Introduce a new counter `files_with_changes: usize` that increments each time the loop does NOT `continue` at the "no symbol-level changes" branch. After the summary line, when `compact == true` and `changed_files.len() > files_with_changes` (i.e., some files were omitted), append:
 ```
 (N file(s) with only non-symbol changes omitted)
 ```
+where `N = changed_files.len() - files_with_changes`.
+
+**Important:** Do NOT reuse the existing `files_with_symbol_changes` variable — that holds the total *symbol* count (`total_added + total_removed + total_modified`), not the number of *files* with symbol changes.
 
 **Test:** Add a test in `src/protocol/tools.rs` that verifies compact mode output includes the omission note when files have non-symbol changes.
 
@@ -136,11 +142,17 @@ Where `<verb>` is "replace", "insert before/after", "delete", or "edit within".
 
 1. **Qualified-name filter (primary):** If the reference has a `qualified_name`, check that it contains the target file's module path segment (derived from the file path). If it doesn't match, skip. Note: for re-exported symbols, the qualified name references the re-exporting module — this is correct behavior since the dependency is on the re-exporter.
 
-2. **Visibility heuristic (fallback):** When `qualified_name` is absent, check whether the target file exports a `pub` symbol with the matching name. If no `pub` symbol by that name exists in the target file, skip.
+2. **Visibility heuristic (fallback):** When `qualified_name` is absent, check whether the target file exports a publicly visible symbol with the matching name. `SymbolRecord` has no `visibility` field, so this is done via a text scan of `IndexedFile.content` (which is available in `find_dependents_for_file`):
+   - **Rust:** scan for `pub fn <name>`, `pub struct <name>`, `pub enum <name>`, `pub trait <name>`, `pub type <name>`, `pub const <name>`, `pub static <name>`, `pub mod <name>`
+   - **JavaScript/TypeScript:** scan for `export` preceding the symbol declaration
+   - **Python:** skip this layer (Python has no export keyword; all module-level symbols are importable)
+   - **Other languages:** skip this layer (no false-negative risk — the qualified-name filter handles most cases)
+
+   If the target file has no publicly visible symbol by that name (for languages where visibility applies), the reference cannot be to this file — skip it.
 
 **Why fix in query.rs instead of handlers.rs:** Fixing at the source benefits all consumers: `get_file_context` "Used by", `find_dependents` tool, mermaid/dot output, and the sidecar outline endpoint.
 
-**Test:** Add a test with a synthetic index where file A has a non-pub symbol `foo` and file B references `foo` from a different module — verify file B does not appear in file A's dependents. Also test that a `pub` symbol with a qualified import path that matches the target file IS included.
+**Test:** Add a test with a synthetic index where file A has a non-pub symbol `foo` (Rust file with `fn foo()` not `pub fn foo()`) and file B references `foo` from a different module — verify file B does not appear in file A's dependents. Also test that a `pub` symbol with a qualified import path that matches the target file IS included.
 
 ---
 
