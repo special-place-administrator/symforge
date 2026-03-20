@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.10](https://github.com/special-place-administrator/symforge/compare/v2.0.9...v2.0.10) (2026-03-20)
+
+
+### Bug Fixes
+
+* 26 bug fixes across parsers, protocol, indexing, sidecar, and npm ([b2abebc](https://github.com/special-place-administrator/symforge/commit/b2abebc4710580cdb62fe984809c4ddc949cd8a6))
+
 ## [2.0.9](https://github.com/special-place-administrator/symforge/compare/v2.0.8...v2.0.9) (2026-03-20)
 
 
