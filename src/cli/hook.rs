@@ -207,6 +207,8 @@ impl HookAdoptionSnapshot {
 ///
 /// Never returns an error — failures produce the fail-open empty JSON.
 pub fn run_hook(subcommand: Option<&HookSubcommand>) -> anyhow::Result<()> {
+    let verbose = is_hook_verbose();
+
     // Always read stdin so we have context for path/query extraction.
     // For explicit subcommands the payload may be empty or absent — that's fine.
     let input = parse_stdin_input();
@@ -240,28 +242,58 @@ pub fn run_hook(subcommand: Option<&HookSubcommand>) -> anyhow::Result<()> {
     // This keeps docs/config/non-source reads and unknown tool events from
     // producing unrelated sidecar output.
     if workflow == HookWorkflow::PassThrough {
+        if verbose {
+            eprintln!("[symforge-hook] workflow=PassThrough — emitting fail-open");
+        }
         println!("{}", fail_open_json(event_name));
         return Ok(());
     }
 
     // Step 1 — read port file; if missing, try daemon fallback before fail-open.
     let (port, effective_session_id, used_daemon_fallback) = match read_port_file() {
-        Ok(p) => (p, session_id.clone(), false),
-        Err(_) => {
+        Ok(p) => {
+            if verbose {
+                eprintln!("[symforge-hook] read port file: port={p}");
+            }
+            (p, session_id.clone(), false)
+        }
+        Err(e) => {
             let repo_root = std::env::current_dir().unwrap_or_default();
             let port_file_path = repo_root.join(PORT_FILE);
+            if verbose {
+                eprintln!(
+                    "[symforge-hook] port file not readable: {e} (searched {})",
+                    port_file_path.display()
+                );
+            }
 
             // --- Gap 2: Daemon fallback ---
             // Before failing open, check if the SymForge daemon is running and
             // has an active session for this repository.
+            if verbose {
+                eprintln!("[symforge-hook] attempting daemon fallback...");
+            }
             match try_daemon_fallback(&repo_root) {
                 Some(fallback) => {
+                    if verbose {
+                        eprintln!(
+                            "[symforge-hook] daemon fallback succeeded: port={}, session={}",
+                            fallback.daemon_port, fallback.session_id
+                        );
+                    }
                     // Daemon has an active session — use its port and session id.
                     (fallback.daemon_port, Some(fallback.session_id), true)
                 }
                 None => {
+                    if verbose {
+                        eprintln!("[symforge-hook] daemon fallback failed — no active session");
+                    }
                     // --- Gap 1: Enhanced diagnostics ---
                     emit_no_sidecar_diagnostic(&repo_root, &port_file_path);
+                    maybe_emit_sidecar_hint(&repo_root);
+                    if verbose {
+                        eprintln!("[symforge-hook] outcome=NoSidecar reason=sidecar_port_missing");
+                    }
                     record_hook_outcome_with_detail(
                         workflow,
                         HookOutcome::NoSidecar,
@@ -270,6 +302,7 @@ pub fn run_hook(subcommand: Option<&HookSubcommand>) -> anyhow::Result<()> {
                             reason: "sidecar_port_missing",
                             searched_path: &port_file_path.to_string_lossy(),
                             suggestion: "start_mcp_session",
+                            project_root: &repo_root.to_string_lossy(),
                         }),
                     );
                     println!("{}", fail_open_json(event_name));
@@ -284,14 +317,36 @@ pub fn run_hook(subcommand: Option<&HookSubcommand>) -> anyhow::Result<()> {
     let (path, query) = endpoint_for(resolved_ref, &input);
     let request_path = proxy_path(path, effective_session_id.as_deref());
 
+    if verbose {
+        eprintln!("[symforge-hook] HTTP GET 127.0.0.1:{port}{request_path}?{query}");
+    }
+
     // Step 3/4 — make sync HTTP GET with 50 ms timeout.
     let body = match sync_http_get(port, &request_path, query) {
         Ok(b) => b,
         Err(_) => {
-            record_hook_outcome(
+            // Port file existed but HTTP call failed — sidecar is stale.
+            let repo_root = std::env::current_dir().unwrap_or_default();
+            let port_file_path = repo_root.join(PORT_FILE);
+            if verbose {
+                eprintln!(
+                    "[symforge-hook] HTTP request failed — classifying as sidecar_port_stale"
+                );
+            }
+            maybe_emit_sidecar_hint(&repo_root);
+            if verbose {
+                eprintln!("[symforge-hook] outcome=NoSidecar reason=sidecar_port_stale");
+            }
+            record_hook_outcome_with_detail(
                 workflow,
-                HookOutcome::SidecarError,
+                HookOutcome::NoSidecar,
                 effective_session_id.as_deref(),
+                Some(NoSidecarDetail {
+                    reason: "sidecar_port_stale",
+                    searched_path: &port_file_path.to_string_lossy(),
+                    suggestion: "restart_sidecar",
+                    project_root: &repo_root.to_string_lossy(),
+                }),
             );
             println!("{}", fail_open_json(event_name));
             return Ok(());
@@ -304,6 +359,10 @@ pub fn run_hook(subcommand: Option<&HookSubcommand>) -> anyhow::Result<()> {
     } else {
         HookOutcome::Routed
     };
+
+    if verbose {
+        eprintln!("[symforge-hook] outcome={}", outcome.label());
+    }
 
     // Step 5/6 — output result JSON.
     record_hook_outcome(workflow, outcome, effective_session_id.as_deref());
@@ -838,6 +897,57 @@ struct NoSidecarDetail<'a> {
     reason: &'a str,
     searched_path: &'a str,
     suggestion: &'a str,
+    project_root: &'a str,
+}
+
+/// Check whether verbose hook diagnostics are enabled.
+///
+/// Set `SYMFORGE_HOOK_VERBOSE=1` to enable detailed stderr output from the hook.
+fn is_hook_verbose() -> bool {
+    std::env::var("SYMFORGE_HOOK_VERBOSE").map_or(false, |v| v == "1")
+}
+
+/// Marker file path for the one-time sidecar hint (HOOK-03).
+const HOOK_HINT_MARKER: &str = ".symforge/hook-hint-shown";
+
+/// Freshness window for the sidecar hint marker file (30 minutes).
+const HOOK_HINT_FRESHNESS: Duration = Duration::from_secs(30 * 60);
+
+/// Emit a one-time hint to stderr when the sidecar is not running (HOOK-03).
+///
+/// Uses a marker file (`.symforge/hook-hint-shown`) to avoid repeating the hint
+/// within a 30-minute window. The hint is written to stderr regardless of
+/// `SYMFORGE_HOOK_VERBOSE` — it is specifically a user-facing one-time hint.
+///
+/// All I/O failures are silently ignored to preserve fail-open behavior.
+fn maybe_emit_sidecar_hint(repo_root: &Path) {
+    let marker_path = repo_root.join(HOOK_HINT_MARKER);
+
+    // Check if the marker file is fresh (modified within the last 30 minutes).
+    if let Ok(metadata) = std::fs::metadata(&marker_path) {
+        if let Ok(modified) = metadata.modified() {
+            if let Ok(elapsed) = modified.elapsed() {
+                if elapsed < HOOK_HINT_FRESHNESS {
+                    // Hint was shown recently — skip.
+                    return;
+                }
+            }
+        }
+    }
+
+    // Write the hint to stderr.
+    eprintln!("[symforge-hook] SymForge sidecar is not running. To enable rich context:");
+    eprintln!(
+        "[symforge-hook]   \u{2022} Configure SymForge as an MCP server in your editor settings"
+    );
+    eprintln!("[symforge-hook]   \u{2022} Or run: symforge --stdio");
+    eprintln!("[symforge-hook] (This hint appears once per session)");
+
+    // Touch / create the marker file so we don't repeat within 30 minutes.
+    if let Some(parent) = marker_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&marker_path, "");
 }
 
 /// Emit a diagnostic message to stderr explaining why the hook is failing open.
@@ -845,7 +955,13 @@ struct NoSidecarDetail<'a> {
 /// This helps users who run hooks manually understand what's missing and how
 /// to fix it. The message is written to stderr so it doesn't interfere with
 /// the JSON output on stdout.
+///
+/// Gated behind `SYMFORGE_HOOK_VERBOSE=1` (HOOK-02).
 fn emit_no_sidecar_diagnostic(repo_root: &Path, port_file_path: &Path) {
+    if !is_hook_verbose() {
+        return;
+    }
+
     let daemon_status = if crate::daemon::read_daemon_port_file().is_ok() {
         "SymForge daemon is running but has no active session for this project."
     } else {
@@ -853,16 +969,16 @@ fn emit_no_sidecar_diagnostic(repo_root: &Path, port_file_path: &Path) {
     };
 
     eprintln!(
-        "symforge hook: sidecar not running. No {} found in {}.",
+        "[symforge-hook] sidecar not running. No {} found in {}.",
         PORT_FILE,
         repo_root.display()
     );
-    eprintln!("  Searched: {}", port_file_path.display());
-    eprintln!("  {daemon_status}");
+    eprintln!("[symforge-hook]   Searched: {}", port_file_path.display());
+    eprintln!("[symforge-hook]   {daemon_status}");
     eprintln!(
-        "  To start: run 'symforge' as an MCP server, or start a Claude/Codex session with SymForge configured."
+        "[symforge-hook]   To start: run 'symforge' as an MCP server, or start a Claude/Codex session with SymForge configured."
     );
-    eprintln!("  Hook falling back to pass-through mode.");
+    eprintln!("[symforge-hook]   Hook falling back to pass-through mode.");
 }
 
 /// Record a hook outcome with optional structured detail for the adoption log.
@@ -910,8 +1026,8 @@ fn append_hook_adoption_event_with_detail(
     match detail {
         Some(d) => writeln!(
             file,
-            "{session}\t{workflow_name}\t{outcome_label}\treason={}\tsearched_path={}\tsuggestion={}",
-            d.reason, d.searched_path, d.suggestion
+            "{session}\t{workflow_name}\t{outcome_label}\treason={}\tsearched_path={}\tsuggestion={}\tproject_root={}",
+            d.reason, d.searched_path, d.suggestion, d.project_root
         ),
         None => writeln!(file, "{session}\t{workflow_name}\t{outcome_label}"),
     }
