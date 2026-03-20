@@ -8239,7 +8239,11 @@ mod tests {
         let import_ref = make_ref("target", None, ReferenceKind::Import, 0, None);
         let usage_ref = make_ref("TargetType", None, ReferenceKind::TypeUsage, 1, Some(0));
         let dep_sym = make_symbol("consumer", SymbolKind::Function, 0, 1);
-        let target_file = make_file("src/target.rs", b"pub struct TargetType {}\n", vec![target_sym]);
+        let target_file = make_file(
+            "src/target.rs",
+            b"pub struct TargetType {}\n",
+            vec![target_sym],
+        );
         let dep_file = make_file_with_refs(
             "src/dep.rs",
             b"use target::TargetType;\nfn consumer() { TargetType }\n",
@@ -8280,7 +8284,13 @@ mod tests {
         );
 
         let other_sym = make_symbol("main", SymbolKind::Function, 2, 4);
-        let other_import = make_ref("target", Some("crate::target"), ReferenceKind::Import, 0, None);
+        let other_import = make_ref(
+            "target",
+            Some("crate::target"),
+            ReferenceKind::Import,
+            0,
+            None,
+        );
         let other_call = make_ref("run", None, ReferenceKind::Call, 3, Some(0));
         let other_file = make_file_with_refs(
             "src/other.rs",

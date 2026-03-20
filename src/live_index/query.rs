@@ -1442,42 +1442,42 @@ impl LiveIndex {
     }
 
     /// Capture the grouped data needed for `find_dependents` without holding the read lock.
-        pub fn capture_find_dependents_view(&self, target_path: &str) -> FindDependentsView {
-            let deps = self.find_dependents_for_file(target_path);
-            let mut by_file: std::collections::BTreeMap<String, Vec<DependentLineView>> =
-                std::collections::BTreeMap::new();
+    pub fn capture_find_dependents_view(&self, target_path: &str) -> FindDependentsView {
+        let deps = self.find_dependents_for_file(target_path);
+        let mut by_file: std::collections::BTreeMap<String, Vec<DependentLineView>> =
+            std::collections::BTreeMap::new();
 
-            for (file_path, reference) in deps {
-                let line_number = reference.line_range.0 + 1;
-                let line_content = self
-                    .get_file(file_path)
-                    .map(|file| {
-                        String::from_utf8_lossy(&file.content)
-                            .lines()
-                            .nth(reference.line_range.0 as usize)
-                            .unwrap_or("")
-                            .to_string()
-                    })
-                    .unwrap_or_default();
+        for (file_path, reference) in deps {
+            let line_number = reference.line_range.0 + 1;
+            let line_content = self
+                .get_file(file_path)
+                .map(|file| {
+                    String::from_utf8_lossy(&file.content)
+                        .lines()
+                        .nth(reference.line_range.0 as usize)
+                        .unwrap_or("")
+                        .to_string()
+                })
+                .unwrap_or_default();
 
-                by_file
-                    .entry(file_path.to_string())
-                    .or_default()
-                    .push(DependentLineView {
-                        line_number,
-                        line_content,
-                        kind: reference.kind.to_string(),
-                        name: reference.name.clone(),
-                    });
-            }
-
-            FindDependentsView {
-                files: by_file
-                    .into_iter()
-                    .map(|(file_path, lines)| DependentFileView { file_path, lines })
-                    .collect(),
-            }
+            by_file
+                .entry(file_path.to_string())
+                .or_default()
+                .push(DependentLineView {
+                    line_number,
+                    line_content,
+                    kind: reference.kind.to_string(),
+                    name: reference.name.clone(),
+                });
         }
+
+        FindDependentsView {
+            files: by_file
+                .into_iter()
+                .map(|(file_path, lines)| DependentFileView { file_path, lines })
+                .collect(),
+        }
+    }
 
     /// Capture the grouped data needed for `find_references` without holding the read lock.
     pub fn capture_find_references_view(
@@ -2411,6 +2411,43 @@ impl LiveIndex {
         }
     }
 
+    /// Check whether a file exports a public symbol with the given name.
+    /// Uses a text scan of file content since SymbolRecord has no visibility field.
+    fn has_pub_symbol(file: &IndexedFile, name: &str) -> bool {
+        match file.language {
+            LanguageId::Rust => {
+                let content = String::from_utf8_lossy(&file.content);
+                for keyword in &[
+                    "fn", "struct", "enum", "trait", "type", "const", "static", "mod",
+                ] {
+                    let pattern = format!("pub {keyword} {name}");
+                    if content.contains(&pattern) {
+                        return true;
+                    }
+                    let crate_pattern = format!("pub(crate) {keyword} {name}");
+                    if content.contains(&crate_pattern) {
+                        return true;
+                    }
+                }
+                false
+            }
+            LanguageId::JavaScript | LanguageId::TypeScript => {
+                let content = String::from_utf8_lossy(&file.content);
+                content.contains(&format!("export {{ {name}"))
+                    || content.contains(&format!("export {name}"))
+                    || content.contains(&format!("export default {name}"))
+                    || content.contains(&format!("export function {name}"))
+                    || content.contains(&format!("export class {name}"))
+                    || content.contains(&format!("export const {name}"))
+                    || content.contains(&format!("export interface {name}"))
+                    || content.contains(&format!("export type {name}"))
+            }
+            // Python: all module-level symbols are importable, skip filter
+            // Other languages: skip filter to avoid false negatives
+            _ => true,
+        }
+    }
+
     /// Find all files that import (depend on) `target_path`.
     ///
     /// Uses two strategies:
@@ -2471,6 +2508,7 @@ impl LiveIndex {
                     .filter(|reference| {
                         reference.kind != ReferenceKind::Import
                             && target_symbol_names.contains(reference.name.as_str())
+                            && Self::has_pub_symbol(target_file, &reference.name)
                     })
                     .collect();
 
@@ -2559,6 +2597,7 @@ impl LiveIndex {
                                 .filter(|reference| {
                                     reference.kind != ReferenceKind::Import
                                         && target_symbol_names.contains(reference.name.as_str())
+                                        && Self::has_pub_symbol(target_file, &reference.name)
                                 })
                                 .collect();
                             if !symbol_refs.is_empty() {
