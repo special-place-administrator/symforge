@@ -3313,6 +3313,13 @@ impl SymForgeServer {
             Ok(s) => s,
             Err(e) => return e,
         };
+        if params.0.dry_run == Some(true) {
+            let old_bytes = (sym.byte_range.1 - sym.byte_range.0) as usize;
+            return format!(
+                "[DRY RUN] Would replace `{}` in {} (old: {} bytes -> new: {} bytes)",
+                params.0.name, params.0.path, old_bytes, params.0.new_body.len()
+            );
+        }
         let old_bytes = (sym.byte_range.1 - sym.byte_range.0) as usize;
         // Splice at line start and apply indentation — same approach as insert tools.
         // Extend past orphaned doc comments so they get replaced along with the symbol,
@@ -3414,6 +3421,12 @@ impl SymForgeServer {
             Ok(s) => s,
             Err(e) => return e,
         };
+        if params.0.dry_run == Some(true) {
+            return format!(
+                "[DRY RUN] Would insert {} `{}` in {} ({} bytes of content)",
+                position, params.0.name, params.0.path, params.0.content.len()
+            );
+        }
         let line_ending = edit::detect_line_ending(&file.content);
         let new_content = if position == "before" {
             edit::build_insert_before(&file.content, &sym, &params.0.content, line_ending)
@@ -3483,6 +3496,13 @@ impl SymForgeServer {
             Ok(s) => s,
             Err(e) => return e,
         };
+        if params.0.dry_run == Some(true) {
+            let deleted_bytes = (sym.byte_range.1 - sym.byte_range.0) as usize;
+            return format!(
+                "[DRY RUN] Would delete `{}` in {} ({} bytes)",
+                params.0.name, params.0.path, deleted_bytes
+            );
+        }
         let deleted_bytes = (sym.byte_range.1 - sym.byte_range.0) as usize;
         let line_ending = edit::detect_line_ending(&file.content);
         let new_content = edit::build_delete(&file.content, &sym, line_ending);
@@ -3586,6 +3606,12 @@ impl SymForgeServer {
             return format!(
                 "Error: `{}` not found within symbol `{}`",
                 params.0.old_text, params.0.name
+            );
+        }
+        if params.0.dry_run == Some(true) {
+            return format!(
+                "[DRY RUN] Would edit within `{}` in {} ({} replacement(s))",
+                params.0.name, params.0.path, count
             );
         }
         let old_sym_bytes = sym_end - sym_start;
