@@ -1899,7 +1899,7 @@ impl SymForgeServer {
             file_path_hint
         } else {
             let guard = self.index.read();
-            let candidates: Vec<String> = guard
+            let mut candidates: Vec<String> = guard
                 .all_files()
                 .filter_map(|(path, file)| {
                     if file.symbols.iter().any(|s| s.name == params.0.name) {
@@ -1910,6 +1910,8 @@ impl SymForgeServer {
                 })
                 .take(5)
                 .collect();
+            // Sort for deterministic selection when multiple files match.
+            candidates.sort();
             drop(guard);
             if candidates.len() == 1 {
                 resolved_path = Some(candidates.into_iter().next().unwrap());
@@ -1946,7 +1948,7 @@ impl SymForgeServer {
                         && params
                             .0
                             .symbol_line
-                            .map(|l| s.line_range.0 == l)
+                            .map(|l| s.line_range.0 + 1 == l)
                             .unwrap_or(true)
                 })?;
                 let body = std::str::from_utf8(
@@ -2762,7 +2764,8 @@ impl SymForgeServer {
 
         let indexed_file = {
             let guard = self.index.read();
-            loading_guard!(guard);
+            // Skip loading_guard here — the disk-read fallback below does not
+            // need the index, so we should not block when the index is still loading.
             guard.capture_shared_file(&input.path)
         };
         if let Some(file) = indexed_file {
@@ -3597,6 +3600,13 @@ impl SymForgeServer {
             Ok(s) => s,
             Err(e) => return e,
         };
+        if let Some(warning) = Self::check_edit_capability(
+            &file.language,
+            crate::parsing::config_extractors::EditCapability::StructuralEditSafe,
+            "insert_symbol",
+        ) {
+            return warning;
+        }
         if params.0.dry_run == Some(true) {
             return format!(
                 "[DRY RUN] Would insert {} `{}` in {} ({} bytes of content)",
@@ -4677,7 +4687,7 @@ mod tests {
                 file: None,
                 path: Some("src/db.rs".to_string()),
                 symbol_kind: Some("fn".to_string()),
-                symbol_line: Some(1),
+                symbol_line: Some(2),
                 verbosity: None,
                 bundle: None,
                 sections: None,
@@ -4774,7 +4784,7 @@ mod tests {
                 file: Some("src/service.rs".to_string()),
                 path: Some("src/db.rs".to_string()),
                 symbol_kind: Some("fn".to_string()),
-                symbol_line: Some(1),
+                symbol_line: Some(2),
                 verbosity: None,
                 bundle: None,
                 sections: None,
@@ -6687,7 +6697,7 @@ mod tests {
                 around_match: None,
                 match_occurrence: None,
                 around_symbol: Some("connect".to_string()),
-                symbol_line: Some(2),
+                symbol_line: Some(3),
                 context_lines: Some(0),
                 show_line_numbers: None,
                 header: None,
@@ -8174,7 +8184,7 @@ mod tests {
                 kind: Some("call".to_string()),
                 path: Some("src/db.rs".to_string()),
                 symbol_kind: Some("fn".to_string()),
-                symbol_line: Some(1),
+                symbol_line: Some(2),
                 limit: None,
                 max_per_file: None,
                 compact: None,

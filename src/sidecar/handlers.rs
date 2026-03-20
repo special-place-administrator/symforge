@@ -2078,7 +2078,7 @@ mod tests {
             file: None,
             path: Some("src/db.rs".to_string()),
             symbol_kind: Some("fn".to_string()),
-            symbol_line: Some(1),
+            symbol_line: Some(2),
         };
         let result = symbol_context_handler(State(state), Query(params))
             .await
@@ -3047,7 +3047,7 @@ mod tests {
         let result = prompt_context_handler(
             State(state),
             Query(PromptContextParams {
-                text: "inspect src/utils:3 connect".to_string(),
+                text: "inspect src/utils:4 connect".to_string(),
             }),
         )
         .await
@@ -3763,7 +3763,7 @@ mod tests {
         let result = prompt_context_handler(
             State(state),
             Query(PromptContextParams {
-                text: "inspect src/utils/connect:3".to_string(),
+                text: "inspect src/utils/connect:4".to_string(),
             }),
         )
         .await
@@ -4031,7 +4031,7 @@ mod tests {
         let result = prompt_context_handler(
             State(state),
             Query(PromptContextParams {
-                text: "inspect pkg.db.connect:4".to_string(),
+                text: "inspect pkg.db.connect:5".to_string(),
             }),
         )
         .await

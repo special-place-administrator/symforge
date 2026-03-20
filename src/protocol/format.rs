@@ -1635,10 +1635,11 @@ fn resolve_around_symbol_range(
     }
 
     if let Some(symbol_line) = symbol_line {
+        // symbol_line is 1-based (from search_symbols output); line_range is 0-based.
         let exact_matches: Vec<&crate::domain::SymbolRecord> = matching_symbols
             .iter()
             .copied()
-            .filter(|symbol| symbol.line_range.0 == symbol_line)
+            .filter(|symbol| symbol.line_range.0 + 1 == symbol_line)
             .collect();
 
         return match exact_matches.as_slice() {
@@ -4484,7 +4485,7 @@ mod tests {
 
         let result = file_content_from_indexed_file_with_context(
             index.capture_shared_file("src/main.rs").unwrap().as_ref(),
-            search::ContentContext::around_symbol("connect", Some(2), Some(0)),
+            search::ContentContext::around_symbol("connect", Some(3), Some(0)),
         );
 
         assert_eq!(result, "3: fn connect() {}");

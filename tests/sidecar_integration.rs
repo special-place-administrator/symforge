@@ -1345,7 +1345,7 @@ async fn test_prompt_context_endpoint_slash_module_alias_line_hint_disambiguates
     let body = raw_http_get(
         handle.port,
         "/prompt-context",
-        "text=inspect%20src%2Futils%3A3%20connect",
+        "text=inspect%20src%2Futils%3A4%20connect",
     )
     .expect("GET /prompt-context must succeed");
 
@@ -1848,7 +1848,7 @@ async fn test_prompt_context_endpoint_slash_qualified_symbol_alias_line_hint_dis
     let body = raw_http_get(
         handle.port,
         "/prompt-context",
-        "text=inspect%20src/utils/connect:3",
+        "text=inspect%20src/utils/connect:4",
     )
     .expect("GET /prompt-context must succeed");
 
@@ -1992,7 +1992,7 @@ async fn test_prompt_context_endpoint_dotted_qualified_symbol_alias_line_hint_di
     let body = raw_http_get(
         handle.port,
         "/prompt-context",
-        "text=inspect%20pkg.db.connect:4",
+        "text=inspect%20pkg.db.connect:5",
     )
     .expect("GET /prompt-context must succeed");
 

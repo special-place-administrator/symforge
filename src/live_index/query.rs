@@ -421,7 +421,8 @@ pub(crate) fn resolve_symbol_selector<'a>(
         .collect();
 
     if let Some(symbol_line) = symbol_line {
-        candidates.retain(|(_, symbol)| symbol.line_range.0 == symbol_line);
+        // symbol_line is 1-based (from search_symbols output); line_range is 0-based.
+        candidates.retain(|(_, symbol)| symbol.line_range.0 + 1 == symbol_line);
     }
 
     match candidates.len() {
@@ -3794,7 +3795,7 @@ mod tests {
             false,
         );
 
-        let view = index.capture_context_bundle_view("src/db.rs", "connect", Some("fn"), Some(2));
+        let view = index.capture_context_bundle_view("src/db.rs", "connect", Some("fn"), Some(3));
 
         let ContextBundleView::Found(found) = view else {
             panic!("expected found view");
@@ -3924,7 +3925,7 @@ impl Actor for MyActor {
         let index = make_index(vec![("src/actors.rs", target)], false);
 
         let view =
-            index.capture_context_bundle_view("src/actors.rs", "MyActor", Some("struct"), Some(0));
+            index.capture_context_bundle_view("src/actors.rs", "MyActor", Some("struct"), Some(1));
 
         let ContextBundleView::Found(found) = view else {
             panic!("expected found view");
@@ -4440,7 +4441,7 @@ impl Actor for MyActor {
                 "src/db.rs",
                 "connect",
                 Some("fn"),
-                Some(1),
+                Some(2),
                 Some("call"),
                 200,
             )

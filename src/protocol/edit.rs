@@ -2162,7 +2162,7 @@ mod tests {
             make_test_symbol("foo", SymbolKind::Function, (0, 20), 1),
             make_test_symbol("foo", SymbolKind::Function, (22, 50), 5),
         ]);
-        let result = resolve_or_error(&file, "foo", None, Some(5));
+        let result = resolve_or_error(&file, "foo", None, Some(6));
         assert!(result.is_ok());
         assert_eq!(result.unwrap().0, 1);
     }
