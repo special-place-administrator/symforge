@@ -287,8 +287,6 @@ mod tests {
         let mut parser = tree_sitter::Parser::new();
         let lang: tree_sitter::Language = tree_sitter_scss::language().into();
         parser.set_language(&lang).expect("set SCSS language");
-        let source = "$primary-color: blue !default;";
-        let tree = parser.parse(source, None).expect("parse");
 
         fn dump(node: &tree_sitter::Node, source: &str, indent: usize) -> String {
             let text = node.utf8_text(source.as_bytes()).unwrap_or("?");
@@ -301,8 +299,29 @@ mod tests {
             s
         }
 
-        let dump_str = dump(&tree.root_node(), source, 0);
-        println!("\n{}", dump_str);
+        // Test single !default
+        let source = "$primary-color: blue !default;";
+        let tree = parser.parse(source, None).expect("parse");
+        println!(
+            "\n=== single !default ===\n{}",
+            dump(&tree.root_node(), source, 0)
+        );
+
+        // Test $var with !global flag
+        let global_src = "$primary-color: blue !global;";
+        let tree4 = parser.parse(global_src, None).expect("parse global");
+        println!(
+            "=== !global ===\n{}",
+            dump(&tree4.root_node(), global_src, 0)
+        );
+
+        // Test $var inside :root {}
+        let root_src = ":root {\n  $primary-color: blue;\n  --gap: 8px;\n}";
+        let tree5 = parser.parse(root_src, None).expect("parse root");
+        println!(
+            "=== :root with $var ===\n{}",
+            dump(&tree5.root_node(), root_src, 0)
+        );
         // Always passes — just for inspection
     }
 }

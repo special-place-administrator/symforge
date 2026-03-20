@@ -408,6 +408,83 @@ mod tests {
         assert!(symbols.is_empty(), "empty file should produce zero symbols");
     }
 
+    #[test]
+    fn test_html_realistic_angular_template() {
+        // Realistic Angular template: @if/@for nested inside a real HTML element.
+        // This exercises the code path where Angular control flow text nodes are
+        // children of an `element` node (not top-level document children).
+        let source = r#"<div class="container">
+  <h1>Title</h1>
+  @if (isLoggedIn) {
+    <app-dashboard></app-dashboard>
+  } @else {
+    <app-login></app-login>
+  }
+  @for (item of items; track item.id) {
+    <app-item [data]="item"></app-item>
+  }
+</div>"#;
+        let symbols = parse_html(source);
+        let if_sym = symbols.iter().find(|s| s.name == "@if");
+        let for_sym = symbols.iter().find(|s| s.name == "@for");
+        assert!(
+            if_sym.is_some(),
+            "should extract @if from realistic template, got: {:?}",
+            symbols
+        );
+        assert!(
+            for_sym.is_some(),
+            "should extract @for from realistic template, got: {:?}",
+            symbols
+        );
+    }
+
+    #[test]
+    fn test_html_debug_node_kinds_realistic_angular() {
+        // Diagnostic: print the tree-sitter parse tree for a realistic Angular template
+        // so we know which node kinds contain @if/@for text.
+        let source = r#"<div class="container">
+  <h1>Title</h1>
+  @if (isLoggedIn) {
+    <app-dashboard></app-dashboard>
+  } @else {
+    <app-login></app-login>
+  }
+  @for (item of items; track item.id) {
+    <app-item [data]="item"></app-item>
+  }
+</div>"#;
+        let mut parser = tree_sitter::Parser::new();
+        let lang: tree_sitter::Language = tree_sitter_html::LANGUAGE.into();
+        parser.set_language(&lang).expect("set HTML language");
+        let tree = parser.parse(source, None).expect("parse");
+
+        fn dump_node(node: &tree_sitter::Node, source: &str, indent: usize) {
+            let text = node
+                .utf8_text(source.as_bytes())
+                .unwrap_or("")
+                .replace('\n', "\\n");
+            let preview = if text.len() > 60 { &text[..60] } else { &text };
+            eprintln!(
+                "{:indent$}[{}] {:?} ({}-{})",
+                "",
+                node.kind(),
+                preview,
+                node.start_byte(),
+                node.end_byte(),
+                indent = indent
+            );
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                dump_node(&child, source, indent + 2);
+            }
+        }
+
+        dump_node(&tree.root_node(), source, 0);
+        // This test always passes — its purpose is to emit the parse tree to stderr.
+        // Run with: cargo test test_html_debug_node_kinds -- --nocapture 2>&1
+    }
+
     // ─── Regression: multiple Angular constructs in one text node ─────
 
     #[test]
