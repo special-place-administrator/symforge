@@ -179,7 +179,7 @@ async fn test_read_hook_returns_formatted_outline() {
         ],
     );
     let index = build_shared_index(vec![file]);
-    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1", None)
         .await
         .expect("spawn_sidecar should succeed");
 
@@ -225,7 +225,7 @@ async fn test_read_hook_noop_for_missing_file() {
     std::env::set_current_dir(tmp.path()).unwrap();
 
     let index = build_shared_index(vec![]);
-    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1", None)
         .await
         .expect("spawn_sidecar should succeed");
 
@@ -275,7 +275,7 @@ async fn test_read_hook_budget_enforced() {
     ];
     let file = make_rust_file_with_symbols("src/big.rs", symbols);
     let index = build_shared_index(vec![file]);
-    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1", None)
         .await
         .expect("spawn_sidecar should succeed");
 
@@ -318,7 +318,7 @@ async fn test_edit_hook_impact_diff() {
     let file =
         make_rust_file_with_symbols("src/edit_test.rs", vec![("original", SymbolKind::Function)]);
     let index = build_shared_index(vec![file]);
-    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1", None)
         .await
         .expect("spawn_sidecar should succeed");
 
@@ -368,7 +368,7 @@ async fn test_edit_hook_shows_callers() {
     );
 
     let index = build_shared_index(vec![file_a, file_b]);
-    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1", None)
         .await
         .expect("spawn_sidecar should succeed");
 
@@ -419,7 +419,7 @@ async fn test_write_hook_confirms_index() {
     .unwrap();
 
     let index = build_shared_index(vec![]); // empty — file not yet indexed
-    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1", None)
         .await
         .expect("spawn_sidecar should succeed");
 
@@ -475,7 +475,7 @@ async fn test_grep_hook_annotates_matches() {
     };
 
     let index = build_shared_index(vec![file]);
-    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1", None)
         .await
         .expect("spawn_sidecar should succeed");
 
@@ -531,7 +531,7 @@ async fn test_grep_hook_caps_at_10() {
         .collect();
 
     let index = build_shared_index(files);
-    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1", None)
         .await
         .expect("spawn_sidecar should succeed");
 
@@ -573,7 +573,7 @@ async fn test_session_start_repo_map() {
         make_rust_file_with_symbols("tests/basic.rs", vec![("test_one", SymbolKind::Function)]),
     ];
     let index = build_shared_index(files);
-    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1", None)
         .await
         .expect("spawn_sidecar should succeed");
 
@@ -629,7 +629,7 @@ async fn test_repo_map_under_500_tokens() {
         .collect();
 
     let index = build_shared_index(files);
-    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1", None)
         .await
         .expect("spawn_sidecar should succeed");
 
@@ -669,7 +669,7 @@ async fn test_token_stats_after_hooks() {
         vec![("tracked_fn", SymbolKind::Function)],
     );
     let index = build_shared_index(vec![file]);
-    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1", None)
         .await
         .expect("spawn_sidecar should succeed");
 
@@ -731,7 +731,7 @@ async fn test_token_savings_footer() {
     file.byte_len = 5000;
 
     let index = build_shared_index(vec![file]);
-    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1", None)
         .await
         .expect("spawn_sidecar should succeed");
 

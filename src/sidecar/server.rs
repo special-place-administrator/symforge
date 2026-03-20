@@ -5,6 +5,7 @@
 
 use parking_lot::RwLock;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use tokio::net::TcpListener;
@@ -24,7 +25,11 @@ use crate::live_index::store::SharedIndex;
 /// 7. Spawns `axum::serve` with graceful shutdown wired to a oneshot channel.
 /// 8. After the server completes, calls `port_file::cleanup_files()`.
 /// 9. Returns `SidecarHandle { port, shutdown_tx }`.
-pub async fn spawn_sidecar(index: SharedIndex, bind_host: &str) -> anyhow::Result<SidecarHandle> {
+pub async fn spawn_sidecar(
+    index: SharedIndex,
+    bind_host: &str,
+    repo_root: Option<PathBuf>,
+) -> anyhow::Result<SidecarHandle> {
     // Allow overriding bind host via env var.
     let resolved_host =
         std::env::var("SYMFORGE_SIDECAR_BIND").unwrap_or_else(|_| bind_host.to_string());
@@ -52,7 +57,7 @@ pub async fn spawn_sidecar(index: SharedIndex, bind_host: &str) -> anyhow::Resul
     let state = SidecarState {
         index,
         token_stats: Arc::clone(&token_stats),
-        repo_root: std::env::current_dir().ok(),
+        repo_root,
         symbol_cache: Arc::new(RwLock::new(HashMap::new())),
     };
 

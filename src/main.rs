@@ -254,7 +254,8 @@ async fn run_local_mcp_server_async(
     // The sidecar shares the same Arc<LiveIndex> so mutations are immediately visible.
     let bind_host =
         std::env::var("SYMFORGE_SIDECAR_BIND").unwrap_or_else(|_| "127.0.0.1".to_string());
-    let sidecar_handle = sidecar::spawn_sidecar(Arc::clone(&index), &bind_host).await?;
+    let sidecar_handle =
+        sidecar::spawn_sidecar(Arc::clone(&index), &bind_host, watcher_root.clone()).await?;
     tracing::info!(port = sidecar_handle.port, "HTTP sidecar started");
 
     // Share the sidecar's TokenStats Arc with the MCP server so the health tool

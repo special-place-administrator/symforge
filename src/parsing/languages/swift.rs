@@ -28,6 +28,7 @@ fn walk_node(
         "struct_declaration" => Some(SymbolKind::Struct),
         "enum_declaration" => Some(SymbolKind::Enum),
         "protocol_declaration" => Some(SymbolKind::Interface),
+        "extension_declaration" => Some(SymbolKind::Impl),
         _ => None,
     };
 

@@ -152,11 +152,9 @@ fn render_symbol_detail(
         Some(s) => {
             let start = s.effective_start() as usize;
             let end = s.byte_range.1 as usize;
-            let body = if end <= content.len() {
-                String::from_utf8_lossy(&content[start..end]).into_owned()
-            } else {
-                String::from_utf8_lossy(content).into_owned()
-            };
+            let clamped_end = end.min(content.len());
+            let clamped_start = start.min(clamped_end);
+            let body = String::from_utf8_lossy(&content[clamped_start..clamped_end]).into_owned();
             let byte_count = end.saturating_sub(start);
             format!(
                 "{}\n[{}, lines {}-{}, {} bytes]",

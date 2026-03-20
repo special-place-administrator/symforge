@@ -183,24 +183,6 @@ pub const CONCEPT_MAP: &[(&str, ConceptPattern)] = &[
         },
     ),
     (
-        "watcher",
-        ConceptPattern {
-            label: "File Watching",
-            symbol_queries: &["watcher", "notify", "debounce", "burst"],
-            text_queries: &["notify::Event", "DebouncedEvent", "file_event", "inotify"],
-            kind_filters: &[],
-        },
-    ),
-    (
-        "parser",
-        ConceptPattern {
-            label: "Parsing",
-            symbol_queries: &["parse", "parser", "ast", "node", "tree_sitter"],
-            text_queries: &["tree_sitter::", ".parse(", "syntax tree", "grammar"],
-            kind_filters: &[],
-        },
-    ),
-    (
         "api",
         ConceptPattern {
             label: "API / HTTP",

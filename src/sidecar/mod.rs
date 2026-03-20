@@ -197,6 +197,17 @@ pub fn build_with_budget(items: &[String], max_bytes: u64) -> (String, usize) {
         included.push(item.as_str());
     }
 
+    // After the loop: if fewer items were included than available (e.g. because
+    // the very first item exceeded max_bytes and forced inclusion while the rest
+    // were silently dropped), always append the truncation suffix so callers
+    // know output was cut short.
+    if included.len() < items.len() {
+        let remaining = items.len() - included.len();
+        let mut text = included.join("\n");
+        text.push_str(&format!("\n... (truncated, {remaining} more)"));
+        return (text, remaining);
+    }
+
     (included.join("\n"), 0)
 }
 

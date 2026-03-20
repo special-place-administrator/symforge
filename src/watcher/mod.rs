@@ -298,6 +298,9 @@ pub(crate) fn freshen_file_if_stale(
             .unwrap_or(u64::MAX)
     };
 
+    if disk_mtime == 0 && indexed_mtime == 0 {
+        return false; // both unknown — treat as fresh to avoid churn
+    }
     if disk_mtime != 0 && disk_mtime == indexed_mtime {
         return false; // already fresh
     }

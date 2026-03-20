@@ -508,14 +508,17 @@ fn push_import_reference(
     import_node: Node,
 ) {
     let full_text = import_text.trim();
-    let name = full_text
-        .split("::")
-        .last()
-        .or_else(|| full_text.split('.').next_back())
-        .unwrap_or(full_text)
-        .trim_matches('"')
-        .trim_matches('\'')
-        .to_string();
+    let name = if full_text.contains('/') && !full_text.contains("::") {
+        // JS/TS path imports like '../utils/helpers' — take the last path segment
+        full_text.split('/').last().unwrap_or(full_text)
+    } else {
+        full_text
+            .split("::")
+            .last()
+            .or_else(|| full_text.split('.').next_back())
+            .unwrap_or(full_text)
+    };
+    let name = name.trim_matches('"').trim_matches('\'').to_string();
 
     if name.is_empty() {
         return;

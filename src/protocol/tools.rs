@@ -874,6 +874,7 @@ fn search_symbols_options_from_input(
             include_generated: input.include_generated.unwrap_or(false),
             include_tests: input.include_tests.unwrap_or(false),
             include_vendor: true,
+            include_ignored: false,
         },
         language_filter: parse_language_filter(input.language.as_deref())?,
     })
@@ -905,6 +906,7 @@ fn search_text_options_from_input(
             include_generated,
             include_tests,
             include_vendor: true,
+            include_ignored: false,
         },
         language_filter: parse_language_filter(input.language.as_deref())?,
         total_limit,

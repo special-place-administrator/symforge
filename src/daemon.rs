@@ -372,11 +372,15 @@ impl DaemonState {
                     (pid, remaining)
                 }
                 None => {
-                    // Session not found in any project. Clean up session record only.
+                    // Session not found in any project — it was never registered under
+                    // a project or its project was already removed. Clean up the session
+                    // record only. We return "orphan" as the project_id because
+                    // session.project_id may be stale (set at open time and never
+                    // updated if index_folder_for_session later reassigned it).
                     let session = self.sessions.write().remove(session_id)?;
                     return Some(CloseSessionResponse {
                         session_id: session.session_id,
-                        project_id: session.project_id,
+                        project_id: "orphan".to_string(),
                         remaining_sessions: 0,
                         project_removed: false,
                     });

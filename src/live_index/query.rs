@@ -1774,11 +1774,9 @@ impl LiveIndex {
 
         let start = sym_rec.effective_start() as usize;
         let end = sym_rec.byte_range.1 as usize;
-        let body = if end <= file.content.len() {
-            String::from_utf8_lossy(&file.content[start..end]).into_owned()
-        } else {
-            String::from_utf8_lossy(&file.content).into_owned()
-        };
+        let clamped_end = end.min(file.content.len());
+        let clamped_start = start.min(clamped_end);
+        let body = String::from_utf8_lossy(&file.content[clamped_start..clamped_end]).into_owned();
         let byte_count = end.saturating_sub(start);
 
         let capture_section = |refs: &[(&str, &ReferenceRecord)]| -> ContextBundleSectionView {

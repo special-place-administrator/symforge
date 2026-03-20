@@ -132,7 +132,7 @@ async fn test_sidecar_binds_ephemeral_port() {
     std::env::set_current_dir(tmp.path()).unwrap();
 
     let index = build_shared_index(vec![make_rust_file("src/main.rs", "main")]);
-    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1", None)
         .await
         .expect("spawn_sidecar should succeed");
 
@@ -181,7 +181,7 @@ async fn test_health_endpoint_responds() {
         make_rust_file("src/main.rs", "main"),
         make_rust_file("src/lib.rs", "run"),
     ]);
-    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1", None)
         .await
         .expect("spawn_sidecar should succeed");
 
@@ -225,7 +225,7 @@ async fn test_outline_endpoint() {
     std::env::set_current_dir(tmp.path()).unwrap();
 
     let index = build_shared_index(vec![make_rust_file("src/foo.rs", "hello")]);
-    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1", None)
         .await
         .expect("spawn_sidecar should succeed");
 
@@ -259,7 +259,7 @@ async fn test_workflow_source_read_endpoint_matches_outline() {
     std::env::set_current_dir(tmp.path()).unwrap();
 
     let index = build_shared_index(vec![make_rust_file("src/foo.rs", "hello")]);
-    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1", None)
         .await
         .expect("spawn_sidecar should succeed");
 
@@ -291,7 +291,7 @@ async fn test_shared_index_mutation() {
     std::env::set_current_dir(tmp.path()).unwrap();
 
     let index = build_shared_index(vec![make_rust_file("src/a.rs", "alpha")]);
-    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1", None)
         .await
         .expect("spawn_sidecar should succeed");
 
@@ -346,7 +346,7 @@ async fn test_hook_binary_latency() {
     std::env::set_current_dir(tmp.path()).unwrap();
 
     let index = build_shared_index(vec![make_rust_file("src/main.rs", "main")]);
-    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1", None)
         .await
         .expect("spawn_sidecar should succeed");
 
@@ -482,7 +482,7 @@ async fn test_repo_map_endpoint() {
         make_rust_file("src/c.rs", "gamma"),
     ];
     let index = build_shared_index(files);
-    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1", None)
         .await
         .expect("spawn_sidecar should succeed");
 
@@ -524,7 +524,7 @@ async fn test_workflow_repo_start_endpoint_matches_repo_map() {
         make_rust_file("src/c.rs", "gamma"),
     ];
     let index = build_shared_index(files);
-    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1", None)
         .await
         .expect("spawn_sidecar should succeed");
 
@@ -551,7 +551,7 @@ async fn test_prompt_context_endpoint_prefers_file_hint() {
     std::env::set_current_dir(tmp.path()).unwrap();
 
     let index = build_shared_index(vec![make_rust_file("src/foo.rs", "hello")]);
-    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1", None)
         .await
         .expect("spawn_sidecar should succeed");
 
@@ -585,7 +585,7 @@ async fn test_workflow_prompt_context_endpoint_matches_prompt_context() {
     std::env::set_current_dir(tmp.path()).unwrap();
 
     let index = build_shared_index(vec![make_rust_file("src/foo.rs", "hello")]);
-    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1", None)
         .await
         .expect("spawn_sidecar should succeed");
 
@@ -742,7 +742,7 @@ async fn test_prompt_context_endpoint_extensionless_path_line_hint_disambiguates
         mtime_secs: 0,
     };
     let index = build_shared_index(vec![src_target, test_target, src_dependent, unrelated]);
-    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1", None)
         .await
         .expect("spawn_sidecar should succeed");
 
@@ -908,7 +908,7 @@ async fn test_prompt_context_endpoint_module_alias_line_hint_disambiguates_exact
         mtime_secs: 0,
     };
     let index = build_shared_index(vec![src_target, test_target, src_dependent, unrelated]);
-    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1", None)
         .await
         .expect("spawn_sidecar should succeed");
 
@@ -1062,7 +1062,7 @@ async fn test_prompt_context_endpoint_module_alias_without_line_prefers_exact_fi
         mtime_secs: 0,
     };
     let index = build_shared_index(vec![src_target, test_target, src_dependent, unrelated]);
-    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1", None)
         .await
         .expect("spawn_sidecar should succeed");
 
@@ -1193,7 +1193,7 @@ async fn test_prompt_context_endpoint_slash_module_alias_without_line_prefers_ex
         mtime_secs: 0,
     };
     let index = build_shared_index(vec![target, dependent, unrelated]);
-    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1", None)
         .await
         .expect("spawn_sidecar should succeed");
 
@@ -1336,7 +1336,7 @@ async fn test_prompt_context_endpoint_slash_module_alias_line_hint_disambiguates
         mtime_secs: 0,
     };
     let index = build_shared_index(vec![target, dependent, unrelated]);
-    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1", None)
         .await
         .expect("spawn_sidecar should succeed");
 
@@ -1445,7 +1445,7 @@ async fn test_prompt_context_endpoint_qualified_symbol_alias_prefers_exact_selec
         mtime_secs: 0,
     };
     let index = build_shared_index(vec![target, dependent, unrelated]);
-    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1", None)
         .await
         .expect("spawn_sidecar should succeed");
 
@@ -1572,7 +1572,7 @@ async fn test_prompt_context_endpoint_dotted_qualified_symbol_alias_prefers_exac
         mtime_secs: 0,
     };
     let index = build_shared_index(vec![target, dependent, unrelated]);
-    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1", None)
         .await
         .expect("spawn_sidecar should succeed");
 
@@ -1699,7 +1699,7 @@ async fn test_prompt_context_endpoint_slash_qualified_symbol_alias_prefers_exact
         mtime_secs: 0,
     };
     let index = build_shared_index(vec![target, dependent, unrelated]);
-    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1", None)
         .await
         .expect("spawn_sidecar should succeed");
 
@@ -1839,7 +1839,7 @@ async fn test_prompt_context_endpoint_slash_qualified_symbol_alias_line_hint_dis
         mtime_secs: 0,
     };
     let index = build_shared_index(vec![target, dependent, unrelated]);
-    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1", None)
         .await
         .expect("spawn_sidecar should succeed");
 
@@ -1983,7 +1983,7 @@ async fn test_prompt_context_endpoint_dotted_qualified_symbol_alias_line_hint_di
         mtime_secs: 0,
     };
     let index = build_shared_index(vec![target, dependent, unrelated]);
-    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1", None)
         .await
         .expect("spawn_sidecar should succeed");
 
@@ -2092,7 +2092,7 @@ async fn test_prompt_context_endpoint_combined_hint_uses_exact_selector() {
         mtime_secs: 0,
     };
     let index = build_shared_index(vec![target, dependent, unrelated]);
-    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1", None)
         .await
         .expect("spawn_sidecar should succeed");
 
@@ -2201,7 +2201,7 @@ async fn test_prompt_context_endpoint_line_hint_disambiguates_exact_selector() {
         mtime_secs: 0,
     };
     let index = build_shared_index(vec![target, dependent]);
-    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1", None)
         .await
         .expect("spawn_sidecar should succeed");
 
@@ -2310,7 +2310,7 @@ async fn test_prompt_context_endpoint_path_line_hint_disambiguates_exact_selecto
         mtime_secs: 0,
     };
     let index = build_shared_index(vec![target, dependent]);
-    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1", None)
         .await
         .expect("spawn_sidecar should succeed");
 
@@ -2419,7 +2419,7 @@ async fn test_prompt_context_endpoint_basename_line_hint_disambiguates_exact_sel
         mtime_secs: 0,
     };
     let index = build_shared_index(vec![target, dependent]);
-    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1", None)
         .await
         .expect("spawn_sidecar should succeed");
 
@@ -2558,7 +2558,7 @@ async fn test_prompt_context_endpoint_extensionless_alias_line_hint_disambiguate
         mtime_secs: 0,
     };
     let index = build_shared_index(vec![target, dependent, unrelated]);
-    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1")
+    let handle = spawn_sidecar(Arc::clone(&index), "127.0.0.1", None)
         .await
         .expect("spawn_sidecar should succeed");
 

@@ -305,6 +305,7 @@ pub struct NoisePolicy {
     pub include_generated: bool,
     pub include_tests: bool,
     pub include_vendor: bool,
+    pub include_ignored: bool,
 }
 
 impl NoisePolicy {
@@ -313,6 +314,7 @@ impl NoisePolicy {
             include_generated: true,
             include_tests: true,
             include_vendor: true,
+            include_ignored: true,
         }
     }
 
@@ -321,6 +323,7 @@ impl NoisePolicy {
             include_generated: false,
             include_tests: false,
             include_vendor: false,
+            include_ignored: false,
         }
     }
 
@@ -406,7 +409,7 @@ impl NoisePolicy {
             NoiseClass::None => false,
             NoiseClass::Vendor => !self.include_vendor,
             NoiseClass::Generated => !self.include_generated,
-            NoiseClass::Ignored => !self.include_vendor,
+            NoiseClass::Ignored => !self.include_ignored,
         }
     }
 }
@@ -448,6 +451,7 @@ impl SymbolSearchOptions {
                 include_generated: false,
                 include_tests: false,
                 include_vendor: true,
+                include_ignored: false,
             },
             language_filter: None,
         }
@@ -503,6 +507,7 @@ impl TextSearchOptions {
                 include_generated: false,
                 include_tests: false,
                 include_vendor: true,
+                include_ignored: false,
             },
             language_filter: None,
             total_limit: 50,
@@ -1676,6 +1681,7 @@ mod tests {
                 include_generated: false,
                 include_tests: false,
                 include_vendor: true,
+                include_ignored: false,
             }
         );
         assert_eq!(options.language_filter, None);
@@ -1693,6 +1699,7 @@ mod tests {
                 include_generated: false,
                 include_tests: false,
                 include_vendor: true,
+                include_ignored: false,
             }
         );
         assert_eq!(options.total_limit, 50);
@@ -1740,6 +1747,7 @@ mod tests {
                 include_generated: false,
                 include_tests: false,
                 include_vendor: true,
+                include_ignored: false,
             },
             language_filter: Some(LanguageId::TypeScript),
             total_limit: 3,
@@ -1779,6 +1787,7 @@ mod tests {
                 include_generated: false,
                 include_tests: false,
                 include_vendor: true,
+                include_ignored: false,
             },
             language_filter: None,
             total_limit: 10,
@@ -2194,11 +2203,12 @@ mod tests {
             include_vendor: true,
             include_generated: false,
             include_tests: true,
+            include_ignored: false,
         };
         assert!(!custom.should_hide(NoiseClass::None));
         assert!(!custom.should_hide(NoiseClass::Vendor));
         assert!(custom.should_hide(NoiseClass::Generated));
-        assert!(!custom.should_hide(NoiseClass::Ignored)); // Ignored follows include_vendor
+        assert!(custom.should_hide(NoiseClass::Ignored)); // Ignored follows include_ignored
     }
 
     #[test]
