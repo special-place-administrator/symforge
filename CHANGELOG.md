@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.1](https://github.com/special-place-administrator/symforge/compare/v2.0.0...v2.0.1) (2026-03-20)
+
+
+### Bug Fixes
+
+* resolve 5 tool bugs from hands-on review ([6d11014](https://github.com/special-place-administrator/symforge/commit/6d1101448f993946699028e26ecf8852f81073be))
+
 ## [2.0.0](https://github.com/special-place-administrator/symforge/compare/v1.9.0...v2.0.0) (2026-03-20)
 
 
