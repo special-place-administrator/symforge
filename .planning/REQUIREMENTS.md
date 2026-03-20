@@ -50,25 +50,25 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SRCH-01 | TBD | Pending |
-| SRCH-02 | TBD | Pending |
-| BUDG-01 | TBD | Pending |
-| BUDG-02 | TBD | Pending |
-| BUDG-03 | TBD | Pending |
-| SYMB-01 | TBD | Pending |
-| SYMB-02 | TBD | Pending |
-| SYMB-03 | TBD | Pending |
-| HOOK-01 | TBD | Pending |
-| HOOK-02 | TBD | Pending |
-| HOOK-03 | TBD | Pending |
-| DOCS-01 | TBD | Pending |
-| DOCS-02 | TBD | Pending |
+| SRCH-01 | Phase 1 | Pending |
+| SRCH-02 | Phase 1 | Pending |
+| BUDG-01 | Phase 1 | Pending |
+| BUDG-02 | Phase 1 | Pending |
+| BUDG-03 | Phase 1 | Pending |
+| SYMB-01 | Phase 2 | Pending |
+| SYMB-02 | Phase 2 | Pending |
+| SYMB-03 | Phase 2 | Pending |
+| HOOK-01 | Phase 3 | Pending |
+| HOOK-02 | Phase 3 | Pending |
+| HOOK-03 | Phase 3 | Pending |
+| DOCS-01 | Phase 3 | Pending |
+| DOCS-02 | Phase 3 | Pending |
 
 **Coverage:**
 - v1 requirements: 13 total
-- Mapped to phases: 0
-- Unmapped: 13
+- Mapped to phases: 13
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-20*
-*Last updated: 2026-03-20 after initial definition*
+*Last updated: 2026-03-20 after roadmap creation*
