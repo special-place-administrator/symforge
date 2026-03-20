@@ -3,20 +3,9 @@
 **Defined:** 2026-03-20
 **Core Value:** Every tool SymForge advertises must work correctly, and hooks must reliably route source-code workflows through SymForge — trust is the product.
 
-**Origin:** AI reviewer tested v1.6.0. 4 of 9 original items fixed in commit d13e76b. These 5 remain.
+**Origin:** AI reviewer tested v1.6.0. Original 9 items — codebase verification on 2026-03-20 confirmed 7 already fixed in d13e76b. These 8 remain (3 SYMB + 3 HOOK + 2 DOCS).
 
 ## v1 Requirements
-
-### Search Quality
-
-- [ ] **SRCH-01**: `search_text` with `ranked=true` returns the same file set as `ranked=false` (only order changes, not count)
-- [ ] **SRCH-02**: Ranked mode diagnostic footer shows `{N} files matched, showing top {M} ranked by importance` when results are truncated
-
-### Budget Enforcement
-
-- [ ] **BUDG-01**: `get_symbol_context` in default mode respects `max_tokens` parameter (truncates output at nearest line boundary)
-- [ ] **BUDG-02**: `get_symbol_context` in trace mode respects `max_tokens` parameter
-- [ ] **BUDG-03**: Truncated output appends `[truncated — exceeded {N} token budget]` footer
 
 ### Symbol Disambiguation
 
@@ -39,10 +28,14 @@
 
 | Feature | Reason |
 |---------|--------|
-| validate_file_syntax dispatch | Already fixed in d13e76b — verified in daemon.rs:1643 |
-| search_text regex noise policy | Already fixed in d13e76b — `for_current_code_search` method exists |
-| Callee deduplication | Already fixed in d13e76b — `occurrence_count` field and dedup logic in query.rs |
-| Daemon fallback for hooks | Already fixed in d13e76b — `DaemonFallback` outcome and `DAEMON_FALLBACK_DEADLINE` in hook.rs |
+| validate_file_syntax dispatch | Fixed in d13e76b — verified in daemon.rs:1643 |
+| search_text regex noise policy | Fixed in d13e76b — `for_current_code_search` method in search.rs |
+| search_text ranked over-filtering | Fixed in d13e76b — ranked default limit boosted to 200 in tools.rs:889 |
+| max_tokens budget (default mode) | Fixed in d13e76b — `enforce_token_budget` called in tools.rs:1916 |
+| max_tokens budget (trace mode) | Fixed in d13e76b — `enforce_token_budget` called in tools.rs:1839 |
+| max_tokens truncation footer | Fixed in d13e76b — `enforce_token_budget` appends `[truncated]` in format.rs:2856 |
+| Callee deduplication | Fixed in d13e76b — `occurrence_count` in query.rs, dedup in format.rs |
+| Daemon fallback for hooks | Fixed in d13e76b — `DaemonFallback` outcome in hook.rs |
 | Git temporal context | Separate milestone, not related to RTK adoption |
 | Full Codex hook integration | Client limitation, not SymForge bug |
 
@@ -50,25 +43,20 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SRCH-01 | Phase 1 | Pending |
-| SRCH-02 | Phase 1 | Pending |
-| BUDG-01 | Phase 1 | Pending |
-| BUDG-02 | Phase 1 | Pending |
-| BUDG-03 | Phase 1 | Pending |
-| SYMB-01 | Phase 2 | Pending |
-| SYMB-02 | Phase 2 | Pending |
-| SYMB-03 | Phase 2 | Pending |
-| HOOK-01 | Phase 3 | Pending |
-| HOOK-02 | Phase 3 | Pending |
-| HOOK-03 | Phase 3 | Pending |
-| DOCS-01 | Phase 3 | Pending |
-| DOCS-02 | Phase 3 | Pending |
+| SYMB-01 | Phase 1 | Pending |
+| SYMB-02 | Phase 1 | Pending |
+| SYMB-03 | Phase 1 | Pending |
+| HOOK-01 | Phase 2 | Pending |
+| HOOK-02 | Phase 2 | Pending |
+| HOOK-03 | Phase 2 | Pending |
+| DOCS-01 | Phase 2 | Pending |
+| DOCS-02 | Phase 2 | Pending |
 
 **Coverage:**
-- v1 requirements: 13 total
-- Mapped to phases: 13
+- v1 requirements: 8 total
+- Mapped to phases: 8
 - Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-20*
-*Last updated: 2026-03-20 after roadmap creation*
+*Last updated: 2026-03-20 after codebase verification — 5 items moved to Out of Scope (already fixed)*
