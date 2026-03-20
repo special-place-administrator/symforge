@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.0.5](https://github.com/special-place-administrator/symforge/compare/v2.0.4...v2.0.5) (2026-03-20)
+
+
+### Bug Fixes
+
+* complete audit remediation — language tests, deferred fixes, dedup ([c04e849](https://github.com/special-place-administrator/symforge/commit/c04e84968e406e1662b5f36fa7df2ae923ab15fe))
+* Go method names, SCSS $variable extraction, language filter completeness ([4156d41](https://github.com/special-place-administrator/symforge/commit/4156d41d24af8739494482ea4ba868a69fec747d))
+
 ## [2.0.4](https://github.com/special-place-administrator/symforge/compare/v2.0.3...v2.0.4) (2026-03-20)
 
 
