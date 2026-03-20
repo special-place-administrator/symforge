@@ -771,6 +771,7 @@ pub struct DependentLineView {
     pub line_number: u32,
     pub line_content: String,
     pub kind: String,
+    pub name: String,
 }
 
 /// One dependent file entry captured for `find_dependents`.
@@ -1439,41 +1440,42 @@ impl LiveIndex {
     }
 
     /// Capture the grouped data needed for `find_dependents` without holding the read lock.
-    pub fn capture_find_dependents_view(&self, target_path: &str) -> FindDependentsView {
-        let deps = self.find_dependents_for_file(target_path);
-        let mut by_file: std::collections::BTreeMap<String, Vec<DependentLineView>> =
-            std::collections::BTreeMap::new();
+        pub fn capture_find_dependents_view(&self, target_path: &str) -> FindDependentsView {
+            let deps = self.find_dependents_for_file(target_path);
+            let mut by_file: std::collections::BTreeMap<String, Vec<DependentLineView>> =
+                std::collections::BTreeMap::new();
 
-        for (file_path, reference) in deps {
-            let line_number = reference.line_range.0 + 1;
-            let line_content = self
-                .get_file(file_path)
-                .map(|file| {
-                    String::from_utf8_lossy(&file.content)
-                        .lines()
-                        .nth(reference.line_range.0 as usize)
-                        .unwrap_or("")
-                        .to_string()
-                })
-                .unwrap_or_default();
+            for (file_path, reference) in deps {
+                let line_number = reference.line_range.0 + 1;
+                let line_content = self
+                    .get_file(file_path)
+                    .map(|file| {
+                        String::from_utf8_lossy(&file.content)
+                            .lines()
+                            .nth(reference.line_range.0 as usize)
+                            .unwrap_or("")
+                            .to_string()
+                    })
+                    .unwrap_or_default();
 
-            by_file
-                .entry(file_path.to_string())
-                .or_default()
-                .push(DependentLineView {
-                    line_number,
-                    line_content,
-                    kind: reference.kind.to_string(),
-                });
+                by_file
+                    .entry(file_path.to_string())
+                    .or_default()
+                    .push(DependentLineView {
+                        line_number,
+                        line_content,
+                        kind: reference.kind.to_string(),
+                        name: reference.name.clone(),
+                    });
+            }
+
+            FindDependentsView {
+                files: by_file
+                    .into_iter()
+                    .map(|(file_path, lines)| DependentFileView { file_path, lines })
+                    .collect(),
+            }
         }
-
-        FindDependentsView {
-            files: by_file
-                .into_iter()
-                .map(|(file_path, lines)| DependentFileView { file_path, lines })
-                .collect(),
-        }
-    }
 
     /// Capture the grouped data needed for `find_references` without holding the read lock.
     pub fn capture_find_references_view(

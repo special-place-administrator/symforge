@@ -2146,9 +2146,27 @@ pub fn find_dependents_mermaid(
     for file in view.files.iter().take(limits.max_files) {
         let dep_id = mermaid_node_id(&file.file_path);
         let ref_count = file.lines.len();
+
+        let mut names: Vec<&str> = Vec::new();
+        for line in &file.lines {
+            if !names.contains(&line.name.as_str()) {
+                names.push(&line.name);
+                if names.len() >= 3 {
+                    break;
+                }
+            }
+        }
+        let remaining = ref_count.saturating_sub(names.len());
+        let label = if names.is_empty() {
+            format!("{ref_count} refs")
+        } else if remaining > 0 {
+            format!("{} +{remaining}", names.join(", "))
+        } else {
+            names.join(", ")
+        };
         lines.push(format!(
-            "    {dep_id}[\"{}\"] -->|{} refs| {target_id}",
-            file.file_path, ref_count
+            "    {dep_id}[\"{}\"] -->|\"{label}\"| {target_id}",
+            file.file_path
         ));
     }
 
@@ -2176,12 +2194,28 @@ pub fn find_dependents_dot(view: &FindDependentsView, path: &str, limits: &Outpu
     ));
 
     for file in view.files.iter().take(limits.max_files) {
-        let ref_count = file.lines.len();
+        let mut names: Vec<&str> = Vec::new();
+        for line in &file.lines {
+            if !names.contains(&line.name.as_str()) {
+                names.push(&line.name);
+                if names.len() >= 3 {
+                    break;
+                }
+            }
+        }
+        let remaining = file.lines.len().saturating_sub(names.len());
+        let label = if names.is_empty() {
+            format!("{} refs", file.lines.len())
+        } else if remaining > 0 {
+            format!("{} +{remaining}", names.join(", "))
+        } else {
+            names.join(", ")
+        };
         lines.push(format!(
-            "    \"{}\" -> \"{}\" [label=\"{} refs\"];",
+            "    \"{}\" -> \"{}\" [label=\"{}\"];",
             dot_escape(&file.file_path),
             dot_escape(path),
-            ref_count
+            label
         ));
     }
 
@@ -4921,24 +4955,24 @@ mod tests {
 
     #[test]
     fn test_find_dependents_mermaid_shows_flowchart() {
-        let content_b = b"use crate::db;\n";
-        let r = make_ref("db", ReferenceKind::Import, 1, None);
-        let (key_b, file_b) = make_file_with_refs("src/handler.rs", content_b, vec![], vec![r]);
-        let (key_a, file_a) = make_file("src/db.rs", b"pub fn connect() {}", vec![]);
-        let index = make_index_with_reverse(vec![(key_a, file_a), (key_b, file_b)]);
-        let view = index.capture_find_dependents_view("src/db.rs");
-        let result = find_dependents_mermaid(&view, "src/db.rs", &OutputLimits::default());
-        assert!(
-            result.starts_with("flowchart LR"),
-            "should start with flowchart, got: {result}"
-        );
-        assert!(result.contains("src/db.rs"), "should mention target file");
-        assert!(
-            result.contains("src/handler.rs"),
-            "should mention dependent"
-        );
-        assert!(result.contains("refs"), "should show ref count");
-    }
+            let content_b = b"use crate::db;\n";
+            let r = make_ref("db", ReferenceKind::Import, 1, None);
+            let (key_b, file_b) = make_file_with_refs("src/handler.rs", content_b, vec![], vec![r]);
+            let (key_a, file_a) = make_file("src/db.rs", b"pub fn connect() {}", vec![]);
+            let index = make_index_with_reverse(vec![(key_a, file_a), (key_b, file_b)]);
+            let view = index.capture_find_dependents_view("src/db.rs");
+            let result = find_dependents_mermaid(&view, "src/db.rs", &OutputLimits::default());
+            assert!(
+                result.starts_with("flowchart LR"),
+                "should start with flowchart, got: {result}"
+            );
+            assert!(result.contains("src/db.rs"), "should mention target file");
+            assert!(
+                result.contains("src/handler.rs"),
+                "should mention dependent"
+            );
+            assert!(result.contains("db"), "should show symbol name in edge label");
+        }
 
     #[test]
     fn test_find_dependents_mermaid_empty() {
@@ -4981,53 +5015,55 @@ mod tests {
 
     #[test]
     fn test_find_dependents_mermaid_shows_true_ref_count_not_capped() {
-        // Construct a view directly with 5 lines, but set max_per_file=2.
-        // The mermaid label should show "5 refs" (the true total), not "2 refs".
-        use crate::live_index::query::{DependentFileView, DependentLineView, FindDependentsView};
-        let lines: Vec<DependentLineView> = (1..=5)
-            .map(|i| DependentLineView {
-                line_number: i,
-                line_content: format!("use crate::db; // ref {i}"),
-                kind: "import".to_string(),
-            })
-            .collect();
-        let view = FindDependentsView {
-            files: vec![DependentFileView {
-                file_path: "src/handler.rs".to_string(),
-                lines,
-            }],
-        };
-        let limits = OutputLimits::new(20, 2); // max_per_file=2, but 5 actual refs
-        let result = find_dependents_mermaid(&view, "src/db.rs", &limits);
-        assert!(
-            result.contains("5 refs"),
-            "mermaid label should show true ref count (5), not capped at max_per_file (2). Got: {result}"
-        );
-    }
+            // Construct a view directly with 5 lines, but set max_per_file=2.
+            // The mermaid label should show symbol names (all "db"), not just "5 refs".
+            use crate::live_index::query::{DependentFileView, DependentLineView, FindDependentsView};
+            let lines: Vec<DependentLineView> = (1..=5)
+                .map(|i| DependentLineView {
+                    line_number: i,
+                    line_content: format!("use crate::db; // ref {i}"),
+                    kind: "import".to_string(),
+                    name: "db".to_string(),
+                })
+                .collect();
+            let view = FindDependentsView {
+                files: vec![DependentFileView {
+                    file_path: "src/handler.rs".to_string(),
+                    lines,
+                }],
+            };
+            let limits = OutputLimits::new(20, 2); // max_per_file=2, but 5 actual refs
+            let result = find_dependents_mermaid(&view, "src/db.rs", &limits);
+            assert!(
+                result.contains("db"),
+                "mermaid label should include symbol name 'db'. Got: {result}"
+            );
+        }
 
     #[test]
     fn test_find_dependents_dot_shows_true_ref_count_not_capped() {
-        use crate::live_index::query::{DependentFileView, DependentLineView, FindDependentsView};
-        let lines: Vec<DependentLineView> = (1..=5)
-            .map(|i| DependentLineView {
-                line_number: i,
-                line_content: format!("use crate::db; // ref {i}"),
-                kind: "import".to_string(),
-            })
-            .collect();
-        let view = FindDependentsView {
-            files: vec![DependentFileView {
-                file_path: "src/handler.rs".to_string(),
-                lines,
-            }],
-        };
-        let limits = OutputLimits::new(20, 2);
-        let result = find_dependents_dot(&view, "src/db.rs", &limits);
-        assert!(
-            result.contains("5 refs"),
-            "dot label should show true ref count (5), not capped at max_per_file (2). Got: {result}"
-        );
-    }
+            use crate::live_index::query::{DependentFileView, DependentLineView, FindDependentsView};
+            let lines: Vec<DependentLineView> = (1..=5)
+                .map(|i| DependentLineView {
+                    line_number: i,
+                    line_content: format!("use crate::db; // ref {i}"),
+                    kind: "import".to_string(),
+                    name: "db".to_string(),
+                })
+                .collect();
+            let view = FindDependentsView {
+                files: vec![DependentFileView {
+                    file_path: "src/handler.rs".to_string(),
+                    lines,
+                }],
+            };
+            let limits = OutputLimits::new(20, 2);
+            let result = find_dependents_dot(&view, "src/db.rs", &limits);
+            assert!(
+                result.contains("db"),
+                "dot label should include symbol name 'db'. Got: {result}"
+            );
+        }
 
     // ─── context_bundle_result tests ──────────────────────────────────────
 

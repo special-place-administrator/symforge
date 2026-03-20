@@ -7991,6 +7991,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_find_dependents_mermaid_includes_symbol_names_in_edges() {
+        // dep_file imports from src/target.rs (stem "target") and uses TargetType.
+        // find_dependents_for_file should prefer the symbol-level TypeUsage ref,
+        // so the mermaid edge label should include the symbol name "TargetType".
+        let target_sym = make_symbol("TargetType", SymbolKind::Struct, 0, 2);
+        let import_ref = make_ref("target", None, ReferenceKind::Import, 0, None);
+        let usage_ref = make_ref("TargetType", None, ReferenceKind::TypeUsage, 1, Some(0));
+        let dep_sym = make_symbol("consumer", SymbolKind::Function, 0, 1);
+        let target_file = make_file("src/target.rs", b"struct TargetType {}\n", vec![target_sym]);
+        let dep_file = make_file_with_refs(
+            "src/dep.rs",
+            b"use target::TargetType;\nfn consumer() { TargetType }\n",
+            vec![dep_sym],
+            vec![import_ref, usage_ref],
+        );
+        let server = make_server(make_live_index_ready(vec![target_file, dep_file]));
+
+        let result = server
+            .find_dependents(Parameters(super::FindDependentsInput {
+                path: "src/target.rs".to_string(),
+                compact: None,
+                format: Some("mermaid".to_string()),
+                limit: None,
+                max_per_file: None,
+            }))
+            .await;
+
+        assert!(
+            result.contains("TargetType"),
+            "mermaid edge should include symbol name: {result}"
+        );
+    }
+
+    #[tokio::test]
     async fn test_search_symbols_rejects_empty_query() {
         let sym = make_symbol("Foo", SymbolKind::Class, 1, 3);
         let (key, file) = make_file("src/lib.rs", b"struct Foo {}", vec![sym]);
