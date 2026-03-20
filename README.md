@@ -117,7 +117,7 @@ Token savings and owned-workflow hook adoption are tracked per session and repor
 
 | Tool | Purpose |
 |------|---------|
-| `search_symbols` | Find symbols by name, filtered by kind/language/path/scope |
+| `search_symbols` | Find symbols by name, filtered by kind/language/path/scope. Auto-disambiguates cross-kind matches (e.g., C# class vs constructor) using kind-tier priority |
 | `search_text` | Full-text search with enclosing symbol context, `group_by` modes, `follow_refs` for inline callers. Set `ranked=true` for semantic re-ranking by caller connectivity, git churn, and symbol kind. Auto-corrects double-escaped regex patterns common in LLM tool calls |
 | `search_files` | Ranked file path discovery. `changed_with=path` for git co-change coupling. `resolve=true` for exact path resolution from partial hints |
 
@@ -179,7 +179,7 @@ Agent gets:   "src/auth.rs — replaced fn `validate_token` (342 → 287 bytes)"
 **Key behaviors:**
 - **Doc comment awareness** — edit operations (replace, delete, insert_before, edit_within) include attached doc comments (`///`, `/** */`, `#`, etc.) in the operation range. Deleting a function also deletes its doc comments. Inserting before a documented function inserts above the doc comments.
 - **Auto-indentation** — new code is indented to match the target symbol's context
-- **Disambiguation** — use `kind` and `symbol_line` when multiple symbols share a name
+- **Disambiguation** — when multiple symbols share a name across different kinds (e.g., C# class and constructor), the highest-priority kind wins automatically (class > module > function > other). Use `kind` and `symbol_line` for same-tier disambiguation
 - **Stale warnings** — `replace_symbol_body` detects signature changes and lists affected callers
 - **Atomic batches** — `batch_edit` validates all symbols before writing anything; overlapping edits are rejected
 
@@ -449,6 +449,8 @@ If the daemon becomes unreachable mid-session, the next tool call automatically 
 
 Claude Code hook integration uses project-local files under `.symforge/` (`sidecar.port`, `sidecar.pid`, `sidecar.session`, `hook-adoption.log`). Hooks intercept read, edit, write, grep, session-start, and prompt-submit events to enrich responses transparently, and the adoption log lets `health` report routed vs fail-open hook outcomes for SymForge-owned workflows.
 
+When the sidecar is unavailable, hooks fail open with structured diagnostics in the adoption log — distinguishing "port file missing" from "port file stale" with the project root path. Set `SYMFORGE_HOOK_VERBOSE=1` for real-time stderr output showing routing decisions, daemon state, and suggestions. A one-time hint is shown on first failure per session (30-minute cooldown) to guide users toward starting the sidecar.
+
 ### Persistence
 
 Index snapshots persist at `.symforge/index.bin` for fast restarts.
@@ -468,6 +470,7 @@ All tool parameters accept both native JSON types and stringified values for com
 | `SYMFORGE_CB_THRESHOLD` | `0.20` | Parse-failure circuit-breaker threshold (proportion, e.g. 0.20 = 20%) |
 | `SYMFORGE_SIDECAR_BIND` | `127.0.0.1` | Sidecar bind host for local in-process mode |
 | `SYMFORGE_HOME` | `~/.symforge` | Home directory for daemon metadata and npm-managed binary |
+| `SYMFORGE_HOOK_VERBOSE` | unset | Set to `1` to enable stderr diagnostic output during hook execution (port status, daemon state, routing decisions) |
 
 ## Build From Source
 
