@@ -1803,7 +1803,12 @@ fn fuzzy_distance(a: &str, b: &str) -> usize {
 
 fn not_found_symbol_names(relative_path: &str, symbol_names: &[String], name: &str) -> String {
     if symbol_names.is_empty() {
-        return format!("No symbol {name} in {relative_path}. No symbols in that file.");
+        return format!(
+            "No symbol {name} in {relative_path}. \
+             This file has no indexed symbols — it may use top-level statements, \
+             expression-bodied code, or a syntax not extracted by the parser. \
+             Use get_file_content without around_symbol to read the raw file."
+        );
     }
 
     // Rank by fuzzy distance and take top 5.
