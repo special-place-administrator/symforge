@@ -729,6 +729,25 @@ struct ScoredSymbolMatch {
     line: u32,
 }
 
+/// Returns true when `filter` matches the given `kind`, accepting both the
+/// Display string (e.g. `"let"` for `Variable`, `"fn"` for `Function`) and
+/// common semantic aliases (e.g. `"variable"`, `"function"`, `"method"`).
+fn kind_filter_matches(filter: &str, kind: &crate::domain::SymbolKind) -> bool {
+    if kind.to_string().eq_ignore_ascii_case(filter) {
+        return true;
+    }
+    // Semantic aliases: users naturally write "variable", "function", "method"
+    // even though the display strings are "let", "fn", "fn".
+    matches!(
+        (filter.to_ascii_lowercase().as_str(), kind),
+        ("variable", crate::domain::SymbolKind::Variable)
+            | ("function", crate::domain::SymbolKind::Function)
+            | ("method", crate::domain::SymbolKind::Method)
+            | ("module", crate::domain::SymbolKind::Module)
+            | ("constant", crate::domain::SymbolKind::Constant)
+    )
+}
+
 pub fn search_symbols(
     index: &LiveIndex,
     query: &str,
@@ -793,7 +812,7 @@ pub fn search_symbols_with_options(
 
             if let Some(filter) = kind_filter
                 && !filter.eq_ignore_ascii_case("all")
-                && !sym.kind.to_string().eq_ignore_ascii_case(filter)
+                && !kind_filter_matches(filter, &sym.kind)
             {
                 continue;
             }
@@ -1507,6 +1526,61 @@ mod tests {
         let result = search_symbols(&index, "job", Some("all"), 50);
 
         assert_eq!(result.hits.len(), 2);
+    }
+
+    #[test]
+    fn test_kind_filter_matches_semantic_aliases() {
+        use crate::domain::SymbolKind;
+        // Display strings match exactly
+        assert!(kind_filter_matches("let", &SymbolKind::Variable));
+        assert!(kind_filter_matches("fn", &SymbolKind::Function));
+        assert!(kind_filter_matches("fn", &SymbolKind::Method));
+        assert!(kind_filter_matches("mod", &SymbolKind::Module));
+        assert!(kind_filter_matches("const", &SymbolKind::Constant));
+        // Semantic aliases also match
+        assert!(kind_filter_matches("variable", &SymbolKind::Variable));
+        assert!(kind_filter_matches("Variable", &SymbolKind::Variable));
+        assert!(kind_filter_matches("function", &SymbolKind::Function));
+        assert!(kind_filter_matches("method", &SymbolKind::Method));
+        assert!(kind_filter_matches("module", &SymbolKind::Module));
+        assert!(kind_filter_matches("constant", &SymbolKind::Constant));
+        // Non-matching pairs
+        assert!(!kind_filter_matches("variable", &SymbolKind::Function));
+        assert!(!kind_filter_matches("function", &SymbolKind::Variable));
+        assert!(!kind_filter_matches("let", &SymbolKind::Constant));
+    }
+
+    #[test]
+    fn test_search_symbols_kind_variable_alias_finds_scss_variables() {
+        // Regression: search_symbols(kind="variable") must find Variable-kind symbols.
+        // Previously, SymbolKind::Variable.to_string() == "let", so kind="variable" matched nothing.
+        let index = make_index(vec![make_file(
+            "styles/tokens.scss",
+            "",
+            vec![
+                make_symbol("$primary-color", SymbolKind::Variable, 1),
+                make_symbol("$gap", SymbolKind::Variable, 2),
+                make_symbol("flex-center", SymbolKind::Function, 3),
+            ],
+        )]);
+
+        let result = search_symbols(&index, "", Some("variable"), 50);
+        let names: Vec<&str> = result.hits.iter().map(|h| h.name.as_str()).collect();
+        assert!(
+            names.contains(&"$primary-color"),
+            "kind='variable' should find $primary-color, got: {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"$gap"),
+            "kind='variable' should find $gap, got: {:?}",
+            names
+        );
+        assert!(
+            !names.contains(&"flex-center"),
+            "kind='variable' should NOT find mixin, got: {:?}",
+            names
+        );
     }
 
     #[test]

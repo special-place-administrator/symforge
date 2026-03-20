@@ -282,46 +282,36 @@ mod tests {
     }
 
     #[test]
-    fn test_scss_node_dump_default() {
-        // Dump tree for debugging — helps identify node kind for !default pattern
-        let mut parser = tree_sitter::Parser::new();
-        let lang: tree_sitter::Language = tree_sitter_scss::language().into();
-        parser.set_language(&lang).expect("set SCSS language");
-
-        fn dump(node: &tree_sitter::Node, source: &str, indent: usize) -> String {
-            let text = node.utf8_text(source.as_bytes()).unwrap_or("?");
-            let short = if text.len() > 30 { &text[..30] } else { text };
-            let mut s = format!("{}{} => {:?}\n", "  ".repeat(indent), node.kind(), short);
-            let mut cursor = node.walk();
-            for child in node.children(&mut cursor) {
-                s.push_str(&dump(&child, source, indent + 1));
-            }
-            s
-        }
-
-        // Test single !default
-        let source = "$primary-color: blue !default;";
-        let tree = parser.parse(source, None).expect("parse");
-        println!(
-            "\n=== single !default ===\n{}",
-            dump(&tree.root_node(), source, 0)
+    fn test_scss_variable_inside_rule_set_extracted() {
+        // PrimeNG pattern: $variable inside a :root {} block
+        let symbols = parse_scss(":root {\n  $primary-color: blue;\n  --gap: 8px;\n}");
+        let vars: Vec<&str> = symbols
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Variable)
+            .map(|s| s.name.as_str())
+            .collect();
+        assert!(
+            vars.contains(&"$primary-color"),
+            "should extract $variable inside :root block, got: {:?}",
+            vars
         );
-
-        // Test $var with !global flag
-        let global_src = "$primary-color: blue !global;";
-        let tree4 = parser.parse(global_src, None).expect("parse global");
-        println!(
-            "=== !global ===\n{}",
-            dump(&tree4.root_node(), global_src, 0)
+        assert!(
+            vars.contains(&"--gap"),
+            "should extract --custom-property inside :root block, got: {:?}",
+            vars
         );
+    }
 
-        // Test $var inside :root {}
-        let root_src = ":root {\n  $primary-color: blue;\n  --gap: 8px;\n}";
-        let tree5 = parser.parse(root_src, None).expect("parse root");
-        println!(
-            "=== :root with $var ===\n{}",
-            dump(&tree5.root_node(), root_src, 0)
+    #[test]
+    fn test_scss_variable_with_global_flag() {
+        // SCSS !global flag — tree-sitter parses !global as ERROR node but variable still extracted
+        let symbols = parse_scss("$primary-color: blue !global;");
+        let var = symbols.iter().find(|s| s.kind == SymbolKind::Variable);
+        assert!(
+            var.is_some(),
+            "should extract $variable with !global as Variable, got: {:?}",
+            symbols
         );
-        // Always passes — just for inspection
+        assert_eq!(var.unwrap().name, "$primary-color");
     }
 }
