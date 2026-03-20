@@ -4839,6 +4839,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_search_symbols_hides_inline_test_module_symbols() {
+        // src/lib.rs is NOT a test file, but contains `mod tests { struct TestHelper; }`.
+        // With include_tests=false (default), symbols inside the inline test module
+        // should be hidden even though the file itself is classified as source code.
+        let content = b"struct Foo {}\nmod tests {\n  struct TestHelper;\n}\n";
+        let symbols = vec![
+            SymbolRecord {
+                name: "Foo".to_string(),
+                kind: SymbolKind::Struct,
+                depth: 0,
+                sort_order: 0,
+                byte_range: (0, 13),
+                item_byte_range: Some((0, 13)),
+                line_range: (0, 0),
+                doc_byte_range: None,
+            },
+            SymbolRecord {
+                name: "tests".to_string(),
+                kind: SymbolKind::Module,
+                depth: 0,
+                sort_order: 1,
+                byte_range: (14, 48),
+                item_byte_range: Some((14, 48)),
+                line_range: (1, 3),
+                doc_byte_range: None,
+            },
+            SymbolRecord {
+                name: "TestHelper".to_string(),
+                kind: SymbolKind::Struct,
+                depth: 1,
+                sort_order: 2,
+                byte_range: (28, 46),
+                item_byte_range: Some((28, 46)),
+                line_range: (2, 2),
+                doc_byte_range: None,
+            },
+        ];
+        let server = make_server(make_live_index_ready(vec![make_file(
+            "src/lib.rs",
+            content,
+            symbols,
+        )]));
+
+        let result = server
+            .search_symbols(Parameters(super::SearchSymbolsInput {
+                query: None,
+                kind: Some("struct".to_string()),
+                path_prefix: Some("src/".to_string()),
+                language: None,
+                limit: None,
+                include_generated: None,
+                include_tests: None, // default: false
+            }))
+            .await;
+
+        assert!(
+            result.contains("Foo"),
+            "source struct should appear: {result}"
+        );
+        assert!(
+            !result.contains("TestHelper"),
+            "struct inside inline mod tests should be hidden: {result}"
+        );
+    }
+
+    #[tokio::test]
     async fn test_search_symbols_tool_can_include_generated_without_tests() {
         let server = make_server(make_live_index_ready(vec![
             make_file(
