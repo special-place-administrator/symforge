@@ -408,12 +408,44 @@ pub(crate) fn resolve_symbol_selector<'a>(
             let (idx, symbol) = candidates.remove(0);
             SymbolSelectorMatch::Selected(idx, symbol)
         }
-        _ => SymbolSelectorMatch::Ambiguous(
-            candidates
-                .into_iter()
-                .map(|(_, symbol)| symbol.line_range.0)
-                .collect(),
-        ),
+        _ => {
+            // Container-vs-member heuristic: when the user did NOT specify
+            // symbol_kind, and ambiguity is between a single container kind
+            // (class, struct, enum, trait, interface, module) and member kinds
+            // (function, method, impl), default to the container.  This
+            // resolves the very common C#/Java/Kotlin pattern where the
+            // class and its constructor share the same name.
+            if symbol_kind.is_none() {
+                let container_indices: Vec<usize> = candidates
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (_, sym))| {
+                        matches!(
+                            sym.kind,
+                            SymbolKind::Class
+                                | SymbolKind::Struct
+                                | SymbolKind::Enum
+                                | SymbolKind::Trait
+                                | SymbolKind::Interface
+                                | SymbolKind::Module
+                        )
+                    })
+                    .map(|(i, _)| i)
+                    .collect();
+
+                if container_indices.len() == 1 {
+                    let (idx, symbol) = candidates.remove(container_indices[0]);
+                    return SymbolSelectorMatch::Selected(idx, symbol);
+                }
+            }
+
+            SymbolSelectorMatch::Ambiguous(
+                candidates
+                    .into_iter()
+                    .map(|(_, symbol)| symbol.line_range.0)
+                    .collect(),
+            )
+        }
     }
 }
 
@@ -792,6 +824,9 @@ pub struct ContextBundleReferenceView {
     pub file_path: String,
     pub line_number: u32,
     pub enclosing: Option<String>,
+    /// When callees are deduplicated by name, this holds the total call-site count.
+    /// Defaults to 1 for non-deduplicated entries.
+    pub occurrence_count: usize,
 }
 
 /// One owned section inside a captured context bundle.
@@ -800,6 +835,9 @@ pub struct ContextBundleSectionView {
     pub total_count: usize,
     pub overflow_count: usize,
     pub entries: Vec<ContextBundleReferenceView>,
+    /// Number of unique symbol names in the full (uncapped) set.
+    /// When deduplication was applied, `unique_count < total_count`.
+    pub unique_count: usize,
 }
 
 /// Suggested impl block to inspect when a type definition has no direct callers.
@@ -1741,16 +1779,86 @@ impl LiveIndex {
                         file_path: (*file_path).to_string(),
                         line_number: reference.line_range.0 + 1,
                         enclosing,
+                        occurrence_count: 1,
                     }
                 })
                 .collect();
+
+            let unique_count = {
+                let mut names: Vec<&str> = refs
+                    .iter()
+                    .map(|(_, r)| r.name.as_str())
+                    .collect();
+                names.sort_unstable();
+                names.dedup();
+                names.len()
+            };
 
             ContextBundleSectionView {
                 total_count: refs.len(),
                 overflow_count: refs.len().saturating_sub(entries.len()),
                 entries,
+                unique_count,
             }
         };
+
+        // Maximum number of unique callee names to show in a deduplicated section.
+        const CALLEE_UNIQUE_CAP: usize = 30;
+
+        let capture_callee_section =
+            |refs: &[(&str, &ReferenceRecord)]| -> ContextBundleSectionView {
+                // Group callees by name (short name, not qualified) and count occurrences.
+                let mut name_counts: std::collections::HashMap<&str, (usize, usize)> =
+                    std::collections::HashMap::new();
+                for (idx, (_file_path, reference)) in refs.iter().enumerate() {
+                    let entry = name_counts.entry(reference.name.as_str()).or_insert((0, idx));
+                    entry.0 += 1;
+                }
+
+                // Sort by frequency (descending), then alphabetically for ties.
+                let mut sorted_names: Vec<(&str, usize, usize)> = name_counts
+                    .into_iter()
+                    .map(|(name, (count, first_idx))| (name, count, first_idx))
+                    .collect();
+                sorted_names.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+
+                let unique_total = sorted_names.len();
+                let capped = &sorted_names[..sorted_names.len().min(CALLEE_UNIQUE_CAP)];
+
+                let entries: Vec<ContextBundleReferenceView> = capped
+                    .iter()
+                    .map(|(name, count, first_idx)| {
+                        let (file_path, reference) = &refs[*first_idx];
+                        let enclosing = self.get_file(file_path).and_then(|f| {
+                            reference
+                                .enclosing_symbol_index
+                                .and_then(|idx| f.symbols.get(idx as usize))
+                                .map(|symbol| format!("in {} {}", symbol.kind, symbol.name))
+                        });
+
+                        ContextBundleReferenceView {
+                            display_name: reference
+                                .qualified_name
+                                .as_deref()
+                                .unwrap_or(name)
+                                .to_string(),
+                            file_path: (*file_path).to_string(),
+                            line_number: reference.line_range.0 + 1,
+                            enclosing,
+                            occurrence_count: *count,
+                        }
+                    })
+                    .collect();
+
+                let overflow_unique = unique_total.saturating_sub(capped.len());
+
+                ContextBundleSectionView {
+                    total_count: refs.len(),
+                    overflow_count: overflow_unique,
+                    entries,
+                    unique_count: unique_total,
+                }
+            };
 
         let callers =
             self.collect_exact_symbol_references(path, file, name, Some(ReferenceKind::Call));
@@ -1789,7 +1897,7 @@ impl LiveIndex {
             line_range: sym_rec.line_range,
             byte_count,
             callers: capture_section(&callers),
-            callees: capture_section(&callee_pairs),
+            callees: capture_callee_section(&callee_pairs),
             type_usages: capture_section(&type_usages),
             dependencies,
             implementation_suggestions,

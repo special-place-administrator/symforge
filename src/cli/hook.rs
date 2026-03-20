@@ -21,6 +21,11 @@ const ADOPTION_LOG_FILE: &str = ".symforge/hook-adoption.log";
 /// Hard HTTP timeout — leaves margin within HOOK-03's 100 ms total budget.
 const HTTP_TIMEOUT: Duration = Duration::from_millis(50);
 
+/// Total deadline for the entire daemon fallback sequence (port-file read +
+/// two HTTP round-trips + JSON parsing).  Individual requests get whatever
+/// time remains within this budget.
+const DAEMON_FALLBACK_DEADLINE: Duration = Duration::from_millis(500);
+
 // ---------------------------------------------------------------------------
 // Stdin JSON parsing structs
 // ---------------------------------------------------------------------------
@@ -73,6 +78,7 @@ pub(crate) enum HookOutcome {
     Routed,
     NoSidecar,
     SidecarError,
+    DaemonFallback,
 }
 
 impl HookOutcome {
@@ -81,6 +87,7 @@ impl HookOutcome {
             HookOutcome::Routed => "routed",
             HookOutcome::NoSidecar => "no-sidecar",
             HookOutcome::SidecarError => "sidecar-error",
+            HookOutcome::DaemonFallback => "daemon-fallback",
         }
     }
 
@@ -89,6 +96,7 @@ impl HookOutcome {
             "routed" => Some(HookOutcome::Routed),
             "no-sidecar" => Some(HookOutcome::NoSidecar),
             "sidecar-error" => Some(HookOutcome::SidecarError),
+            "daemon-fallback" => Some(HookOutcome::DaemonFallback),
             _ => None,
         }
     }
@@ -99,6 +107,7 @@ pub(crate) struct WorkflowAdoptionCounts {
     pub routed: usize,
     pub no_sidecar: usize,
     pub sidecar_error: usize,
+    pub daemon_fallback: usize,
 }
 
 impl WorkflowAdoptionCounts {
@@ -107,11 +116,12 @@ impl WorkflowAdoptionCounts {
             HookOutcome::Routed => self.routed += 1,
             HookOutcome::NoSidecar => self.no_sidecar += 1,
             HookOutcome::SidecarError => self.sidecar_error += 1,
+            HookOutcome::DaemonFallback => self.daemon_fallback += 1,
         }
     }
 
     pub(crate) fn total(&self) -> usize {
-        self.routed + self.no_sidecar + self.sidecar_error
+        self.routed + self.no_sidecar + self.sidecar_error + self.daemon_fallback
     }
 
     pub(crate) fn fail_open(&self) -> usize {
@@ -150,11 +160,11 @@ impl HookAdoptionSnapshot {
     }
 
     pub(crate) fn total_routed(&self) -> usize {
-        self.source_read.routed
-            + self.source_search.routed
-            + self.repo_start.routed
-            + self.prompt_context.routed
-            + self.post_edit_impact.routed
+        self.source_read.routed + self.source_read.daemon_fallback
+            + self.source_search.routed + self.source_search.daemon_fallback
+            + self.repo_start.routed + self.repo_start.daemon_fallback
+            + self.prompt_context.routed + self.prompt_context.daemon_fallback
+            + self.post_edit_impact.routed + self.post_edit_impact.daemon_fallback
     }
 
     pub(crate) fn total_fail_open(&self) -> usize {
@@ -221,34 +231,65 @@ pub fn run_hook(subcommand: Option<&HookSubcommand>) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // Step 1 — read port file.
-    let port = match read_port_file() {
-        Ok(p) => p,
+    // Step 1 — read port file; if missing, try daemon fallback before fail-open.
+    let (port, effective_session_id, used_daemon_fallback) = match read_port_file() {
+        Ok(p) => (p, session_id.clone(), false),
         Err(_) => {
-            // Sidecar not running — fail open silently.
-            record_hook_outcome(workflow, HookOutcome::NoSidecar, session_id.as_deref());
-            println!("{}", fail_open_json(event_name));
-            return Ok(());
+            let repo_root = std::env::current_dir().unwrap_or_default();
+            let port_file_path = repo_root.join(PORT_FILE);
+
+            // --- Gap 2: Daemon fallback ---
+            // Before failing open, check if the SymForge daemon is running and
+            // has an active session for this repository.
+            match try_daemon_fallback(&repo_root) {
+                Some(fallback) => {
+                    // Daemon has an active session — use its port and session id.
+                    (fallback.daemon_port, Some(fallback.session_id), true)
+                }
+                None => {
+                    // --- Gap 1: Enhanced diagnostics ---
+                    emit_no_sidecar_diagnostic(&repo_root, &port_file_path);
+                    record_hook_outcome_with_detail(
+                        workflow,
+                        HookOutcome::NoSidecar,
+                        session_id.as_deref(),
+                        Some(NoSidecarDetail {
+                            reason: "sidecar_port_missing",
+                            searched_path: &port_file_path.to_string_lossy(),
+                            suggestion: "start_mcp_session",
+                        }),
+                    );
+                    println!("{}", fail_open_json(event_name));
+                    return Ok(());
+                }
+            }
         }
     };
 
     // Step 2 — determine endpoint + query string.
     let resolved_ref = resolved.as_ref();
     let (path, query) = endpoint_for(resolved_ref, &input);
-    let request_path = proxy_path(path, session_id.as_deref());
+    let request_path = proxy_path(path, effective_session_id.as_deref());
 
     // Step 3/4 — make sync HTTP GET with 50 ms timeout.
     let body = match sync_http_get(port, &request_path, query) {
         Ok(b) => b,
         Err(_) => {
-            record_hook_outcome(workflow, HookOutcome::SidecarError, session_id.as_deref());
+            record_hook_outcome(workflow, HookOutcome::SidecarError, effective_session_id.as_deref());
             println!("{}", fail_open_json(event_name));
             return Ok(());
         }
     };
 
+    // Track whether this was a daemon-fallback routed call.
+    let outcome = if used_daemon_fallback {
+        HookOutcome::DaemonFallback
+    } else {
+        HookOutcome::Routed
+    };
+
     // Step 5/6 — output result JSON.
-    record_hook_outcome(workflow, HookOutcome::Routed, session_id.as_deref());
+    record_hook_outcome(workflow, outcome, effective_session_id.as_deref());
     println!("{}", success_json(event_name, &body));
     Ok(())
 }
@@ -632,6 +673,238 @@ fn record_hook_outcome(workflow: HookWorkflow, outcome: HookOutcome, session_id:
     );
 }
 
+
+// ---------------------------------------------------------------------------
+// Daemon fallback (Gap 2)
+// ---------------------------------------------------------------------------
+
+/// Result of a successful daemon fallback lookup.
+struct DaemonFallbackResult {
+    daemon_port: u16,
+    session_id: String,
+}
+
+/// Try to find an active daemon session for the given repo root.
+///
+/// Returns `Some(DaemonFallbackResult)` if the daemon is running and has a
+/// session whose canonical_root matches `repo_root`. Returns `None` if the
+/// daemon is unreachable, has no matching project, or any step times out.
+///
+/// Total budget: DAEMON_FALLBACK_DEADLINE (500ms shared across all steps).
+fn try_daemon_fallback(repo_root: &Path) -> Option<DaemonFallbackResult> {
+    let deadline = std::time::Instant::now() + DAEMON_FALLBACK_DEADLINE;
+
+    // Step 1: Read the daemon port file (~/.symforge/daemon.port).
+    let daemon_port = crate::daemon::read_daemon_port_file().ok()?;
+
+    // Step 2: Query GET /v1/projects for the list of active projects.
+    let remaining = deadline.checked_duration_since(std::time::Instant::now())?;
+    let projects_json = sync_http_get_with_timeout(
+        daemon_port,
+        "/v1/projects",
+        String::new(),
+        remaining,
+    )
+    .ok()?;
+
+    // Step 3: Parse the projects list and find one matching this repo root.
+    let canon_root = std::fs::canonicalize(repo_root)
+        .unwrap_or_else(|_| repo_root.to_path_buf());
+    let canon_root_str = normalize_path_for_match(&canon_root);
+
+    // Minimal serde structs for daemon JSON responses.
+    // The daemon returns a JSON array of objects with `canonical_root`,
+    // `project_id`, and `session_count` fields.
+    let projects: Vec<DaemonProjectEntry> =
+        serde_json::from_str(&projects_json).ok()?;
+
+    let matching = projects.iter().find(|p| {
+        normalize_path_for_match(Path::new(&p.canonical_root)) == canon_root_str
+    })?;
+
+    if matching.session_count == 0 {
+        return None;
+    }
+
+    // Step 4: Query GET /v1/projects/{project_id}/sessions to get a session id.
+    let remaining = deadline.checked_duration_since(std::time::Instant::now())?;
+    let sessions_path = format!("/v1/projects/{}/sessions", url_encode(&matching.project_id));
+    let sessions_json = sync_http_get_with_timeout(
+        daemon_port,
+        &sessions_path,
+        String::new(),
+        remaining,
+    )
+    .ok()?;
+
+    let sessions: Vec<DaemonSessionEntry> =
+        serde_json::from_str(&sessions_json).ok()?;
+
+    // Pick the most recently seen session.
+    let session = sessions.iter().max_by_key(|s| s.last_seen_at_unix_secs)?;
+
+    Some(DaemonFallbackResult {
+        daemon_port,
+        session_id: session.session_id.clone(),
+    })
+}
+
+/// Minimal deserialization struct for daemon project list entries.
+#[derive(serde::Deserialize)]
+struct DaemonProjectEntry {
+    project_id: String,
+    canonical_root: String,
+    session_count: usize,
+}
+
+/// Minimal deserialization struct for daemon session list entries.
+#[derive(serde::Deserialize)]
+struct DaemonSessionEntry {
+    session_id: String,
+    last_seen_at_unix_secs: u64,
+}
+
+/// Normalize a path for cross-platform comparison: lowercase on Windows,
+/// forward slashes everywhere, no trailing separator.
+fn normalize_path_for_match(path: &Path) -> String {
+    let s = path.to_string_lossy().replace('\\', "/");
+    let trimmed = s.trim_end_matches('/');
+    if cfg!(windows) {
+        trimmed.to_lowercase()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Like `sync_http_get` but with a configurable timeout.
+fn sync_http_get_with_timeout(
+    port: u16,
+    path: &str,
+    query: String,
+    timeout: Duration,
+) -> anyhow::Result<String> {
+    let addr = format!("127.0.0.1:{port}");
+    let sock_addr: std::net::SocketAddr = addr.parse()?;
+
+    let mut stream = TcpStream::connect_timeout(&sock_addr, timeout)?;
+    stream.set_read_timeout(Some(timeout))?;
+    stream.set_write_timeout(Some(timeout))?;
+
+    let request_path = if query.is_empty() {
+        path.to_string()
+    } else {
+        format!("{path}?{query}")
+    };
+
+    let request = format!(
+        "GET {request_path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+    );
+
+    stream.write_all(request.as_bytes())?;
+
+    let mut response = String::new();
+    stream.read_to_string(&mut response)?;
+
+    let body = response
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body)
+        .unwrap_or("")
+        .to_string();
+
+    Ok(body)
+}
+
+// ---------------------------------------------------------------------------
+// Enhanced diagnostics (Gap 1)
+// ---------------------------------------------------------------------------
+
+/// Structured detail for no-sidecar adoption log entries.
+struct NoSidecarDetail<'a> {
+    reason: &'a str,
+    searched_path: &'a str,
+    suggestion: &'a str,
+}
+
+/// Emit a diagnostic message to stderr explaining why the hook is failing open.
+///
+/// This helps users who run hooks manually understand what's missing and how
+/// to fix it. The message is written to stderr so it doesn't interfere with
+/// the JSON output on stdout.
+fn emit_no_sidecar_diagnostic(repo_root: &Path, port_file_path: &Path) {
+    let daemon_status = if crate::daemon::read_daemon_port_file().is_ok() {
+        "SymForge daemon is running but has no active session for this project."
+    } else {
+        "SymForge daemon is not running."
+    };
+
+    eprintln!(
+        "symforge hook: sidecar not running. No {} found in {}.",
+        PORT_FILE,
+        repo_root.display()
+    );
+    eprintln!(
+        "  Searched: {}",
+        port_file_path.display()
+    );
+    eprintln!("  {daemon_status}");
+    eprintln!(
+        "  To start: run 'symforge' as an MCP server, or start a Claude/Codex session with SymForge configured."
+    );
+    eprintln!("  Hook falling back to pass-through mode.");
+}
+
+/// Record a hook outcome with optional structured detail for the adoption log.
+fn record_hook_outcome_with_detail(
+    workflow: HookWorkflow,
+    outcome: HookOutcome,
+    session_id: Option<&str>,
+    detail: Option<NoSidecarDetail<'_>>,
+) {
+    let Some(workflow_name) = tracked_workflow_name(workflow) else {
+        return;
+    };
+    let _ = append_hook_adoption_event_with_detail(
+        Path::new(ADOPTION_LOG_FILE),
+        session_id,
+        workflow_name,
+        outcome.label(),
+        detail,
+    );
+}
+
+/// Append a hook adoption event with optional structured detail fields.
+///
+/// Extended log format (tab-separated):
+///   session_id \t workflow \t outcome [\t reason=X \t searched_path=X \t suggestion=X]
+fn append_hook_adoption_event_with_detail(
+    log_path: &Path,
+    session_id: Option<&str>,
+    workflow_name: &str,
+    outcome_label: &str,
+    detail: Option<NoSidecarDetail<'_>>,
+) -> std::io::Result<()> {
+    if let Some(parent) = log_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)?;
+    let session = session_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("-");
+
+    match detail {
+        Some(d) => writeln!(
+            file,
+            "{session}\t{workflow_name}\t{outcome_label}\treason={}\tsearched_path={}\tsuggestion={}",
+            d.reason, d.searched_path, d.suggestion
+        ),
+        None => writeln!(file, "{session}\t{workflow_name}\t{outcome_label}"),
+    }
+}
+
 fn append_hook_adoption_event(
     log_path: &Path,
     session_id: Option<&str>,
@@ -727,38 +1000,7 @@ pub(crate) fn load_hook_adoption_snapshot(repo_root: Option<&Path>) -> HookAdopt
 /// Uses a raw `TcpStream` (no HTTP client crate) so there is no async runtime
 /// and the startup cost is near zero.  The timeout covers both connect and read.
 fn sync_http_get(port: u16, path: &str, query: String) -> anyhow::Result<String> {
-    let addr = format!("127.0.0.1:{port}");
-    let sock_addr: std::net::SocketAddr = addr.parse()?;
-
-    let mut stream = TcpStream::connect_timeout(&sock_addr, HTTP_TIMEOUT)?;
-    stream.set_read_timeout(Some(HTTP_TIMEOUT))?;
-    stream.set_write_timeout(Some(HTTP_TIMEOUT))?;
-
-    // Build the request line, including the query string if present.
-    let request_path = if query.is_empty() {
-        path.to_string()
-    } else {
-        format!("{path}?{query}")
-    };
-
-    let request = format!(
-        "GET {request_path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
-    );
-
-    stream.write_all(request.as_bytes())?;
-
-    // Read the full response (headers + body).
-    let mut response = String::new();
-    stream.read_to_string(&mut response)?;
-
-    // Split on the blank-line separator between headers and body.
-    let body = response
-        .split_once("\r\n\r\n")
-        .map(|(_, body)| body)
-        .unwrap_or("")
-        .to_string();
-
-    Ok(body)
+    sync_http_get_with_timeout(port, path, query, HTTP_TIMEOUT)
 }
 
 /// Minimal percent-encoding for query parameter values.

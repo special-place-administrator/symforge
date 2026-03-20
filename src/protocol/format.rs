@@ -2439,7 +2439,22 @@ fn format_enclosing(enclosing: &crate::live_index::EnclosingSymbolView) -> Strin
 }
 
 fn format_context_bundle_section(title: &str, section: &ContextBundleSectionView) -> String {
-    let mut lines = vec![format!("\n{title} ({}):", section.total_count)];
+    // Detect if this section has deduplicated entries (any occurrence_count > 1).
+    let has_dedup = section
+        .entries
+        .iter()
+        .any(|e| e.occurrence_count > 1);
+
+    let header = if has_dedup && section.unique_count > 0 && section.unique_count < section.total_count {
+        format!(
+            "\n{title} ({} total, {} unique):",
+            section.total_count, section.unique_count
+        )
+    } else {
+        format!("\n{title} ({}):", section.total_count)
+    };
+
+    let mut lines = vec![header];
 
     let mut external_count = 0usize;
 
@@ -2447,15 +2462,23 @@ fn format_context_bundle_section(title: &str, section: &ContextBundleSectionView
         if is_external_symbol(&entry.display_name, &entry.file_path) {
             external_count += 1;
         }
+
+        // Build the name part, appending ×N for deduplicated entries.
+        let name_part = if entry.occurrence_count > 1 {
+            format!("{} (×{})", entry.display_name, entry.occurrence_count)
+        } else {
+            entry.display_name.clone()
+        };
+
         if let Some(enclosing) = &entry.enclosing {
             lines.push(format!(
-                "  {:<20} {}:{}  {}",
-                entry.display_name, entry.file_path, entry.line_number, enclosing
+                "  {:<30} {}:{}  {}",
+                name_part, entry.file_path, entry.line_number, enclosing
             ));
         } else {
             lines.push(format!(
-                "  {:<20} {}:{}",
-                entry.display_name, entry.file_path, entry.line_number
+                "  {:<30} {}:{}",
+                name_part, entry.file_path, entry.line_number
             ));
         }
     }
@@ -2469,7 +2492,14 @@ fn format_context_bundle_section(title: &str, section: &ContextBundleSectionView
             0
         };
         let est_project = section.overflow_count.saturating_sub(est_external);
-        if est_external > 0 {
+        if has_dedup {
+            // For deduplicated sections, overflow is in unique callee names
+            lines.push(format!(
+                "  ...and {} more unique {}",
+                section.overflow_count,
+                title.to_lowercase()
+            ));
+        } else if est_external > 0 {
             lines.push(format!(
                 "  ...and {} more {} ({} project, ~{} stdlib/framework)",
                 section.overflow_count,
@@ -2808,6 +2838,29 @@ fn format_bundle_truncation_notice(max_tokens: u64, omitted_dependencies: Option
     }
 }
 
+/// Enforce a max-token budget on an already-assembled output string.
+///
+/// If the output exceeds `max_tokens * 4` bytes it is truncated at a line
+/// boundary and a clear notice is appended.  Returns the original string
+/// unchanged when no budget is set or the output fits within the budget.
+pub fn enforce_token_budget(output: String, max_tokens: Option<u64>) -> String {
+    let max_tokens = match max_tokens {
+        Some(t) if t > 0 => t,
+        _ => return output,
+    };
+    let max_bytes = (max_tokens as usize).saturating_mul(4);
+    if output.len() <= max_bytes {
+        return output;
+    }
+    let actual_tokens_est = output.len() / 4;
+    let mut truncated = truncate_text_at_line_boundary(&output, max_bytes);
+    truncated.push_str(&format!(
+        "\n\n[truncated — output is ~{} tokens, budget is {} tokens]\n",
+        actual_tokens_est, max_tokens
+    ));
+    truncated
+}
+
 fn truncate_text_at_line_boundary(text: &str, max_bytes: usize) -> String {
     if text.len() <= max_bytes {
         return text.to_string();
@@ -2960,11 +3013,24 @@ pub(crate) fn format_hook_adoption(snap: &HookAdoptionSnapshot) -> String {
         format!("Fail-open outcomes: {}", snap.total_fail_open()),
     ];
 
+    // Show daemon fallback total if any occurred.
+    let total_daemon = snap.source_read.daemon_fallback
+        + snap.source_search.daemon_fallback
+        + snap.repo_start.daemon_fallback
+        + snap.prompt_context.daemon_fallback
+        + snap.post_edit_impact.daemon_fallback;
+    if total_daemon > 0 {
+        lines.push(format!("Daemon fallback routed: {total_daemon}"));
+    }
+
     let mut push_workflow_line = |label: &str, counts: &crate::cli::hook::WorkflowAdoptionCounts| {
         if counts.total() == 0 {
             return;
         }
         let mut parts = vec![format!("routed {}", counts.routed)];
+        if counts.daemon_fallback > 0 {
+            parts.push(format!("daemon fallback {}", counts.daemon_fallback));
+        }
         if counts.fail_open() > 0 && counts.no_sidecar > 0 {
             parts.push(format!("no sidecar {}", counts.no_sidecar));
         }
@@ -2982,6 +3048,13 @@ pub(crate) fn format_hook_adoption(snap: &HookAdoptionSnapshot) -> String {
 
     if let Some(first) = snap.first_repo_start {
         lines.push(format!("First repo start: {}", first.label()));
+    }
+
+    // Show a hint when all fail-open outcomes are due to no-sidecar.
+    if snap.total_fail_open() > 0 && snap.total_routed() == 0 && total_daemon == 0 {
+        lines.push(String::new());
+        lines.push("⚠ All hook attempts failed open (no sidecar found).".to_string());
+        lines.push("  Start SymForge as an MCP server or run 'symforge daemon start'.".to_string());
     }
 
     lines.join("\n")
@@ -5006,6 +5079,7 @@ mod tests {
             total_count: 0,
             overflow_count: 0,
             entries: vec![],
+            unique_count: 0,
         };
         let result = context_bundle_result_view(
             &ContextBundleView::Found(ContextBundleFoundView {
@@ -5054,6 +5128,7 @@ mod tests {
             total_count: 0,
             overflow_count: 0,
             entries: vec![],
+            unique_count: 0,
         };
         let result = context_bundle_result_view_with_max_tokens(
             &ContextBundleView::Found(ContextBundleFoundView {
@@ -5265,22 +5340,26 @@ mod tests {
                 routed: 3,
                 no_sidecar: 1,
                 sidecar_error: 0,
+                daemon_fallback: 0,
             },
             source_search: crate::cli::hook::WorkflowAdoptionCounts {
                 routed: 2,
                 no_sidecar: 0,
                 sidecar_error: 1,
+                daemon_fallback: 0,
             },
             repo_start: crate::cli::hook::WorkflowAdoptionCounts {
                 routed: 1,
                 no_sidecar: 0,
                 sidecar_error: 0,
+                daemon_fallback: 0,
             },
             prompt_context: crate::cli::hook::WorkflowAdoptionCounts::default(),
             post_edit_impact: crate::cli::hook::WorkflowAdoptionCounts {
                 routed: 0,
                 no_sidecar: 1,
                 sidecar_error: 0,
+                daemon_fallback: 0,
             },
             first_repo_start: Some(crate::cli::hook::HookOutcome::Routed),
         };

@@ -29,13 +29,13 @@ use crate::protocol::tools::{
     GetFileContentInput, GetFileContextInput, GetFileOutlineInput, GetFileTreeInput,
     GetRepoMapInput, GetSymbolContextInput, GetSymbolInput, GetSymbolsInput, IndexFolderInput,
     InspectMatchInput, ResolvePathInput, SearchFilesInput, SearchSymbolsInput, SearchTextInput,
-    TraceSymbolInput, WhatChangedInput,
+    TraceSymbolInput, ValidateFileSyntaxInput, WhatChangedInput,
 };
 use crate::sidecar::{SidecarState, SymbolSnapshot, TokenStats};
 use crate::watcher::{self, WatcherInfo};
 
 const DAEMON_DIR_NAME: &str = ".symforge";
-const DAEMON_PORT_FILE: &str = "daemon.port";
+pub(crate) const DAEMON_PORT_FILE: &str = "daemon.port";
 const DAEMON_PID_FILE: &str = "daemon.pid";
 const DAEMON_START_LOCK_FILE: &str = "daemon.starting";
 
@@ -1640,6 +1640,9 @@ async fn execute_tool_call(
         "batch_insert" => Ok(server
             .batch_insert(Parameters(decode_params::<BatchInsertInput>(params)?))
             .await),
+        "validate_file_syntax" => Ok(server
+            .validate_file_syntax(Parameters(decode_params::<ValidateFileSyntaxInput>(params)?))
+            .await),
         other => anyhow::bail!("unknown tool '{other}'"),
     }
 }
@@ -1693,7 +1696,7 @@ fn normalized_path_string(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
-fn daemon_dir() -> io::Result<PathBuf> {
+pub(crate) fn daemon_dir() -> io::Result<PathBuf> {
     if let Some(explicit_home) = std::env::var_os("SYMFORGE_HOME") {
         let dir = PathBuf::from(explicit_home);
         std::fs::create_dir_all(&dir)?;
@@ -1723,7 +1726,7 @@ fn read_daemon_pid_file() -> io::Result<u32> {
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
-fn read_daemon_port_file() -> io::Result<u16> {
+pub(crate) fn read_daemon_port_file() -> io::Result<u16> {
     let contents = std::fs::read_to_string(daemon_dir()?.join(DAEMON_PORT_FILE))?;
     contents
         .trim()

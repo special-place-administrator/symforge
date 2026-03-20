@@ -871,23 +871,39 @@ fn search_symbols_options_from_input(
 fn search_text_options_from_input(
     input: &SearchTextInput,
 ) -> Result<search::TextSearchOptions, String> {
+    let is_regex = input.regex.unwrap_or(false);
+    let is_ranked = input.ranked.unwrap_or(false);
+
+    // When regex mode is active the user is doing a targeted, precise search
+    // and expects completeness over noise reduction.  Default to including
+    // tests and vendor files so we don't silently omit results that grep
+    // would find.  The user can still explicitly opt out via the normal
+    // include_tests / include_generated flags.
+    let include_tests = input.include_tests.unwrap_or(is_regex);
+    let include_generated = input.include_generated.unwrap_or(false);
+
+    // When ranked=true the user wants results ordered by importance, which
+    // requires scanning broadly first.  A low total_limit starves the
+    // ranker — boost it so common terms still surface enough files.
+    let total_limit = input.limit.unwrap_or(if is_ranked { 200 } else { 50 }) as usize;
+
     Ok(search::TextSearchOptions {
         path_scope: normalize_path_prefix(input.path_prefix.as_deref()),
         search_scope: search::SearchScope::Code,
         noise_policy: search::NoisePolicy {
-            include_generated: input.include_generated.unwrap_or(false),
-            include_tests: input.include_tests.unwrap_or(false),
+            include_generated,
+            include_tests,
             include_vendor: true,
         },
         language_filter: parse_language_filter(input.language.as_deref())?,
-        total_limit: input.limit.unwrap_or(50) as usize,
+        total_limit,
         max_per_file: input.max_per_file.unwrap_or(5) as usize,
         glob: normalize_search_text_glob(input.glob.as_deref()),
         exclude_glob: normalize_search_text_glob(input.exclude_glob.as_deref()),
         context: input.context.map(|context| context as usize),
         case_sensitive: input.case_sensitive,
         whole_word: input.whole_word.unwrap_or(false),
-        ranked: input.ranked.unwrap_or(false),
+        ranked: is_ranked,
         churn_scores: None,
     })
 }
@@ -1810,7 +1826,8 @@ impl SymForgeServer {
                 sections: sections_param,
                 verbosity: params.0.verbosity.clone(),
             };
-            return self.trace_symbol(Parameters(trace_input)).await;
+            let trace_result = self.trace_symbol(Parameters(trace_input)).await;
+            return format::enforce_token_budget(trace_result, params.0.max_tokens);
         }
 
         // Default: symbol context mode
@@ -1819,6 +1836,7 @@ impl SymForgeServer {
         }
         let file_path_hint = params.0.path.as_deref().or(params.0.file.as_deref());
         let verbosity = params.0.verbosity.as_deref().unwrap_or("full");
+        let max_tokens = params.0.max_tokens;
 
         // Capture the symbol definition from the index so we can prepend it
         // (the sidecar only returns reference locations, not the definition itself).
@@ -1882,7 +1900,7 @@ impl SymForgeServer {
                 let saved = raw_chars.saturating_sub(output.len());
                 let footer = format::compact_savings_footer(output.len(), raw_chars);
                 self.record_read_savings((saved / 4) as u64);
-                format!("{output}{footer}")
+                format::enforce_token_budget(format!("{output}{footer}"), max_tokens)
             }
             Err(_) => {
                 // Sidecar unavailable — fall back to the index definition so callers
@@ -1898,7 +1916,7 @@ impl SymForgeServer {
                     let footer = format::compact_savings_footer(body.len(), raw_chars);
                     let saved = raw_chars.saturating_sub(body.len());
                     self.record_read_savings((saved / 4) as u64);
-                    format!("{body}{footer}")
+                    format::enforce_token_budget(format!("{body}{footer}"), max_tokens)
                 } else {
                     format!("Symbol \"{}\" not found in index.", params.0.name)
                 }
@@ -2054,6 +2072,12 @@ impl SymForgeServer {
                     || q.contains("\\S");
                 if has_regex_escape {
                     is_regex = true;
+                    // Relax noise policy for auto-detected regex — the user
+                    // is doing a targeted pattern search and expects grep-like
+                    // completeness, so include test files by default.
+                    if params.0.include_tests.is_none() {
+                        options.noise_policy.include_tests = true;
+                    }
                 }
             }
         }
