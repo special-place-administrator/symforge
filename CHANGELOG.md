@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.8.1](https://github.com/special-place-administrator/symforge/compare/v1.8.0...v1.8.1) (2026-03-20)
+
+
+### Bug Fixes
+
+* index safety hardening and tool output correctness ([c952759](https://github.com/special-place-administrator/symforge/commit/c952759567b0a1e7a2de4cd56ccb0576eaa792a8))
+* index safety hardening and tool output correctness ([59720c5](https://github.com/special-place-administrator/symforge/commit/59720c5fc9e48eccb2fc41d291a804b0a69cbd55))
+
 ## [1.8.0](https://github.com/special-place-administrator/symforge/compare/v1.7.0...v1.8.0) (2026-03-20)
 
 
