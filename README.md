@@ -67,7 +67,7 @@ The server does the graph traversal, the agent gets a focused answer. The index 
 **Key architectural decisions:**
 - **Symbol-addressed operations** — tools accept symbol names, not file content. The server resolves names to byte ranges via the index, eliminating the need for agents to track positions.
 - **Tree-sitter parsing** — deterministic, incremental parsing across 19 source languages plus native parsers for 5 config formats. Each symbol gets a byte range, line range, and an attached doc comment range.
-- **Persistent snapshots** — the index serializes to `.symforge/index.bin` for fast restarts (~88ms for a 326-file project).
+- **Persistent snapshots** — the index serializes to `.symforge/index.bin` for fast restarts (~88ms for a 326-file project). Snapshots preserve file modification times so the watcher skips unchanged files on restore — no re-index storms after restart.
 - **Daemon mode** — multiple terminal sessions share one index via a local loopback daemon. No redundant re-indexing.
 - **Non-poisoning locks** — all shared state uses `parking_lot::RwLock`, which never poisons. A panicked thread releases its lock instead of crashing the daemon.
 - **Panic-safe index mutations** — all index write operations (`update_file`, `add_file`, `remove_file`) are wrapped in `catch_unwind`. If any dependency or code path panics mid-mutation, the index auto-repairs auxiliary indices (reverse refs, trigram, path lookups) from the always-consistent primary store. Files never vanish from the index, even under concurrent agent stress.
@@ -179,7 +179,7 @@ Agent gets:   "src/auth.rs — replaced fn `validate_token` (342 → 287 bytes)"
 ```
 
 **Key behaviors:**
-- **Doc comment awareness** — edit operations (replace, delete, insert_before, edit_within) include attached doc comments (`///`, `/** */`, `#`, etc.) in the operation range. Deleting a function also deletes its doc comments. Inserting before a documented function inserts above the doc comments.
+- **Doc comment awareness** — edit operations (replace, delete, insert_before, edit_within, batch_edit) include attached doc comments (`///`, `/** */`, `#`, etc.) in the operation range, including orphaned doc comments separated by a blank line. Deleting a function also deletes its doc comments. Inserting before a documented function inserts above the doc comments.
 - **Auto-indentation** — new code is indented to match the target symbol's context
 - **Disambiguation** — when multiple symbols share a name across different kinds (e.g., C# class and constructor), the highest-priority kind wins automatically (class > module > function > other). Use `kind` and `symbol_line` for same-tier disambiguation
 - **Stale warnings** — `replace_symbol_body` detects signature changes and lists affected callers
@@ -455,7 +455,7 @@ When the sidecar is unavailable, hooks fail open with structured diagnostics in 
 
 ### Persistence
 
-Index snapshots persist at `.symforge/index.bin` for fast restarts.
+Index snapshots persist at `.symforge/index.bin` for fast restarts. File modification times are preserved in snapshots, so the watcher can skip unchanged files immediately on restore without re-parsing.
 
 ### Parameter Handling
 
@@ -463,6 +463,18 @@ All tool parameters accept both native JSON types and stringified values for com
 - Booleans: `"true"` / `"false"` accepted alongside native `true` / `false`
 - Numbers: `"5"` accepted alongside native `5`
 - Arrays: `"[{\"path\": \"...\"}]"` (stringified JSON array) accepted alongside native arrays — enables batch tools (`get_symbol` targets, `batch_edit` edits, `search_text` terms, etc.) to work with clients like Kilo Code that stringify array parameters
+
+## Migrating to v2.0.0
+
+> [!CAUTION]
+> **Breaking change:** All user-facing line numbers are now **1-indexed** (previously 0-indexed in some tools). This affects `search_symbols`, `get_symbol_context`, `trace_symbol` sections, `inspect_match` siblings, and sidecar outline/impact endpoints. Clients that parse line numbers numerically from these outputs must account for the +1 shift.
+
+Other v2.0.0 improvements (non-breaking):
+- Snapshot restores now preserve file modification times, eliminating re-index storms on restart
+- `find_dependents` uses word-boundary matching for visibility checks, preventing false positives from symbol name prefixes (e.g., `process` no longer matches `process_items`)
+- `batch_edit` Replace operations now include orphaned doc comments, matching `replace_symbol_body` behavior
+- Daemon session lifecycle is race-free under concurrent `close_session` and `index_folder` calls
+- Health tier counts are correctly reset after index reload
 
 ## Environment Variables
 
