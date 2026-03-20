@@ -12,7 +12,7 @@ This milestone addresses 8 remaining items from the v1.6.0 external review after
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Symbol Disambiguation** - Auto-resolve C# class/constructor ambiguity by kind priority
+- [x] **Phase 1: Symbol Disambiguation** - Auto-resolve C# class/constructor ambiguity by kind priority
 - [ ] **Phase 2: Diagnostics & Documentation** - Hook failure context, verbose mode, and Codex ceiling docs
 
 ## Phase Details
@@ -28,7 +28,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Plans**: 1 plan
 
 Plans:
-- [ ] 01-01-PLAN.md — Add kind-tier disambiguation to resolve_symbol_selector with comprehensive tests
+- [x] 01-01-PLAN.md — Add kind-tier disambiguation to resolve_symbol_selector with comprehensive tests
 
 ### Phase 2: Diagnostics & Documentation
 **Goal**: Users can diagnose hook failures and understand SymForge's limits in Codex
@@ -53,5 +53,5 @@ Phases execute in numeric order: 1 → 2
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Symbol Disambiguation | 0/1 | Not started | - |
+| 1. Symbol Disambiguation | 1/1 | Complete | 2026-03-20 |
 | 2. Diagnostics & Documentation | 0/2 | Not started | - |

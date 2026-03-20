@@ -9,9 +9,9 @@
 
 ### Symbol Disambiguation
 
-- [ ] **SYMB-01**: `resolve_symbol_selector` auto-disambiguates when candidates span different kind tiers (class > constructor > method > other)
-- [ ] **SYMB-02**: C# class lookup with name matching both class and constructor returns the class without error
-- [ ] **SYMB-03**: Genuine ambiguity (two symbols at same priority tier) still returns Ambiguous error
+- [x] **SYMB-01**: `resolve_symbol_selector` auto-disambiguates when candidates span different kind tiers (class > constructor > method > other)
+- [x] **SYMB-02**: C# class lookup with name matching both class and constructor returns the class without error
+- [x] **SYMB-03**: Genuine ambiguity (two symbols at same priority tier) still returns Ambiguous error
 
 ### Hook Diagnostics
 
@@ -43,9 +43,9 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SYMB-01 | Phase 1 | Pending |
-| SYMB-02 | Phase 1 | Pending |
-| SYMB-03 | Phase 1 | Pending |
+| SYMB-01 | Phase 1 | Complete |
+| SYMB-02 | Phase 1 | Complete |
+| SYMB-03 | Phase 1 | Complete |
 | HOOK-01 | Phase 2 | Pending |
 | HOOK-02 | Phase 2 | Pending |
 | HOOK-03 | Phase 2 | Pending |
