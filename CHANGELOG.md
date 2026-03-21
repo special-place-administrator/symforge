@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.1.1](https://github.com/special-place-administrator/symforge/compare/v3.1.0...v3.1.1) (2026-03-21)
+
+
+### Bug Fixes
+
+* add NOT-for tips to 5 tool descriptions missing them ([14a8fad](https://github.com/special-place-administrator/symforge/commit/14a8fad0de46c1b3aa35711a8bbda3f8efee2c94))
+
 ## [3.1.0](https://github.com/special-place-administrator/symforge/compare/v3.0.1...v3.1.0) (2026-03-21)
 
 
