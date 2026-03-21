@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.0.1](https://github.com/special-place-administrator/symforge/compare/v3.0.0...v3.0.1) (2026-03-21)
+
+
+### Bug Fixes
+
+* 4 display/UX improvements in search, outline, repo_map, and get_symbol ([b3a449c](https://github.com/special-place-administrator/symforge/commit/b3a449c81a0802070b035cc41f8e44b46ad50a50))
+
 ## [3.0.0](https://github.com/special-place-administrator/symforge/compare/v2.0.11...v3.0.0) (2026-03-20)
 
 
