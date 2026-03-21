@@ -160,6 +160,7 @@ impl SymForgeServer {
                     path_prefix: None,
                     language: None,
                     code_only: None,
+                    include_symbol_diff: None,
                 }))
                 .await
             }

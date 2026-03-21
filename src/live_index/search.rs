@@ -131,14 +131,18 @@ pub struct ContentContext {
     pub max_lines: Option<u32>,
     pub show_line_numbers: bool,
     pub header: bool,
+    /// The mode used for content selection (e.g. "lines", "symbol", "match", "chunk").
+    pub mode_name: Option<String>,
+    /// Whether the mode was explicitly specified by the caller or inferred from flags.
+    pub mode_explicit: bool,
 }
 
 impl ContentContext {
-    pub const fn line_range(start_line: Option<u32>, end_line: Option<u32>) -> Self {
+    pub fn line_range(start_line: Option<u32>, end_line: Option<u32>) -> Self {
         Self::line_range_with_format(start_line, end_line, false, false)
     }
 
-    pub const fn line_range_with_format(
+    pub fn line_range_with_format(
         start_line: Option<u32>,
         end_line: Option<u32>,
         show_line_numbers: bool,
@@ -157,6 +161,8 @@ impl ContentContext {
             max_lines: None,
             show_line_numbers,
             header,
+            mode_name: None,
+            mode_explicit: false,
         }
     }
 
@@ -179,6 +185,8 @@ impl ContentContext {
             max_lines: None,
             show_line_numbers,
             header,
+            mode_name: None,
+            mode_explicit: false,
         }
     }
 
@@ -211,6 +219,8 @@ impl ContentContext {
             max_lines: None,
             show_line_numbers,
             header,
+            mode_name: None,
+            mode_explicit: false,
         }
     }
 
@@ -250,10 +260,12 @@ impl ContentContext {
             max_lines,
             show_line_numbers,
             header,
+            mode_name: None,
+            mode_explicit: false,
         }
     }
 
-    pub const fn chunk(chunk_index: u32, max_lines: u32) -> Self {
+    pub fn chunk(chunk_index: u32, max_lines: u32) -> Self {
         Self {
             start_line: None,
             end_line: None,
@@ -267,6 +279,8 @@ impl ContentContext {
             max_lines: Some(max_lines),
             show_line_numbers: false,
             header: false,
+            mode_name: None,
+            mode_explicit: false,
         }
     }
 }

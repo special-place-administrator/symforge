@@ -2422,7 +2422,7 @@ impl LiveIndex {
 
     /// Check whether a file exports a public symbol with the given name.
     /// Uses a text scan of file content since SymbolRecord has no visibility field.
-    fn has_pub_symbol(file: &IndexedFile, name: &str) -> bool {
+    pub(crate) fn has_pub_symbol(file: &IndexedFile, name: &str) -> bool {
         let is_word_match = |content: &str, pattern: &str| -> bool {
             let mut start = 0;
             while let Some(pos) = content[start..].find(pattern) {

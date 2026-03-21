@@ -160,7 +160,7 @@ where
 
 use crate::domain::LanguageId;
 use crate::live_index::{
-    IndexedFile, SearchFilesHit, SearchFilesTier, SearchFilesView, search, store::IndexState,
+    IndexedFile, SearchFilesHit, SearchFilesTier, SearchFilesView, search, store::{IndexState, LiveIndex},
 };
 use crate::protocol::edit;
 use crate::protocol::edit_format;
@@ -292,7 +292,8 @@ pub struct SearchTextInput {
     #[serde(default, deserialize_with = "lenient_bool")]
     pub whole_word: Option<bool>,
     /// Group matches: "file" (default), "symbol" (one entry per enclosing symbol),
-    /// or "usage" (exclude imports and comments).
+    /// "usage" (exclude imports and comments), or "names" (flat deduplicated list of
+    /// symbol names containing matches — useful as input to batch operations).
     pub group_by: Option<String>,
     /// When true, for each match include a compact list of callers of the enclosing symbol.
     #[serde(default, deserialize_with = "lenient_bool")]
@@ -358,6 +359,12 @@ pub struct WhatChangedInput {
     /// Only files with a recognized programming language extension are included.
     #[serde(default, deserialize_with = "lenient_bool")]
     pub code_only: Option<bool>,
+    /// When true, also include a symbol-level diff alongside the file list.
+    /// Only applies in git_ref and uncommitted modes (not timestamp mode).
+    /// In git_ref mode, diffs the given ref against HEAD.
+    /// In uncommitted mode, diffs HEAD against the working tree.
+    #[serde(default, deserialize_with = "lenient_bool")]
+    pub include_symbol_diff: Option<bool>,
 }
 
 /// Input for `get_file_content`.
@@ -1012,7 +1019,8 @@ fn file_content_options_from_input(
 
     // ── Mode dispatch ───────────────────────────────────────────────────
     if let Some(mode) = &input.mode {
-        return match mode.as_str() {
+        let mode_str = mode.as_str();
+        let result = match mode_str {
             "lines" => validate_lines_mode(input),
             "symbol" => validate_symbol_mode(input),
             "match" => validate_match_mode(input),
@@ -1022,6 +1030,11 @@ fn file_content_options_from_input(
                 "Unknown mode '{other}'. Valid modes: lines, symbol, match, chunk."
             )),
         };
+        return result.map(|mut opts| {
+            opts.content_context.mode_name = Some(mode_str.to_string());
+            opts.content_context.mode_explicit = true;
+            opts
+        });
     }
     // No mode — infer from flags (existing backward-compatible behavior below)
 
@@ -1065,17 +1078,18 @@ fn file_content_options_from_input(
             );
         }
 
-        return Ok(
-            search::FileContentOptions::for_explicit_path_read_around_symbol(
-                input.path.clone(),
-                around_symbol,
-                input.symbol_line,
-                input.context_lines,
-                input.max_lines,
-                show_line_numbers,
-                header,
-            ),
+        let mut opts = search::FileContentOptions::for_explicit_path_read_around_symbol(
+            input.path.clone(),
+            around_symbol,
+            input.symbol_line,
+            input.context_lines,
+            input.max_lines,
+            show_line_numbers,
+            header,
         );
+        opts.content_context.mode_name = Some("symbol".to_string());
+        opts.content_context.mode_explicit = false;
+        return Ok(opts);
     }
 
     if input.max_lines.is_some() && input.chunk_index.is_none() {
@@ -1114,11 +1128,14 @@ fn file_content_options_from_input(
             );
         }
 
-        return Ok(search::FileContentOptions::for_explicit_path_read_chunk(
+        let mut opts = search::FileContentOptions::for_explicit_path_read_chunk(
             input.path.clone(),
             chunk_index,
             max_lines,
-        ));
+        );
+        opts.content_context.mode_name = Some("chunk".to_string());
+        opts.content_context.mode_explicit = false;
+        return Ok(opts);
     }
 
     // show_line_numbers and header are now allowed with all read modes
@@ -1139,16 +1156,17 @@ fn file_content_options_from_input(
             );
         }
 
-        return Ok(
-            search::FileContentOptions::for_explicit_path_read_around_match(
-                input.path.clone(),
-                around_match,
-                input.match_occurrence,
-                input.context_lines,
-                show_line_numbers,
-                header,
-            ),
+        let mut opts = search::FileContentOptions::for_explicit_path_read_around_match(
+            input.path.clone(),
+            around_match,
+            input.match_occurrence,
+            input.context_lines,
+            show_line_numbers,
+            header,
         );
+        opts.content_context.mode_name = Some("match".to_string());
+        opts.content_context.mode_explicit = false;
+        return Ok(opts);
     }
 
     if input.around_line.is_some() && (input.start_line.is_some() || input.end_line.is_some()) {
@@ -1158,7 +1176,7 @@ fn file_content_options_from_input(
         );
     }
 
-    Ok(match input.around_line {
+    let mut opts = match input.around_line {
         Some(around_line) => search::FileContentOptions::for_explicit_path_read_around_line(
             input.path.clone(),
             around_line,
@@ -1173,7 +1191,10 @@ fn file_content_options_from_input(
             show_line_numbers,
             header,
         ),
-    })
+    };
+    opts.content_context.mode_name = Some("lines".to_string());
+    opts.content_context.mode_explicit = false;
+    Ok(opts)
 }
 
 // ── Mode validators for get_file_content ────────────────────────────────
@@ -2147,11 +2168,43 @@ impl SymForgeServer {
                 &options,
             )
         };
-        // In browse mode, sort by file path then line number for deterministic output
+        // In browse mode, sort by relevance: public symbols first, then kind priority,
+        // then penalize very short/common names, then alphabetical tiebreaker.
         if is_browse {
-            result
-                .hits
-                .sort_by(|a, b| a.path.cmp(&b.path).then(a.line.cmp(&b.line)));
+            let scores: Vec<(bool, f32, bool)> = {
+                let guard = self.index.read();
+                result
+                    .hits
+                    .iter()
+                    .map(|hit| {
+                        let is_pub = guard
+                            .get_file(&hit.path)
+                            .map(|f| LiveIndex::has_pub_symbol(f, &hit.name))
+                            .unwrap_or(false);
+                        let kind_score = search::symbol_kind_priority(&hit.kind);
+                        let is_short_common = hit.name.len() <= 3;
+                        (is_pub, kind_score, is_short_common)
+                    })
+                    .collect()
+            };
+            let mut indices: Vec<usize> = (0..result.hits.len()).collect();
+            indices.sort_by(|&i, &j| {
+                scores[j]
+                    .0
+                    .cmp(&scores[i].0) // public first
+                    .then(
+                        scores[j]
+                            .1
+                            .partial_cmp(&scores[i].1) // higher kind priority first
+                            .unwrap_or(std::cmp::Ordering::Equal),
+                    )
+                    .then(scores[i].2.cmp(&scores[j].2)) // non-short names first
+                    .then(result.hits[i].name.cmp(&result.hits[j].name)) // alphabetical
+            });
+            result.hits = indices
+                .into_iter()
+                .map(|i| result.hits[i].clone())
+                .collect();
         }
         let output = format::search_symbols_result_view(&result, query_str);
         let hint = format::compact_next_step_hint(&[
@@ -2608,9 +2661,9 @@ impl SymForgeServer {
     /// List changed files: uncommitted=true for working tree, git_ref for ref comparison, since for
     /// timestamp filter. Use to see what files changed.
     /// Set code_only=true to exclude non-source files (docs, configs, lock files).
-    /// NOT for symbol-level diffs (use diff_symbols).
+    /// Set include_symbol_diff=true to also get a symbol-level diff in the same response (git modes only).
     #[tool(
-        description = "List changed files: uncommitted=true for working tree, git_ref for ref comparison, since for timestamp filter. Filter with path_prefix and/or language. Set code_only=true to exclude non-source files (docs, configs, lock files). NOT for symbol-level diffs (use diff_symbols)."
+        description = "List changed files: uncommitted=true for working tree, git_ref for ref comparison, since for timestamp filter. Filter with path_prefix and/or language. Set code_only=true to exclude non-source files (docs, configs, lock files). Set include_symbol_diff=true to also include a symbol-level diff in the same response (git_ref and uncommitted modes only), saving a round-trip vs calling diff_symbols separately."
     )]
     pub(crate) async fn what_changed(&self, params: Parameters<WhatChangedInput>) -> String {
         if let Some(result) = self.proxy_tool_call("what_changed", &params.0).await {
@@ -2652,10 +2705,29 @@ impl SymForgeServer {
                             params.0.language.as_deref(),
                             params.0.code_only.unwrap_or(false),
                         ) {
-                            Ok(filtered) => format::what_changed_paths_result(
-                                &filtered,
-                                "No uncommitted changes detected.",
-                            ),
+                            Ok(filtered) => {
+                                let mut output = format::what_changed_paths_result(
+                                    &filtered,
+                                    "No uncommitted changes detected.",
+                                );
+                                if params.0.include_symbol_diff.unwrap_or(false)
+                                    && !filtered.is_empty()
+                                {
+                                    let changed_refs: Vec<&str> =
+                                        filtered.iter().map(|s| s.as_str()).collect();
+                                    let sym_diff = format::diff_symbols_result_view(
+                                        "HEAD",
+                                        "",
+                                        &changed_refs,
+                                        &repo,
+                                        true,
+                                        false,
+                                    );
+                                    output.push_str("\n\n");
+                                    output.push_str(&sym_diff);
+                                }
+                                output
+                            }
                             Err(e) => e,
                         }
                     }
@@ -2683,10 +2755,36 @@ impl SymForgeServer {
                             params.0.language.as_deref(),
                             params.0.code_only.unwrap_or(false),
                         ) {
-                            Ok(filtered) => format::what_changed_paths_result(
-                                &filtered,
-                                &format!("No changes detected relative to git ref '{git_ref}'."),
-                            ),
+                            Ok(filtered) => {
+                                let mut output = format::what_changed_paths_result(
+                                    &filtered,
+                                    &format!(
+                                        "No changes detected relative to git ref '{git_ref}'."
+                                    ),
+                                );
+                                if params.0.include_symbol_diff.unwrap_or(false)
+                                    && !filtered.is_empty()
+                                {
+                                    let base = if git_ref.starts_with("branch:") {
+                                        &git_ref[7..]
+                                    } else {
+                                        git_ref.as_str()
+                                    };
+                                    let changed_refs: Vec<&str> =
+                                        filtered.iter().map(|s| s.as_str()).collect();
+                                    let sym_diff = format::diff_symbols_result_view(
+                                        base,
+                                        "HEAD",
+                                        &changed_refs,
+                                        &repo,
+                                        true,
+                                        false,
+                                    );
+                                    output.push_str("\n\n");
+                                    output.push_str(&sym_diff);
+                                }
+                                output
+                            }
                             Err(e) => e,
                         }
                     }
@@ -2716,6 +2814,10 @@ impl SymForgeServer {
             Err(message) => return message,
         };
         freshen_exact_path_for_targeted_retrieval(self, &options.path_scope);
+        let mode_annotation = match (&options.content_context.mode_name, options.content_context.mode_explicit) {
+            (Some(mode), true) => format!("── mode: {} (explicit) ──\n", mode),
+            _ => String::new(),
+        };
         let file = {
             let guard = self.index.read();
             loading_guard!(guard);
@@ -2729,7 +2831,7 @@ impl SymForgeServer {
                     options.content_context,
                 );
                 self.record_tool_savings((raw_chars / 4) as u64, (output.len() / 4) as u64);
-                output
+                format!("{}{}", mode_annotation, output)
             }
             None => {
                 // Not in index — try raw disk read for non-source files
@@ -2742,11 +2844,12 @@ impl SymForgeServer {
                     if canon_path.is_file() {
                         match std::fs::read(&canon_path) {
                             Ok(content) => {
-                                return format::render_file_content_bytes(
+                                let body = format::render_file_content_bytes(
                                     &input.path,
                                     &content,
                                     options.content_context,
                                 );
+                                return format!("{}{}", mode_annotation, body);
                             }
                             Err(e) => {
                                 return format!("{} [error: could not read file: {e}]", input.path);
@@ -5007,6 +5110,7 @@ mod tests {
                 path_prefix: None,
                 language: None,
                 code_only: None,
+                include_symbol_diff: None,
             }))
             .await;
 
@@ -6096,6 +6200,7 @@ mod tests {
                 path_prefix: None,
                 language: None,
                 code_only: None,
+                include_symbol_diff: None,
             }))
             .await;
         assert!(
@@ -6134,6 +6239,7 @@ mod tests {
                 path_prefix: None,
                 language: None,
                 code_only: None,
+                include_symbol_diff: None,
             }))
             .await;
         assert!(
@@ -6172,6 +6278,7 @@ mod tests {
                 path_prefix: None,
                 language: None,
                 code_only: None,
+                include_symbol_diff: None,
             }))
             .await;
         assert!(
