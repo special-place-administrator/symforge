@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.1.0](https://github.com/special-place-administrator/symforge/compare/v3.0.1...v3.1.0) (2026-03-21)
+
+
+### Features
+
+* 4 UX improvements from external review feedback (Wave 1) ([430a86a](https://github.com/special-place-administrator/symforge/commit/430a86a4fad65c9725f21037d070349e165f8cee))
+* 4 UX improvements from external review feedback (Wave 2) ([0e773e6](https://github.com/special-place-administrator/symforge/commit/0e773e603ee51178d8cc1e36a851ada55c26e9f6))
+
 ## [3.0.1](https://github.com/special-place-administrator/symforge/compare/v3.0.0...v3.0.1) (2026-03-21)
 
 
