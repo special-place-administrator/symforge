@@ -2436,7 +2436,7 @@ impl SymForgeServer {
     /// Inspect a specific line in full symbol context: shows the enclosing symbol, parent chain,
     /// and siblings. Works standalone with just path + line, or after search_text to deep-dive a match.
     #[tool(
-        description = "Inspect a specific line in full symbol context: enclosing symbol, parent chain (e.g. module → class → method), and sibling symbols. Works standalone with just path + line number, or after search_text to deep-dive a specific hit."
+        description = "Inspect a specific line in full symbol context: enclosing symbol, parent chain (e.g. module → class → method), and sibling symbols. Works standalone with just path + line number, or after search_text to deep-dive a specific hit. NOT for finding all occurrences of a pattern (use search_text). NOT for understanding a symbol's callers and callees (use get_symbol_context)."
     )]
     pub(crate) async fn inspect_match(&self, params: Parameters<InspectMatchInput>) -> String {
         if let Some(result) = self.proxy_tool_call("inspect_match", &params.0).await {
@@ -2561,7 +2561,7 @@ impl SymForgeServer {
     /// hook adoption metrics, git temporal status. Always responds even during loading. Use to
     /// verify SymForge is working.
     #[tool(
-        description = "Diagnostic: index status, file/symbol counts, load time, watcher state, token savings, hook adoption metrics, git temporal status. Always responds even during loading. Use to verify SymForge is working."
+        description = "Diagnostic: index status, file/symbol counts, load time, watcher state, token savings, hook adoption metrics, git temporal status. Always responds even during loading. Use to verify SymForge is working. NOT for diagnosing a specific file or symbol (use get_file_context or get_symbol)."
     )]
     pub(crate) async fn health(&self) -> String {
         if let Some(result) = self.proxy_tool_call_without_params("health").await {
@@ -2609,7 +2609,7 @@ impl SymForgeServer {
     /// Reindex a directory from scratch — replaces the current index, restarts watcher, triggers
     /// git temporal analysis. Use when switching projects. Destructive to current index.
     #[tool(
-        description = "Reindex a directory from scratch — replaces the current index, restarts watcher, triggers git temporal analysis. Use when switching projects. Destructive to current index."
+        description = "Reindex a directory from scratch — replaces the current index, restarts watcher, triggers git temporal analysis. Use when switching projects. Destructive to current index. NOT for re-reading a single changed file (use analyze_file_impact). NOT for reading content from an existing index (use get_file_content)."
     )]
     pub(crate) async fn index_folder(&self, params: Parameters<IndexFolderInput>) -> String {
         if let Some(result) = self.proxy_tool_call("index_folder", &params.0).await {
@@ -2663,7 +2663,7 @@ impl SymForgeServer {
     /// Set code_only=true to exclude non-source files (docs, configs, lock files).
     /// Set include_symbol_diff=true to also get a symbol-level diff in the same response (git modes only).
     #[tool(
-        description = "List changed files: uncommitted=true for working tree, git_ref for ref comparison, since for timestamp filter. Filter with path_prefix and/or language. Set code_only=true to exclude non-source files (docs, configs, lock files). Set include_symbol_diff=true to also include a symbol-level diff in the same response (git_ref and uncommitted modes only), saving a round-trip vs calling diff_symbols separately."
+        description = "List changed files: uncommitted=true for working tree, git_ref for ref comparison, since for timestamp filter. Filter with path_prefix and/or language. Set code_only=true to exclude non-source files (docs, configs, lock files). Set include_symbol_diff=true to also include a symbol-level diff in the same response (git_ref and uncommitted modes only), saving a round-trip vs calling diff_symbols separately. NOT for symbol-level change detail alone (use diff_symbols). NOT for finding files by name or content (use search_files or search_text)."
     )]
     pub(crate) async fn what_changed(&self, params: Parameters<WhatChangedInput>) -> String {
         if let Some(result) = self.proxy_tool_call("what_changed", &params.0).await {
@@ -2866,7 +2866,7 @@ impl SymForgeServer {
     /// Validate a file's syntax and surface parser diagnostics with exact locations when available.
     /// Best for malformed TOML/JSON/YAML and other config files where you need authoritative parse errors.
     #[tool(
-        description = "Validate a file's syntax and surface parser diagnostics with exact locations when available. Best for malformed TOML/JSON/YAML and other config files where you need authoritative parse errors. Uses the indexed file when available and falls back to direct parsing from disk when needed."
+        description = "Validate a file's syntax and surface parser diagnostics with exact locations when available. Best for malformed TOML/JSON/YAML and other config files where you need authoritative parse errors. Uses the indexed file when available and falls back to direct parsing from disk when needed. NOT for understanding file structure (use get_file_context). NOT for searching file content (use search_text)."
     )]
     pub(crate) async fn validate_file_syntax(
         &self,
