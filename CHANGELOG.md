@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.1.2](https://github.com/special-place-administrator/symforge/compare/v3.1.1...v3.1.2) (2026-03-21)
+
+
+### Bug Fixes
+
+* widen common-name warning in find_references to trigger on ref c… ([32b22b4](https://github.com/special-place-administrator/symforge/commit/32b22b432d54e1a02fced916ebfbdb08d21b8c1a))
+* widen common-name warning in find_references to trigger on ref count alone ([2c3cc4b](https://github.com/special-place-administrator/symforge/commit/2c3cc4b472d1df4645b3008d32451ffe1a104082))
+
 ## [3.1.1](https://github.com/special-place-administrator/symforge/compare/v3.1.0...v3.1.1) (2026-03-21)
 
 
