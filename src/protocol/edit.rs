@@ -982,6 +982,10 @@ pub struct BatchRenameInput {
     /// When true, show what would change without writing any files.
     #[serde(default, deserialize_with = "super::tools::lenient_bool")]
     pub dry_run: Option<bool>,
+    /// When true, exclude non-source files (docs, configs, images) from renaming.
+    /// Only files with a recognized programming language extension are included.
+    #[serde(default, deserialize_with = "super::tools::lenient_bool")]
+    pub code_only: Option<bool>,
 }
 
 /// Validate rename ranges for a single file. Sorts descending, deduplicates exact matches,
@@ -1061,6 +1065,19 @@ pub(crate) fn execute_batch_rename(
             .collect()
     };
 
+    // Filter ref_sites by code_only
+    let ref_sites: Vec<(String, (u32, u32))> = if input.code_only.unwrap_or(false) {
+        ref_sites.into_iter().filter(|(path, _)| {
+            let ext = path.rsplit('.').next().unwrap_or("");
+            match crate::domain::index::LanguageId::from_extension(ext) {
+                None => false,
+                Some(lang) => !crate::parsing::config_extractors::is_config_language(&lang),
+            }
+        }).collect()
+    } else {
+        ref_sites
+    };
+
     // Phase 2b: Supplemental qualified-path scan with confidence classification.
     // The xref index tracks call targets (e.g. "new" in Widget::new()), not
     // path prefixes. find_qualified_usages catches Type::method() patterns,
@@ -1073,6 +1090,16 @@ pub(crate) fn execute_batch_rename(
         guard
             .files
             .iter()
+            .filter(|(path, _)| {
+                if !input.code_only.unwrap_or(false) {
+                    return true;
+                }
+                let ext = path.rsplit('.').next().unwrap_or("");
+                match crate::domain::index::LanguageId::from_extension(ext) {
+                    None => false,
+                    Some(lang) => !crate::parsing::config_extractors::is_config_language(&lang),
+                }
+            })
             .map(|(path, file)| (path.clone(), file.content.clone()))
             .collect()
     };

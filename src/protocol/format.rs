@@ -535,6 +535,15 @@ pub fn search_text_result_view(
             }
         }
     }
+    // Add follow_refs clarification if any non-empty callers were included
+    let has_nonempty_callers = result
+        .files
+        .iter()
+        .any(|f| f.callers.as_ref().is_some_and(|c| !c.is_empty()));
+    if has_nonempty_callers {
+        lines.push(String::new());
+        lines.push("Note: Caller information is for the enclosing symbol, not for the search text itself.".to_string());
+    }
     lines.join("\n")
 }
 
@@ -6412,16 +6421,19 @@ pub fn diff_symbols_result_view(
 
         if !summary_only {
             if compact {
-                // Compact mode: one line per file with counts only
+                // Compact mode: one line per file with counts and symbol names
                 let mut parts = Vec::new();
                 if !file_added.is_empty() {
-                    parts.push(format!("+{}", file_added.len()));
+                    let names = compact_symbol_list(&file_added);
+                    parts.push(format!("+{}: {}", file_added.len(), names));
                 }
                 if !file_removed.is_empty() {
-                    parts.push(format!("-{}", file_removed.len()));
+                    let names = compact_symbol_list(&file_removed);
+                    parts.push(format!("-{}: {}", file_removed.len(), names));
                 }
                 if !file_modified.is_empty() {
-                    parts.push(format!("~{}", file_modified.len()));
+                    let names = compact_symbol_list(&file_modified);
+                    parts.push(format!("~{}: {}", file_modified.len(), names));
                 }
                 lines.push(format!("  {} ({})", file_path, parts.join(", ")));
             } else {
@@ -6472,6 +6484,17 @@ pub fn diff_symbols_result_view(
     }
 
     lines.join("\n")
+}
+
+/// Format a list of symbol names for compact display: up to 3 names, then "..."
+fn compact_symbol_list(names: &[&str]) -> String {
+    let mut sorted: Vec<&str> = names.to_vec();
+    sorted.sort_unstable();
+    if sorted.len() <= 3 {
+        sorted.join(", ")
+    } else {
+        format!("{}, ... +{} more", sorted[..3].join(", "), sorted.len() - 3)
+    }
 }
 
 /// Extract symbol name → signature pairs from source code using simple pattern matching.

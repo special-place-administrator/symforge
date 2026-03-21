@@ -2863,7 +2863,6 @@ impl SymForgeServer {
             let limits = format::OutputLimits::new(cap, cap);
             let result = format::find_implementations_result_view(&view, &input.name, &limits);
             if view.entries.is_empty() {
-                // Check if the symbol is a class/struct (not an interface/trait)
                 let guard = self.index.read();
                 let is_concrete = guard.all_files().any(|(_, file)| {
                     file.symbols.iter().any(|s| {
@@ -2876,12 +2875,25 @@ impl SymForgeServer {
                             )
                     })
                 });
-                drop(guard);
                 if is_concrete {
+                    drop(guard);
                     return format!(
                         "No implementations found for \"{}\" — it is a class/struct, not an \
                          interface/trait.\nUse find_references with mode=\"references\" to find \
                          callers and usages instead.",
+                        input.name
+                    );
+                }
+                // Check if the symbol exists at all in the indexed project
+                let exists_in_project = guard.all_files().any(|(_, file)| {
+                    file.symbols.iter().any(|s| s.name == input.name)
+                });
+                drop(guard);
+                if !exists_in_project {
+                    return format!(
+                        "No implementations found for \"{}\" — this symbol is not defined \
+                         in the indexed project (likely from an external dependency).\n\
+                         Use search_text to find usages of this symbol in your code instead.",
                         input.name
                     );
                 }
@@ -9264,6 +9276,7 @@ mod tests {
             symbol_line: None,
             new_name: "new_name".to_string(),
             dry_run: None,
+            code_only: None,
         };
         let result = server.batch_rename(Parameters(input)).await;
         assert!(result.contains("Renamed"), "result: {result}");
@@ -9311,6 +9324,7 @@ mod tests {
             symbol_line: None,
             new_name: "Gadget".to_string(),
             dry_run: None,
+            code_only: None,
         };
         let result = server.batch_rename(Parameters(input)).await;
         assert!(result.contains("Renamed"), "result: {result}");
@@ -9365,6 +9379,7 @@ mod tests {
             symbol_line: None,
             new_name: "Gadget".to_string(),
             dry_run: None,
+            code_only: None,
         };
         let _result = server.batch_rename(Parameters(input)).await;
 
@@ -9441,6 +9456,7 @@ mod tests {
             symbol_line: None,
             new_name: "NewType".to_string(),
             dry_run: None,
+            code_only: None,
         };
         let result = server.batch_rename(Parameters(input)).await;
         assert!(result.contains("Renamed"), "result: {result}");
@@ -9493,6 +9509,7 @@ mod tests {
             symbol_line: None,
             new_name: "NewType".to_string(),
             dry_run: Some(true),
+            code_only: None,
         };
         let result = server.batch_rename(Parameters(input)).await;
 
@@ -9545,6 +9562,7 @@ mod tests {
             symbol_line: None,
             new_name: "NewType".to_string(),
             dry_run: None,
+            code_only: None,
         };
         let result = server.batch_rename(Parameters(input)).await;
         assert!(result.contains("Renamed"), "result: {result}");
@@ -9598,6 +9616,7 @@ mod tests {
             symbol_line: None,
             new_name: "Renamed".to_string(),
             dry_run: None,
+            code_only: None,
         };
         let result = server.batch_rename(Parameters(input)).await;
         assert!(result.contains("Renamed"), "result: {result}");
