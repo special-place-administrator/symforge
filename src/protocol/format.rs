@@ -140,14 +140,17 @@ fn render_symbol_detail(
     name: &str,
     kind_filter: Option<&str>,
 ) -> String {
-    let sym = symbols.iter().find(|s| {
-        s.name == name
-            && kind_filter
-                .map(|k| s.kind.to_string().eq_ignore_ascii_case(k))
-                .unwrap_or(true)
-    });
+    let matching: Vec<&crate::domain::SymbolRecord> = symbols
+        .iter()
+        .filter(|s| {
+            s.name == name
+                && kind_filter
+                    .map(|k| s.kind.to_string().eq_ignore_ascii_case(k))
+                    .unwrap_or(true)
+        })
+        .collect();
 
-    match sym {
+    match matching.first() {
         None => render_not_found_symbol(relative_path, symbols, name),
         Some(s) => {
             let start = s.effective_start() as usize;
@@ -156,14 +159,28 @@ fn render_symbol_detail(
             let clamped_start = start.min(clamped_end);
             let body = String::from_utf8_lossy(&content[clamped_start..clamped_end]).into_owned();
             let byte_count = end.saturating_sub(start);
-            format!(
+            let mut result = format!(
                 "{}\n[{}, lines {}-{}, {} bytes]",
                 body,
                 s.kind,
                 s.line_range.0 + 1,
                 s.line_range.1 + 1,
                 byte_count
-            )
+            );
+            if matching.len() > 1 {
+                let others = matching.len() - 1;
+                let lines: Vec<String> = matching[1..]
+                    .iter()
+                    .map(|m| format!("{}", m.line_range.0 + 1))
+                    .collect();
+                result.push_str(&format!(
+                    "\nNote: {} more `{}` in this file (line {}). Use symbol_line to disambiguate.",
+                    others,
+                    name,
+                    lines.join(", ")
+                ));
+            }
+            result
         }
     }
 }
@@ -247,9 +264,15 @@ pub fn search_symbols_result_view(result: &search::SymbolSearchResult, query: &s
             }
             lines.push(header.to_string());
         }
+        // Strip redundant kind prefix from name (e.g., impl blocks named "impl Foo").
+        let display_name = if hit.name.starts_with(&format!("{} ", hit.kind)) {
+            &hit.name[hit.kind.len() + 1..]
+        } else {
+            &hit.name
+        };
         lines.push(format!(
             "  {}: {} {}  ({})",
-            hit.line, hit.kind, hit.name, hit.path
+            hit.line, hit.kind, display_name, hit.path
         ));
     }
 

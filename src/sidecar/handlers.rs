@@ -219,14 +219,38 @@ fn outline_text(
     ));
     append_parse_status_lines(&mut lines, file);
 
+    // Surface section validation warnings in the output.
+    if let Some(ref section_list) = params.sections {
+        let valid = ["outline", "imports", "consumers", "references", "git"];
+        let unknown: Vec<&str> = section_list
+            .iter()
+            .filter(|s| !valid.iter().any(|v| s.eq_ignore_ascii_case(v)))
+            .map(|s| s.as_str())
+            .collect();
+        if !unknown.is_empty() {
+            lines.push(format!(
+                "Warning: unknown section(s): {}. Valid: {}.",
+                unknown.join(", "),
+                valid.join(", ")
+            ));
+        }
+    }
+
     if include_section("outline") {
         for sym in &file.symbols {
             let indent = "  ".repeat(sym.depth as usize);
+            let kind_str = sym.kind.to_string();
+            // Strip redundant kind prefix from name (e.g., impl blocks named "impl Foo").
+            let display_name = if sym.name.starts_with(&format!("{} ", kind_str)) {
+                &sym.name[kind_str.len() + 1..]
+            } else {
+                &sym.name[..]
+            };
             lines.push(format!(
                 "{}  {:<10} {}  L{}-{}",
                 indent,
-                sym.kind.to_string(),
-                sym.name,
+                kind_str,
+                display_name,
                 sym.line_range.0 + 1,
                 sym.line_range.1 + 1,
             ));
@@ -974,6 +998,11 @@ pub(crate) fn repo_map_text(state: &SidecarState) -> Result<String, StatusCode> 
         std::collections::HashMap::new();
 
     for (path, file) in guard.all_files() {
+        // Skip files with absolute paths (outside project root, e.g., Windows memory files).
+        if path.contains(':') || path.starts_with('/') {
+            continue;
+        }
+
         // Language breakdown.
         let lang = format!("{:?}", file.language);
         *lang_counts.entry(lang).or_insert(0) += 1;
