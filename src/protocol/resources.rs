@@ -206,6 +206,7 @@ impl SymForgeServer {
                     path,
                     name,
                     kind,
+                    symbol_line: None,
                     targets: None,
                 }))
                 .await
