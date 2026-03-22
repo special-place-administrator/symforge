@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.1.3](https://github.com/special-place-administrator/symforge/compare/v3.1.2...v3.1.3) (2026-03-22)
+
+
+### Bug Fixes
+
+* explore depth=2 shows symbol-level callers, get_symbol uses tier disambiguation ([9a22035](https://github.com/special-place-administrator/symforge/commit/9a22035872fb0ad58026a9dc50d66f0440e98f4b))
+* explore depth=2 shows symbol-level callers, get_symbol uses tier… ([4c1f588](https://github.com/special-place-administrator/symforge/commit/4c1f588fc1bd7282f74251eadb587913f89658a2))
+
 ## [3.1.2](https://github.com/special-place-administrator/symforge/compare/v3.1.1...v3.1.2) (2026-03-21)
 
 
