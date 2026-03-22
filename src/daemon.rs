@@ -1486,6 +1486,7 @@ async fn execute_tool_call(
                 path: String::new(),
                 name: String::new(),
                 kind: None,
+                symbol_line: None,
                 targets: Some(batch_input.targets),
             };
             Ok(server.get_symbol(Parameters(merged)).await)

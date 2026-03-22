@@ -194,6 +194,10 @@ pub struct GetSymbolInput {
     pub name: String,
     /// Optional kind filter: "fn", "struct", "enum", "impl", etc.
     pub kind: Option<String>,
+    /// Disambiguate when multiple symbols share the same name. Pass the 1-based start line of the
+    /// desired symbol (shown in ambiguity errors and search_symbols output).
+    #[serde(default, deserialize_with = "lenient_u32")]
+    pub symbol_line: Option<u32>,
     /// Optional batch mode: provide multiple targets to retrieve 2+ symbols or code slices in one call.
     /// Each target is a file path + symbol name or byte range. When provided, path/name/kind above are ignored.
     #[serde(default, deserialize_with = "lenient_option_vec")]
@@ -211,6 +215,9 @@ pub struct SymbolTarget {
     pub name: Option<String>,
     /// Kind filter for symbol lookup (e.g., "fn", "struct").
     pub kind: Option<String>,
+    /// Disambiguate when multiple symbols share the same name. Pass the 1-based start line.
+    #[serde(default, deserialize_with = "lenient_u32")]
+    pub symbol_line: Option<u32>,
     /// Start byte offset for code slice (mutually exclusive with name).
     #[serde(default, deserialize_with = "lenient_u32")]
     pub start_byte: Option<u32>,
@@ -1482,6 +1489,7 @@ enum CapturedGetSymbolsEntry {
         file: Arc<IndexedFile>,
         name: String,
         kind: Option<String>,
+        symbol_line: Option<u32>,
     },
     CodeSlice {
         file: Arc<IndexedFile>,
@@ -1533,11 +1541,14 @@ fn loading_guard_message_from_published(
 impl SymForgeServer {
     /// Look up symbol(s) by file path and name. Single mode: provide path + name for one symbol.
     /// Batch mode: provide targets[] array for multiple symbols or code slices in one call.
+    /// When multiple symbols share the same name (e.g. `handle` in different impl blocks),
+    /// pass symbol_line (1-based) to disambiguate; omitting it auto-selects by kind tier or
+    /// returns an Ambiguous error listing candidate lines.
     /// NOT for finding symbols by name (use search_symbols first).
     /// NOT for understanding who calls it (use find_references or get_symbol_context).
     /// NOT for edit preparation (use get_symbol_context with bundle=true).
     #[tool(
-        description = "Prefer this over reading an entire file when you already know the symbol or have narrowed to one file. Retrieves the complete source code of a specific symbol with doc comments. Single mode: provide path + name. Batch mode: provide targets[] array for 2+ symbols or code slices in one call (each target is file path + symbol name or byte range). Use search_symbols first if you only know part of the name. NOT for understanding callers (use find_references or get_symbol_context). NOT for edit preparation (use get_symbol_context with bundle=true)."
+        description = "Prefer this over reading an entire file when you already know the symbol or have narrowed to one file. Retrieves the complete source code of a specific symbol with doc comments. Single mode: provide path + name. Batch mode: provide targets[] array for 2+ symbols or code slices in one call (each target is file path + symbol name or byte range). When multiple symbols share the same name, pass symbol_line (1-based) to disambiguate; auto-selects by kind tier when possible. Use search_symbols first if you only know part of the name. NOT for understanding callers (use find_references or get_symbol_context). NOT for edit preparation (use get_symbol_context with bundle=true)."
     )]
     pub(crate) async fn get_symbol(&self, params: Parameters<GetSymbolInput>) -> String {
         if let Some(result) = self.proxy_tool_call("get_symbol", &params.0).await {
@@ -1561,6 +1572,7 @@ impl SymForgeServer {
                                 file,
                                 name: name.to_string(),
                                 kind: target.kind.clone(),
+                                symbol_line: target.symbol_line,
                             },
                             None => CapturedGetSymbolsEntry::FileNotFound {
                                 path: target.path.clone(),
@@ -1583,11 +1595,12 @@ impl SymForgeServer {
             let output = captured
                 .into_iter()
                 .map(|entry| match entry {
-                    CapturedGetSymbolsEntry::SymbolLookup { file, name, kind } => {
+                    CapturedGetSymbolsEntry::SymbolLookup { file, name, kind, symbol_line } => {
                         let body = format::symbol_detail_from_indexed_file(
                             file.as_ref(),
                             &name,
                             kind.as_deref(),
+                            symbol_line,
                         );
                         format!(
                             "{body}{}",
@@ -1623,6 +1636,7 @@ impl SymForgeServer {
                     file.as_ref(),
                     &params.0.name,
                     params.0.kind.as_deref(),
+                    params.0.symbol_line,
                 );
                 let output = format!(
                     "{body}{}",
@@ -3097,11 +3111,11 @@ impl SymForgeServer {
 
     /// Start here when you don't know where to look. Accepts a natural-language concept
     /// and returns related symbols, patterns, and files. Set depth=2 for signatures and
-    /// dependents of top symbols (~1500 tokens). Set depth=3 for implementations and type
+    /// callers of top symbols (~1500 tokens). Set depth=3 for implementations and type
     /// dependency chains (~3000 tokens). NOT for finding a specific symbol by name
     /// (use search_symbols). NOT for text content search (use search_text).
     #[tool(
-        description = "Start here when you don't know where to look. Accepts a natural-language concept and returns related symbols, patterns, and files. Set depth=2 for signatures and dependents of top symbols (~1500 tokens). Set depth=3 for implementations and type dependency chains (~3000 tokens). NOT for finding a specific symbol by name (use search_symbols). NOT for text content search (use search_text)."
+        description = "Start here when you don't know where to look. Accepts a natural-language concept and returns related symbols, patterns, and files. Set depth=2 for signatures and callers of top symbols (~1500 tokens). Set depth=3 for implementations and type dependency chains (~3000 tokens). NOT for finding a specific symbol by name (use search_symbols). NOT for text content search (use search_text)."
     )]
     pub(crate) async fn explore(&self, params: Parameters<ExploreInput>) -> String {
         if let Some(result) = self.proxy_tool_call("explore", &params.0).await {
@@ -3380,8 +3394,8 @@ impl SymForgeServer {
                 });
 
                 let dependents = {
-                    let dep_view = guard.capture_find_dependents_view(path);
-                    dep_view
+                    let ref_view = guard.capture_find_references_view(name, None, 3);
+                    ref_view
                         .files
                         .iter()
                         .take(3)
@@ -4322,6 +4336,7 @@ mod tests {
                 path: "anything.rs".to_string(),
                 name: "anything".to_string(),
                 kind: None,
+                symbol_line: None,
                 targets: None,
             }))
             .await;
@@ -4340,6 +4355,7 @@ mod tests {
                 path: "anything.rs".to_string(),
                 name: "anything".to_string(),
                 kind: None,
+                symbol_line: None,
                 targets: None,
             }))
             .await;
@@ -4393,6 +4409,7 @@ mod tests {
                 path: "src/lib.rs".to_string(),
                 name: "foo".to_string(),
                 kind: None,
+                symbol_line: None,
                 targets: None,
             }))
             .await;
@@ -6139,10 +6156,12 @@ mod tests {
                 path: String::new(),
                 name: String::new(),
                 kind: None,
+                symbol_line: None,
                 targets: Some(vec![super::SymbolTarget {
                     path: "src/lib.rs".to_string(),
                     name: Some("bar".to_string()),
                     kind: None,
+                    symbol_line: None,
                     start_byte: None,
                     end_byte: None,
                 }]),
@@ -6168,10 +6187,12 @@ mod tests {
                 path: String::new(),
                 name: String::new(),
                 kind: None,
+                symbol_line: None,
                 targets: Some(vec![super::SymbolTarget {
                     path: "src/lib.rs".to_string(),
                     name: None,
                     kind: None,
+                    symbol_line: None,
                     start_byte: Some(0),
                     end_byte: Some(8),
                 }]),

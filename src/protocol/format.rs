@@ -97,7 +97,7 @@ pub fn symbol_detail(
     kind_filter: Option<&str>,
 ) -> String {
     match index.capture_shared_file(path) {
-        Some(file) => symbol_detail_from_indexed_file(file.as_ref(), name, kind_filter),
+        Some(file) => symbol_detail_from_indexed_file(file.as_ref(), name, kind_filter, None),
         None => not_found_file(path),
     }
 }
@@ -106,14 +106,42 @@ pub fn symbol_detail_from_indexed_file(
     file: &IndexedFile,
     name: &str,
     kind_filter: Option<&str>,
+    symbol_line: Option<u32>,
 ) -> String {
-    render_symbol_detail(
-        &file.relative_path,
-        &file.content,
-        &file.symbols,
-        name,
-        kind_filter,
-    )
+    use crate::live_index::query::{resolve_symbol_selector, SymbolSelectorMatch};
+
+    match resolve_symbol_selector(file, name, kind_filter, symbol_line) {
+        SymbolSelectorMatch::Selected(_idx, sym) => {
+            let start = sym.effective_start() as usize;
+            let end = sym.byte_range.1 as usize;
+            let clamped_end = end.min(file.content.len());
+            let clamped_start = start.min(clamped_end);
+            let body =
+                String::from_utf8_lossy(&file.content[clamped_start..clamped_end]).into_owned();
+            let byte_count = end.saturating_sub(start);
+            format!(
+                "{}\n[{}, lines {}-{}, {} bytes]",
+                body,
+                sym.kind,
+                sym.line_range.0 + 1,
+                sym.line_range.1 + 1,
+                byte_count
+            )
+        }
+        SymbolSelectorMatch::NotFound => {
+            render_not_found_symbol(&file.relative_path, &file.symbols, name)
+        }
+        SymbolSelectorMatch::Ambiguous(lines) => {
+            let line_strs: Vec<String> = lines.iter().map(|l| format!("{}", l + 1)).collect();
+            format!(
+                "Ambiguous: {} `{}` symbols in {} (lines {}). Pass symbol_line to disambiguate.",
+                lines.len(),
+                name,
+                file.relative_path,
+                line_strs.join(", ")
+            )
+        }
+    }
 }
 
 /// Compatibility renderer for `SymbolDetailView`.
@@ -4272,6 +4300,7 @@ mod tests {
         let shared_result = symbol_detail_from_indexed_file(
             index.capture_shared_file("src/main.rs").unwrap().as_ref(),
             "target",
+            None,
             None,
         );
 
