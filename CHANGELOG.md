@@ -1,5 +1,16 @@
 # Changelog
 
+## [3.1.4](https://github.com/special-place-administrator/symforge/compare/v3.1.3...v3.1.4) (2026-03-23)
+
+
+### Bug Fixes
+
+* add panic hook to clean up sidecar port files on crash ([6758696](https://github.com/special-place-administrator/symforge/commit/6758696a02d052d6646721629a51c67ee8978f93))
+* replace std::sync::Mutex with parking_lot::Mutex to prevent poison cascades ([04651d0](https://github.com/special-place-administrator/symforge/commit/04651d09f5fccbad4e4ee267b2cf4c2ee953ea44))
+* sidecar reliability + reviewer feedback remediation ([8b41990](https://github.com/special-place-administrator/symforge/commit/8b419904451053df06d82f06ba7921f435395af0))
+* wrap daemon sidecar handlers with governor + spawn_blocking ([d665e41](https://github.com/special-place-administrator/symforge/commit/d665e415a5f889229ef7c5dc8a18a4c9cadc36bd))
+* wrap repair_file_indices in catch_unwind to prevent double-panic abort ([e2d2e97](https://github.com/special-place-administrator/symforge/commit/e2d2e976f4bef08ca678ad5e2a2142f5f5c48f2a))
+
 ## [3.1.3](https://github.com/special-place-administrator/symforge/compare/v3.1.2...v3.1.3) (2026-03-22)
 
 
