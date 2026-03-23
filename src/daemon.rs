@@ -5,8 +5,8 @@ use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use anyhow::Context;
@@ -1354,7 +1354,19 @@ async fn sidecar_health_handler(
     let runtime = state
         .session_runtime(&session_id)
         .ok_or(axum::http::StatusCode::NOT_FOUND)?;
-    crate::sidecar::handlers::health_handler(State(sidecar_state_for_runtime(&runtime))).await
+    let sidecar = sidecar_state_for_runtime(&runtime);
+    state
+        .governor
+        .execute("sidecar/health", async move {
+            let handle = tokio::runtime::Handle::current();
+            tokio::task::spawn_blocking(move || {
+                handle.block_on(crate::sidecar::handlers::health_handler(State(sidecar)))
+            })
+            .await
+            .unwrap_or(Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR))
+        })
+        .await
+        .map_err(|_| axum::http::StatusCode::GATEWAY_TIMEOUT)?
 }
 
 async fn sidecar_outline_handler(
@@ -1365,11 +1377,22 @@ async fn sidecar_outline_handler(
     let runtime = state
         .session_runtime(&session_id)
         .ok_or(axum::http::StatusCode::NOT_FOUND)?;
-    crate::sidecar::handlers::outline_handler(
-        State(sidecar_state_for_runtime(&runtime)),
-        Query(params),
-    )
-    .await
+    let sidecar = sidecar_state_for_runtime(&runtime);
+    state
+        .governor
+        .execute("sidecar/outline", async move {
+            let handle = tokio::runtime::Handle::current();
+            tokio::task::spawn_blocking(move || {
+                handle.block_on(crate::sidecar::handlers::outline_handler(
+                    State(sidecar),
+                    Query(params),
+                ))
+            })
+            .await
+            .unwrap_or(Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR))
+        })
+        .await
+        .map_err(|_| axum::http::StatusCode::GATEWAY_TIMEOUT)?
 }
 
 async fn sidecar_impact_handler(
@@ -1380,11 +1403,22 @@ async fn sidecar_impact_handler(
     let runtime = state
         .session_runtime(&session_id)
         .ok_or(axum::http::StatusCode::NOT_FOUND)?;
-    crate::sidecar::handlers::impact_handler(
-        State(sidecar_state_for_runtime(&runtime)),
-        Query(params),
-    )
-    .await
+    let sidecar = sidecar_state_for_runtime(&runtime);
+    state
+        .governor
+        .execute("sidecar/impact", async move {
+            let handle = tokio::runtime::Handle::current();
+            tokio::task::spawn_blocking(move || {
+                handle.block_on(crate::sidecar::handlers::impact_handler(
+                    State(sidecar),
+                    Query(params),
+                ))
+            })
+            .await
+            .unwrap_or(Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR))
+        })
+        .await
+        .map_err(|_| axum::http::StatusCode::GATEWAY_TIMEOUT)?
 }
 
 async fn sidecar_symbol_context_handler(
@@ -1395,11 +1429,22 @@ async fn sidecar_symbol_context_handler(
     let runtime = state
         .session_runtime(&session_id)
         .ok_or(axum::http::StatusCode::NOT_FOUND)?;
-    crate::sidecar::handlers::symbol_context_handler(
-        State(sidecar_state_for_runtime(&runtime)),
-        Query(params),
-    )
-    .await
+    let sidecar = sidecar_state_for_runtime(&runtime);
+    state
+        .governor
+        .execute("sidecar/symbol-context", async move {
+            let handle = tokio::runtime::Handle::current();
+            tokio::task::spawn_blocking(move || {
+                handle.block_on(crate::sidecar::handlers::symbol_context_handler(
+                    State(sidecar),
+                    Query(params),
+                ))
+            })
+            .await
+            .unwrap_or(Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR))
+        })
+        .await
+        .map_err(|_| axum::http::StatusCode::GATEWAY_TIMEOUT)?
 }
 
 async fn sidecar_repo_map_handler(
@@ -1409,7 +1454,19 @@ async fn sidecar_repo_map_handler(
     let runtime = state
         .session_runtime(&session_id)
         .ok_or(axum::http::StatusCode::NOT_FOUND)?;
-    crate::sidecar::handlers::repo_map_handler(State(sidecar_state_for_runtime(&runtime))).await
+    let sidecar = sidecar_state_for_runtime(&runtime);
+    state
+        .governor
+        .execute("sidecar/repo-map", async move {
+            let handle = tokio::runtime::Handle::current();
+            tokio::task::spawn_blocking(move || {
+                handle.block_on(crate::sidecar::handlers::repo_map_handler(State(sidecar)))
+            })
+            .await
+            .unwrap_or(Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR))
+        })
+        .await
+        .map_err(|_| axum::http::StatusCode::GATEWAY_TIMEOUT)?
 }
 
 async fn sidecar_prompt_context_handler(
@@ -1420,11 +1477,22 @@ async fn sidecar_prompt_context_handler(
     let runtime = state
         .session_runtime(&session_id)
         .ok_or(axum::http::StatusCode::NOT_FOUND)?;
-    crate::sidecar::handlers::prompt_context_handler(
-        State(sidecar_state_for_runtime(&runtime)),
-        Query(params),
-    )
-    .await
+    let sidecar = sidecar_state_for_runtime(&runtime);
+    state
+        .governor
+        .execute("sidecar/prompt-context", async move {
+            let handle = tokio::runtime::Handle::current();
+            tokio::task::spawn_blocking(move || {
+                handle.block_on(crate::sidecar::handlers::prompt_context_handler(
+                    State(sidecar),
+                    Query(params),
+                ))
+            })
+            .await
+            .unwrap_or(Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR))
+        })
+        .await
+        .map_err(|_| axum::http::StatusCode::GATEWAY_TIMEOUT)?
 }
 
 async fn sidecar_stats_handler(
@@ -1434,7 +1502,21 @@ async fn sidecar_stats_handler(
     let runtime = state
         .session_runtime(&session_id)
         .ok_or(axum::http::StatusCode::NOT_FOUND)?;
-    Ok(crate::sidecar::handlers::stats_handler(State(sidecar_state_for_runtime(&runtime))).await)
+    let sidecar = sidecar_state_for_runtime(&runtime);
+    state
+        .governor
+        .execute("sidecar/stats", async move {
+            let handle = tokio::runtime::Handle::current();
+            tokio::task::spawn_blocking(move || {
+                handle.block_on(async {
+                    Ok(crate::sidecar::handlers::stats_handler(State(sidecar)).await)
+                })
+            })
+            .await
+            .unwrap_or(Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR))
+        })
+        .await
+        .map_err(|_| axum::http::StatusCode::GATEWAY_TIMEOUT)?
 }
 
 async fn heartbeat_handler(

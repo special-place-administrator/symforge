@@ -11,8 +11,8 @@
 //! - Full observability: in-flight requests visible in health output
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use parking_lot::Mutex;
 use std::time::{Duration, Instant};
@@ -121,7 +121,15 @@ pub fn classify_tool(tool_name: &str) -> ToolWeight {
         }
 
         // Medium: operations that scan many files but only read
-        "analyze_file_impact" => ToolWeight::Medium,
+        "analyze_file_impact" | "sidecar/impact" => ToolWeight::Medium,
+
+        // Light: sidecar endpoints (reads, lookups, health)
+        "sidecar/outline"
+        | "sidecar/prompt-context"
+        | "sidecar/repo-map"
+        | "sidecar/symbol-context"
+        | "sidecar/health"
+        | "sidecar/stats" => ToolWeight::Light,
 
         // Light: everything else (reads, searches, lookups)
         _ => ToolWeight::Light,
