@@ -2,9 +2,9 @@ use std::collections::{HashMap, HashSet};
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use parking_lot::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant, SystemTime};
 
 use rayon::prelude::*;
@@ -178,7 +178,7 @@ impl CircuitBreakerState {
         self.total.fetch_add(1, Ordering::Relaxed);
         self.failed.fetch_add(1, Ordering::Relaxed);
 
-        let mut details = self.failure_details.lock().unwrap();
+        let mut details = self.failure_details.lock();
         if details.len() < 5 {
             details.push((path.to_string(), reason.to_string()));
         }
@@ -217,7 +217,7 @@ impl CircuitBreakerState {
             0
         };
 
-        let details = self.failure_details.lock().unwrap();
+        let details = self.failure_details.lock();
         let top_failures: Vec<String> = details
             .iter()
             .take(3)

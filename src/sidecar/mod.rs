@@ -7,11 +7,11 @@ pub mod server;
 pub use governor::RequestGovernor;
 pub use server::spawn_sidecar;
 
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use serde::Serialize;
 
@@ -105,13 +105,13 @@ impl TokenStats {
 
     /// Record a single MCP tool invocation by name.
     pub fn record_tool_call(&self, name: &str) {
-        let mut map = self.tool_calls.lock().unwrap();
+        let mut map = self.tool_calls.lock();
         *map.entry(name.to_string()).or_insert(0) += 1;
     }
 
     /// Return per-tool invocation counts sorted by count descending, then name ascending.
     pub fn tool_call_counts(&self) -> Vec<(String, usize)> {
-        let map = self.tool_calls.lock().unwrap();
+        let map = self.tool_calls.lock();
         let mut counts: Vec<(String, usize)> = map.iter().map(|(k, v)| (k.clone(), *v)).collect();
         counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         counts
