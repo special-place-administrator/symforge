@@ -2582,8 +2582,8 @@ impl SymForgeServer {
             return result;
         }
         let published = self.index.published_state();
-        let watcher_guard = self.watcher_info.lock().unwrap_or_else(|e| e.into_inner());
-        let mut result = format::health_report_from_published_state(&published, &watcher_guard);
+        let watcher_guard = self.watcher_info.lock();
+        let mut result = format::health_report_from_published_state(&published, &*watcher_guard);
 
         // Append token savings section if the sidecar's TokenStats are available.
         if let Some(ref stats) = self.token_stats {
@@ -4235,7 +4235,7 @@ mod tests {
 
     fn make_server_with_root(index: LiveIndex, repo_root: Option<PathBuf>) -> SymForgeServer {
         use crate::watcher::WatcherInfo;
-        use std::sync::Mutex;
+        use parking_lot::Mutex;
         let shared = crate::live_index::SharedIndexHandle::shared(index);
         let watcher_info = Arc::new(Mutex::new(WatcherInfo::default()));
         SymForgeServer::new(

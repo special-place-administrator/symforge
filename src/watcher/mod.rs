@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use notify::{EventKind, RecommendedWatcher as NotifyRecommendedWatcher, RecursiveMode};
@@ -418,7 +419,7 @@ pub(crate) fn process_events(
                 EventKind::Remove(_) => {
                     shared.remove_file(&relative_path);
 
-                    let mut info = watcher_info.lock().unwrap();
+                    let mut info = watcher_info.lock();
                     info.events_processed += 1;
                     info.last_event_at = Some(SystemTime::now());
                 }
@@ -431,7 +432,7 @@ pub(crate) fn process_events(
 
                     maybe_reindex(&relative_path, abs_path, shared, language);
 
-                    let mut info = watcher_info.lock().unwrap();
+                    let mut info = watcher_info.lock();
                     info.events_processed += 1;
                     info.last_event_at = Some(SystemTime::now());
                     info.debounce_window_ms = debounce_ms;
@@ -462,7 +463,7 @@ pub async fn run_watcher(
     watcher_info: Arc<Mutex<WatcherInfo>>,
 ) {
     {
-        let mut info = watcher_info.lock().unwrap();
+        let mut info = watcher_info.lock();
         info.state = WatcherState::Active;
     }
 
@@ -471,7 +472,7 @@ pub async fn run_watcher(
 
     loop {
         // Read the current recommended debounce window (updated by the burst tracker).
-        let debounce_ms = watcher_info.lock().unwrap().debounce_window_ms;
+        let debounce_ms = watcher_info.lock().debounce_window_ms;
         match start_watcher(&repo_root, debounce_ms) {
             Err(e) => {
                 consecutive_failures += 1;
@@ -480,7 +481,7 @@ pub async fn run_watcher(
                     consecutive_failures, e
                 );
                 if consecutive_failures >= MAX_FAILURES {
-                    let mut info = watcher_info.lock().unwrap();
+                    let mut info = watcher_info.lock();
                     info.state = WatcherState::Degraded;
                     error!(
                         "watcher: entering degraded mode after {} consecutive failures",
@@ -494,7 +495,7 @@ pub async fn run_watcher(
             Ok(handle) => {
                 consecutive_failures = 0;
                 {
-                    let mut info = watcher_info.lock().unwrap();
+                    let mut info = watcher_info.lock();
                     info.state = WatcherState::Active;
                 }
 
@@ -521,7 +522,7 @@ pub async fn run_watcher(
                         let watcher_info_clone = watcher_info.clone();
                         tokio::task::spawn_blocking(move || {
                             let stale = reconcile_stale_files(&root_clone, &shared_clone);
-                            let mut info = watcher_info_clone.lock().unwrap();
+                            let mut info = watcher_info_clone.lock();
                             info.stale_files_found += stale as u64;
                             info.last_reconcile_at = Some(SystemTime::now());
                         });
@@ -579,7 +580,7 @@ pub async fn run_watcher(
                                 let watcher_info_clone = watcher_info.clone();
                                 tokio::task::spawn_blocking(move || {
                                     let stale = reconcile_stale_files(&root_clone, &shared_clone);
-                                    let mut info = watcher_info_clone.lock().unwrap();
+                                    let mut info = watcher_info_clone.lock();
                                     info.overflow_count += 1;
                                     info.last_overflow_at = Some(SystemTime::now());
                                     info.stale_files_found += stale as u64;
@@ -609,7 +610,7 @@ pub async fn run_watcher(
                 // Inner loop exited — count as a failure and try to restart
                 consecutive_failures += 1;
                 if consecutive_failures >= MAX_FAILURES {
-                    let mut info = watcher_info.lock().unwrap();
+                    let mut info = watcher_info.lock();
                     info.state = WatcherState::Degraded;
                     error!(
                         "watcher: entering degraded mode after {} consecutive failures",
@@ -633,7 +634,7 @@ pub fn restart_watcher(
     watcher_info: Arc<Mutex<WatcherInfo>>,
 ) -> tokio::task::JoinHandle<()> {
     {
-        let mut info = watcher_info.lock().unwrap();
+        let mut info = watcher_info.lock();
         info.state = WatcherState::Off;
     }
     tokio::spawn(run_watcher(repo_root, shared, watcher_info))

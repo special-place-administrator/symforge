@@ -163,7 +163,8 @@ fn build_failure_triage_instructions(
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use std::sync::{Arc, Mutex};
+    use parking_lot::Mutex;
+    use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     use crate::live_index::store::{CircuitBreakerState, LiveIndex};

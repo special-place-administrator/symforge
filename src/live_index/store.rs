@@ -2,9 +2,9 @@ use std::collections::{HashMap, HashSet};
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use parking_lot::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant, SystemTime};
 
 use rayon::prelude::*;
@@ -178,7 +178,7 @@ impl CircuitBreakerState {
         self.total.fetch_add(1, Ordering::Relaxed);
         self.failed.fetch_add(1, Ordering::Relaxed);
 
-        let mut details = self.failure_details.lock().unwrap();
+        let mut details = self.failure_details.lock();
         if details.len() < 5 {
             details.push((path.to_string(), reason.to_string()));
         }
@@ -217,7 +217,7 @@ impl CircuitBreakerState {
             0
         };
 
-        let details = self.failure_details.lock().unwrap();
+        let details = self.failure_details.lock();
         let top_failures: Vec<String> = details
             .iter()
             .take(3)
@@ -457,11 +457,20 @@ impl SharedIndexHandle {
                 .or_else(|| panic_info.downcast_ref::<&str>().copied())
                 .unwrap_or("unknown");
             tracing::error!(
-                "index mutation panicked for '{}': {} — repairing",
+                "index mutation panicked for '{}': {} — attempting repair",
                 path_clone,
                 msg
             );
-            live.repair_file_indices(&path_clone);
+            // Wrap repair in its own catch_unwind to prevent double-panic abort.
+            let repair_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                live.repair_file_indices(&path_clone);
+            }));
+            if let Err(_) = repair_result {
+                tracing::error!(
+                    "repair also panicked for '{}' — index may be inconsistent",
+                    path_clone
+                );
+            }
         }
         self.publish_locked(&live);
     }
