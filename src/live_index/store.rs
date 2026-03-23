@@ -457,11 +457,20 @@ impl SharedIndexHandle {
                 .or_else(|| panic_info.downcast_ref::<&str>().copied())
                 .unwrap_or("unknown");
             tracing::error!(
-                "index mutation panicked for '{}': {} — repairing",
+                "index mutation panicked for '{}': {} — attempting repair",
                 path_clone,
                 msg
             );
-            live.repair_file_indices(&path_clone);
+            // Wrap repair in its own catch_unwind to prevent double-panic abort.
+            let repair_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                live.repair_file_indices(&path_clone);
+            }));
+            if let Err(_) = repair_result {
+                tracing::error!(
+                    "repair also panicked for '{}' — index may be inconsistent",
+                    path_clone
+                );
+            }
         }
         self.publish_locked(&live);
     }
