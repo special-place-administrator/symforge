@@ -8,7 +8,7 @@ use std::net::TcpStream;
 use std::path::PathBuf;
 use std::time::Duration;
 
-const DIR_NAME: &str = ".symforge";
+pub const DIR_NAME: &str = ".symforge";
 const PORT_FILE: &str = "sidecar.port";
 const PID_FILE: &str = "sidecar.pid";
 const SESSION_FILE: &str = "sidecar.session";
@@ -78,6 +78,14 @@ pub fn read_port() -> io::Result<u16> {
 /// Called during sidecar shutdown — it is safe to call even if files don't exist.
 pub fn cleanup_files() {
     let dir = PathBuf::from(DIR_NAME);
+    let _ = std::fs::remove_file(dir.join(PORT_FILE));
+    let _ = std::fs::remove_file(dir.join(PID_FILE));
+    let _ = std::fs::remove_file(dir.join(SESSION_FILE));
+}
+
+/// Remove port/PID/session files from a specific directory.
+/// Used by the panic hook which cannot rely on CWD.
+pub fn cleanup_files_at(dir: &std::path::Path) {
     let _ = std::fs::remove_file(dir.join(PORT_FILE));
     let _ = std::fs::remove_file(dir.join(PID_FILE));
     let _ = std::fs::remove_file(dir.join(SESSION_FILE));
