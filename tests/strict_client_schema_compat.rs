@@ -14,11 +14,23 @@ fn visit_schema(node: &Value, path: &str) {
 }
 
 fn visit_schema_object(object: &Map<String, Value>, path: &str) {
-    if object.get("type") == Some(&Value::String("array".to_string())) {
-        assert!(
-            object.contains_key("items"),
-            "strict client compatibility requires `items` for array schema at {path}: {object:?}"
-        );
+    match object.get("type") {
+        Some(Value::String(schema_type)) if schema_type == "array" => {
+            assert!(
+                object.contains_key("items"),
+                "strict client compatibility requires `items` for array schema at {path}: {object:?}"
+            );
+        }
+        Some(Value::Array(schema_types))
+            if schema_types
+                .iter()
+                .any(|value| value == &Value::String("array".to_string())) =>
+        {
+            panic!(
+                "strict client compatibility forbids nullable/union array schemas at {path}: {object:?}"
+            );
+        }
+        _ => {}
     }
 
     for (key, value) in object {
