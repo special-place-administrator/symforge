@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.1.5](https://github.com/special-place-administrator/symforge/compare/v3.1.4...v3.1.5) (2026-03-25)
+
+
+### Bug Fixes
+
+* emit strict MCP array schemas for optional list params ([3519470](https://github.com/special-place-administrator/symforge/commit/3519470c2cafc36cd1d4c7e9b4455b8f3020623f))
+* make SymForge MCP schemas compatible with strict OpenAI clients ([aaa42f2](https://github.com/special-place-administrator/symforge/commit/aaa42f2aa6cb17af2a7d149abd5d0483f8086513))
+
 ## [3.1.4](https://github.com/special-place-administrator/symforge/compare/v3.1.3...v3.1.4) (2026-03-23)
 
 
