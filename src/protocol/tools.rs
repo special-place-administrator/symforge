@@ -160,7 +160,8 @@ where
 
 use crate::domain::LanguageId;
 use crate::live_index::{
-    IndexedFile, SearchFilesHit, SearchFilesTier, SearchFilesView, search, store::{IndexState, LiveIndex},
+    IndexedFile, SearchFilesHit, SearchFilesTier, SearchFilesView, search,
+    store::{IndexState, LiveIndex},
 };
 use crate::protocol::edit;
 use crate::protocol::edit_format;
@@ -201,6 +202,7 @@ pub struct GetSymbolInput {
     /// Optional batch mode: provide multiple targets to retrieve 2+ symbols or code slices in one call.
     /// Each target is a file path + symbol name or byte range. When provided, path/name/kind above are ignored.
     #[serde(default, deserialize_with = "lenient_option_vec")]
+    #[schemars(with = "Vec<SymbolTarget>")]
     pub targets: Option<Vec<SymbolTarget>>,
 }
 
@@ -265,6 +267,7 @@ pub struct SearchTextInput {
     pub query: Option<String>,
     /// Optional list of terms to match with OR semantics.
     #[serde(default, deserialize_with = "lenient_option_vec")]
+    #[schemars(with = "Vec<String>")]
     pub terms: Option<Vec<String>>,
     /// Interpret `query` as a regex pattern instead of a literal substring.
     #[serde(default, deserialize_with = "lenient_bool")]
@@ -538,6 +541,7 @@ pub struct GetFileContextInput {
     pub max_tokens: Option<u64>,
     /// Optional list of sections to include. Allowed values: "outline", "imports", "consumers", "references", "git". Omit to include all sections.
     #[serde(default, deserialize_with = "lenient_option_vec")]
+    #[schemars(with = "Vec<String>")]
     pub sections: Option<Vec<String>>,
 }
 
@@ -565,6 +569,7 @@ pub struct GetSymbolContextInput {
     /// Valid values: "dependents", "siblings", "implementations", "git".
     /// Omit for default symbol-context mode. Pass empty array for all trace sections.
     #[serde(default, deserialize_with = "lenient_option_vec")]
+    #[schemars(with = "Vec<String>")]
     pub sections: Option<Vec<String>>,
     /// Optional max token budget for bundle mode. When set, preserves the main
     /// symbol body and sections, then includes type dependencies in priority
@@ -947,8 +952,9 @@ fn search_text_options_from_input(
 /// Returns `Some(fixed)` if the pattern contains likely double-escaped sequences,
 /// `None` otherwise.
 fn fix_common_double_escapes(pattern: &str) -> Option<String> {
-    static RE: std::sync::LazyLock<regex::Regex> =
-        std::sync::LazyLock::new(|| regex::Regex::new(r"\\\\([sdwbntSDWB])").expect("static regex"));
+    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"\\\\([sdwbntSDWB])").expect("static regex")
+    });
     if !RE.is_match(pattern) {
         return None;
     }
@@ -1595,7 +1601,12 @@ impl SymForgeServer {
             let output = captured
                 .into_iter()
                 .map(|entry| match entry {
-                    CapturedGetSymbolsEntry::SymbolLookup { file, name, kind, symbol_line } => {
+                    CapturedGetSymbolsEntry::SymbolLookup {
+                        file,
+                        name,
+                        kind,
+                        symbol_line,
+                    } => {
                         let body = format::symbol_detail_from_indexed_file(
                             file.as_ref(),
                             &name,
@@ -2828,7 +2839,10 @@ impl SymForgeServer {
             Err(message) => return message,
         };
         freshen_exact_path_for_targeted_retrieval(self, &options.path_scope);
-        let mode_annotation = match (&options.content_context.mode_name, options.content_context.mode_explicit) {
+        let mode_annotation = match (
+            &options.content_context.mode_name,
+            options.content_context.mode_explicit,
+        ) {
             (Some(mode), true) => format!("── mode: {} (explicit) ──\n", mode),
             _ => String::new(),
         };
@@ -3002,9 +3016,9 @@ impl SymForgeServer {
                     );
                 }
                 // Check if the symbol exists at all in the indexed project
-                let exists_in_project = guard.all_files().any(|(_, file)| {
-                    file.symbols.iter().any(|s| s.name == input.name)
-                });
+                let exists_in_project = guard
+                    .all_files()
+                    .any(|(_, file)| file.symbols.iter().any(|s| s.name == input.name));
                 drop(guard);
                 if !exists_in_project {
                     return format!(
