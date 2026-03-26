@@ -112,31 +112,20 @@ impl ConfigExtractor for JsonExtractor {
 
         let mut symbols = Vec::new();
         let mut sort_order: u32 = 0;
+        let mut walker = JsonWalker {
+            content,
+            line_starts: &line_starts,
+            symbols: &mut symbols,
+            sort_order: &mut sort_order,
+        };
 
         // Only walk into the root if it is an object or array.
         match &value {
             serde_json::Value::Object(map) => {
-                walk_object(
-                    content,
-                    &line_starts,
-                    map,
-                    "",
-                    0,
-                    &mut symbols,
-                    &mut sort_order,
-                );
+                walker.walk_object(map, "", 0);
             }
             serde_json::Value::Array(arr) => {
-                walk_array(
-                    content,
-                    &line_starts,
-                    arr,
-                    "",
-                    (0, content.len() as u32),
-                    0,
-                    &mut symbols,
-                    &mut sort_order,
-                );
+                walker.walk_array(arr, "", (0, content.len() as u32), 0);
             }
             _ => {}
         }
@@ -156,139 +145,89 @@ impl ConfigExtractor for JsonExtractor {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn walk_object(
-    content: &[u8],
-    line_starts: &[u32],
-    map: &serde_json::Map<String, serde_json::Value>,
-    parent_path: &str,
-    depth: u32,
-    symbols: &mut Vec<SymbolRecord>,
-    sort_order: &mut u32,
-) {
-    // We need a search cursor so we scan forward through the raw bytes.
-    // Start after the opening `{` of this object.
-    let mut search_from: usize = 0;
-
-    for (key, value) in map.iter() {
-        let key_path = join_key_path(parent_path, key);
-
-        // Find the byte range for this key-value pair in the raw content.
-        let (byte_start, byte_end) = find_key_value_range(content, key, &mut search_from);
-        let byte_range = (byte_start as u32, byte_end as u32);
-
-        let start_line = byte_to_line(line_starts, byte_start as u32);
-        let end_line = byte_to_line(
-            line_starts,
-            byte_end.saturating_sub(1).max(byte_start) as u32,
-        );
-
-        symbols.push(SymbolRecord {
-            name: key_path.clone(),
-            kind: SymbolKind::Key,
-            depth,
-            sort_order: *sort_order,
-            byte_range,
-            line_range: (start_line, end_line),
-            doc_byte_range: None,
-            item_byte_range: Some(byte_range),
-        });
-        *sort_order += 1;
-
-        // Recurse if we haven't hit the depth limit.
-        if depth + 1 < MAX_DEPTH {
-            match value {
-                serde_json::Value::Object(child_map) => {
-                    walk_object(
-                        content,
-                        line_starts,
-                        child_map,
-                        &key_path,
-                        depth + 1,
-                        symbols,
-                        sort_order,
-                    );
-                }
-                serde_json::Value::Array(child_arr) => {
-                    walk_array(
-                        content,
-                        line_starts,
-                        child_arr,
-                        &key_path,
-                        byte_range,
-                        depth + 1,
-                        symbols,
-                        sort_order,
-                    );
-                }
-                _ => {}
-            }
-        }
-    }
+struct JsonWalker<'a> {
+    content: &'a [u8],
+    line_starts: &'a [u32],
+    symbols: &'a mut Vec<SymbolRecord>,
+    sort_order: &'a mut u32,
 }
 
-#[allow(clippy::too_many_arguments)]
-fn walk_array(
-    content: &[u8],
-    line_starts: &[u32],
-    arr: &[serde_json::Value],
-    parent_path: &str,
-    parent_byte_range: (u32, u32),
-    depth: u32,
-    symbols: &mut Vec<SymbolRecord>,
-    sort_order: &mut u32,
-) {
-    let item_ranges = find_array_item_ranges(content, parent_byte_range);
-    for (i, value) in arr.iter().enumerate() {
-        if i >= MAX_ARRAY_ITEMS {
-            break;
-        }
-
-        let elem_path = join_array_index(parent_path, i);
-        let byte_range = item_ranges.get(i).copied().unwrap_or(parent_byte_range);
-        let start_line = byte_to_line(line_starts, byte_range.0);
+impl JsonWalker<'_> {
+    fn push_key_symbol(&mut self, name: String, depth: u32, byte_range: (u32, u32)) {
+        let start_line = byte_to_line(self.line_starts, byte_range.0);
         let end_line = byte_to_line(
-            line_starts,
+            self.line_starts,
             byte_range.1.saturating_sub(1).max(byte_range.0),
         );
 
-        symbols.push(SymbolRecord {
-            name: elem_path.clone(),
+        self.symbols.push(SymbolRecord {
+            name,
             kind: SymbolKind::Key,
             depth,
-            sort_order: *sort_order,
+            sort_order: *self.sort_order,
             byte_range,
             line_range: (start_line, end_line),
             doc_byte_range: None,
             item_byte_range: Some(byte_range),
         });
-        *sort_order += 1;
+        *self.sort_order += 1;
+    }
 
-        if depth + 1 < MAX_DEPTH {
-            match value {
-                serde_json::Value::Object(child_map) => {
-                    walk_object(
-                        content,
-                        line_starts,
-                        child_map,
-                        &elem_path,
-                        depth + 1,
-                        symbols,
-                        sort_order,
-                    );
+    fn walk_object(
+        &mut self,
+        map: &serde_json::Map<String, serde_json::Value>,
+        parent_path: &str,
+        depth: u32,
+    ) {
+        let mut search_from: usize = 0;
+
+        for (key, value) in map.iter() {
+            let key_path = join_key_path(parent_path, key);
+            let (byte_start, byte_end) = find_key_value_range(self.content, key, &mut search_from);
+            let byte_range = (byte_start as u32, byte_end as u32);
+            self.push_key_symbol(key_path.clone(), depth, byte_range);
+
+            if depth + 1 < MAX_DEPTH {
+                match value {
+                    serde_json::Value::Object(child_map) => {
+                        self.walk_object(child_map, &key_path, depth + 1);
+                    }
+                    serde_json::Value::Array(child_arr) => {
+                        self.walk_array(child_arr, &key_path, byte_range, depth + 1);
+                    }
+                    _ => {}
                 }
-                serde_json::Value::Array(child_arr) => {
-                    walk_array(
-                        content,
-                        line_starts,
-                        child_arr,
-                        &elem_path,
-                        byte_range,
-                        depth + 1,
-                        symbols,
-                        sort_order,
-                    );
+            }
+        }
+    }
+
+    fn walk_array(
+        &mut self,
+        arr: &[serde_json::Value],
+        parent_path: &str,
+        parent_byte_range: (u32, u32),
+        depth: u32,
+    ) {
+        let item_ranges = find_array_item_ranges(self.content, parent_byte_range);
+        for (i, value) in arr.iter().enumerate() {
+            if i >= MAX_ARRAY_ITEMS {
+                break;
+            }
+
+            let elem_path = join_array_index(parent_path, i);
+            let byte_range = item_ranges.get(i).copied().unwrap_or(parent_byte_range);
+            self.push_key_symbol(elem_path.clone(), depth, byte_range);
+
+            if depth + 1 < MAX_DEPTH {
+                match value {
+                    serde_json::Value::Object(child_map) => {
+                        self.walk_object(child_map, &elem_path, depth + 1);
+                    }
+                    serde_json::Value::Array(child_arr) => {
+                        self.walk_array(child_arr, &elem_path, byte_range, depth + 1);
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
     }

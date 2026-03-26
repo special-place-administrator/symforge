@@ -43,15 +43,13 @@ impl ConfigExtractor for TomlExtractor {
             Ok(doc) => {
                 let mut symbols = Vec::new();
                 let mut sort_order: u32 = 0;
-                walk_table(
-                    doc.as_table(),
-                    "",
-                    0,
-                    content,
-                    &line_starts,
-                    &mut symbols,
-                    &mut sort_order,
-                );
+                let mut walker = TomlWalker {
+                    raw: content,
+                    line_starts: &line_starts,
+                    symbols: &mut symbols,
+                    sort_order: &mut sort_order,
+                };
+                walker.walk_table(doc.as_table(), "", 0);
                 ExtractionResult {
                     symbols,
                     outcome: ExtractionOutcome::Ok,
@@ -86,132 +84,87 @@ impl ConfigExtractor for TomlExtractor {
 // toml_edit document walker (used when parse succeeds)
 // ---------------------------------------------------------------------------
 
-fn walk_table(
-    table: &toml_edit::Table,
-    parent_path: &str,
-    depth: u32,
-    raw: &[u8],
-    line_starts: &[u32],
-    symbols: &mut Vec<SymbolRecord>,
-    sort_order: &mut u32,
-) {
-    if depth >= MAX_DEPTH {
-        return;
-    }
-    let mut search_from: usize = 0;
-    for (key, item) in table.iter() {
-        let key_path = join_key_path(parent_path, key);
-        walk_item(
-            item,
-            key,
-            &key_path,
-            depth,
-            raw,
-            line_starts,
-            symbols,
-            sort_order,
-            &mut search_from,
-        );
-    }
+struct TomlWalker<'a> {
+    raw: &'a [u8],
+    line_starts: &'a [u32],
+    symbols: &'a mut Vec<SymbolRecord>,
+    sort_order: &'a mut u32,
 }
 
-#[allow(clippy::too_many_arguments)]
-fn walk_item(
-    item: &toml_edit::Item,
-    raw_key: &str,
-    key_path: &str,
-    depth: u32,
-    raw: &[u8],
-    line_starts: &[u32],
-    symbols: &mut Vec<SymbolRecord>,
-    sort_order: &mut u32,
-    search_from: &mut usize,
-) {
-    match item {
-        toml_edit::Item::None => {}
+impl TomlWalker<'_> {
+    fn push_symbol(&mut self, key_path: &str, depth: u32, start: usize, end: usize) {
+        self.symbols.push(make_symbol(
+            key_path,
+            depth,
+            start,
+            end,
+            *self.sort_order,
+            self.line_starts,
+        ));
+        *self.sort_order += 1;
+    }
 
-        toml_edit::Item::Value(value) => {
-            let (start, end) = find_key_value_bytes(raw, raw_key, *search_from);
-            if end > *search_from {
-                *search_from = end;
-            }
-            symbols.push(make_symbol(
-                key_path,
-                depth,
-                start,
-                end,
-                *sort_order,
-                line_starts,
-            ));
-            *sort_order += 1;
+    fn walk_table(&mut self, table: &toml_edit::Table, parent_path: &str, depth: u32) {
+        if depth >= MAX_DEPTH {
+            return;
+        }
+        let mut search_from: usize = 0;
+        for (key, item) in table.iter() {
+            let key_path = join_key_path(parent_path, key);
+            self.walk_item(item, key, &key_path, depth, &mut search_from);
+        }
+    }
 
-            if depth + 1 < MAX_DEPTH
-                && let Some(inline_table) = value.as_inline_table()
-            {
-                for (k, v) in inline_table.iter() {
-                    let child_path = join_key_path(key_path, k);
-                    walk_item(
-                        &toml_edit::Item::Value(v.clone()),
-                        k,
-                        &child_path,
-                        depth + 1,
-                        raw,
-                        line_starts,
-                        symbols,
-                        sort_order,
-                        search_from,
-                    );
+    fn walk_item(
+        &mut self,
+        item: &toml_edit::Item,
+        raw_key: &str,
+        key_path: &str,
+        depth: u32,
+        search_from: &mut usize,
+    ) {
+        match item {
+            toml_edit::Item::None => {}
+
+            toml_edit::Item::Value(value) => {
+                let (start, end) = find_key_value_bytes(self.raw, raw_key, *search_from);
+                if end > *search_from {
+                    *search_from = end;
+                }
+                self.push_symbol(key_path, depth, start, end);
+
+                if depth + 1 < MAX_DEPTH
+                    && let Some(inline_table) = value.as_inline_table()
+                {
+                    for (k, v) in inline_table.iter() {
+                        let child_path = join_key_path(key_path, k);
+                        self.walk_item(
+                            &toml_edit::Item::Value(v.clone()),
+                            k,
+                            &child_path,
+                            depth + 1,
+                            search_from,
+                        );
+                    }
                 }
             }
-        }
 
-        toml_edit::Item::Table(table) => {
-            let (start, end) = find_table_header_bytes(raw, key_path);
-            symbols.push(make_symbol(
-                key_path,
-                depth,
-                start,
-                end,
-                *sort_order,
-                line_starts,
-            ));
-            *sort_order += 1;
-            if depth + 1 < MAX_DEPTH {
-                walk_table(
-                    table,
-                    key_path,
-                    depth + 1,
-                    raw,
-                    line_starts,
-                    symbols,
-                    sort_order,
-                );
-            }
-        }
-
-        toml_edit::Item::ArrayOfTables(array) => {
-            for (i, table) in array.iter().enumerate() {
-                let indexed_path = format!("{}[{}]", key_path, i);
-                let (start, end) = find_array_table_header_bytes(raw, key_path, i);
-                symbols.push(make_symbol(
-                    &indexed_path,
-                    depth,
-                    start,
-                    end,
-                    *sort_order,
-                    line_starts,
-                ));
-                *sort_order += 1;
+            toml_edit::Item::Table(table) => {
+                let (start, end) = find_table_header_bytes(self.raw, key_path);
+                self.push_symbol(key_path, depth, start, end);
                 if depth + 1 < MAX_DEPTH {
-                    walk_table(
-                        table,
-                        &indexed_path,
-                        depth + 1,
-                        raw,
-                        line_starts,
-                        symbols,
-                        sort_order,
-                    );
+                    self.walk_table(table, key_path, depth + 1);
+                }
+            }
+
+            toml_edit::Item::ArrayOfTables(array) => {
+                for (i, table) in array.iter().enumerate() {
+                    let indexed_path = format!("{}[{}]", key_path, i);
+                    let (start, end) = find_array_table_header_bytes(self.raw, key_path, i);
+                    self.push_symbol(&indexed_path, depth, start, end);
+                    if depth + 1 < MAX_DEPTH {
+                        self.walk_table(table, &indexed_path, depth + 1);
+                    }
                 }
             }
         }
