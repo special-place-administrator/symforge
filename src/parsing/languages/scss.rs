@@ -1,6 +1,6 @@
 use tree_sitter::Node;
 
-use super::{NO_DOC_SPEC, at_rule_name, collect_symbols, push_symbol};
+use super::{NO_DOC_SPEC, SymbolSink, at_rule_name, collect_symbols, push_symbol};
 use crate::domain::{SymbolKind, SymbolRecord};
 
 pub fn extract_symbols(node: &Node, source: &str) -> Vec<SymbolRecord> {
@@ -26,16 +26,8 @@ fn walk_node(
                         .trim()
                         .to_string();
                     if !name.is_empty() {
-                        push_symbol(
-                            node,
-                            source,
-                            name,
-                            SymbolKind::Other,
-                            depth,
-                            sort_order,
-                            symbols,
-                            &NO_DOC_SPEC,
-                        );
+                        let mut sink = SymbolSink::new(source, sort_order, symbols, &NO_DOC_SPEC);
+                        push_symbol(node, name, SymbolKind::Other, depth, &mut sink);
                     }
                     break;
                 }
@@ -51,15 +43,13 @@ fn walk_node(
                 if child.kind() == "property_name" || child.kind() == "variable" {
                     let text = child.utf8_text(source.as_bytes()).unwrap_or("");
                     if text.starts_with('$') || text.starts_with("--") {
+                        let mut sink = SymbolSink::new(source, sort_order, symbols, &NO_DOC_SPEC);
                         push_symbol(
                             node,
-                            source,
                             text.to_string(),
                             SymbolKind::Variable,
                             depth,
-                            sort_order,
-                            symbols,
-                            &NO_DOC_SPEC,
+                            &mut sink,
                         );
                     }
                     break;
@@ -68,31 +58,15 @@ fn walk_node(
         }
         "mixin_statement" => {
             if let Some(name) = find_identifier_child(node, source) {
-                push_symbol(
-                    node,
-                    source,
-                    name,
-                    SymbolKind::Function,
-                    depth,
-                    sort_order,
-                    symbols,
-                    &NO_DOC_SPEC,
-                );
+                let mut sink = SymbolSink::new(source, sort_order, symbols, &NO_DOC_SPEC);
+                push_symbol(node, name, SymbolKind::Function, depth, &mut sink);
             }
             walk_children(node, source, depth + 1, sort_order, symbols);
         }
         "function_statement" => {
             if let Some(name) = find_identifier_child(node, source) {
-                push_symbol(
-                    node,
-                    source,
-                    name,
-                    SymbolKind::Function,
-                    depth,
-                    sort_order,
-                    symbols,
-                    &NO_DOC_SPEC,
-                );
+                let mut sink = SymbolSink::new(source, sort_order, symbols, &NO_DOC_SPEC);
+                push_symbol(node, name, SymbolKind::Function, depth, &mut sink);
             }
             walk_children(node, source, depth + 1, sort_order, symbols);
         }
@@ -104,32 +78,16 @@ fn walk_node(
         "media_statement" => {
             let name = at_rule_name(node, source);
             if !name.is_empty() {
-                push_symbol(
-                    node,
-                    source,
-                    name,
-                    SymbolKind::Module,
-                    depth,
-                    sort_order,
-                    symbols,
-                    &NO_DOC_SPEC,
-                );
+                let mut sink = SymbolSink::new(source, sort_order, symbols, &NO_DOC_SPEC);
+                push_symbol(node, name, SymbolKind::Module, depth, &mut sink);
             }
             walk_children(node, source, depth + 1, sort_order, symbols);
         }
         "keyframes_statement" => {
             let name = at_rule_name(node, source);
             if !name.is_empty() {
-                push_symbol(
-                    node,
-                    source,
-                    name,
-                    SymbolKind::Module,
-                    depth,
-                    sort_order,
-                    symbols,
-                    &NO_DOC_SPEC,
-                );
+                let mut sink = SymbolSink::new(source, sort_order, symbols, &NO_DOC_SPEC);
+                push_symbol(node, name, SymbolKind::Module, depth, &mut sink);
             }
             // Do NOT recurse — skip inner keyframe steps.
         }

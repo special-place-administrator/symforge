@@ -1,6 +1,6 @@
 use tree_sitter::Node;
 
-use super::{DocCommentSpec, collect_symbols, push_symbol, walk_children};
+use super::{DocCommentSpec, SymbolSink, collect_symbols, push_symbol, walk_children};
 
 fn is_elixir_doc(node: &tree_sitter::Node, source: &str) -> bool {
     let start = node.start_byte();
@@ -35,16 +35,8 @@ fn walk_node(
     if node.kind() == "call"
         && let Some((symbol_kind, name)) = extract_elixir_def(node, source)
     {
-        push_symbol(
-            node,
-            source,
-            name,
-            symbol_kind,
-            depth,
-            sort_order,
-            symbols,
-            &DOC_SPEC,
-        );
+        let mut sink = SymbolSink::new(source, sort_order, symbols, &DOC_SPEC);
+        push_symbol(node, name, symbol_kind, depth, &mut sink);
         walk_children(
             node,
             source,

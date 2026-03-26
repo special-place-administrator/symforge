@@ -147,24 +147,43 @@ pub(super) fn collect_symbols(node: &Node, source: &str, walk: WalkNodeFn) -> Ve
     symbols
 }
 
-#[allow(clippy::too_many_arguments)]
+pub(super) struct SymbolSink<'a, 'b> {
+    source: &'a str,
+    sort_order: &'b mut u32,
+    symbols: &'b mut Vec<SymbolRecord>,
+    doc_spec: &'a DocCommentSpec,
+}
+
+impl<'a, 'b> SymbolSink<'a, 'b> {
+    pub(super) fn new(
+        source: &'a str,
+        sort_order: &'b mut u32,
+        symbols: &'b mut Vec<SymbolRecord>,
+        doc_spec: &'a DocCommentSpec,
+    ) -> Self {
+        Self {
+            source,
+            sort_order,
+            symbols,
+            doc_spec,
+        }
+    }
+}
+
 pub(super) fn push_symbol(
     node: &Node,
-    source: &str,
     name: String,
     kind: SymbolKind,
     depth: u32,
-    sort_order: &mut u32,
-    symbols: &mut Vec<SymbolRecord>,
-    doc_spec: &DocCommentSpec,
+    sink: &mut SymbolSink<'_, '_>,
 ) {
-    let doc_byte_range = scan_doc_range(node, source, doc_spec);
+    let doc_byte_range = scan_doc_range(node, sink.source, sink.doc_spec);
     let byte_range = (node.start_byte() as u32, node.end_byte() as u32);
-    symbols.push(SymbolRecord {
+    sink.symbols.push(SymbolRecord {
         name,
         kind,
         depth,
-        sort_order: *sort_order,
+        sort_order: *sink.sort_order,
         byte_range,
         line_range: (
             node.start_position().row as u32,
@@ -173,19 +192,15 @@ pub(super) fn push_symbol(
         doc_byte_range,
         item_byte_range: Some(byte_range),
     });
-    *sort_order += 1;
+    *sink.sort_order += 1;
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn push_named_symbol<F>(
     node: &Node,
-    source: &str,
     depth: u32,
-    sort_order: &mut u32,
-    symbols: &mut Vec<SymbolRecord>,
     kind: Option<SymbolKind>,
     find_name: F,
-    doc_spec: &DocCommentSpec,
+    sink: &mut SymbolSink<'_, '_>,
 ) -> bool
 where
     F: FnOnce(&Node, &str, SymbolKind) -> Option<String>,
@@ -193,19 +208,10 @@ where
     let Some(symbol_kind) = kind else {
         return false;
     };
-    let Some(name) = find_name(node, source, symbol_kind) else {
+    let Some(name) = find_name(node, sink.source, symbol_kind) else {
         return false;
     };
-    push_symbol(
-        node,
-        source,
-        name,
-        symbol_kind,
-        depth,
-        sort_order,
-        symbols,
-        doc_spec,
-    );
+    push_symbol(node, name, symbol_kind, depth, sink);
     true
 }
 
@@ -284,16 +290,16 @@ mod tests {
         let mut symbols = Vec::new();
         let mut sort_order = 0u32;
 
-        let pushed = push_named_symbol(
-            &function,
-            source,
-            2,
-            &mut sort_order,
-            &mut symbols,
-            Some(SymbolKind::Function),
-            |node, source, _kind| find_first_named_child(node, source, &["identifier"]),
-            &NO_DOC_SPEC,
-        );
+        let pushed = {
+            let mut sink = SymbolSink::new(source, &mut sort_order, &mut symbols, &NO_DOC_SPEC);
+            push_named_symbol(
+                &function,
+                2,
+                Some(SymbolKind::Function),
+                |node, source, _kind| find_first_named_child(node, source, &["identifier"]),
+                &mut sink,
+            )
+        };
 
         assert!(pushed);
         assert_eq!(sort_order, 1);

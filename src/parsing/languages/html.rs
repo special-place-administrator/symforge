@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use tree_sitter::Node;
 
-use super::{NO_DOC_SPEC, push_symbol};
+use super::{NO_DOC_SPEC, SymbolSink, push_symbol};
 use crate::domain::{SymbolKind, SymbolRecord};
 
 pub fn extract_symbols(node: &Node, source: &str) -> Vec<SymbolRecord> {
@@ -37,16 +37,8 @@ fn walk_node(
                 if is_top_level || is_custom || is_ng_template {
                     let byte_key = (node.start_byte() as u32, node.end_byte() as u32);
                     if emitted.insert(byte_key) {
-                        push_symbol(
-                            node,
-                            source,
-                            name.clone(),
-                            SymbolKind::Other,
-                            depth,
-                            sort_order,
-                            symbols,
-                            &NO_DOC_SPEC,
-                        );
+                        let mut sink = SymbolSink::new(source, sort_order, symbols, &NO_DOC_SPEC);
+                        push_symbol(node, name.clone(), SymbolKind::Other, depth, &mut sink);
                     }
                 }
             }
@@ -127,15 +119,14 @@ fn scan_template_refs(
                                 let ref_name = &text[1..];
                                 let byte_key = (attr.start_byte() as u32, attr.end_byte() as u32);
                                 if emitted.insert(byte_key) {
+                                    let mut sink =
+                                        SymbolSink::new(source, sort_order, symbols, &NO_DOC_SPEC);
                                     push_symbol(
                                         &attr,
-                                        source,
                                         ref_name.to_string(),
                                         SymbolKind::Variable,
                                         depth,
-                                        sort_order,
-                                        symbols,
-                                        &NO_DOC_SPEC,
+                                        &mut sink,
                                     );
                                 }
                             }

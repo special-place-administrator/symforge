@@ -1,6 +1,6 @@
 use tree_sitter::Node;
 
-use super::{DocCommentSpec, collect_symbols, push_named_symbol, walk_children};
+use super::{DocCommentSpec, SymbolSink, collect_symbols, push_named_symbol, walk_children};
 
 pub(super) const DOC_SPEC: DocCommentSpec = DocCommentSpec {
     comment_node_types: &["comment"],
@@ -31,16 +31,16 @@ fn walk_node(
         _ => None,
     };
 
-    push_named_symbol(
-        node,
-        source,
-        depth,
-        sort_order,
-        symbols,
-        kind,
-        |node, source, _| find_cpp_name(node, source),
-        &DOC_SPEC,
-    );
+    {
+        let mut sink = SymbolSink::new(source, sort_order, symbols, &DOC_SPEC);
+        push_named_symbol(
+            node,
+            depth,
+            kind,
+            |node, source, _| find_cpp_name(node, source),
+            &mut sink,
+        );
+    }
     walk_children(node, source, depth, sort_order, symbols, kind, walk_node);
 }
 

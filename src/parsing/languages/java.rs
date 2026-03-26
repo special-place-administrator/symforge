@@ -1,8 +1,8 @@
 use tree_sitter::Node;
 
 use super::{
-    DocCommentSpec, collect_symbols, find_first_named_child, push_named_symbol, push_symbol,
-    walk_children,
+    DocCommentSpec, SymbolSink, collect_symbols, find_first_named_child, push_named_symbol,
+    push_symbol, walk_children,
 };
 
 pub(super) const DOC_SPEC: DocCommentSpec = DocCommentSpec {
@@ -36,16 +36,16 @@ fn walk_node(
         _ => None,
     };
 
-    push_named_symbol(
-        node,
-        source,
-        depth,
-        sort_order,
-        symbols,
-        kind,
-        |node, source, _| find_name(node, source),
-        &DOC_SPEC,
-    );
+    {
+        let mut sink = SymbolSink::new(source, sort_order, symbols, &DOC_SPEC);
+        push_named_symbol(
+            node,
+            depth,
+            kind,
+            |node, source, _| find_name(node, source),
+            &mut sink,
+        );
+    }
     walk_children(node, source, depth, sort_order, symbols, kind, walk_node);
 }
 
@@ -61,16 +61,8 @@ fn extract_field(
         if child.kind() == "variable_declarator"
             && let Some(name) = find_name(&child, source)
         {
-            push_symbol(
-                node,
-                source,
-                name,
-                SymbolKind::Variable,
-                depth,
-                sort_order,
-                symbols,
-                &DOC_SPEC,
-            );
+            let mut sink = SymbolSink::new(source, sort_order, symbols, &DOC_SPEC);
+            push_symbol(node, name, SymbolKind::Variable, depth, &mut sink);
         }
     }
 }
