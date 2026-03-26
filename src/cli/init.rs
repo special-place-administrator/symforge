@@ -19,6 +19,8 @@ use anyhow::Context;
 use serde_json::{Value, json};
 use toml_edit::{Array, DocumentMut, Item, Table, value};
 
+use crate::paths;
+
 use crate::cli::InitClient;
 
 // ---------------------------------------------------------------------------
@@ -147,8 +149,8 @@ pub fn run_init_with_context(
         );
     }
 
-    std::fs::create_dir_all(working_dir.join(".symforge"))
-        .with_context(|| format!("creating {}", working_dir.join(".symforge").display()))?;
+    paths::ensure_symforge_dir(working_dir, "init runtime")
+        .with_context(|| format!("ensuring {}", working_dir.join(".symforge").display()))?;
 
     eprintln!("symforge init complete");
 

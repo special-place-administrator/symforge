@@ -407,30 +407,6 @@ pub fn classify_admission(
     AdmissionDecision::normal()
 }
 
-/// Resolve the project data directory (`.symforge/`) for the given project root.
-///
-/// Checks for `.symforge` first (the canonical name). If it doesn't exist but the
-/// legacy `.tokenizor` directory does, returns that path with a deprecation warning.
-/// If neither exists, returns the `.symforge` path (for new directory creation).
-pub fn resolve_project_data_dir(project_root: &Path) -> PathBuf {
-    let symforge_dir = project_root.join(".symforge");
-    if symforge_dir.exists() {
-        return symforge_dir;
-    }
-
-    let legacy_dir = project_root.join(".tokenizor");
-    if legacy_dir.exists() {
-        tracing::warn!(
-            "Found legacy .tokenizor/ directory. Please rename to .symforge/. \
-             Support for .tokenizor/ will be removed in a future version."
-        );
-        return legacy_dir;
-    }
-
-    // Neither exists — return the canonical name for creation.
-    symforge_dir
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

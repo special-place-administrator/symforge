@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 
 use crate::live_index::{self, SharedIndex};
+use crate::paths;
 use crate::protocol::SymForgeServer;
 use crate::protocol::edit::{
     BatchEditInput, BatchInsertInput, BatchRenameInput, DeleteSymbolInput, EditWithinSymbolInput,
@@ -34,7 +35,6 @@ use crate::protocol::tools::{
 use crate::sidecar::{SidecarState, SymbolSnapshot, TokenStats};
 use crate::watcher::{self, WatcherInfo};
 
-const DAEMON_DIR_NAME: &str = ".symforge";
 pub(crate) const DAEMON_PORT_FILE: &str = "daemon.port";
 const DAEMON_PID_FILE: &str = "daemon.pid";
 const DAEMON_START_LOCK_FILE: &str = "daemon.starting";
@@ -1722,9 +1722,7 @@ pub(crate) fn daemon_dir() -> io::Result<PathBuf> {
 
     let home = dirs::home_dir()
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "home directory not found"))?;
-    let dir = home.join(DAEMON_DIR_NAME);
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir)
+    paths::ensure_symforge_dir(&home, "daemon state")
 }
 
 fn write_daemon_port_file(port: u16) -> io::Result<()> {

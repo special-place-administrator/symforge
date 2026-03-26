@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::domain::{LanguageId, SymbolKind, SymbolRecord};
 use crate::live_index::store::{CircuitBreakerState, IndexedFile, LiveIndex, ParseStatus};

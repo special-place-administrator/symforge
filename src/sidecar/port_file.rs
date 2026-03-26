@@ -8,19 +8,16 @@ use std::net::TcpStream;
 use std::path::PathBuf;
 use std::time::Duration;
 
-const DIR_NAME: &str = ".symforge";
+const DIR_NAME: &str = crate::paths::SYMFORGE_DIR_NAME;
 const PORT_FILE: &str = "sidecar.port";
 const PID_FILE: &str = "sidecar.pid";
 const SESSION_FILE: &str = "sidecar.session";
 
-/// Ensure `.symforge/` exists in the current working directory.
-/// Creates the directory if it doesn't exist. Returns its path.
+/// Ensure the current working directory has a usable `.symforge/` runtime directory.
+/// Legacy `.tokenizor/` directories are migrated automatically when possible.
 pub fn ensure_symforge_dir() -> io::Result<PathBuf> {
-    let dir = PathBuf::from(DIR_NAME);
-    if !dir.exists() {
-        std::fs::create_dir_all(&dir)?;
-    }
-    Ok(dir)
+    let cwd = std::env::current_dir()?;
+    crate::paths::ensure_symforge_dir(&cwd, "sidecar runtime")
 }
 
 /// Write the sidecar port to `.symforge/sidecar.port`.
@@ -246,6 +243,27 @@ mod tests {
         with_temp_dir(|| {
             ensure_symforge_dir().expect("first call should succeed");
             ensure_symforge_dir().expect("second call should also succeed (idempotent)");
+        });
+    }
+
+    #[test]
+    fn test_ensure_symforge_dir_migrates_legacy_directory() {
+        with_temp_dir(|| {
+            let legacy_dir = PathBuf::from(crate::paths::LEGACY_TOKENIZOR_DIR_NAME);
+            std::fs::create_dir_all(&legacy_dir).unwrap();
+            std::fs::write(legacy_dir.join(PORT_FILE), b"8123").unwrap();
+
+            let dir = ensure_symforge_dir().expect("legacy directory should migrate cleanly");
+
+            assert_eq!(dir, std::env::current_dir().unwrap().join(DIR_NAME));
+            assert!(
+                dir.join(PORT_FILE).exists(),
+                "legacy contents should move forward"
+            );
+            assert!(
+                !legacy_dir.exists(),
+                "legacy directory should be renamed to canonical path"
+            );
         });
     }
 
