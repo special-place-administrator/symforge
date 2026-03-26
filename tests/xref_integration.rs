@@ -452,7 +452,7 @@ fn main() {
 }
 
 // ---------------------------------------------------------------------------
-// TOOL-11: get_context_bundle responds under 100ms on a 50-file index
+// TOOL-11: get_symbol_context bundle mode responds under 100ms on a 50-file index
 // ---------------------------------------------------------------------------
 
 #[test]

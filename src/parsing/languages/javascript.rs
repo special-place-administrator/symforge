@@ -1,8 +1,8 @@
 use tree_sitter::Node;
 
 use super::{
-    DocCommentSpec, collect_symbols, find_first_named_child, push_named_symbol, push_symbol,
-    walk_children,
+    DocCommentSpec, SymbolSink, collect_symbols, find_first_named_child, push_named_symbol,
+    push_symbol, walk_children,
 };
 
 pub(super) const DOC_SPEC: DocCommentSpec = DocCommentSpec {
@@ -38,16 +38,24 @@ fn walk_node(
                 for child in node.children(&mut cursor2) {
                     match child.kind() {
                         "arrow_function" | "function_expression" | "generator_function" => {
+                            let mut sink = SymbolSink::new(source, sort_order, symbols, &DOC_SPEC);
                             push_symbol(
-                                node, source, "default".to_string(), SymbolKind::Function,
-                                depth, sort_order, symbols, &DOC_SPEC,
+                                node,
+                                "default".to_string(),
+                                SymbolKind::Function,
+                                depth,
+                                &mut sink,
                             );
                             break;
                         }
                         "class" => {
+                            let mut sink = SymbolSink::new(source, sort_order, symbols, &DOC_SPEC);
                             push_symbol(
-                                node, source, "default".to_string(), SymbolKind::Class,
-                                depth, sort_order, symbols, &DOC_SPEC,
+                                node,
+                                "default".to_string(),
+                                SymbolKind::Class,
+                                depth,
+                                &mut sink,
                             );
                             break;
                         }
@@ -66,16 +74,16 @@ fn walk_node(
         _ => None,
     };
 
-    push_named_symbol(
-        node,
-        source,
-        depth,
-        sort_order,
-        symbols,
-        kind,
-        |node, source, _| find_name(node, source),
-        &DOC_SPEC,
-    );
+    {
+        let mut sink = SymbolSink::new(source, sort_order, symbols, &DOC_SPEC);
+        push_named_symbol(
+            node,
+            depth,
+            kind,
+            |node, source, _| find_name(node, source),
+            &mut sink,
+        );
+    }
     walk_children(node, source, depth, sort_order, symbols, kind, walk_node);
 }
 
@@ -98,9 +106,8 @@ fn extract_variable_declarations(
             } else {
                 SymbolKind::Variable
             };
-            push_symbol(
-                &child, source, name, kind, depth, sort_order, symbols, &DOC_SPEC,
-            );
+            let mut sink = SymbolSink::new(source, sort_order, symbols, &DOC_SPEC);
+            push_symbol(&child, name, kind, depth, &mut sink);
         }
     }
 }

@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 
 use crate::live_index::{self, SharedIndex};
+use crate::paths;
 use crate::protocol::SymForgeServer;
 use crate::protocol::edit::{
     BatchEditInput, BatchInsertInput, BatchRenameInput, DeleteSymbolInput, EditWithinSymbolInput,
@@ -25,16 +26,14 @@ use crate::protocol::edit::{
 };
 use crate::protocol::tools::{
     AnalyzeFileImpactInput, DiffSymbolsInput, ExploreInput, FindDependentsInput,
-    FindImplementationsInput, FindReferencesInput, GetCoChangesInput, GetContextBundleInput,
-    GetFileContentInput, GetFileContextInput, GetFileOutlineInput, GetFileTreeInput,
-    GetRepoMapInput, GetSymbolContextInput, GetSymbolInput, GetSymbolsInput, IndexFolderInput,
-    InspectMatchInput, ResolvePathInput, SearchFilesInput, SearchSymbolsInput, SearchTextInput,
-    TraceSymbolInput, ValidateFileSyntaxInput, WhatChangedInput,
+    FindReferencesInput, GetFileContentInput, GetFileContextInput, GetRepoMapInput,
+    GetSymbolContextInput, GetSymbolInput, IndexFolderInput, InspectMatchInput, SearchFilesInput,
+    SearchSymbolsInput, SearchTextInput, TraceSymbolInput, ValidateFileSyntaxInput,
+    WhatChangedInput,
 };
 use crate::sidecar::{SidecarState, SymbolSnapshot, TokenStats};
 use crate::watcher::{self, WatcherInfo};
 
-const DAEMON_DIR_NAME: &str = ".symforge";
 pub(crate) const DAEMON_PORT_FILE: &str = "daemon.port";
 const DAEMON_PID_FILE: &str = "daemon.pid";
 const DAEMON_START_LOCK_FILE: &str = "daemon.starting";
@@ -206,12 +205,8 @@ pub struct DaemonHealth {
 
 #[derive(Clone)]
 struct SessionRuntime {
-    #[allow(dead_code)]
-    project_name: String,
     canonical_root: PathBuf,
     index: SharedIndex,
-    #[allow(dead_code)]
-    watcher_info: Arc<Mutex<WatcherInfo>>,
     token_stats: Arc<TokenStats>,
     symbol_cache: Arc<RwLock<HashMap<String, Vec<SymbolSnapshot>>>>,
     /// Cached `SymForgeServer` clone — cheap because all inner state is `Arc`-wrapped.
@@ -314,10 +309,10 @@ impl DaemonState {
                 // We won — insert as Inactive, then activate under the same lock
                 // to avoid a second write-lock acquisition.
                 projects.insert(project_id.clone(), new_project);
-                if let Some(project) = projects.get_mut(&project_id) {
-                    if project.activation_state == ActivationState::Inactive {
-                        project.activate();
-                    }
+                if let Some(project) = projects.get_mut(&project_id)
+                    && project.activation_state == ActivationState::Inactive
+                {
+                    project.activate();
                 }
             }
         }
@@ -519,13 +514,11 @@ impl DaemonState {
 
         // Update the session's project association *after* the projects lock is
         // released to maintain lock order (projects before sessions everywhere).
-        if needs_reassign {
-            if let Some(session) = self.sessions.write().get_mut(session_id) {
-                session.project_id = target_project_id;
-                session
-                    .last_seen_at
-                    .store(now_epoch_millis(), Ordering::Relaxed);
-            }
+        if needs_reassign && let Some(session) = self.sessions.write().get_mut(session_id) {
+            session.project_id = target_project_id;
+            session
+                .last_seen_at
+                .store(now_epoch_millis(), Ordering::Relaxed);
         }
 
         Ok(format!(
@@ -545,10 +538,8 @@ impl DaemonState {
         };
         let project = projects.get(&session.project_id)?;
         Some(SessionRuntime {
-            project_name: project.project_name.clone(),
             canonical_root: project.canonical_root.clone(),
             index: Arc::clone(&project.index),
-            watcher_info: Arc::clone(&project.watcher_info),
             token_stats: Arc::clone(&project.token_stats),
             symbol_cache: Arc::clone(&project.symbol_cache),
             server: project.server.clone(),
@@ -893,21 +884,20 @@ fn try_acquire_start_lock() -> anyhow::Result<Option<DaemonStartLock>> {
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
             // Check if the lock is stale (older than 30 seconds).
             // Daemon startup takes <5s normally, so a 30s-old lock is certainly stale.
-            if let Ok(metadata) = std::fs::metadata(&path) {
-                if let Ok(modified) = metadata.modified() {
-                    if modified.elapsed().unwrap_or_default() > std::time::Duration::from_secs(30) {
-                        tracing::warn!("removing stale daemon start lock (age > 30s)");
-                        let _ = std::fs::remove_file(&path);
-                        // Retry creation — another process may grab it first.
-                        match std::fs::OpenOptions::new()
-                            .write(true)
-                            .create_new(true)
-                            .open(&path)
-                        {
-                            Ok(_) => return Ok(Some(DaemonStartLock { path })),
-                            Err(_) => {} // Another process grabbed it — fall through
-                        }
-                    }
+            if let Ok(metadata) = std::fs::metadata(&path)
+                && let Ok(modified) = metadata.modified()
+                && modified.elapsed().unwrap_or_default() > std::time::Duration::from_secs(30)
+            {
+                tracing::warn!("removing stale daemon start lock (age > 30s)");
+                let _ = std::fs::remove_file(&path);
+                // Retry creation — another process may grab it first.
+                if std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&path)
+                    .is_ok()
+                {
+                    return Ok(Some(DaemonStartLock { path }));
                 }
             }
             Ok(None)
@@ -1548,41 +1538,9 @@ async fn execute_tool_call(
     let server = runtime.server;
 
     match tool_name {
-        // Backward-compat alias: get_file_outline → get_file_context with sections=['outline']
-        "get_file_outline" => {
-            let outline_input = decode_params::<GetFileOutlineInput>(params)?;
-            let ctx_input = GetFileContextInput {
-                path: outline_input.path,
-                max_tokens: None,
-                sections: Some(vec!["outline".to_string()]),
-            };
-            Ok(server.get_file_context(Parameters(ctx_input)).await)
-        }
         "get_symbol" => Ok(server
             .get_symbol(Parameters(decode_params::<GetSymbolInput>(params)?))
             .await),
-        // Backward-compat alias: get_symbols → get_symbol with targets[]
-        "get_symbols" => {
-            let batch_input = decode_params::<GetSymbolsInput>(params)?;
-            let merged = GetSymbolInput {
-                path: String::new(),
-                name: String::new(),
-                kind: None,
-                symbol_line: None,
-                targets: Some(batch_input.targets),
-            };
-            Ok(server.get_symbol(Parameters(merged)).await)
-        }
-        // Backward-compat alias: get_repo_outline → get_repo_map with detail='full'
-        "get_repo_outline" => {
-            let merged = GetRepoMapInput {
-                detail: Some("full".to_string()),
-                path: None,
-                depth: None,
-                max_files: None,
-            };
-            Ok(server.get_repo_map(Parameters(merged)).await)
-        }
         "get_repo_map" => Ok(server
             .get_repo_map(Parameters(decode_params::<GetRepoMapInput>(params)?))
             .await),
@@ -1625,18 +1583,6 @@ async fn execute_tool_call(
         "search_files" => Ok(server
             .search_files(Parameters(decode_params::<SearchFilesInput>(params)?))
             .await),
-        // Backward-compat alias: resolve_path → search_files with resolve=true
-        "resolve_path" => {
-            let rp = decode_params::<ResolvePathInput>(params)?;
-            let merged = SearchFilesInput {
-                query: rp.hint,
-                limit: None,
-                current_file: None,
-                changed_with: None,
-                resolve: Some(true),
-            };
-            Ok(server.search_files(Parameters(merged)).await)
-        }
         "health" => Ok(server.health().await),
         "index_folder" => Ok(server
             .index_folder(Parameters(decode_params::<IndexFolderInput>(params)?))
@@ -1653,84 +1599,18 @@ async fn execute_tool_call(
         "find_dependents" => Ok(server
             .find_dependents(Parameters(decode_params::<FindDependentsInput>(params)?))
             .await),
-        // Backward-compat alias: get_file_tree → get_repo_map with detail='tree'
-        "get_file_tree" => {
-            let tree_input = decode_params::<GetFileTreeInput>(params)?;
-            let merged = GetRepoMapInput {
-                detail: Some("tree".to_string()),
-                path: tree_input.path,
-                depth: tree_input.depth,
-                max_files: None,
-            };
-            Ok(server.get_repo_map(Parameters(merged)).await)
-        }
-        // Backward-compat alias: get_context_bundle → get_symbol_context with bundle=true
-        "get_context_bundle" => {
-            let bundle_input = decode_params::<GetContextBundleInput>(params)?;
-            let merged = GetSymbolContextInput {
-                name: bundle_input.name,
-                file: None,
-                path: Some(bundle_input.path),
-                symbol_kind: bundle_input.kind,
-                symbol_line: bundle_input.symbol_line,
-                verbosity: bundle_input.verbosity,
-                bundle: Some(true),
-                sections: None,
-                max_tokens: None,
-            };
-            Ok(server.get_symbol_context(Parameters(merged)).await)
-        }
         "explore" => Ok(server
             .explore(Parameters(decode_params::<ExploreInput>(params)?))
             .await),
-        // Backward-compat alias: get_co_changes → analyze_file_impact with include_co_changes=true
-        "get_co_changes" => {
-            let co_input = decode_params::<GetCoChangesInput>(params)?;
-            let merged = AnalyzeFileImpactInput {
-                path: co_input.path,
-                new_file: None,
-                include_co_changes: Some(true),
-                co_changes_limit: co_input.limit,
-            };
-            Ok(server.analyze_file_impact(Parameters(merged)).await)
-        }
         "diff_symbols" => Ok(server
             .diff_symbols(Parameters(decode_params::<DiffSymbolsInput>(params)?))
             .await),
-        // Backward-compat alias: find_implementations → find_references with mode='implementations'
-        "find_implementations" => {
-            let impl_input = decode_params::<FindImplementationsInput>(params)?;
-            let merged = FindReferencesInput {
-                name: impl_input.name,
-                kind: None,
-                path: None,
-                symbol_kind: None,
-                symbol_line: None,
-                limit: impl_input.limit,
-                max_per_file: None,
-                compact: None,
-                mode: Some("implementations".to_string()),
-                direction: impl_input.direction,
-            };
-            Ok(server.find_references(Parameters(merged)).await)
-        }
         "replace_symbol_body" => Ok(server
             .replace_symbol_body(Parameters(decode_params::<ReplaceSymbolBodyInput>(params)?))
             .await),
         "insert_symbol" => Ok(server
             .insert_symbol(Parameters(decode_params::<InsertSymbolInput>(params)?))
             .await),
-        // Backward-compat aliases for the merged insert_symbol tool
-        "insert_before_symbol" => {
-            let mut input = decode_params::<InsertSymbolInput>(params)?;
-            input.position = Some("before".to_string());
-            Ok(server.insert_symbol(Parameters(input)).await)
-        }
-        "insert_after_symbol" => {
-            let mut input = decode_params::<InsertSymbolInput>(params)?;
-            input.position = Some("after".to_string());
-            Ok(server.insert_symbol(Parameters(input)).await)
-        }
         "delete_symbol" => Ok(server
             .delete_symbol(Parameters(decode_params::<DeleteSymbolInput>(params)?))
             .await),
@@ -1813,9 +1693,7 @@ pub(crate) fn daemon_dir() -> io::Result<PathBuf> {
 
     let home = dirs::home_dir()
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "home directory not found"))?;
-    let dir = home.join(DAEMON_DIR_NAME);
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir)
+    paths::ensure_symforge_dir(&home)
 }
 
 fn write_daemon_port_file(port: u16) -> io::Result<()> {
@@ -2329,10 +2207,12 @@ mod tests {
 
         let response = client
             .post(format!(
-                "{base_url}/v1/sessions/{}/tools/get_repo_outline",
+                "{base_url}/v1/sessions/{}/tools/get_repo_map",
                 opened.session_id
             ))
-            .json(&serde_json::json!({}))
+            .json(&serde_json::json!({
+                "detail": "full"
+            }))
             .send()
             .await
             .expect("tool request");
@@ -2374,28 +2254,32 @@ mod tests {
             "search_files should return the indexed file, got: {search_files_body}"
         );
 
-        let resolve_path = client
+        let resolved_path = client
             .post(format!(
-                "{base_url}/v1/sessions/{}/tools/resolve_path",
+                "{base_url}/v1/sessions/{}/tools/search_files",
                 opened.session_id
             ))
             .json(&serde_json::json!({
-                "hint": "main.rs"
+                "query": "main.rs",
+                "resolve": true
             }))
             .send()
             .await
-            .expect("resolve_path request");
+            .expect("search_files resolve request");
 
         assert!(
-            resolve_path.status().is_success(),
-            "resolve_path endpoint should succeed, got {}",
-            resolve_path.status()
+            resolved_path.status().is_success(),
+            "search_files resolve mode should succeed, got {}",
+            resolved_path.status()
         );
 
-        let resolve_path_body = resolve_path.text().await.expect("resolve_path body");
+        let resolved_path_body = resolved_path
+            .text()
+            .await
+            .expect("search_files resolve body");
         assert!(
-            resolve_path_body.contains("src/main.rs"),
-            "resolve_path should return the indexed file, got: {resolve_path_body}"
+            resolved_path_body.contains("src/main.rs"),
+            "search_files resolve mode should return the indexed file, got: {resolved_path_body}"
         );
 
         let _ = handle.shutdown_tx.send(());
@@ -2797,10 +2681,12 @@ mod tests {
 
         let outline = client
             .post(format!(
-                "{base_url}/v1/sessions/{}/tools/get_repo_outline",
+                "{base_url}/v1/sessions/{}/tools/get_repo_map",
                 opened.session_id
             ))
-            .json(&serde_json::json!({}))
+            .json(&serde_json::json!({
+                "detail": "full"
+            }))
             .send()
             .await
             .expect("outline request")

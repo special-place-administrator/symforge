@@ -10,14 +10,15 @@
 //! 6. Create `.symforge/` in the current working directory (runtime needs it).
 //!
 //! Identification: any hook entry whose `hooks[].command` contains the substring
-//! `"symforge hook"` or `"tokenizor hook"` (legacy) is considered a symforge-owned
-//! entry and will be replaced.
+//! `"symforge hook"` is considered a symforge-owned entry and will be replaced.
 
 use std::path::PathBuf;
 
 use anyhow::Context;
 use serde_json::{Value, json};
 use toml_edit::{Array, DocumentMut, Item, Table, value};
+
+use crate::paths;
 
 use crate::cli::InitClient;
 
@@ -61,9 +62,6 @@ const CODEX_STARTUP_TIMEOUT_SEC: i64 = 30;
 const CODEX_TOOL_TIMEOUT_SEC: i64 = 120;
 const SYMFORGE_GUIDANCE_START: &str = "<!-- SYMFORGE START -->";
 const SYMFORGE_GUIDANCE_END: &str = "<!-- SYMFORGE END -->";
-/// Legacy marker strings for backward-compatible detection during upsert.
-const LEGACY_GUIDANCE_START: &str = "<!-- TOKENIZOR START -->";
-const LEGACY_GUIDANCE_END: &str = "<!-- TOKENIZOR END -->";
 
 /// Entry point called by main.rs for `symforge init`.
 pub fn run_init(client: InitClient) -> anyhow::Result<()> {
@@ -147,8 +145,8 @@ pub fn run_init_with_context(
         );
     }
 
-    std::fs::create_dir_all(working_dir.join(".symforge"))
-        .with_context(|| format!("creating {}", working_dir.join(".symforge").display()))?;
+    paths::ensure_symforge_dir(working_dir)
+        .with_context(|| format!("ensuring {}", working_dir.join(".symforge").display()))?;
 
     eprintln!("symforge init complete");
 
@@ -380,19 +378,13 @@ fn build_user_prompt_submit_entries(binary_path: &str) -> Vec<Value> {
 // Merge helpers
 // ---------------------------------------------------------------------------
 
-/// Returns `true` if a hook entry array contains a symforge or legacy tokenizor hook command.
-///
-/// The binary may be named `symforge`, `symforge.exe`, or legacy `tokenizor`/`tokenizor-mcp`
-/// (with optional `.exe`), so we check for "symforge" OR "tokenizor" anywhere in the command
-/// AND " hook" as the subcommand indicator.
+/// Returns `true` if a hook entry array contains a symforge hook command.
 fn is_symforge_entry(entry: &Value) -> bool {
     if let Some(hooks) = entry["hooks"].as_array() {
         hooks.iter().any(|h| {
             h["command"]
                 .as_str()
-                .map(|cmd| {
-                    (cmd.contains("symforge") || cmd.contains("tokenizor")) && cmd.contains(" hook")
-                })
+                .map(|cmd| cmd.contains("symforge") && cmd.contains(" hook"))
                 .unwrap_or(false)
         })
     } else {
@@ -402,7 +394,7 @@ fn is_symforge_entry(entry: &Value) -> bool {
 
 /// Merge `new_entries` into the `event_key` array of the hooks object.
 ///
-/// Existing symforge/tokenizor entries (identified by `is_symforge_entry`) are filtered
+/// Existing symforge entries (identified by `is_symforge_entry`) are filtered
 /// out before appending the fresh entries, which achieves idempotency.
 fn merge_event_entries(
     hooks: &mut serde_json::Map<String, Value>,
@@ -668,23 +660,10 @@ fn upsert_guidance_markdown(path: &std::path::Path, guidance_block: &str) -> any
 }
 
 fn upsert_markdown_block(existing: &str, guidance_block: &str) -> String {
-    // Try new marker first, then fall back to legacy marker for backward compat.
     if let Some(start) = existing.find(SYMFORGE_GUIDANCE_START)
         && let Some(end_marker_start) = existing[start..].find(SYMFORGE_GUIDANCE_END)
     {
         let end = start + end_marker_start + SYMFORGE_GUIDANCE_END.len();
-        let mut merged = String::new();
-        merged.push_str(&existing[..start]);
-        merged.push_str(guidance_block);
-        merged.push_str(&existing[end..]);
-        return merged;
-    }
-
-    // Backward compat: detect and replace legacy TOKENIZOR markers.
-    if let Some(start) = existing.find(LEGACY_GUIDANCE_START)
-        && let Some(end_marker_start) = existing[start..].find(LEGACY_GUIDANCE_END)
-    {
-        let end = start + end_marker_start + LEGACY_GUIDANCE_END.len();
         let mut merged = String::new();
         merged.push_str(&existing[..start]);
         merged.push_str(guidance_block);
@@ -958,8 +937,7 @@ mod tests {
 
     #[test]
     fn test_init_migrates_old_three_entry_format() {
-        // Old 3-entry format from Phase 5 (legacy tokenizor binary name).
-        let old_binary = "/usr/local/bin/tokenizor";
+        let old_binary = "/usr/local/bin/symforge";
         let initial = json!({
             "hooks": {
                 "PostToolUse": [
@@ -1095,30 +1073,6 @@ mod tests {
     }
 
     #[test]
-    fn test_is_symforge_entry_detects_legacy_tokenizor_command() {
-        let entry = json!({
-            "matcher": "Read",
-            "hooks": [{"type": "command", "command": "/path/tokenizor hook read"}]
-        });
-        assert!(
-            is_symforge_entry(&entry),
-            "must detect legacy tokenizor hook command for backward compat"
-        );
-    }
-
-    #[test]
-    fn test_is_symforge_entry_detects_legacy_tokenizor_mcp_binary() {
-        let entry = json!({
-            "matcher": "Read|Edit|Write|Grep",
-            "hooks": [{"type": "command", "command": "C:/Users/user/node_modules/tokenizor-mcp/bin/tokenizor-mcp.exe hook"}]
-        });
-        assert!(
-            is_symforge_entry(&entry),
-            "must detect legacy tokenizor-mcp.exe binary name"
-        );
-    }
-
-    #[test]
     fn test_is_symforge_entry_ignores_non_symforge() {
         let entry = json!({
             "matcher": "Bash",
@@ -1153,10 +1107,10 @@ mod tests {
             "should include get_symbol"
         );
         assert!(
-            !allowed
+            allowed
                 .iter()
-                .any(|v| v.as_str() == Some("mcp__symforge__get_file_outline")),
-            "should not include alias-only tool names"
+                .any(|v| v.as_str() == Some("mcp__symforge__get_file_context")),
+            "should include get_file_context"
         );
         let first_len = allowed.len();
         // Should not duplicate on re-run
@@ -1180,8 +1134,8 @@ mod tests {
             "should contain canonical raw-read tool: {content}"
         );
         assert!(
-            !content.contains("get_file_outline"),
-            "should not write alias-only tool names: {content}"
+            content.contains("get_file_context"),
+            "should contain canonical context tool: {content}"
         );
         assert!(
             content.contains("project_doc_fallback_filenames = [\"AGENTS.md\", \"CLAUDE.md\"]"),

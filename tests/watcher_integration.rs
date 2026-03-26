@@ -1,3 +1,4 @@
+use parking_lot::Mutex;
 /// Integration tests for the file watcher — proves FRSH-01 through FRSH-06 and RELY-03.
 ///
 /// Each test uses a real tempdir, spawns the watcher via tokio::spawn, performs a
@@ -17,7 +18,6 @@
 ///   test_watcher_ignores_non_source_files          → filter correctness
 use std::fs;
 use std::path::Path;
-use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::Duration;
 

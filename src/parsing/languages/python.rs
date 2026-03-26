@@ -1,8 +1,8 @@
 use tree_sitter::Node;
 
 use super::{
-    NO_DOC_SPEC, collect_symbols, find_first_named_child, push_named_symbol, push_symbol,
-    walk_children,
+    NO_DOC_SPEC, SymbolSink, collect_symbols, find_first_named_child, push_named_symbol,
+    push_symbol, walk_children,
 };
 use crate::domain::{SymbolKind, SymbolRecord};
 
@@ -30,29 +30,21 @@ fn walk_node(
                     "class_definition" => Some(SymbolKind::Class),
                     _ => None,
                 };
-                if let Some(k) = inner_kind {
-                    if let Some(name) = find_name(&child, source) {
-                        push_symbol(
-                            node,
-                            source,
-                            name,
-                            k,
-                            depth,
-                            sort_order,
-                            symbols,
-                            &NO_DOC_SPEC,
-                        );
-                        // Recurse into the inner definition's children (nested classes/methods)
-                        walk_children(
-                            &child,
-                            source,
-                            depth,
-                            sort_order,
-                            symbols,
-                            Some(k),
-                            walk_node,
-                        );
-                    }
+                if let Some(k) = inner_kind
+                    && let Some(name) = find_name(&child, source)
+                {
+                    let mut sink = SymbolSink::new(source, sort_order, symbols, &NO_DOC_SPEC);
+                    push_symbol(node, name, k, depth, &mut sink);
+                    // Recurse into the inner definition's children (nested classes/methods)
+                    walk_children(
+                        &child,
+                        source,
+                        depth,
+                        sort_order,
+                        symbols,
+                        Some(k),
+                        walk_node,
+                    );
                 }
             }
             return;
@@ -60,16 +52,16 @@ fn walk_node(
         _ => None,
     };
 
-    push_named_symbol(
-        node,
-        source,
-        depth,
-        sort_order,
-        symbols,
-        kind,
-        |node, source, _| find_name(node, source),
-        &NO_DOC_SPEC,
-    );
+    {
+        let mut sink = SymbolSink::new(source, sort_order, symbols, &NO_DOC_SPEC);
+        push_named_symbol(
+            node,
+            depth,
+            kind,
+            |node, source, _| find_name(node, source),
+            &mut sink,
+        );
+    }
     walk_children(node, source, depth, sort_order, symbols, kind, walk_node);
 }
 

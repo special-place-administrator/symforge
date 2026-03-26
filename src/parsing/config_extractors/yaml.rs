@@ -40,30 +40,19 @@ impl ConfigExtractor for YamlExtractor {
 
         let mut symbols = Vec::new();
         let mut sort_order: u32 = 0;
+        let mut walker = YamlWalker {
+            content,
+            line_starts: &line_starts,
+            symbols: &mut symbols,
+            sort_order: &mut sort_order,
+        };
 
         match &value {
             serde_yml::Value::Mapping(map) => {
-                walk_mapping(
-                    content,
-                    &line_starts,
-                    map,
-                    "",
-                    0,
-                    &mut symbols,
-                    &mut sort_order,
-                );
+                walker.walk_mapping(map, "", 0);
             }
             serde_yml::Value::Sequence(seq) => {
-                walk_sequence(
-                    content,
-                    &line_starts,
-                    seq,
-                    "",
-                    (0, content.len() as u32),
-                    0,
-                    &mut symbols,
-                    &mut sort_order,
-                );
+                walker.walk_sequence(seq, "", (0, content.len() as u32), 0);
             }
             _ => {}
         }
@@ -205,147 +194,151 @@ fn find_substring(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
 }
 
-/// Walk a YAML mapping, emitting a SymbolRecord per key and recursing.
-fn walk_mapping(
-    content: &[u8],
-    line_starts: &[u32],
-    map: &serde_yml::Mapping,
-    parent_path: &str,
-    depth: u32,
-    symbols: &mut Vec<SymbolRecord>,
-    sort_order: &mut u32,
-) {
-    let mut search_from: usize = 0;
+struct YamlWalker<'a> {
+    content: &'a [u8],
+    line_starts: &'a [u32],
+    symbols: &'a mut Vec<SymbolRecord>,
+    sort_order: &'a mut u32,
+}
 
-    for (k, v) in map.iter() {
-        let key_str = match value_as_key_str(k) {
-            Some(s) => s,
-            None => continue, // skip non-scalar keys
-        };
-
-        let key_path = join_key_path(parent_path, &key_str);
-
-        let (byte_start, byte_end) = find_yaml_key_range(content, &key_str, &mut search_from);
-        let byte_range = (byte_start as u32, byte_end as u32);
-
-        let start_line = byte_to_line(line_starts, byte_start as u32);
+impl YamlWalker<'_> {
+    fn push_key_symbol(&mut self, name: String, depth: u32, byte_range: (u32, u32)) {
+        let start_line = byte_to_line(self.line_starts, byte_range.0);
         let end_line = byte_to_line(
-            line_starts,
-            (byte_end.saturating_sub(1).max(byte_start)) as u32,
+            self.line_starts,
+            byte_range.1.saturating_sub(1).max(byte_range.0),
         );
 
-        symbols.push(SymbolRecord {
-            name: key_path.clone(),
+        self.symbols.push(SymbolRecord {
+            name,
             kind: SymbolKind::Key,
             depth,
-            sort_order: *sort_order,
+            sort_order: *self.sort_order,
             byte_range,
             item_byte_range: Some(byte_range),
             line_range: (start_line, end_line),
             doc_byte_range: None,
         });
-        *sort_order += 1;
+        *self.sort_order += 1;
+    }
 
-        if depth + 1 < MAX_DEPTH {
-            match v {
-                serde_yml::Value::Mapping(child_map) => {
-                    walk_mapping(
-                        content,
-                        line_starts,
-                        child_map,
-                        &key_path,
-                        depth + 1,
-                        symbols,
-                        sort_order,
-                    );
+    fn walk_mapping(&mut self, map: &serde_yml::Mapping, parent_path: &str, depth: u32) {
+        let mut search_from: usize = 0;
+
+        for (k, v) in map.iter() {
+            let key_str = match value_as_key_str(k) {
+                Some(s) => s,
+                None => continue,
+            };
+
+            let key_path = join_key_path(parent_path, &key_str);
+            let (byte_start, byte_end) =
+                find_yaml_key_range(self.content, &key_str, &mut search_from);
+            let byte_range = (byte_start as u32, byte_end as u32);
+            self.push_key_symbol(key_path.clone(), depth, byte_range);
+
+            if depth + 1 < MAX_DEPTH {
+                match v {
+                    serde_yml::Value::Mapping(child_map) => {
+                        self.walk_mapping(child_map, &key_path, depth + 1);
+                    }
+                    serde_yml::Value::Sequence(child_seq) => {
+                        self.walk_sequence(child_seq, &key_path, byte_range, depth + 1);
+                    }
+                    _ => {}
                 }
-                serde_yml::Value::Sequence(child_seq) => {
-                    walk_sequence(
-                        content,
-                        line_starts,
-                        child_seq,
-                        &key_path,
-                        byte_range,
-                        depth + 1,
-                        symbols,
-                        sort_order,
-                    );
+            }
+        }
+    }
+
+    fn walk_sequence(
+        &mut self,
+        seq: &[serde_yml::Value],
+        parent_path: &str,
+        parent_byte_range: (u32, u32),
+        depth: u32,
+    ) {
+        let item_ranges = find_sequence_item_ranges(self.content, parent_byte_range);
+        for (i, v) in seq.iter().enumerate() {
+            if i >= MAX_ARRAY_ITEMS {
+                break;
+            }
+
+            let elem_path = join_array_index(parent_path, i);
+            let byte_range = item_ranges.get(i).copied().unwrap_or(parent_byte_range);
+            self.push_key_symbol(elem_path.clone(), depth, byte_range);
+
+            if depth + 1 < MAX_DEPTH {
+                match v {
+                    serde_yml::Value::Mapping(child_map) => {
+                        self.walk_mapping(child_map, &elem_path, depth + 1);
+                    }
+                    serde_yml::Value::Sequence(child_seq) => {
+                        self.walk_sequence(child_seq, &elem_path, byte_range, depth + 1);
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
     }
 }
 
-/// Walk a YAML sequence, emitting a SymbolRecord per element and recursing.
-fn walk_sequence(
-    content: &[u8],
-    line_starts: &[u32],
-    seq: &[serde_yml::Value],
-    parent_path: &str,
-    parent_byte_range: (u32, u32),
-    depth: u32,
-    symbols: &mut Vec<SymbolRecord>,
-    sort_order: &mut u32,
-) {
-    for (i, v) in seq.iter().enumerate() {
-        if i >= MAX_ARRAY_ITEMS {
-            break;
+fn find_sequence_item_ranges(content: &[u8], parent_byte_range: (u32, u32)) -> Vec<(u32, u32)> {
+    let start = parent_byte_range.0 as usize;
+    let end = (parent_byte_range.1 as usize).min(content.len());
+    if start >= end {
+        return Vec::new();
+    }
+
+    let mut cursor = start;
+    let mut item_indent: Option<usize> = None;
+    let mut current_start: Option<usize> = None;
+    let mut ranges = Vec::new();
+    while cursor < end {
+        let line_start = cursor;
+        let line_end = content[cursor..end]
+            .iter()
+            .position(|&b| b == b'\n')
+            .map_or(end, |offset| cursor + offset + 1);
+        cursor = line_end;
+
+        let line = &content[line_start..line_end];
+        let indent = line
+            .iter()
+            .take_while(|&&b| b == b' ' || b == b'\t')
+            .count();
+        let rest = &line[indent..];
+        if rest.is_empty() || matches!(rest[0], b'#' | b'\r' | b'\n') {
+            continue;
         }
 
-        let elem_path = join_array_index(parent_path, i);
+        let is_item = rest[0] == b'-'
+            && rest
+                .get(1)
+                .is_some_and(|next| matches!(next, b' ' | b'\t' | b'\r' | b'\n'));
+        if !is_item {
+            continue;
+        }
 
-        // TODO: compute exact per-element byte ranges by scanning for `- ` list
-        // markers at the appropriate indentation level. For now, fall back to the
-        // parent sequence's range, which is strictly better than the full-file span.
-        let byte_range = parent_byte_range;
-        let start_line = byte_to_line(line_starts, byte_range.0);
-        let end_line = byte_to_line(
-            line_starts,
-            byte_range.1.saturating_sub(1).max(byte_range.0),
-        );
-
-        symbols.push(SymbolRecord {
-            name: elem_path.clone(),
-            kind: SymbolKind::Key,
-            depth,
-            sort_order: *sort_order,
-            byte_range,
-            item_byte_range: Some(byte_range),
-            line_range: (start_line, end_line),
-            doc_byte_range: None,
-        });
-        *sort_order += 1;
-
-        if depth + 1 < MAX_DEPTH {
-            match v {
-                serde_yml::Value::Mapping(child_map) => {
-                    walk_mapping(
-                        content,
-                        line_starts,
-                        child_map,
-                        &elem_path,
-                        depth + 1,
-                        symbols,
-                        sort_order,
-                    );
-                }
-                serde_yml::Value::Sequence(child_seq) => {
-                    walk_sequence(
-                        content,
-                        line_starts,
-                        child_seq,
-                        &elem_path,
-                        byte_range,
-                        depth + 1,
-                        symbols,
-                        sort_order,
-                    );
-                }
-                _ => {}
+        match item_indent {
+            None => {
+                item_indent = Some(indent);
+                current_start = Some(line_start);
             }
+            Some(existing_indent) if indent == existing_indent => {
+                if let Some(previous_start) = current_start.replace(line_start) {
+                    ranges.push((previous_start as u32, line_start as u32));
+                }
+            }
+            _ => {}
         }
     }
+
+    if let Some(previous_start) = current_start {
+        ranges.push((previous_start as u32, end as u32));
+    }
+
+    ranges
 }
 
 #[cfg(test)]
@@ -439,5 +432,46 @@ mod tests {
                 content.len()
             );
         }
+    }
+
+    #[test]
+    fn test_sequence_items_get_precise_byte_ranges() {
+        let content = b"items:\n  - alpha\n  - nested:\n      ok: true\n  - gamma\n";
+        let result = YamlExtractor.extract(content);
+        assert!(matches!(result.outcome, ExtractionOutcome::Ok));
+
+        let first = result
+            .symbols
+            .iter()
+            .find(|sym| sym.name == "items[0]")
+            .expect("first sequence item");
+        let second = result
+            .symbols
+            .iter()
+            .find(|sym| sym.name == "items[1]")
+            .expect("second sequence item");
+        let third = result
+            .symbols
+            .iter()
+            .find(|sym| sym.name == "items[2]")
+            .expect("third sequence item");
+
+        let first_text =
+            std::str::from_utf8(&content[first.byte_range.0 as usize..first.byte_range.1 as usize])
+                .unwrap();
+        let second_text = std::str::from_utf8(
+            &content[second.byte_range.0 as usize..second.byte_range.1 as usize],
+        )
+        .unwrap();
+        let third_text =
+            std::str::from_utf8(&content[third.byte_range.0 as usize..third.byte_range.1 as usize])
+                .unwrap();
+
+        assert!(first_text.trim_end().ends_with("- alpha"));
+        assert!(second_text.contains("- nested:"));
+        assert!(second_text.contains("ok: true"));
+        assert!(third_text.trim_end().ends_with("- gamma"));
+        assert_ne!(first.byte_range, second.byte_range);
+        assert_ne!(second.byte_range, third.byte_range);
     }
 }

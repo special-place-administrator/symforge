@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use parking_lot::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant, SystemTime};
@@ -465,7 +465,7 @@ impl SharedIndexHandle {
             let repair_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 live.repair_file_indices(&path_clone);
             }));
-            if let Err(_) = repair_result {
+            if repair_result.is_err() {
                 tracing::error!(
                     "repair also panicked for '{}' — index may be inconsistent",
                     path_clone

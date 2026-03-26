@@ -1,6 +1,6 @@
 use tree_sitter::Node;
 
-use super::{DocCommentSpec, collect_symbols, push_symbol, walk_children};
+use super::{DocCommentSpec, SymbolSink, collect_symbols, push_symbol, walk_children};
 
 fn is_elixir_doc(node: &tree_sitter::Node, source: &str) -> bool {
     let start = node.start_byte();
@@ -8,9 +8,7 @@ fn is_elixir_doc(node: &tree_sitter::Node, source: &str) -> bool {
     if end > source.len() {
         return false;
     }
-    let text = std::str::from_utf8(&source.as_bytes()[start..end])
-        .unwrap_or("")
-        .trim_start();
+    let text = source[start..end].trim_start();
     text.starts_with("@doc") || text.starts_with("@moduledoc") || text.starts_with("@typedoc")
 }
 
@@ -37,16 +35,8 @@ fn walk_node(
     if node.kind() == "call"
         && let Some((symbol_kind, name)) = extract_elixir_def(node, source)
     {
-        push_symbol(
-            node,
-            source,
-            name,
-            symbol_kind,
-            depth,
-            sort_order,
-            symbols,
-            &DOC_SPEC,
-        );
+        let mut sink = SymbolSink::new(source, sort_order, symbols, &DOC_SPEC);
+        push_symbol(node, name, symbol_kind, depth, &mut sink);
         walk_children(
             node,
             source,

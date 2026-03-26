@@ -60,7 +60,7 @@ pub(super) fn scan_doc_range(
         let is_comment_node = spec.comment_node_types.contains(&sibling.kind());
         let is_custom_doc = spec
             .custom_doc_check
-            .map_or(false, |check| check(&sibling, source));
+            .is_some_and(|check| check(&sibling, source));
 
         if !is_comment_node && !is_custom_doc {
             break;
@@ -83,17 +83,14 @@ pub(super) fn scan_doc_range(
         }
 
         // If doc_prefixes is set, check the text prefix.
-        if is_comment_node {
-            if let Some(prefixes) = spec.doc_prefixes {
-                let text_start = sibling.start_byte();
-                let text_end = sibling.end_byte();
-                if text_end <= source.len() {
-                    let text =
-                        std::str::from_utf8(&source.as_bytes()[text_start..text_end]).unwrap_or("");
-                    let trimmed = text.trim_start();
-                    if !prefixes.iter().any(|p| trimmed.starts_with(p)) {
-                        break;
-                    }
+        if is_comment_node && let Some(prefixes) = spec.doc_prefixes {
+            let text_start = sibling.start_byte();
+            let text_end = sibling.end_byte();
+            if text_end <= source.len() {
+                let text = &source[text_start..text_end];
+                let trimmed = text.trim_start();
+                if !prefixes.iter().any(|p| trimmed.starts_with(p)) {
+                    break;
                 }
             }
         }
@@ -150,23 +147,43 @@ pub(super) fn collect_symbols(node: &Node, source: &str, walk: WalkNodeFn) -> Ve
     symbols
 }
 
+pub(super) struct SymbolSink<'a, 'b> {
+    source: &'a str,
+    sort_order: &'b mut u32,
+    symbols: &'b mut Vec<SymbolRecord>,
+    doc_spec: &'a DocCommentSpec,
+}
+
+impl<'a, 'b> SymbolSink<'a, 'b> {
+    pub(super) fn new(
+        source: &'a str,
+        sort_order: &'b mut u32,
+        symbols: &'b mut Vec<SymbolRecord>,
+        doc_spec: &'a DocCommentSpec,
+    ) -> Self {
+        Self {
+            source,
+            sort_order,
+            symbols,
+            doc_spec,
+        }
+    }
+}
+
 pub(super) fn push_symbol(
     node: &Node,
-    source: &str,
     name: String,
     kind: SymbolKind,
     depth: u32,
-    sort_order: &mut u32,
-    symbols: &mut Vec<SymbolRecord>,
-    doc_spec: &DocCommentSpec,
+    sink: &mut SymbolSink<'_, '_>,
 ) {
-    let doc_byte_range = scan_doc_range(node, source, doc_spec);
+    let doc_byte_range = scan_doc_range(node, sink.source, sink.doc_spec);
     let byte_range = (node.start_byte() as u32, node.end_byte() as u32);
-    symbols.push(SymbolRecord {
+    sink.symbols.push(SymbolRecord {
         name,
         kind,
         depth,
-        sort_order: *sort_order,
+        sort_order: *sink.sort_order,
         byte_range,
         line_range: (
             node.start_position().row as u32,
@@ -175,18 +192,15 @@ pub(super) fn push_symbol(
         doc_byte_range,
         item_byte_range: Some(byte_range),
     });
-    *sort_order += 1;
+    *sink.sort_order += 1;
 }
 
 pub(super) fn push_named_symbol<F>(
     node: &Node,
-    source: &str,
     depth: u32,
-    sort_order: &mut u32,
-    symbols: &mut Vec<SymbolRecord>,
     kind: Option<SymbolKind>,
     find_name: F,
-    doc_spec: &DocCommentSpec,
+    sink: &mut SymbolSink<'_, '_>,
 ) -> bool
 where
     F: FnOnce(&Node, &str, SymbolKind) -> Option<String>,
@@ -194,19 +208,10 @@ where
     let Some(symbol_kind) = kind else {
         return false;
     };
-    let Some(name) = find_name(node, source, symbol_kind) else {
+    let Some(name) = find_name(node, sink.source, symbol_kind) else {
         return false;
     };
-    push_symbol(
-        node,
-        source,
-        name,
-        symbol_kind,
-        depth,
-        sort_order,
-        symbols,
-        doc_spec,
-    );
+    push_symbol(node, name, symbol_kind, depth, sink);
     true
 }
 
@@ -285,16 +290,16 @@ mod tests {
         let mut symbols = Vec::new();
         let mut sort_order = 0u32;
 
-        let pushed = push_named_symbol(
-            &function,
-            source,
-            2,
-            &mut sort_order,
-            &mut symbols,
-            Some(SymbolKind::Function),
-            |node, source, _kind| find_first_named_child(node, source, &["identifier"]),
-            &NO_DOC_SPEC,
-        );
+        let pushed = {
+            let mut sink = SymbolSink::new(source, &mut sort_order, &mut symbols, &NO_DOC_SPEC);
+            push_named_symbol(
+                &function,
+                2,
+                Some(SymbolKind::Function),
+                |node, source, _kind| find_first_named_child(node, source, &["identifier"]),
+                &mut sink,
+            )
+        };
 
         assert!(pushed);
         assert_eq!(sort_order, 1);

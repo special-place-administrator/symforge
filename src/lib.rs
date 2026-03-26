@@ -7,6 +7,7 @@ pub mod hash;
 pub mod live_index;
 pub mod observability;
 pub mod parsing;
+pub mod paths;
 pub mod protocol;
 pub mod sidecar;
 pub mod watcher;

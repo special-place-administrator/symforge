@@ -1,8 +1,8 @@
 use tree_sitter::Node;
 
 use super::{
-    DocCommentSpec, collect_symbols, find_first_named_child, push_named_symbol, push_symbol,
-    walk_children,
+    DocCommentSpec, SymbolSink, collect_symbols, find_first_named_child, push_named_symbol,
+    push_symbol, walk_children,
 };
 
 pub(super) const DOC_SPEC: DocCommentSpec = DocCommentSpec {
@@ -37,16 +37,16 @@ fn walk_node(
         _ => None,
     };
 
-    push_named_symbol(
-        node,
-        source,
-        depth,
-        sort_order,
-        symbols,
-        kind,
-        |node, source, _| find_name(node, source),
-        &DOC_SPEC,
-    );
+    {
+        let mut sink = SymbolSink::new(source, sort_order, symbols, &DOC_SPEC);
+        push_named_symbol(
+            node,
+            depth,
+            kind,
+            |node, source, _| find_name(node, source),
+            &mut sink,
+        );
+    }
     walk_children(node, source, depth, sort_order, symbols, kind, walk_node);
 }
 
@@ -63,9 +63,8 @@ fn extract_type_declarations(
             && let Some(name) = find_name(&child, source)
         {
             let kind = classify_type_spec(&child);
-            push_symbol(
-                &child, source, name, kind, depth, sort_order, symbols, &DOC_SPEC,
-            );
+            let mut sink = SymbolSink::new(source, sort_order, symbols, &DOC_SPEC);
+            push_symbol(&child, name, kind, depth, &mut sink);
         }
     }
 }
@@ -95,9 +94,9 @@ fn extract_var_declarations(
         if (child.kind() == "const_spec" || child.kind() == "var_spec")
             && let Some(name) = find_name(&child, source)
         {
+            let mut sink = SymbolSink::new(source, sort_order, symbols, &DOC_SPEC);
             push_symbol(
                 &child,
-                source,
                 name,
                 if is_const {
                     SymbolKind::Constant
@@ -105,9 +104,7 @@ fn extract_var_declarations(
                     SymbolKind::Variable
                 },
                 depth,
-                sort_order,
-                symbols,
-                &DOC_SPEC,
+                &mut sink,
             );
         }
     }

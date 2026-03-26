@@ -15,6 +15,7 @@ use crate::domain::{FileClassification, LanguageId, ReferenceRecord, SymbolRecor
 use crate::live_index::store::{
     CircuitBreakerState, IndexLoadSource, IndexedFile, LiveIndex, ParseStatus, SnapshotVerifyState,
 };
+use crate::paths;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -22,7 +23,6 @@ use crate::domain::ParseDiagnostic;
 
 const CURRENT_VERSION: u32 = 4;
 const INDEX_FILENAME: &str = "index.bin";
-const SYMFORGE_DIR: &str = ".symforge";
 
 // ── Snapshot types ────────────────────────────────────────────────────────────
 
@@ -69,7 +69,7 @@ pub struct StatCheckResult {
 
 // ── Public API ─────────────────────────────────────────────────────────────────
 
-/// Serialize `index` to `.symforge/index.bin` inside `project_root`.
+/// Serialize `index` to `index.bin` inside the project's data directory.
 ///
 /// Uses an atomic write pattern (write to tmp, then rename) so a crash during
 /// write never leaves a partially-written file.
@@ -109,9 +109,7 @@ fn write_snapshot(snapshot: IndexSnapshot, project_root: &Path) -> anyhow::Resul
     // Serialize with postcard
     let bytes = postcard::to_stdvec(&snapshot)?;
 
-    // Ensure .symforge directory exists
-    let dir = project_root.join(SYMFORGE_DIR);
-    std::fs::create_dir_all(&dir)?;
+    let dir = paths::ensure_symforge_dir(project_root)?;
 
     // Atomic write: tmp file then rename
     let final_path = dir.join(INDEX_FILENAME);
@@ -123,20 +121,21 @@ fn write_snapshot(snapshot: IndexSnapshot, project_root: &Path) -> anyhow::Resul
     info!(
         bytes = bytes.len(),
         files = snapshot.files.len(),
-        "index serialized to .symforge/index.bin"
+        path = %final_path.display(),
+        "index serialized to project data dir"
     );
 
     Ok(())
 }
 
-/// Load an `IndexSnapshot` from `.symforge/index.bin`.
+/// Load an `IndexSnapshot` from the project's data directory.
 ///
 /// Returns `None` (not panic) on:
 /// - file not found (first run or crash)
 /// - version mismatch (schema upgrade)
 /// - corrupt / truncated bytes
 pub fn load_snapshot(project_root: &Path) -> Option<IndexSnapshot> {
-    let path = project_root.join(SYMFORGE_DIR).join(INDEX_FILENAME);
+    let path = paths::resolve_symforge_dir(project_root).join(INDEX_FILENAME);
 
     let bytes = match std::fs::read(&path) {
         Ok(b) => b,

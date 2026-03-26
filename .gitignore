@@ -10,7 +10,9 @@
 npm/*.tgz
 .env
 .claude/settings.local.json
-spacetime/tokenizor/target/
+.claude/circuit-breaker-state.json
+.planning/telemetry/*.jsonl
+spacetime/*/target/
 __pycache__/
 
 # Windows NUL device name — some tools accidentally create a tracked 'nul' file

@@ -6,6 +6,10 @@ description = "SymForge — in-memory code intelligence MCP server for Claude Co
 license-file = "LICENSE"
 repository = "https://github.com/special-place-administrator/symforge"
 
+[lib]
+name = "symforge"
+path = "src/lib.rs"
+
 [[bin]]
 name = "symforge"
 path = "src/main.rs"
@@ -59,11 +63,6 @@ globset = "0.4"
 git2 = { version = "0.20", default-features = false, features = ["vendored-libgit2"] }
 tempfile = "3"
 libc = "0.2.183"
-
-[features]
-# v1 feature gate: keeps retrieval_conformance.rs compiling without v1 domain types.
-# These tests will be rewritten for v2 response format in Phase 2.
-v1 = []
 
 [dev-dependencies]
 tempfile = "3"

@@ -177,13 +177,6 @@ use super::SymForgeServer;
 
 // ─── Input parameter structs ────────────────────────────────────────────────
 
-/// Input for `get_file_outline`.
-#[derive(Deserialize, Serialize, JsonSchema)]
-pub struct GetFileOutlineInput {
-    /// Relative path to the file (e.g. "src/lib.rs").
-    pub path: String,
-}
-
 /// Input for `get_symbol`.
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct GetSymbolInput {
@@ -226,14 +219,6 @@ pub struct SymbolTarget {
     /// End byte offset for code slice (inclusive).
     #[serde(default, deserialize_with = "lenient_u32")]
     pub end_byte: Option<u32>,
-}
-
-/// Input for `get_symbols` (batch).
-#[derive(Deserialize, Serialize, JsonSchema)]
-pub struct GetSymbolsInput {
-    /// List of symbol or code-slice targets.
-    #[serde(deserialize_with = "lenient_vec_required")]
-    pub targets: Vec<SymbolTarget>,
 }
 
 /// Input for `search_symbols`.
@@ -321,7 +306,7 @@ pub struct SearchTextInput {
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct SearchFilesInput {
     /// Filename, folder name, or partial path. Required for search and resolve modes. Optional when `changed_with` is provided.
-    #[serde(default, alias = "hint")]
+    #[serde(default)]
     pub query: String,
     /// Optional maximum number of matches to return (default 20, capped at 50).
     #[serde(default, deserialize_with = "lenient_u32")]
@@ -333,14 +318,6 @@ pub struct SearchFilesInput {
     /// Set to true for exact path resolution mode: resolves an ambiguous filename or partial path to one exact project path.
     #[serde(default, deserialize_with = "lenient_bool")]
     pub resolve: Option<bool>,
-}
-
-/// Input for `resolve_path`.
-#[derive(Deserialize, Serialize, JsonSchema)]
-pub struct ResolvePathInput {
-    /// Filename, partial path, or ambiguous path hint.
-    #[serde(alias = "query")]
-    pub hint: String,
 }
 
 /// Input for `index_folder`.
@@ -478,18 +455,6 @@ pub struct FindDependentsInput {
     pub compact: Option<bool>,
 }
 
-/// Input for `find_implementations`.
-#[derive(Deserialize, Serialize, JsonSchema)]
-pub struct FindImplementationsInput {
-    /// Trait/interface name or implementing type name to search for.
-    pub name: String,
-    /// Search direction: "trait" (find implementors of a trait), "type" (find traits a type implements), or "auto" (default: search both directions).
-    pub direction: Option<String>,
-    /// Maximum entries to show (default 200).
-    #[serde(default, deserialize_with = "lenient_u32")]
-    pub limit: Option<u32>,
-}
-
 /// Input for `get_repo_map`.
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct GetRepoMapInput {
@@ -503,32 +468,6 @@ pub struct GetRepoMapInput {
     /// Maximum number of files to include in the output (only used when detail="full", default: 200).
     #[serde(default, deserialize_with = "lenient_u32")]
     pub max_files: Option<u32>,
-}
-
-/// Input for `get_file_tree` (backward compat).
-#[derive(Deserialize, Serialize, JsonSchema)]
-pub struct GetFileTreeInput {
-    /// Subtree path to browse (default: project root).
-    pub path: Option<String>,
-    /// Max depth levels to expand (default: 2, max: 5).
-    #[serde(default, deserialize_with = "lenient_u32")]
-    pub depth: Option<u32>,
-}
-
-/// Input for `get_context_bundle`.
-#[derive(Deserialize, Serialize, JsonSchema)]
-pub struct GetContextBundleInput {
-    /// File path containing the symbol.
-    pub path: String,
-    /// Symbol name to get context for.
-    pub name: String,
-    /// Optional kind filter for the symbol lookup (e.g., "fn", "struct").
-    pub kind: Option<String>,
-    /// Optional selected symbol line from `search_symbols`.
-    #[serde(default, deserialize_with = "lenient_u32")]
-    pub symbol_line: Option<u32>,
-    /// Output verbosity: "signature" (name+params+return only, ~80% smaller), "compact" (signature + first doc line), "full" (default — complete body).
-    pub verbosity: Option<String>,
 }
 
 /// Input for `get_file_context`.
@@ -652,16 +591,6 @@ pub struct ExploreInput {
     pub language: Option<String>,
     /// Optional relative path prefix scope (e.g., "src/", "backend/").
     pub path_prefix: Option<String>,
-}
-
-/// Input for `get_co_changes`.
-#[derive(Deserialize, Serialize, JsonSchema)]
-pub struct GetCoChangesInput {
-    /// Relative path to the file to query co-changes for.
-    pub path: String,
-    /// Maximum number of co-changing files to return (default 10).
-    #[serde(default, deserialize_with = "lenient_u32")]
-    pub limit: Option<u32>,
 }
 
 /// Input for `diff_symbols`.
@@ -795,10 +724,10 @@ fn filter_paths_by_prefix_and_language(
     Ok(paths
         .into_iter()
         .filter(|path| {
-            if let Some(ref pfx) = prefix {
-                if !path.starts_with(pfx.as_str()) {
-                    return false;
-                }
+            if let Some(ref pfx) = prefix
+                && !path.starts_with(pfx.as_str())
+            {
+                return false;
             }
             if let Some(ref lang) = lang_filter {
                 let ext = path.rsplit('.').next().unwrap_or("");
@@ -1490,6 +1419,51 @@ fn sidecar_state_for_server(server: &SymForgeServer) -> SidecarState {
     }
 }
 
+fn symbol_candidate_paths(index: &crate::live_index::store::LiveIndex, name: &str) -> Vec<String> {
+    let mut candidates: Vec<String> = index
+        .all_files()
+        .filter_map(|(path, file)| {
+            if file.symbols.iter().any(|s| s.name == name) {
+                Some(path.to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
+    candidates.sort();
+    candidates.dedup();
+    candidates
+}
+
+fn render_symbol_context_header(
+    file: &IndexedFile,
+    name: &str,
+    symbol_kind: Option<&str>,
+    symbol_line: Option<u32>,
+    verbosity: &str,
+) -> Option<String> {
+    use crate::live_index::query::{SymbolSelectorMatch, resolve_symbol_selector};
+
+    match resolve_symbol_selector(file, name, symbol_kind, symbol_line) {
+        SymbolSelectorMatch::Selected(_, sym) => {
+            let body = std::str::from_utf8(
+                &file.content[sym.byte_range.0 as usize..sym.byte_range.1 as usize],
+            )
+            .ok()?;
+            let rendered = format::apply_verbosity(body, verbosity);
+            Some(format!(
+                "{}\n[{}, {}:{}-{}]",
+                rendered,
+                sym.kind,
+                file.relative_path,
+                sym.line_range.0 + 1,
+                sym.line_range.1 + 1
+            ))
+        }
+        SymbolSelectorMatch::NotFound | SymbolSelectorMatch::Ambiguous(_) => None,
+    }
+}
+
 enum CapturedGetSymbolsEntry {
     SymbolLookup {
         file: Arc<IndexedFile>,
@@ -1673,16 +1647,12 @@ impl SymForgeServer {
         description = "Start here for project orientation and the first code-reading pass before any broad raw file read. Returns a structural overview of the repository. Modes: (1) default/compact: ~500 token overview with file count, languages, and directory tree. (2) detail='full': complete symbol outline of every file — warning: large output. (3) detail='tree': browsable file tree with per-file symbol counts and language tags — supports path and depth params for subtree browsing. NOT for file details (use get_file_context) or finding symbols (use search_symbols)."
     )]
     pub(crate) async fn get_repo_map(&self, params: Parameters<GetRepoMapInput>) -> String {
+        if let Some(result) = self.proxy_tool_call("get_repo_map", &params.0).await {
+            return result;
+        }
         let detail = params.0.detail.as_deref().unwrap_or("compact");
         match detail {
             "full" => {
-                // Full symbol outline (old get_repo_outline behavior)
-                if let Some(result) = self
-                    .proxy_tool_call_without_params("get_repo_outline")
-                    .await
-                {
-                    return result;
-                }
                 let published = self.index.published_state();
                 if let Some(message) = loading_guard_message_from_published(&published) {
                     return message;
@@ -1751,19 +1721,6 @@ impl SymForgeServer {
                 }
             }
             "tree" => {
-                // Browsable file tree (old get_file_tree behavior)
-                if let Some(result) = self
-                    .proxy_tool_call(
-                        "get_file_tree",
-                        &serde_json::json!({
-                            "path": params.0.path,
-                            "depth": params.0.depth,
-                        }),
-                    )
-                    .await
-                {
-                    return result;
-                }
                 let published = self.index.published_state();
                 if let Some(message) = loading_guard_message_from_published(&published) {
                     return message;
@@ -1777,10 +1734,6 @@ impl SymForgeServer {
                 format::file_tree_view_with_skipped(&view.files, &skipped, path, depth)
             }
             _ => {
-                // Compact overview (default)
-                if let Some(result) = self.proxy_tool_call_without_params("get_repo_map").await {
-                    return result;
-                }
                 let guard = self.index.read();
                 loading_guard!(guard);
                 drop(guard);
@@ -1807,7 +1760,7 @@ impl SymForgeServer {
     }
 
     /// Rich file summary: symbol outline, imports, consumers, references, and git activity.
-    /// Use sections=['outline'] for a compact symbol outline only (replaces the old get_file_outline tool).
+    /// Use sections=['outline'] for a compact symbol outline only.
     /// Use sections=['outline','imports'] to limit output. Best tool for understanding a file before editing.
     /// Much smaller than reading the raw file.
     /// NOT for reading actual source code (use get_file_content or get_symbol).
@@ -1870,27 +1823,14 @@ impl SymForgeServer {
         &self,
         params: Parameters<GetSymbolContextInput>,
     ) -> String {
+        if let Some(result) = self.proxy_tool_call("get_symbol_context", &params.0).await {
+            return result;
+        }
         if params.0.bundle.unwrap_or(false) {
-            // Bundle mode (old get_context_bundle behavior)
             let path = match params.0.path.as_deref() {
                 Some(p) => p.to_string(),
                 None => return "Error: bundle=true requires the 'path' parameter.".to_string(),
             };
-            if let Some(result) = self
-                .proxy_tool_call(
-                    "get_context_bundle",
-                    &serde_json::json!({
-                        "path": path,
-                        "name": params.0.name,
-                        "kind": params.0.symbol_kind,
-                        "symbol_line": params.0.symbol_line,
-                        "verbosity": params.0.verbosity,
-                    }),
-                )
-                .await
-            {
-                return result;
-            }
             let (view, raw_chars) = {
                 let guard = self.index.read();
                 loading_guard!(guard);
@@ -1951,25 +1891,16 @@ impl SymForgeServer {
         let file_path_hint = params.0.path.as_deref().or(params.0.file.as_deref());
         // Auto-resolve path from index when not provided
         let resolved_path: Option<String>;
+        let auto_resolved_candidate_count: usize;
         let file_path_hint = if file_path_hint.is_some() {
             resolved_path = None;
+            auto_resolved_candidate_count = 0;
             file_path_hint
         } else {
             let guard = self.index.read();
-            let mut candidates: Vec<String> = guard
-                .all_files()
-                .filter_map(|(path, file)| {
-                    if file.symbols.iter().any(|s| s.name == params.0.name) {
-                        Some(path.to_string())
-                    } else {
-                        None
-                    }
-                })
-                .take(5)
-                .collect();
-            // Sort for deterministic selection when multiple files match.
-            candidates.sort();
+            let candidates = symbol_candidate_paths(&guard, &params.0.name);
             drop(guard);
+            auto_resolved_candidate_count = candidates.len();
             if candidates.len() == 1 {
                 resolved_path = Some(candidates.into_iter().next().unwrap());
                 resolved_path.as_deref()
@@ -1994,33 +1925,13 @@ impl SymForgeServer {
             let raw = file.as_ref().map(|f| f.content.len()).unwrap_or(0);
 
             let header = file.and_then(|f| {
-                let sym = f.symbols.iter().find(|s| {
-                    s.name == params.0.name
-                        && params
-                            .0
-                            .symbol_kind
-                            .as_deref()
-                            .map(|k| s.kind.to_string().eq_ignore_ascii_case(k))
-                            .unwrap_or(true)
-                        && params
-                            .0
-                            .symbol_line
-                            .map(|l| s.line_range.0 + 1 == l)
-                            .unwrap_or(true)
-                })?;
-                let body = std::str::from_utf8(
-                    &f.content[sym.byte_range.0 as usize..sym.byte_range.1 as usize],
+                render_symbol_context_header(
+                    f.as_ref(),
+                    &params.0.name,
+                    params.0.symbol_kind.as_deref(),
+                    params.0.symbol_line,
+                    verbosity,
                 )
-                .ok()?;
-                let rendered = format::apply_verbosity(body, verbosity);
-                Some(format!(
-                    "{}\n[{}, {}:{}-{}]",
-                    rendered,
-                    sym.kind,
-                    f.relative_path,
-                    sym.line_range.0 + 1,
-                    sym.line_range.1 + 1
-                ))
             });
 
             (header, raw)
@@ -2048,23 +1959,15 @@ impl SymForgeServer {
                     "edit_within_symbol / replace_symbol_body (edits)",
                 ]));
                 // Add disambiguation note when path was auto-resolved from multiple candidates
-                if params.0.path.is_none() && params.0.file.is_none() {
-                    if let Some(ref resolved) = resolved_path {
-                        let guard = self.index.read();
-                        let count = guard
-                            .all_files()
-                            .filter(|(_, file)| {
-                                file.symbols.iter().any(|s| s.name == params.0.name)
-                            })
-                            .count();
-                        drop(guard);
-                        if count > 1 {
-                            output.push_str(&format!(
-                                "\n\nNote: {} symbols named \"{}\" found — showing from {}. Specify path for precision.",
-                                count, params.0.name, resolved
-                            ));
-                        }
-                    }
+                if params.0.path.is_none()
+                    && params.0.file.is_none()
+                    && auto_resolved_candidate_count > 1
+                    && let Some(ref resolved) = resolved_path
+                {
+                    output.push_str(&format!(
+                        "\n\nNote: {} symbols named \"{}\" found — showing from {}. Specify path for precision.",
+                        auto_resolved_candidate_count, params.0.name, resolved
+                    ));
                 }
                 let saved = raw_chars.saturating_sub(output.len());
                 let footer = format::compact_savings_footer(output.len(), raw_chars);
@@ -2137,9 +2040,7 @@ impl SymForgeServer {
                     match temporal.files.get(path) {
                         Some(history) => {
                             result.push_str("\n\n");
-                            result.push_str(&format::get_co_changes_result_view(
-                                path, history, limit,
-                            ));
+                            result.push_str(&format::co_changes_result_view(path, history, limit));
                         }
                         None => {
                             result.push_str("\n\nNo git co-change data found for this file.");
@@ -2264,23 +2165,21 @@ impl SymForgeServer {
         // query contains unambiguous regex sequences (\w, \d, \s, \b, .+, .*),
         // enable regex mode automatically. These sequences never appear
         // literally in code, so treating them as literals always gives 0 results.
-        if !is_regex {
-            if let Some(ref q) = params.0.query {
-                let has_regex_escape = q.contains("\\w")
-                    || q.contains("\\d")
-                    || q.contains("\\s")
-                    || q.contains("\\b")
-                    || q.contains("\\W")
-                    || q.contains("\\D")
-                    || q.contains("\\S");
-                if has_regex_escape {
-                    is_regex = true;
-                    // Relax noise policy for auto-detected regex — the user
-                    // is doing a targeted pattern search and expects grep-like
-                    // completeness, so include test files by default.
-                    if params.0.include_tests.is_none() {
-                        options.noise_policy.include_tests = true;
-                    }
+        if !is_regex && let Some(ref q) = params.0.query {
+            let has_regex_escape = q.contains("\\w")
+                || q.contains("\\d")
+                || q.contains("\\s")
+                || q.contains("\\b")
+                || q.contains("\\W")
+                || q.contains("\\D")
+                || q.contains("\\S");
+            if has_regex_escape {
+                is_regex = true;
+                // Relax noise policy for auto-detected regex — the user
+                // is doing a targeted pattern search and expects grep-like
+                // completeness, so include test files by default.
+                if params.0.include_tests.is_none() {
+                    options.noise_policy.include_tests = true;
                 }
             }
         }
@@ -2315,11 +2214,11 @@ impl SymForgeServer {
                 &options,
             );
             // Enrich with callers if follow_refs is set
-            if params.0.follow_refs.unwrap_or(false) {
-                if let Ok(ref mut text_result) = r {
-                    let limit = params.0.follow_refs_limit.unwrap_or(3) as usize;
-                    enrich_with_callers(&guard, text_result, limit);
-                }
+            if params.0.follow_refs.unwrap_or(false)
+                && let Ok(ref mut text_result) = r
+            {
+                let limit = params.0.follow_refs_limit.unwrap_or(3) as usize;
+                enrich_with_callers(&guard, text_result, limit);
             }
             r
         };
@@ -2333,48 +2232,47 @@ impl SymForgeServer {
                 Ok(r) if r.files.is_empty() => true,
                 _ => false,
             };
-            if should_retry {
-                if let Some(ref query) = original_query {
-                    if let Some(fixed) = fix_common_double_escapes(query) {
-                        let retry_result = {
-                            let guard = self.index.read();
-                            loading_guard!(guard);
-                            let mut r = search::search_text_with_options(
-                                &guard,
-                                Some(fixed.as_str()),
-                                params.0.terms.as_deref(),
-                                true,
-                                &options,
-                            );
-                            if params.0.follow_refs.unwrap_or(false) {
-                                if let Ok(ref mut text_result) = r {
-                                    let limit = params.0.follow_refs_limit.unwrap_or(3) as usize;
-                                    enrich_with_callers(&guard, text_result, limit);
-                                }
-                            }
-                            r
-                        };
-                        // Use the retry result if it actually produced matches
-                        if let Ok(ref retry_ok) = retry_result {
-                            if !retry_ok.files.is_empty() {
-                                let mut output = format::search_text_result_view(
-                                    retry_result,
-                                    params.0.group_by.as_deref(),
-                                    params.0.terms.as_deref(),
-                                );
-                                output.push_str(&format!(
-                                    "\n(auto-corrected double-escaped regex: `{}` → `{}`)",
-                                    query, fixed
-                                ));
-                                output.push_str(&format::compact_next_step_hint(&[
-                                    "inspect_match (deep-dive one hit)",
-                                    "get_file_context (file overview)",
-                                    "search_symbols (name-based lookup)",
-                                ]));
-                                return output;
-                            }
-                        }
+            if should_retry
+                && let Some(ref query) = original_query
+                && let Some(fixed) = fix_common_double_escapes(query)
+            {
+                let retry_result = {
+                    let guard = self.index.read();
+                    loading_guard!(guard);
+                    let mut r = search::search_text_with_options(
+                        &guard,
+                        Some(fixed.as_str()),
+                        params.0.terms.as_deref(),
+                        true,
+                        &options,
+                    );
+                    if params.0.follow_refs.unwrap_or(false)
+                        && let Ok(ref mut text_result) = r
+                    {
+                        let limit = params.0.follow_refs_limit.unwrap_or(3) as usize;
+                        enrich_with_callers(&guard, text_result, limit);
                     }
+                    r
+                };
+                // Use the retry result if it actually produced matches
+                if let Ok(ref retry_ok) = retry_result
+                    && !retry_ok.files.is_empty()
+                {
+                    let mut output = format::search_text_result_view(
+                        retry_result,
+                        params.0.group_by.as_deref(),
+                        params.0.terms.as_deref(),
+                    );
+                    output.push_str(&format!(
+                        "\n(auto-corrected double-escaped regex: `{}` → `{}`)",
+                        query, fixed
+                    ));
+                    output.push_str(&format::compact_next_step_hint(&[
+                        "inspect_match (deep-dive one hit)",
+                        "get_file_context (file overview)",
+                        "search_symbols (name-based lookup)",
+                    ]));
+                    return output;
                 }
             }
         }
@@ -2422,34 +2320,32 @@ impl SymForgeServer {
 
             if wants_git {
                 let temporal = self.index.git_temporal();
-                if temporal.state == crate::live_index::git_temporal::GitTemporalState::Ready {
-                    if let Some(history) = temporal.files.get(&params.0.path) {
-                        use crate::live_index::git_temporal::{
-                            churn_bar, churn_label, relative_time,
-                        };
+                if temporal.state == crate::live_index::git_temporal::GitTemporalState::Ready
+                    && let Some(history) = temporal.files.get(&params.0.path)
+                {
+                    use crate::live_index::git_temporal::{churn_bar, churn_label, relative_time};
 
-                        found.git_activity = Some(crate::live_index::GitActivityView {
-                            churn_score: history.churn_score,
-                            churn_bar: churn_bar(history.churn_score),
-                            churn_label: churn_label(history.churn_score).to_string(),
-                            commit_count: history.commit_count,
-                            last_relative: relative_time(history.last_commit.days_ago),
-                            last_hash: history.last_commit.hash.clone(),
-                            last_message: history.last_commit.message_head.clone(),
-                            last_author: history.last_commit.author.clone(),
-                            last_timestamp: history.last_commit.timestamp.clone(),
-                            owners: history
-                                .contributors
-                                .iter()
-                                .map(|c| format!("{} {:.0}%", c.author, c.percentage))
-                                .collect(),
-                            co_changes: history
-                                .co_changes
-                                .iter()
-                                .map(|e| (e.path.clone(), e.coupling_score, e.shared_commits))
-                                .collect(),
-                        });
-                    }
+                    found.git_activity = Some(crate::live_index::GitActivityView {
+                        churn_score: history.churn_score,
+                        churn_bar: churn_bar(history.churn_score),
+                        churn_label: churn_label(history.churn_score).to_string(),
+                        commit_count: history.commit_count,
+                        last_relative: relative_time(history.last_commit.days_ago),
+                        last_hash: history.last_commit.hash.clone(),
+                        last_message: history.last_commit.message_head.clone(),
+                        last_author: history.last_commit.author.clone(),
+                        last_timestamp: history.last_commit.timestamp.clone(),
+                        owners: history
+                            .contributors
+                            .iter()
+                            .map(|c| format!("{} {:.0}%", c.author, c.percentage))
+                            .collect(),
+                        co_changes: history
+                            .co_changes
+                            .iter()
+                            .map(|e| (e.path.clone(), e.coupling_score, e.shared_commits))
+                            .collect(),
+                    });
                 }
             }
         }
@@ -2501,9 +2397,9 @@ impl SymForgeServer {
             let view = {
                 let guard = self.index.read();
                 loading_guard!(guard);
-                guard.capture_resolve_path_view(&params.0.query)
+                guard.capture_search_files_resolve_view(&params.0.query)
             };
-            return format::resolve_path_result_view(&view);
+            return format::search_files_resolve_result_view(&view);
         }
 
         // Handle changed_with (git temporal coupling)
@@ -2594,7 +2490,7 @@ impl SymForgeServer {
         }
         let published = self.index.published_state();
         let watcher_guard = self.watcher_info.lock();
-        let mut result = format::health_report_from_published_state(&published, &*watcher_guard);
+        let mut result = format::health_report_from_published_state(&published, &watcher_guard);
 
         // Append token savings section if the sidecar's TokenStats are available.
         if let Some(ref stats) = self.token_stats {
@@ -2790,11 +2686,8 @@ impl SymForgeServer {
                                 if params.0.include_symbol_diff.unwrap_or(false)
                                     && !filtered.is_empty()
                                 {
-                                    let base = if git_ref.starts_with("branch:") {
-                                        &git_ref[7..]
-                                    } else {
-                                        git_ref.as_str()
-                                    };
+                                    let base =
+                                        git_ref.strip_prefix("branch:").unwrap_or(git_ref.as_str());
                                     let changed_refs: Vec<&str> =
                                         filtered.iter().map(|s| s.as_str()).collect();
                                     let sym_diff = format::diff_symbols_result_view(
@@ -2967,32 +2860,21 @@ impl SymForgeServer {
         description = "Find all references or implementations for a symbol. Modes: (1) default/references: call sites, imports, type usages grouped by file - set compact=true for ~60-75% smaller output. (2) mode='implementations': find trait/interface implementors bidirectionally - set direction='trait'/'type'/'auto'. Use when you need 'who calls this?' or 'who implements this?' NOT for file-level dependencies (use find_dependents). NOT for full refactoring context (use get_symbol_context with sections=[...])."
     )]
     pub(crate) async fn find_references(&self, params: Parameters<FindReferencesInput>) -> String {
+        if let Some(result) = self.proxy_tool_call("find_references", &params.0).await {
+            return result;
+        }
         let input = &params.0;
         let mode = input.mode.as_deref().unwrap_or("references");
 
         if mode == "implementations" {
-            // Implementations mode (old find_implementations behavior)
-            if let Some(result) = self
-                .proxy_tool_call(
-                    "find_implementations",
-                    &serde_json::json!({
-                        "name": input.name,
-                        "direction": input.direction,
-                        "limit": input.limit,
-                    }),
-                )
-                .await
-            {
-                return result;
-            }
             let view = {
                 let guard = self.index.read();
                 loading_guard!(guard);
-                guard.capture_find_implementations_view(&input.name, input.direction.as_deref())
+                guard.capture_implementations_view(&input.name, input.direction.as_deref())
             };
             let cap = input.limit.unwrap_or(200).min(500);
             let limits = format::OutputLimits::new(cap, cap);
-            let result = format::find_implementations_result_view(&view, &input.name, &limits);
+            let result = format::implementations_result_view(&view, &input.name, &limits);
             if view.entries.is_empty() {
                 let guard = self.index.read();
                 let is_concrete = guard.all_files().any(|(_, file)| {
@@ -3032,10 +2914,6 @@ impl SymForgeServer {
             return result;
         }
 
-        // Default: references mode
-        if let Some(result) = self.proxy_tool_call("find_references", &params.0).await {
-            return result;
-        }
         let limits =
             format::OutputLimits::new(input.limit.unwrap_or(20), input.max_per_file.unwrap_or(10));
         let result = {
@@ -3212,8 +3090,7 @@ impl SymForgeServer {
                     })
                     .max();
                 if let Some(weight) = best_match {
-                    let mut injected = 0;
-                    for sym in &file.symbols {
+                    for (injected, sym) in file.symbols.iter().enumerate() {
                         if injected >= limit {
                             break;
                         }
@@ -3222,7 +3099,6 @@ impl SymForgeServer {
                         // matches.  This prevents path-matching files from
                         // dominating over content-matching files.
                         match_counts.entry(entry).or_insert(weight.min(1));
-                        injected += 1;
                     }
                 }
             }
@@ -3246,10 +3122,10 @@ impl SymForgeServer {
         // Filter Phase 1 results by language and path_prefix
         if lang_filter.is_some() || params.0.path_prefix.is_some() {
             match_counts.retain(|(_, _, path), _| {
-                if let Some(ref prefix) = params.0.path_prefix {
-                    if !path.starts_with(prefix.as_str()) {
-                        return false;
-                    }
+                if let Some(ref prefix) = params.0.path_prefix
+                    && !path.starts_with(prefix.as_str())
+                {
+                    return false;
                 }
                 if let Some(ref lang) = lang_filter {
                     let ext = path.rsplit('.').next().unwrap_or("");
@@ -3388,9 +3264,8 @@ impl SymForgeServer {
         related_files.truncate(limit);
 
         // Depth 2+: enrich top symbol hits with signatures and dependents
-        let depth = params.0.depth.unwrap_or(1).max(1).min(3);
-        let mut enriched_symbols: Vec<(String, String, String, Option<String>, Vec<String>)> =
-            Vec::new();
+        let depth = params.0.depth.unwrap_or(1).clamp(1, 3);
+        let mut enriched_symbols: Vec<format::ExploreEnrichedSymbol> = Vec::new();
         // (name, kind, path, signature, dependent_files)
 
         if depth >= 2 {
@@ -3434,7 +3309,7 @@ impl SymForgeServer {
             let impl_limit = 3.min(enriched_symbols.len());
             for (name, _kind, path, _, _) in &enriched_symbols[..impl_limit] {
                 // Implementations (trait → implementors)
-                let impl_view = guard.capture_find_implementations_view(name, None);
+                let impl_view = guard.capture_implementations_view(name, None);
                 let impl_names: Vec<String> = impl_view
                     .entries
                     .iter()
@@ -3466,16 +3341,16 @@ impl SymForgeServer {
             }
         }
 
-        let mut output = format::explore_result_view(
-            &label,
-            &symbol_hits,
-            &text_hits,
-            &related_files,
-            &enriched_symbols,
-            &symbol_impls,
-            &symbol_deps,
+        let mut output = format::explore_result_view(format::ExploreResultViewInput {
+            label: &label,
+            symbol_hits: &symbol_hits,
+            text_hits: &text_hits,
+            related_files: &related_files,
+            enriched_symbols: &enriched_symbols,
+            symbol_impls: &symbol_impls,
+            symbol_deps: &symbol_deps,
             depth,
-        );
+        });
 
         if noise_hidden > 0 {
             output.push_str(&format!(
@@ -3533,10 +3408,10 @@ impl SymForgeServer {
             .iter()
             .map(|s| s.as_str())
             .filter(|p| {
-                if let Some(ref prefix) = params.0.path_prefix {
-                    if !p.starts_with(prefix.as_str()) {
-                        return false;
-                    }
+                if let Some(ref prefix) = params.0.path_prefix
+                    && !p.starts_with(prefix.as_str())
+                {
+                    return false;
                 }
                 if let Some(ref lang) = lang_filter {
                     let ext = p.rsplit('.').next().unwrap_or("");
@@ -4111,6 +3986,25 @@ mod tests {
 
     fn make_symbol(name: &str, kind: SymbolKind, line_start: u32, line_end: u32) -> SymbolRecord {
         let byte_range = (0, 10);
+        SymbolRecord {
+            name: name.to_string(),
+            kind,
+            depth: 0,
+            sort_order: 0,
+            byte_range,
+            item_byte_range: Some(byte_range),
+            line_range: (line_start, line_end),
+            doc_byte_range: None,
+        }
+    }
+
+    fn make_symbol_with_bytes(
+        name: &str,
+        kind: SymbolKind,
+        line_start: u32,
+        line_end: u32,
+        byte_range: (u32, u32),
+    ) -> SymbolRecord {
         SymbolRecord {
             name: name.to_string(),
             kind,
@@ -4884,10 +4778,10 @@ mod tests {
     async fn test_get_symbol_context_exact_selector_requires_line_for_ambiguous_symbol() {
         let target = make_file(
             "src/db.rs",
-            b"fn connect() {}\nfn connect() {}\n",
+            b"fn connect() { first(); }\nfn connect() { second(); }\n",
             vec![
-                make_symbol("connect", SymbolKind::Function, 1, 1),
-                make_symbol("connect", SymbolKind::Function, 2, 2),
+                make_symbol_with_bytes("connect", SymbolKind::Function, 1, 1, (0, 25)),
+                make_symbol_with_bytes("connect", SymbolKind::Function, 2, 2, (26, 52)),
             ],
         );
         let server = make_server(make_live_index_ready(vec![target]));
@@ -4910,8 +4804,53 @@ mod tests {
             result.contains("Ambiguous symbol selector"),
             "got: {result}"
         );
+        assert!(
+            !result.contains("first()"),
+            "ambiguous selector should not prepend an arbitrary definition: {result}"
+        );
         assert!(result.contains("1"), "got: {result}");
         assert!(result.contains("2"), "got: {result}");
+    }
+
+    #[test]
+    fn test_symbol_candidate_paths_sorts_all_matches() {
+        let index = make_live_index_ready(vec![
+            make_file(
+                "src/zeta.rs",
+                b"fn connect() {}\n",
+                vec![make_symbol("connect", SymbolKind::Function, 1, 1)],
+            ),
+            make_file(
+                "src/echo.rs",
+                b"fn connect() {}\n",
+                vec![make_symbol("connect", SymbolKind::Function, 1, 1)],
+            ),
+            make_file(
+                "src/bravo.rs",
+                b"fn connect() {}\n",
+                vec![make_symbol("connect", SymbolKind::Function, 1, 1)],
+            ),
+            make_file(
+                "src/alpha.rs",
+                b"fn connect() {}\n",
+                vec![make_symbol("connect", SymbolKind::Function, 1, 1)],
+            ),
+            make_file(
+                "src/delta.rs",
+                b"fn connect() {}\n",
+                vec![make_symbol("connect", SymbolKind::Function, 1, 1)],
+            ),
+            make_file(
+                "src/charlie.rs",
+                b"fn connect() {}\n",
+                vec![make_symbol("connect", SymbolKind::Function, 1, 1)],
+            ),
+        ]);
+
+        let candidates = super::symbol_candidate_paths(&index, "connect");
+        assert_eq!(candidates.len(), 6);
+        assert_eq!(candidates.first().map(String::as_str), Some("src/alpha.rs"));
+        assert_eq!(candidates.last().map(String::as_str), Some("src/zeta.rs"));
     }
 
     #[tokio::test]
@@ -8916,38 +8855,9 @@ mod tests {
 
     #[test]
     fn test_lenient_depth_accepts_string() {
-        let json = r#"{"depth":"1"}"#;
-        let input: super::GetFileTreeInput = serde_json::from_str(json).unwrap();
+        let json = r#"{"detail":"tree","depth":"1"}"#;
+        let input: super::GetRepoMapInput = serde_json::from_str(json).unwrap();
         assert_eq!(input.depth, Some(1));
-    }
-
-    #[test]
-    fn test_resolve_path_accepts_query_alias() {
-        let json = r#"{"query":"daemon"}"#;
-        let input: super::ResolvePathInput = serde_json::from_str(json).unwrap();
-        assert_eq!(input.hint, "daemon");
-    }
-
-    #[test]
-    fn test_resolve_path_accepts_hint() {
-        let json = r#"{"hint":"daemon"}"#;
-        let input: super::ResolvePathInput = serde_json::from_str(json).unwrap();
-        assert_eq!(input.hint, "daemon");
-    }
-
-    #[test]
-    fn test_get_co_changes_input_deserializes() {
-        let json = r#"{"path":"src/lib.rs","limit":5}"#;
-        let input: super::GetCoChangesInput = serde_json::from_str(json).unwrap();
-        assert_eq!(input.path, "src/lib.rs");
-        assert_eq!(input.limit, Some(5));
-    }
-
-    #[test]
-    fn test_get_co_changes_input_limit_as_string() {
-        let json = r#"{"path":"src/lib.rs","limit":"10"}"#;
-        let input: super::GetCoChangesInput = serde_json::from_str(json).unwrap();
-        assert_eq!(input.limit, Some(10));
     }
 
     #[tokio::test]

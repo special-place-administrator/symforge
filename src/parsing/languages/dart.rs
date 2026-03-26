@@ -1,7 +1,8 @@
 use tree_sitter::Node;
 
 use super::{
-    NO_DOC_SPEC, collect_symbols, find_first_named_child, push_named_symbol, walk_children,
+    NO_DOC_SPEC, SymbolSink, collect_symbols, find_first_named_child, push_named_symbol,
+    walk_children,
 };
 use crate::domain::{SymbolKind, SymbolRecord};
 
@@ -24,16 +25,16 @@ fn walk_node(
         _ => None,
     };
 
-    push_named_symbol(
-        node,
-        source,
-        depth,
-        sort_order,
-        symbols,
-        kind,
-        |node, source, _| find_name(node, source),
-        &NO_DOC_SPEC,
-    );
+    {
+        let mut sink = SymbolSink::new(source, sort_order, symbols, &NO_DOC_SPEC);
+        push_named_symbol(
+            node,
+            depth,
+            kind,
+            |node, source, _| find_name(node, source),
+            &mut sink,
+        );
+    }
     walk_children(node, source, depth, sort_order, symbols, kind, walk_node);
 }
 

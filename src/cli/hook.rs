@@ -888,12 +888,10 @@ fn sync_http_get_with_timeout(
     // Check for chunked transfer-encoding. The sidecar uses hyper which may
     // send chunked responses. Since we use Connection: close and read_to_string,
     // the raw body includes chunk framing that must be decoded.
-    let is_chunked = headers
-        .lines()
-        .any(|line| {
-            let lower = line.to_lowercase();
-            lower.starts_with("transfer-encoding:") && lower.contains("chunked")
-        });
+    let is_chunked = headers.lines().any(|line| {
+        let lower = line.to_lowercase();
+        lower.starts_with("transfer-encoding:") && lower.contains("chunked")
+    });
 
     if is_chunked {
         Ok(decode_chunked_body(body))
@@ -907,12 +905,8 @@ fn sync_http_get_with_timeout(
 fn decode_chunked_body(raw: &str) -> String {
     let mut result = String::new();
     let mut remainder = raw;
-    loop {
+    while let Some(size_end) = remainder.find("\r\n") {
         // Find chunk size line
-        let size_end = match remainder.find("\r\n") {
-            Some(pos) => pos,
-            None => break,
-        };
         let size_str = remainder[..size_end].trim();
         let chunk_size = match usize::from_str_radix(size_str, 16) {
             Ok(0) => break, // Terminal chunk
@@ -952,7 +946,7 @@ struct NoSidecarDetail<'a> {
 ///
 /// Set `SYMFORGE_HOOK_VERBOSE=1` to enable detailed stderr output from the hook.
 fn is_hook_verbose() -> bool {
-    std::env::var("SYMFORGE_HOOK_VERBOSE").map_or(false, |v| v == "1")
+    std::env::var("SYMFORGE_HOOK_VERBOSE").is_ok_and(|v| v == "1")
 }
 
 /// Marker file path for the one-time sidecar hint (HOOK-03).
@@ -972,15 +966,13 @@ fn maybe_emit_sidecar_hint(repo_root: &Path) {
     let marker_path = repo_root.join(HOOK_HINT_MARKER);
 
     // Check if the marker file is fresh (modified within the last 30 minutes).
-    if let Ok(metadata) = std::fs::metadata(&marker_path) {
-        if let Ok(modified) = metadata.modified() {
-            if let Ok(elapsed) = modified.elapsed() {
-                if elapsed < HOOK_HINT_FRESHNESS {
-                    // Hint was shown recently — skip.
-                    return;
-                }
-            }
-        }
+    if let Ok(metadata) = std::fs::metadata(&marker_path)
+        && let Ok(modified) = metadata.modified()
+        && let Ok(elapsed) = modified.elapsed()
+        && elapsed < HOOK_HINT_FRESHNESS
+    {
+        // Hint was shown recently — skip.
+        return;
     }
 
     // Write the hint to stderr.
@@ -1141,10 +1133,10 @@ fn load_hook_adoption_snapshot_from_path(
             continue;
         };
 
-        if let Some(filter) = session_filter {
-            if session_id != filter {
-                continue;
-            }
+        if let Some(filter) = session_filter
+            && session_id != filter
+        {
+            continue;
         }
 
         let Some(workflow) = parse_tracked_workflow(workflow_raw) else {
@@ -1220,8 +1212,12 @@ fn json_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use once_cell::sync::Lazy;
     use serde_json::Value;
+    use std::sync::Mutex;
     use tempfile::TempDir;
+
+    static HOOK_VERBOSE_ENV_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
     // --- fail_open_json ---
 
@@ -1436,7 +1432,7 @@ mod tests {
     }
 
     #[test]
-    fn test_proxy_path_keeps_legacy_sidecar_route_without_session() {
+    fn test_proxy_path_returns_base_path_without_session() {
         let path = proxy_path("/repo-map", None);
         assert_eq!(path, "/repo-map");
     }
@@ -1807,6 +1803,7 @@ mod tests {
 
     #[test]
     fn hook_verbose_returns_false_when_unset() {
+        let _guard = HOOK_VERBOSE_ENV_LOCK.lock().unwrap();
         // SAFETY: test-only env manipulation; tests run with --test-threads=1.
         unsafe { std::env::remove_var("SYMFORGE_HOOK_VERBOSE") };
         assert!(!is_hook_verbose());
@@ -1814,6 +1811,7 @@ mod tests {
 
     #[test]
     fn hook_verbose_returns_true_when_set_to_1() {
+        let _guard = HOOK_VERBOSE_ENV_LOCK.lock().unwrap();
         // SAFETY: test-only env manipulation; tests run with --test-threads=1.
         unsafe { std::env::set_var("SYMFORGE_HOOK_VERBOSE", "1") };
         let result = is_hook_verbose();
@@ -1823,6 +1821,7 @@ mod tests {
 
     #[test]
     fn hook_verbose_returns_false_for_other_values() {
+        let _guard = HOOK_VERBOSE_ENV_LOCK.lock().unwrap();
         for val in &["0", "true", "yes", "2", ""] {
             // SAFETY: test-only env manipulation; tests run with --test-threads=1.
             unsafe { std::env::set_var("SYMFORGE_HOOK_VERBOSE", val) };

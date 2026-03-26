@@ -51,8 +51,8 @@ pub fn discover_files(root: &Path) -> Result<Vec<DiscoveredFile>> {
         .build()
         .filter_map(|entry_result| {
             let entry = entry_result.ok()?;
-            let path = std::fs::canonicalize(entry.path())
-                .unwrap_or_else(|_| entry.path().to_path_buf());
+            let path =
+                std::fs::canonicalize(entry.path()).unwrap_or_else(|_| entry.path().to_path_buf());
 
             // Use the already-known file_type from the walker instead of
             // path.is_file() which would issue a redundant stat() syscall.
@@ -105,8 +105,8 @@ pub fn discover_all_files(root: &Path) -> Result<Vec<DiscoveredEntry>> {
         .build()
         .filter_map(|entry_result| {
             let entry = entry_result.ok()?;
-            let path = std::fs::canonicalize(entry.path())
-                .unwrap_or_else(|_| entry.path().to_path_buf());
+            let path =
+                std::fs::canonicalize(entry.path()).unwrap_or_else(|_| entry.path().to_path_buf());
 
             if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
                 return None;
@@ -174,25 +174,25 @@ pub fn load_gitignore(root: &Path) -> Option<ignore::gitignore::Gitignore> {
 
     while let Some((dir, depth)) = queue.pop_front() {
         let gitignore_path = dir.join(".gitignore");
-        if gitignore_path.is_file() {
-            if let Some(err) = builder.add(&gitignore_path) {
-                tracing::debug!("failed to load {:?}: {}", gitignore_path, err);
-            }
+        if gitignore_path.is_file()
+            && let Some(err) = builder.add(&gitignore_path)
+        {
+            tracing::debug!("failed to load {:?}: {}", gitignore_path, err);
         }
 
-        if depth < max_depth {
-            if let Ok(entries) = std::fs::read_dir(&dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_dir() {
-                        // Skip common directories that won't have relevant .gitignore files
-                        let name = entry.file_name();
-                        let name_str = name.to_string_lossy();
-                        if name_str.starts_with('.') && name_str != ".github" {
-                            continue;
-                        }
-                        queue.push_back((path, depth + 1));
+        if depth < max_depth
+            && let Ok(entries) = std::fs::read_dir(&dir)
+        {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    // Skip common directories that won't have relevant .gitignore files
+                    let name = entry.file_name();
+                    let name_str = name.to_string_lossy();
+                    if name_str.starts_with('.') && name_str != ".github" {
+                        continue;
                     }
+                    queue.push_back((path, depth + 1));
                 }
             }
         }
@@ -322,13 +322,6 @@ fn home_dir() -> Option<PathBuf> {
     }
 }
 
-/// Deprecated: use `find_project_root()` instead.
-#[deprecated(note = "use find_project_root() which returns Option and checks forbidden dirs")]
-pub fn find_git_root() -> PathBuf {
-    find_project_root()
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
-}
-
 /// Check if content appears to be binary.
 /// Examines up to BINARY_SNIFF_BYTES of the content using three heuristics:
 /// 1. NUL byte present -> binary
@@ -388,47 +381,23 @@ pub fn classify_admission(
     if file_size > HARD_SKIP_BYTES {
         return AdmissionDecision::skip(AdmissionTier::HardSkip, SkipReason::SizeCeiling);
     }
-    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-        if is_denylisted_extension(ext) {
-            return AdmissionDecision::skip(
-                AdmissionTier::MetadataOnly,
-                SkipReason::DenylistedExtension,
-            );
-        }
+    if let Some(ext) = path.extension().and_then(|e| e.to_str())
+        && is_denylisted_extension(ext)
+    {
+        return AdmissionDecision::skip(
+            AdmissionTier::MetadataOnly,
+            SkipReason::DenylistedExtension,
+        );
     }
     if file_size > METADATA_ONLY_BYTES {
         return AdmissionDecision::skip(AdmissionTier::MetadataOnly, SkipReason::SizeThreshold);
     }
-    if let Some(content) = content_sample {
-        if is_binary_content(content) {
-            return AdmissionDecision::skip(AdmissionTier::MetadataOnly, SkipReason::BinaryContent);
-        }
+    if let Some(content) = content_sample
+        && is_binary_content(content)
+    {
+        return AdmissionDecision::skip(AdmissionTier::MetadataOnly, SkipReason::BinaryContent);
     }
     AdmissionDecision::normal()
-}
-
-/// Resolve the project data directory (`.symforge/`) for the given project root.
-///
-/// Checks for `.symforge` first (the canonical name). If it doesn't exist but the
-/// legacy `.tokenizor` directory does, returns that path with a deprecation warning.
-/// If neither exists, returns the `.symforge` path (for new directory creation).
-pub fn resolve_project_data_dir(project_root: &Path) -> PathBuf {
-    let symforge_dir = project_root.join(".symforge");
-    if symforge_dir.exists() {
-        return symforge_dir;
-    }
-
-    let legacy_dir = project_root.join(".tokenizor");
-    if legacy_dir.exists() {
-        tracing::warn!(
-            "Found legacy .tokenizor/ directory. Please rename to .symforge/. \
-             Support for .tokenizor/ will be removed in a future version."
-        );
-        return legacy_dir;
-    }
-
-    // Neither exists — return the canonical name for creation.
-    symforge_dir
 }
 
 #[cfg(test)]
@@ -568,27 +537,6 @@ mod tests {
     }
 
     #[test]
-    fn test_find_git_root_returns_git_containing_dir() {
-        let tmp = TempDir::new().unwrap();
-        fs::create_dir(tmp.path().join(".git")).unwrap();
-
-        // Verify the walk-up logic finds .git
-        let mut found = false;
-        let mut current = tmp.path().to_path_buf();
-        loop {
-            if current.join(".git").exists() {
-                found = true;
-                break;
-            }
-            match current.parent() {
-                Some(p) => current = p.to_path_buf(),
-                None => break,
-            }
-        }
-        assert!(found, "should find .git directory");
-    }
-
-    #[test]
     fn test_is_forbidden_root_blocks_home_dir() {
         let home = home_dir();
         if let Some(h) = home {
@@ -645,12 +593,8 @@ mod tests {
     #[test]
     fn test_binary_sniff_detects_high_control_ratio() {
         let mut content = Vec::new();
-        for _ in 0..80 {
-            content.push(0x01); // SOH — control char
-        }
-        for _ in 0..20 {
-            content.push(b'A'); // printable
-        }
+        content.extend(std::iter::repeat_n(0x01, 80)); // SOH — control char
+        content.extend(std::iter::repeat_n(b'A', 20)); // printable
         // 80% control bytes > 30% threshold -> binary
         assert!(is_binary_content(&content));
     }

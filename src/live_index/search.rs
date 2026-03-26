@@ -27,8 +27,9 @@ pub struct SymbolSearchResult {
     pub hits: Vec<SymbolSearchHit>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum PathScope {
+    #[default]
     Any,
     Exact(String),
     Prefix(String),
@@ -63,15 +64,10 @@ impl PathScope {
     }
 }
 
-impl Default for PathScope {
-    fn default() -> Self {
-        Self::Any
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SearchScope {
     All,
+    #[default]
     Code,
     Text,
     Binary,
@@ -85,12 +81,6 @@ impl SearchScope {
             Self::Text => matches!(classification.class, FileClass::Text),
             Self::Binary => matches!(classification.class, FileClass::Binary),
         }
-    }
-}
-
-impl Default for SearchScope {
-    fn default() -> Self {
-        Self::Code
     }
 }
 
@@ -434,25 +424,13 @@ impl Default for NoisePolicy {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SymbolSearchOptions {
     pub path_scope: PathScope,
     pub search_scope: SearchScope,
     pub result_limit: ResultLimit,
     pub noise_policy: NoisePolicy,
     pub language_filter: Option<LanguageId>,
-}
-
-impl Default for SymbolSearchOptions {
-    fn default() -> Self {
-        Self {
-            path_scope: PathScope::default(),
-            search_scope: SearchScope::default(),
-            result_limit: ResultLimit::default(),
-            noise_policy: NoisePolicy::default(),
-            language_filter: None,
-        }
-    }
 }
 
 impl SymbolSearchOptions {
@@ -1191,7 +1169,7 @@ where
         // Pre-compute Rust test module line ranges for noise filtering.
         let test_ranges: Vec<(u32, u32)> =
             if !options.noise_policy.include_tests && file.language == LanguageId::Rust {
-                compute_test_ranges(&file)
+                compute_test_ranges(file)
             } else {
                 Vec::new()
             };
@@ -1262,7 +1240,7 @@ where
         // Pre-compute Rust test module line ranges for noise filtering.
         let test_ranges: Vec<(u32, u32)> =
             if !options.noise_policy.include_tests && file.language == LanguageId::Rust {
-                compute_test_ranges(&file)
+                compute_test_ranges(file)
             } else {
                 Vec::new()
             };

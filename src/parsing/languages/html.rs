@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use tree_sitter::Node;
 
-use super::{NO_DOC_SPEC, push_symbol};
+use super::{NO_DOC_SPEC, SymbolSink, push_symbol};
 use crate::domain::{SymbolKind, SymbolRecord};
 
 pub fn extract_symbols(node: &Node, source: &str) -> Vec<SymbolRecord> {
@@ -37,16 +37,8 @@ fn walk_node(
                 if is_top_level || is_custom || is_ng_template {
                     let byte_key = (node.start_byte() as u32, node.end_byte() as u32);
                     if emitted.insert(byte_key) {
-                        push_symbol(
-                            node,
-                            source,
-                            name.clone(),
-                            SymbolKind::Other,
-                            depth,
-                            sort_order,
-                            symbols,
-                            &NO_DOC_SPEC,
-                        );
+                        let mut sink = SymbolSink::new(source, sort_order, symbols, &NO_DOC_SPEC);
+                        push_symbol(node, name.clone(), SymbolKind::Other, depth, &mut sink);
                     }
                 }
             }
@@ -127,15 +119,14 @@ fn scan_template_refs(
                                 let ref_name = &text[1..];
                                 let byte_key = (attr.start_byte() as u32, attr.end_byte() as u32);
                                 if emitted.insert(byte_key) {
+                                    let mut sink =
+                                        SymbolSink::new(source, sort_order, symbols, &NO_DOC_SPEC);
                                     push_symbol(
                                         &attr,
-                                        source,
                                         ref_name.to_string(),
                                         SymbolKind::Variable,
                                         depth,
-                                        sort_order,
-                                        symbols,
-                                        &NO_DOC_SPEC,
+                                        &mut sink,
                                     );
                                 }
                             }
@@ -173,40 +164,36 @@ fn scan_angular_text(
     let node_start = node.start_byte() as u32;
     let start_line = node.start_position().row as u32;
     let mut offset = 0u32;
-    let mut line_idx = 0u32;
-
-    for line in text.split('\n') {
+    for (line_idx, line) in text.split('\n').enumerate() {
         let line_start = node_start + offset;
         let trimmed = line.trim_start();
 
         // Control flow: @if, @for, @switch, @defer
         for keyword in &["@if", "@for", "@switch", "@defer"] {
-            if trimmed.starts_with(keyword) {
-                let rest = &trimmed[keyword.len()..];
-                if rest.starts_with(|c: char| c == ' ' || c == '(' || c == '{') {
-                    let byte_key = (line_start, line_start + line.len() as u32);
-                    if emitted.insert(byte_key) {
-                        let current_line = start_line + line_idx;
-                        symbols.push(SymbolRecord {
-                            name: keyword.to_string(),
-                            kind: SymbolKind::Module,
-                            depth,
-                            sort_order: *sort_order,
-                            byte_range: byte_key,
-                            line_range: (current_line, current_line),
-                            doc_byte_range: None,
-                            item_byte_range: Some(byte_key),
-                        });
-                        *sort_order += 1;
-                    }
-                    break; // Only one keyword per line
+            if let Some(rest) = trimmed.strip_prefix(keyword)
+                && rest.starts_with([' ', '(', '{'])
+            {
+                let byte_key = (line_start, line_start + line.len() as u32);
+                if emitted.insert(byte_key) {
+                    let current_line = start_line + line_idx as u32;
+                    symbols.push(SymbolRecord {
+                        name: keyword.to_string(),
+                        kind: SymbolKind::Module,
+                        depth,
+                        sort_order: *sort_order,
+                        byte_range: byte_key,
+                        line_range: (current_line, current_line),
+                        doc_byte_range: None,
+                        item_byte_range: Some(byte_key),
+                    });
+                    *sort_order += 1;
                 }
+                break; // Only one keyword per line
             }
         }
 
         // @let name = expr
-        if trimmed.starts_with("@let ") {
-            let rest = &trimmed[5..];
+        if let Some(rest) = trimmed.strip_prefix("@let ") {
             let name: String = rest
                 .chars()
                 .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
@@ -214,7 +201,7 @@ fn scan_angular_text(
             if !name.is_empty() {
                 let byte_key = (line_start, line_start + line.len() as u32);
                 if emitted.insert(byte_key) {
-                    let current_line = start_line + line_idx;
+                    let current_line = start_line + line_idx as u32;
                     symbols.push(SymbolRecord {
                         name,
                         kind: SymbolKind::Variable,
@@ -233,7 +220,6 @@ fn scan_angular_text(
         // @else, @empty — intentionally NOT extracted (subordinate branches)
 
         offset = offset.saturating_add(line.len() as u32 + 1); // +1 for the '\n'
-        line_idx += 1;
     }
 }
 

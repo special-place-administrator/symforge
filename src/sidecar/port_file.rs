@@ -8,19 +8,15 @@ use std::net::TcpStream;
 use std::path::PathBuf;
 use std::time::Duration;
 
-pub const DIR_NAME: &str = ".symforge";
+pub const DIR_NAME: &str = crate::paths::SYMFORGE_DIR_NAME;
 const PORT_FILE: &str = "sidecar.port";
 const PID_FILE: &str = "sidecar.pid";
 const SESSION_FILE: &str = "sidecar.session";
 
-/// Ensure `.symforge/` exists in the current working directory.
-/// Creates the directory if it doesn't exist. Returns its path.
+/// Ensure the current working directory has a usable `.symforge/` runtime directory.
 pub fn ensure_symforge_dir() -> io::Result<PathBuf> {
-    let dir = PathBuf::from(DIR_NAME);
-    if !dir.exists() {
-        std::fs::create_dir_all(&dir)?;
-    }
-    Ok(dir)
+    let cwd = std::env::current_dir()?;
+    crate::paths::ensure_symforge_dir(&cwd)
 }
 
 /// Write the sidecar port to `.symforge/sidecar.port`.
@@ -256,7 +252,6 @@ mod tests {
             ensure_symforge_dir().expect("second call should also succeed (idempotent)");
         });
     }
-
     #[test]
     fn test_check_stale_returns_false_when_no_port_file() {
         with_temp_dir(|| {

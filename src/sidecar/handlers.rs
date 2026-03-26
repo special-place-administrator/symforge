@@ -352,40 +352,40 @@ fn outline_text(
             GitTemporalState, churn_bar, churn_label, relative_time,
         };
         let temporal = state.index.git_temporal();
-        if temporal.state == GitTemporalState::Ready {
-            if let Some(history) = temporal.files.get(&params.path) {
-                lines.push(String::new());
-                lines.push(format!(
-                    "Git activity:  {} {:.2} ({})    {} commits, last {}",
-                    churn_bar(history.churn_score),
-                    history.churn_score,
-                    churn_label(history.churn_score),
-                    history.commit_count,
-                    relative_time(history.last_commit.days_ago),
-                ));
-                lines.push(format!(
-                    "  Last:  {} \"{}\" ({}, {})",
-                    history.last_commit.hash,
-                    history.last_commit.message_head,
-                    history.last_commit.author,
-                    history.last_commit.timestamp,
-                ));
-                if !history.contributors.is_empty() {
-                    let owners: Vec<String> = history
-                        .contributors
-                        .iter()
-                        .map(|c| format!("{} {:.0}%", c.author, c.percentage))
-                        .collect();
-                    lines.push(format!("  Owners: {}", owners.join(", ")));
-                }
-                if !history.co_changes.is_empty() {
-                    lines.push("  Co-changes:".to_string());
-                    for entry in &history.co_changes {
-                        lines.push(format!(
-                            "    {}  ({:.2} coupling, {} shared commits)",
-                            entry.path, entry.coupling_score, entry.shared_commits,
-                        ));
-                    }
+        if temporal.state == GitTemporalState::Ready
+            && let Some(history) = temporal.files.get(&params.path)
+        {
+            lines.push(String::new());
+            lines.push(format!(
+                "Git activity:  {} {:.2} ({})    {} commits, last {}",
+                churn_bar(history.churn_score),
+                history.churn_score,
+                churn_label(history.churn_score),
+                history.commit_count,
+                relative_time(history.last_commit.days_ago),
+            ));
+            lines.push(format!(
+                "  Last:  {} \"{}\" ({}, {})",
+                history.last_commit.hash,
+                history.last_commit.message_head,
+                history.last_commit.author,
+                history.last_commit.timestamp,
+            ));
+            if !history.contributors.is_empty() {
+                let owners: Vec<String> = history
+                    .contributors
+                    .iter()
+                    .map(|c| format!("{} {:.0}%", c.author, c.percentage))
+                    .collect();
+                lines.push(format!("  Owners: {}", owners.join(", ")));
+            }
+            if !history.co_changes.is_empty() {
+                lines.push("  Co-changes:".to_string());
+                for entry in &history.co_changes {
+                    lines.push(format!(
+                        "    {}  ({:.2} coupling, {} shared commits)",
+                        entry.path, entry.coupling_score, entry.shared_commits,
+                    ));
                 }
             }
         }
@@ -506,8 +506,7 @@ async fn handle_new_file_impact(
             Ok((bytes, result, mtime_secs))
         })
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .map_err(|e| e)?;
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
 
     // Build symbol kind breakdown.
     let mut kind_counts: std::collections::HashMap<String, usize> =
@@ -621,7 +620,7 @@ async fn handle_edit_impact(
     enum ReadOutcome {
         Ok {
             bytes: Vec<u8>,
-            result: crate::domain::FileProcessingResult,
+            result: Box<crate::domain::FileProcessingResult>,
             mtime_secs: u64,
         },
         NotFound,
@@ -642,7 +641,7 @@ async fn handle_edit_impact(
                 let result = crate::parsing::process_file(&path_owned, &bytes, language);
                 ReadOutcome::Ok {
                     bytes,
-                    result,
+                    result: Box::new(result),
                     mtime_secs,
                 }
             }
@@ -691,7 +690,7 @@ async fn handle_edit_impact(
         })
         .collect();
 
-    let indexed = crate::live_index::store::IndexedFile::from_parse_result(result, bytes)
+    let indexed = crate::live_index::store::IndexedFile::from_parse_result(*result, bytes)
         .with_mtime(mtime_secs);
     state.index.update_file(path.to_string(), indexed);
 
@@ -1255,33 +1254,33 @@ fn find_prompt_file_hint(
             }));
         }
 
-        if let Some(module_alias) = prompt_file_module_alias(path, &file.language) {
-            if prompt_contains_exact_alias(prompt, &module_alias) {
-                if let Some(existing) = &module_match {
-                    if existing.path != path.as_str() {
-                        module_ambiguous = true;
-                    }
-                } else {
-                    module_match = Some(PromptFileHint {
-                        path: path.to_string(),
-                        line_hint_alias: Some(module_alias),
-                    });
+        if let Some(module_alias) = prompt_file_module_alias(path, &file.language)
+            && prompt_contains_exact_alias(prompt, &module_alias)
+        {
+            if let Some(existing) = &module_match {
+                if existing.path != path.as_str() {
+                    module_ambiguous = true;
                 }
+            } else {
+                module_match = Some(PromptFileHint {
+                    path: path.to_string(),
+                    line_hint_alias: Some(module_alias),
+                });
             }
         }
 
-        if let Some(path_without_extension) = prompt_path_without_extension(path) {
-            if find_prompt_path_line_hint(prompt, &path_without_extension).is_some() {
-                if let Some(existing) = &qualified_path_match {
-                    if existing.path != path.as_str() {
-                        qualified_path_ambiguous = true;
-                    }
-                } else {
-                    qualified_path_match = Some(PromptFileHint {
-                        path: path.to_string(),
-                        line_hint_alias: Some(path_without_extension),
-                    });
+        if let Some(path_without_extension) = prompt_path_without_extension(path)
+            && find_prompt_path_line_hint(prompt, &path_without_extension).is_some()
+        {
+            if let Some(existing) = &qualified_path_match {
+                if existing.path != path.as_str() {
+                    qualified_path_ambiguous = true;
                 }
+            } else {
+                qualified_path_match = Some(PromptFileHint {
+                    path: path.to_string(),
+                    line_hint_alias: Some(path_without_extension),
+                });
             }
         }
 
@@ -1311,7 +1310,7 @@ fn find_prompt_file_hint(
             continue;
         };
 
-        if !find_prompt_path_line_hint(prompt, file_stem).is_some() {
+        if find_prompt_path_line_hint(prompt, file_stem).is_none() {
             continue;
         }
 
@@ -1416,10 +1415,10 @@ fn find_prompt_line_hint(prompt: &str, file_hint: Option<&PromptFileHint>) -> Op
         if let Some(line) = find_prompt_path_line_hint(prompt, &file_hint.path) {
             return Some(line);
         }
-        if let Some(alias) = &file_hint.line_hint_alias {
-            if let Some(line) = find_prompt_path_line_hint(prompt, &alias) {
-                return Some(line);
-            }
+        if let Some(alias) = &file_hint.line_hint_alias
+            && let Some(line) = find_prompt_path_line_hint(prompt, alias)
+        {
+            return Some(line);
         }
     }
 
@@ -1428,10 +1427,10 @@ fn find_prompt_line_hint(prompt: &str, file_hint: Option<&PromptFileHint>) -> Op
         if !window[0].eq_ignore_ascii_case("line") {
             continue;
         }
-        if let Ok(line) = window[1].parse::<u32>() {
-            if line > 0 {
-                return Some(line);
-            }
+        if let Ok(line) = window[1].parse::<u32>()
+            && line > 0
+        {
+            return Some(line);
         }
     }
 
@@ -1449,10 +1448,10 @@ fn find_prompt_path_line_hint(prompt: &str, path: &str) -> Option<u32> {
             .chars()
             .take_while(|ch| ch.is_ascii_digit())
             .collect();
-        if let Ok(line) = digits.parse::<u32>() {
-            if line > 0 {
-                return Some(line);
-            }
+        if let Ok(line) = digits.parse::<u32>()
+            && line > 0
+        {
+            return Some(line);
         }
 
         search_start = value_start;

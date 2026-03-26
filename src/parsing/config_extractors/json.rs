@@ -112,31 +112,20 @@ impl ConfigExtractor for JsonExtractor {
 
         let mut symbols = Vec::new();
         let mut sort_order: u32 = 0;
+        let mut walker = JsonWalker {
+            content,
+            line_starts: &line_starts,
+            symbols: &mut symbols,
+            sort_order: &mut sort_order,
+        };
 
         // Only walk into the root if it is an object or array.
         match &value {
             serde_json::Value::Object(map) => {
-                walk_object(
-                    content,
-                    &line_starts,
-                    map,
-                    "",
-                    0,
-                    &mut symbols,
-                    &mut sort_order,
-                );
+                walker.walk_object(map, "", 0);
             }
             serde_json::Value::Array(arr) => {
-                walk_array(
-                    content,
-                    &line_starts,
-                    arr,
-                    "",
-                    (0, content.len() as u32),
-                    0,
-                    &mut symbols,
-                    &mut sort_order,
-                );
+                walker.walk_array(arr, "", (0, content.len() as u32), 0);
             }
             _ => {}
         }
@@ -156,144 +145,157 @@ impl ConfigExtractor for JsonExtractor {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn walk_object(
-    content: &[u8],
-    line_starts: &[u32],
-    map: &serde_json::Map<String, serde_json::Value>,
-    parent_path: &str,
-    depth: u32,
-    symbols: &mut Vec<SymbolRecord>,
-    sort_order: &mut u32,
-) {
-    // We need a search cursor so we scan forward through the raw bytes.
-    // Start after the opening `{` of this object.
-    let mut search_from: usize = 0;
+struct JsonWalker<'a> {
+    content: &'a [u8],
+    line_starts: &'a [u32],
+    symbols: &'a mut Vec<SymbolRecord>,
+    sort_order: &'a mut u32,
+}
 
-    for (key, value) in map.iter() {
-        let key_path = join_key_path(parent_path, key);
-
-        // Find the byte range for this key-value pair in the raw content.
-        let (byte_start, byte_end) = find_key_value_range(content, key, &mut search_from);
-        let byte_range = (byte_start as u32, byte_end as u32);
-
-        let start_line = byte_to_line(line_starts, byte_start as u32);
+impl JsonWalker<'_> {
+    fn push_key_symbol(&mut self, name: String, depth: u32, byte_range: (u32, u32)) {
+        let start_line = byte_to_line(self.line_starts, byte_range.0);
         let end_line = byte_to_line(
-            line_starts,
-            byte_end.saturating_sub(1).max(byte_start) as u32,
+            self.line_starts,
+            byte_range.1.saturating_sub(1).max(byte_range.0),
         );
 
-        symbols.push(SymbolRecord {
-            name: key_path.clone(),
+        self.symbols.push(SymbolRecord {
+            name,
             kind: SymbolKind::Key,
             depth,
-            sort_order: *sort_order,
+            sort_order: *self.sort_order,
             byte_range,
             line_range: (start_line, end_line),
             doc_byte_range: None,
             item_byte_range: Some(byte_range),
         });
-        *sort_order += 1;
+        *self.sort_order += 1;
+    }
 
-        // Recurse if we haven't hit the depth limit.
-        if depth + 1 < MAX_DEPTH {
-            match value {
-                serde_json::Value::Object(child_map) => {
-                    walk_object(
-                        content,
-                        line_starts,
-                        child_map,
-                        &key_path,
-                        depth + 1,
-                        symbols,
-                        sort_order,
-                    );
+    fn walk_object(
+        &mut self,
+        map: &serde_json::Map<String, serde_json::Value>,
+        parent_path: &str,
+        depth: u32,
+    ) {
+        let mut search_from: usize = 0;
+
+        for (key, value) in map.iter() {
+            let key_path = join_key_path(parent_path, key);
+            let (byte_start, byte_end) = find_key_value_range(self.content, key, &mut search_from);
+            let byte_range = (byte_start as u32, byte_end as u32);
+            self.push_key_symbol(key_path.clone(), depth, byte_range);
+
+            if depth + 1 < MAX_DEPTH {
+                match value {
+                    serde_json::Value::Object(child_map) => {
+                        self.walk_object(child_map, &key_path, depth + 1);
+                    }
+                    serde_json::Value::Array(child_arr) => {
+                        self.walk_array(child_arr, &key_path, byte_range, depth + 1);
+                    }
+                    _ => {}
                 }
-                serde_json::Value::Array(child_arr) => {
-                    walk_array(
-                        content,
-                        line_starts,
-                        child_arr,
-                        &key_path,
-                        byte_range,
-                        depth + 1,
-                        symbols,
-                        sort_order,
-                    );
+            }
+        }
+    }
+
+    fn walk_array(
+        &mut self,
+        arr: &[serde_json::Value],
+        parent_path: &str,
+        parent_byte_range: (u32, u32),
+        depth: u32,
+    ) {
+        let item_ranges = find_array_item_ranges(self.content, parent_byte_range);
+        for (i, value) in arr.iter().enumerate() {
+            if i >= MAX_ARRAY_ITEMS {
+                break;
+            }
+
+            let elem_path = join_array_index(parent_path, i);
+            let byte_range = item_ranges.get(i).copied().unwrap_or(parent_byte_range);
+            self.push_key_symbol(elem_path.clone(), depth, byte_range);
+
+            if depth + 1 < MAX_DEPTH {
+                match value {
+                    serde_json::Value::Object(child_map) => {
+                        self.walk_object(child_map, &elem_path, depth + 1);
+                    }
+                    serde_json::Value::Array(child_arr) => {
+                        self.walk_array(child_arr, &elem_path, byte_range, depth + 1);
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
     }
 }
 
-fn walk_array(
-    content: &[u8],
-    line_starts: &[u32],
-    arr: &[serde_json::Value],
-    parent_path: &str,
-    parent_byte_range: (u32, u32),
-    depth: u32,
-    symbols: &mut Vec<SymbolRecord>,
-    sort_order: &mut u32,
-) {
-    for (i, value) in arr.iter().enumerate() {
-        if i >= MAX_ARRAY_ITEMS {
+fn find_array_item_ranges(content: &[u8], parent_byte_range: (u32, u32)) -> Vec<(u32, u32)> {
+    let start = parent_byte_range.0 as usize;
+    let end = (parent_byte_range.1 as usize).min(content.len());
+    if start >= end {
+        return Vec::new();
+    }
+
+    let Some(value_start) = find_value_start_in_range(content, start, end) else {
+        return Vec::new();
+    };
+    if value_start >= end || content[value_start] != b'[' {
+        return Vec::new();
+    }
+
+    let array_end = scan_container_end(content, value_start).min(end);
+    let mut cursor = value_start + 1;
+    let mut ranges = Vec::new();
+    while cursor < array_end {
+        cursor = skip_whitespace(content, cursor);
+        if cursor >= array_end || content[cursor] == b']' {
             break;
         }
 
-        let elem_path = join_array_index(parent_path, i);
+        let item_start = cursor;
+        let item_end = scan_value_end(content, item_start).min(array_end);
+        ranges.push((item_start as u32, item_end as u32));
 
-        // TODO: compute exact per-element byte ranges by scanning for element
-        // boundaries in the raw bytes. For now, fall back to the parent array's
-        // range, which is strictly better than the full-file span.
-        let byte_range = parent_byte_range;
-        let start_line = byte_to_line(line_starts, byte_range.0);
-        let end_line = byte_to_line(
-            line_starts,
-            byte_range.1.saturating_sub(1).max(byte_range.0),
-        );
-
-        symbols.push(SymbolRecord {
-            name: elem_path.clone(),
-            kind: SymbolKind::Key,
-            depth,
-            sort_order: *sort_order,
-            byte_range,
-            line_range: (start_line, end_line),
-            doc_byte_range: None,
-            item_byte_range: Some(byte_range),
-        });
-        *sort_order += 1;
-
-        if depth + 1 < MAX_DEPTH {
-            match value {
-                serde_json::Value::Object(child_map) => {
-                    walk_object(
-                        content,
-                        line_starts,
-                        child_map,
-                        &elem_path,
-                        depth + 1,
-                        symbols,
-                        sort_order,
-                    );
-                }
-                serde_json::Value::Array(child_arr) => {
-                    walk_array(
-                        content,
-                        line_starts,
-                        child_arr,
-                        &elem_path,
-                        byte_range,
-                        depth + 1,
-                        symbols,
-                        sort_order,
-                    );
-                }
-                _ => {}
-            }
+        cursor = skip_whitespace(content, item_end);
+        if cursor < array_end && content[cursor] == b',' {
+            cursor += 1;
         }
     }
+
+    ranges
+}
+
+fn find_value_start_in_range(content: &[u8], start: usize, end: usize) -> Option<usize> {
+    if start >= end || start >= content.len() {
+        return None;
+    }
+
+    let mut i = start;
+    let mut in_string = false;
+    let mut escaped = false;
+    while i < end {
+        let byte = content[i];
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+        } else if byte == b'"' {
+            in_string = true;
+        } else if byte == b':' {
+            return Some(skip_whitespace(content, i + 1).min(end));
+        }
+        i += 1;
+    }
+
+    Some(skip_whitespace(content, start).min(end))
 }
 
 /// Search the raw bytes for `"key":` starting from `*search_from`, returning
@@ -522,6 +524,44 @@ mod tests {
                 content.len()
             );
         }
+    }
+
+    #[test]
+    fn test_array_items_get_precise_byte_ranges() {
+        let content = br#"{"items": [1, {"nested": true}, 3]}"#;
+        let result = JsonExtractor.extract(content);
+        assert!(matches!(result.outcome, ExtractionOutcome::Ok));
+
+        let first = result
+            .symbols
+            .iter()
+            .find(|sym| sym.name == "items[0]")
+            .expect("first array item");
+        let second = result
+            .symbols
+            .iter()
+            .find(|sym| sym.name == "items[1]")
+            .expect("second array item");
+        let third = result
+            .symbols
+            .iter()
+            .find(|sym| sym.name == "items[2]")
+            .expect("third array item");
+
+        assert_eq!(
+            &content[first.byte_range.0 as usize..first.byte_range.1 as usize],
+            b"1"
+        );
+        assert_eq!(
+            &content[second.byte_range.0 as usize..second.byte_range.1 as usize],
+            br#"{"nested": true}"#
+        );
+        assert_eq!(
+            &content[third.byte_range.0 as usize..third.byte_range.1 as usize],
+            b"3"
+        );
+        assert_ne!(first.byte_range, second.byte_range);
+        assert_ne!(second.byte_range, third.byte_range);
     }
 
     #[test]
