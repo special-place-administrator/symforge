@@ -109,7 +109,7 @@ fn write_snapshot(snapshot: IndexSnapshot, project_root: &Path) -> anyhow::Resul
     // Serialize with postcard
     let bytes = postcard::to_stdvec(&snapshot)?;
 
-    let dir = paths::ensure_symforge_dir(project_root, "project index snapshot")?;
+    let dir = paths::ensure_symforge_dir(project_root)?;
 
     // Atomic write: tmp file then rename
     let final_path = dir.join(INDEX_FILENAME);
@@ -135,13 +135,7 @@ fn write_snapshot(snapshot: IndexSnapshot, project_root: &Path) -> anyhow::Resul
 /// - version mismatch (schema upgrade)
 /// - corrupt / truncated bytes
 pub fn load_snapshot(project_root: &Path) -> Option<IndexSnapshot> {
-    let path = match paths::resolve_symforge_dir(project_root, "project index snapshot") {
-        Ok(dir) => dir.join(INDEX_FILENAME),
-        Err(error) => {
-            warn!(%error, root = %project_root.display(), "failed to resolve project data dir");
-            return None;
-        }
-    };
+    let path = paths::resolve_symforge_dir(project_root).join(INDEX_FILENAME);
 
     let bytes = match std::fs::read(&path) {
         Ok(b) => b,
@@ -1263,24 +1257,5 @@ mod tests {
         assert!(tmp.path().join(".symforge").join("index.bin").exists());
         // No tmp file should remain
         assert!(!tmp.path().join(".symforge").join("index.bin.tmp").exists());
-    }
-
-    #[test]
-    fn test_serialize_migrates_legacy_project_data_dir() {
-        let tmp = TempDir::new().unwrap();
-        let legacy_dir = tmp.path().join(crate::paths::LEGACY_TOKENIZOR_DIR_NAME);
-        std::fs::create_dir_all(&legacy_dir).unwrap();
-        std::fs::write(legacy_dir.join("stale.txt"), b"keep me").unwrap();
-        let index = make_live_index_with_files(vec![("src/lib.rs", b"fn lib() {}")]);
-
-        serialize_index(&index, tmp.path()).expect("serialize should migrate legacy dir");
-
-        let symforge_dir = tmp.path().join(crate::paths::SYMFORGE_DIR_NAME);
-        assert!(symforge_dir.join("index.bin").exists());
-        assert!(symforge_dir.join("stale.txt").exists());
-        assert!(
-            !legacy_dir.exists(),
-            "legacy project dir should be renamed away"
-        );
     }
 }

@@ -1722,7 +1722,7 @@ pub(crate) fn daemon_dir() -> io::Result<PathBuf> {
 
     let home = dirs::home_dir()
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "home directory not found"))?;
-    paths::ensure_symforge_dir(&home, "daemon state")
+    paths::ensure_symforge_dir(&home)
 }
 
 fn write_daemon_port_file(port: u16) -> io::Result<()> {

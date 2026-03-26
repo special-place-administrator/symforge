@@ -14,10 +14,9 @@ const PID_FILE: &str = "sidecar.pid";
 const SESSION_FILE: &str = "sidecar.session";
 
 /// Ensure the current working directory has a usable `.symforge/` runtime directory.
-/// Legacy `.tokenizor/` directories are migrated automatically when possible.
 pub fn ensure_symforge_dir() -> io::Result<PathBuf> {
     let cwd = std::env::current_dir()?;
-    crate::paths::ensure_symforge_dir(&cwd, "sidecar runtime")
+    crate::paths::ensure_symforge_dir(&cwd)
 }
 
 /// Write the sidecar port to `.symforge/sidecar.port`.
@@ -245,28 +244,6 @@ mod tests {
             ensure_symforge_dir().expect("second call should also succeed (idempotent)");
         });
     }
-
-    #[test]
-    fn test_ensure_symforge_dir_migrates_legacy_directory() {
-        with_temp_dir(|| {
-            let legacy_dir = PathBuf::from(crate::paths::LEGACY_TOKENIZOR_DIR_NAME);
-            std::fs::create_dir_all(&legacy_dir).unwrap();
-            std::fs::write(legacy_dir.join(PORT_FILE), b"8123").unwrap();
-
-            let dir = ensure_symforge_dir().expect("legacy directory should migrate cleanly");
-
-            assert_eq!(dir, std::env::current_dir().unwrap().join(DIR_NAME));
-            assert!(
-                dir.join(PORT_FILE).exists(),
-                "legacy contents should move forward"
-            );
-            assert!(
-                !legacy_dir.exists(),
-                "legacy directory should be renamed to canonical path"
-            );
-        });
-    }
-
     #[test]
     fn test_check_stale_returns_false_when_no_port_file() {
         with_temp_dir(|| {
