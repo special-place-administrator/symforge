@@ -206,12 +206,8 @@ pub struct DaemonHealth {
 
 #[derive(Clone)]
 struct SessionRuntime {
-    #[allow(dead_code)]
-    project_name: String,
     canonical_root: PathBuf,
     index: SharedIndex,
-    #[allow(dead_code)]
-    watcher_info: Arc<Mutex<WatcherInfo>>,
     token_stats: Arc<TokenStats>,
     symbol_cache: Arc<RwLock<HashMap<String, Vec<SymbolSnapshot>>>>,
     /// Cached `SymForgeServer` clone — cheap because all inner state is `Arc`-wrapped.
@@ -543,10 +539,8 @@ impl DaemonState {
         };
         let project = projects.get(&session.project_id)?;
         Some(SessionRuntime {
-            project_name: project.project_name.clone(),
             canonical_root: project.canonical_root.clone(),
             index: Arc::clone(&project.index),
-            watcher_info: Arc::clone(&project.watcher_info),
             token_stats: Arc::clone(&project.token_stats),
             symbol_cache: Arc::clone(&project.symbol_cache),
             server: project.server.clone(),
