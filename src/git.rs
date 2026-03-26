@@ -245,10 +245,10 @@ impl GitRepo {
 fn collect_diff_paths(diff: &git2::Diff<'_>) -> Vec<String> {
     let mut paths = Vec::new();
     for delta in diff.deltas() {
-        if let Some(path) = delta.new_file().path().or_else(|| delta.old_file().path()) {
-            if let Some(s) = path.to_str() {
-                paths.push(s.replace('\\', "/"));
-            }
+        if let Some(path) = delta.new_file().path().or_else(|| delta.old_file().path())
+            && let Some(s) = path.to_str()
+        {
+            paths.push(s.replace('\\', "/"));
         }
     }
     paths

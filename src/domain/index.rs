@@ -536,7 +536,7 @@ impl SkippedFile {
 }
 
 pub const HARD_SKIP_BYTES: u64 = 100 * 1024 * 1024;
-pub const METADATA_ONLY_BYTES: u64 = 1 * 1024 * 1024;
+pub const METADATA_ONLY_BYTES: u64 = 1024 * 1024;
 pub const BINARY_SNIFF_BYTES: usize = 8192;
 
 const DENYLISTED_EXTENSIONS: &[&str] = &[

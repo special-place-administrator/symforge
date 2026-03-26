@@ -510,7 +510,7 @@ fn push_import_reference(
     let full_text = import_text.trim();
     let name = if full_text.contains('/') && !full_text.contains("::") {
         // JS/TS path imports like '../utils/helpers' — take the last path segment
-        full_text.split('/').last().unwrap_or(full_text)
+        full_text.split('/').next_back().unwrap_or(full_text)
     } else {
         full_text
             .split("::")

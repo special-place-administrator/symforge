@@ -316,7 +316,7 @@ pub(crate) fn build_insert_before(
     let indent = detect_indentation(file_content, sym.byte_range.0);
     let normalized = normalize_line_endings(new_code.as_bytes(), line_ending);
     let normalized_str = std::str::from_utf8(&normalized).unwrap_or(new_code);
-    let indented = apply_indentation(&normalized_str, &indent, line_ending);
+    let indented = apply_indentation(normalized_str, &indent, line_ending);
     let mut insertion = indented;
     let le = line_ending.as_bytes();
     let separator: Vec<u8> = if sym.doc_byte_range.is_some() {
@@ -363,7 +363,7 @@ pub(crate) fn build_insert_after(
     let indent = detect_indentation(file_content, sym.byte_range.0);
     let normalized = normalize_line_endings(new_code.as_bytes(), line_ending);
     let normalized_str = std::str::from_utf8(&normalized).unwrap_or(new_code);
-    let indented = apply_indentation(&normalized_str, &indent, line_ending);
+    let indented = apply_indentation(normalized_str, &indent, line_ending);
     let le = line_ending.as_bytes();
     let mut insertion = Vec::new();
     insertion.extend_from_slice(le);
@@ -1067,13 +1067,16 @@ pub(crate) fn execute_batch_rename(
 
     // Filter ref_sites by code_only
     let ref_sites: Vec<(String, (u32, u32))> = if input.code_only.unwrap_or(false) {
-        ref_sites.into_iter().filter(|(path, _)| {
-            let ext = path.rsplit('.').next().unwrap_or("");
-            match crate::domain::index::LanguageId::from_extension(ext) {
-                None => false,
-                Some(lang) => !crate::parsing::config_extractors::is_config_language(&lang),
-            }
-        }).collect()
+        ref_sites
+            .into_iter()
+            .filter(|(path, _)| {
+                let ext = path.rsplit('.').next().unwrap_or("");
+                match crate::domain::index::LanguageId::from_extension(ext) {
+                    None => false,
+                    Some(lang) => !crate::parsing::config_extractors::is_config_language(&lang),
+                }
+            })
+            .collect()
     } else {
         ref_sites
     };
@@ -1212,7 +1215,7 @@ pub(crate) fn execute_batch_rename(
         let mut last_start: Option<u32> = None;
         for range in ranges {
             debug_assert!(
-                last_start.map_or(true, |prev| range.0 < prev),
+                last_start.is_none_or(|prev| range.0 < prev),
                 "ranges must be strictly descending: {} not < {:?}",
                 range.0,
                 last_start
@@ -1583,12 +1586,11 @@ pub(crate) fn detect_stale_references(
         .filter(|(ref_path, _)| {
             // Skip references in files of a different language to reduce false positives
             // (e.g., Rust `add` flagging Python's `add`).
-            if let Some(lang) = source_language {
-                if let Some(ref_file) = guard.get_file(ref_path) {
-                    if ref_file.language != *lang {
-                        return false;
-                    }
-                }
+            if let Some(lang) = source_language
+                && let Some(ref_file) = guard.get_file(ref_path)
+                && ref_file.language != *lang
+            {
+                return false;
             }
             true
         })

@@ -608,12 +608,18 @@ mod tests {
             .find(|sym| sym.name == "items[2]")
             .expect("third array item");
 
-        assert_eq!(&content[first.byte_range.0 as usize..first.byte_range.1 as usize], b"1");
+        assert_eq!(
+            &content[first.byte_range.0 as usize..first.byte_range.1 as usize],
+            b"1"
+        );
         assert_eq!(
             &content[second.byte_range.0 as usize..second.byte_range.1 as usize],
             br#"{"nested": true}"#
         );
-        assert_eq!(&content[third.byte_range.0 as usize..third.byte_range.1 as usize], b"3");
+        assert_eq!(
+            &content[third.byte_range.0 as usize..third.byte_range.1 as usize],
+            b"3"
+        );
         assert_ne!(first.byte_range, second.byte_range);
         assert_ne!(second.byte_range, third.byte_range);
     }

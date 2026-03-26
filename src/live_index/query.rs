@@ -1220,43 +1220,42 @@ impl LiveIndex {
         let is_glob = normalized_query.contains('*')
             || normalized_query.contains('?')
             || normalized_query.contains('[');
-        if is_glob {
-            if let Ok(glob) = globset::GlobBuilder::new(&normalized_query)
+        if is_glob
+            && let Ok(glob) = globset::GlobBuilder::new(&normalized_query)
                 .literal_separator(false)
                 .build()
-            {
-                let matcher = glob.compile_matcher();
-                let mut glob_hits: Vec<String> = self
-                    .all_files()
-                    .map(|(path, _)| path.as_str())
-                    .filter(|path| matcher.is_match(path))
-                    .map(|path| path.to_string())
-                    .collect();
-                glob_hits.sort();
-                let total_matches = glob_hits.len();
-                if total_matches == 0 {
-                    return SearchFilesView::NotFound {
-                        query: normalized_query,
-                    };
-                }
-                let overflow_count = total_matches.saturating_sub(limit);
-                glob_hits.truncate(limit);
-                let hits: Vec<SearchFilesHit> = glob_hits
-                    .into_iter()
-                    .map(|path| SearchFilesHit {
-                        tier: SearchFilesTier::StrongPath,
-                        path,
-                        coupling_score: None,
-                        shared_commits: None,
-                    })
-                    .collect();
-                return SearchFilesView::Found {
+        {
+            let matcher = glob.compile_matcher();
+            let mut glob_hits: Vec<String> = self
+                .all_files()
+                .map(|(path, _)| path.as_str())
+                .filter(|path| matcher.is_match(path))
+                .map(|path| path.to_string())
+                .collect();
+            glob_hits.sort();
+            let total_matches = glob_hits.len();
+            if total_matches == 0 {
+                return SearchFilesView::NotFound {
                     query: normalized_query,
-                    total_matches,
-                    overflow_count,
-                    hits,
                 };
             }
+            let overflow_count = total_matches.saturating_sub(limit);
+            glob_hits.truncate(limit);
+            let hits: Vec<SearchFilesHit> = glob_hits
+                .into_iter()
+                .map(|path| SearchFilesHit {
+                    tier: SearchFilesTier::StrongPath,
+                    path,
+                    coupling_score: None,
+                    shared_commits: None,
+                })
+                .collect();
+            return SearchFilesView::Found {
+                query: normalized_query,
+                total_matches,
+                overflow_count,
+                hits,
+            };
             // If glob parsing fails, fall through to normal search.
         }
 

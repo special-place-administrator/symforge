@@ -314,10 +314,10 @@ impl DaemonState {
                 // We won — insert as Inactive, then activate under the same lock
                 // to avoid a second write-lock acquisition.
                 projects.insert(project_id.clone(), new_project);
-                if let Some(project) = projects.get_mut(&project_id) {
-                    if project.activation_state == ActivationState::Inactive {
-                        project.activate();
-                    }
+                if let Some(project) = projects.get_mut(&project_id)
+                    && project.activation_state == ActivationState::Inactive
+                {
+                    project.activate();
                 }
             }
         }
@@ -519,13 +519,11 @@ impl DaemonState {
 
         // Update the session's project association *after* the projects lock is
         // released to maintain lock order (projects before sessions everywhere).
-        if needs_reassign {
-            if let Some(session) = self.sessions.write().get_mut(session_id) {
-                session.project_id = target_project_id;
-                session
-                    .last_seen_at
-                    .store(now_epoch_millis(), Ordering::Relaxed);
-            }
+        if needs_reassign && let Some(session) = self.sessions.write().get_mut(session_id) {
+            session.project_id = target_project_id;
+            session
+                .last_seen_at
+                .store(now_epoch_millis(), Ordering::Relaxed);
         }
 
         Ok(format!(
@@ -893,21 +891,20 @@ fn try_acquire_start_lock() -> anyhow::Result<Option<DaemonStartLock>> {
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
             // Check if the lock is stale (older than 30 seconds).
             // Daemon startup takes <5s normally, so a 30s-old lock is certainly stale.
-            if let Ok(metadata) = std::fs::metadata(&path) {
-                if let Ok(modified) = metadata.modified() {
-                    if modified.elapsed().unwrap_or_default() > std::time::Duration::from_secs(30) {
-                        tracing::warn!("removing stale daemon start lock (age > 30s)");
-                        let _ = std::fs::remove_file(&path);
-                        // Retry creation — another process may grab it first.
-                        match std::fs::OpenOptions::new()
-                            .write(true)
-                            .create_new(true)
-                            .open(&path)
-                        {
-                            Ok(_) => return Ok(Some(DaemonStartLock { path })),
-                            Err(_) => {} // Another process grabbed it — fall through
-                        }
-                    }
+            if let Ok(metadata) = std::fs::metadata(&path)
+                && let Ok(modified) = metadata.modified()
+                && modified.elapsed().unwrap_or_default() > std::time::Duration::from_secs(30)
+            {
+                tracing::warn!("removing stale daemon start lock (age > 30s)");
+                let _ = std::fs::remove_file(&path);
+                // Retry creation — another process may grab it first.
+                if std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&path)
+                    .is_ok()
+                {
+                    return Ok(Some(DaemonStartLock { path }));
                 }
             }
             Ok(None)

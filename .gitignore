@@ -10,6 +10,8 @@
 npm/*.tgz
 .env
 .claude/settings.local.json
+.claude/circuit-breaker-state.json
+.planning/telemetry/*.jsonl
 spacetime/tokenizor/target/
 __pycache__/
 

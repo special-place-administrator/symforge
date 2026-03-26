@@ -160,7 +160,8 @@ where
 
 use crate::domain::LanguageId;
 use crate::live_index::{
-    IndexedFile, SearchFilesHit, SearchFilesTier, SearchFilesView, search, store::{IndexState, LiveIndex},
+    IndexedFile, SearchFilesHit, SearchFilesTier, SearchFilesView, search,
+    store::{IndexState, LiveIndex},
 };
 use crate::protocol::edit;
 use crate::protocol::edit_format;
@@ -947,8 +948,9 @@ fn search_text_options_from_input(
 /// Returns `Some(fixed)` if the pattern contains likely double-escaped sequences,
 /// `None` otherwise.
 fn fix_common_double_escapes(pattern: &str) -> Option<String> {
-    static RE: std::sync::LazyLock<regex::Regex> =
-        std::sync::LazyLock::new(|| regex::Regex::new(r"\\\\([sdwbntSDWB])").expect("static regex"));
+    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"\\\\([sdwbntSDWB])").expect("static regex")
+    });
     if !RE.is_match(pattern) {
         return None;
     }
@@ -1507,7 +1509,7 @@ fn render_symbol_context_header(
     symbol_line: Option<u32>,
     verbosity: &str,
 ) -> Option<String> {
-    use crate::live_index::query::{resolve_symbol_selector, SymbolSelectorMatch};
+    use crate::live_index::query::{SymbolSelectorMatch, resolve_symbol_selector};
 
     match resolve_symbol_selector(file, name, symbol_kind, symbol_line) {
         SymbolSelectorMatch::Selected(_, sym) => {
@@ -1640,7 +1642,12 @@ impl SymForgeServer {
             let output = captured
                 .into_iter()
                 .map(|entry| match entry {
-                    CapturedGetSymbolsEntry::SymbolLookup { file, name, kind, symbol_line } => {
+                    CapturedGetSymbolsEntry::SymbolLookup {
+                        file,
+                        name,
+                        kind,
+                        symbol_line,
+                    } => {
                         let body = format::symbol_detail_from_indexed_file(
                             file.as_ref(),
                             &name,
@@ -2353,24 +2360,22 @@ impl SymForgeServer {
                             r
                         };
                         // Use the retry result if it actually produced matches
-                        if let Ok(ref retry_ok) = retry_result {
-                            if !retry_ok.files.is_empty() {
-                                let mut output = format::search_text_result_view(
-                                    retry_result,
-                                    params.0.group_by.as_deref(),
-                                    params.0.terms.as_deref(),
-                                );
-                                output.push_str(&format!(
-                                    "\n(auto-corrected double-escaped regex: `{}` → `{}`)",
-                                    query, fixed
-                                ));
-                                output.push_str(&format::compact_next_step_hint(&[
-                                    "inspect_match (deep-dive one hit)",
-                                    "get_file_context (file overview)",
-                                    "search_symbols (name-based lookup)",
-                                ]));
-                                return output;
-                            }
+                        if let Ok(ref retry_ok) = retry_result && !retry_ok.files.is_empty() {
+                            let mut output = format::search_text_result_view(
+                                retry_result,
+                                params.0.group_by.as_deref(),
+                                params.0.terms.as_deref(),
+                            );
+                            output.push_str(&format!(
+                                "\n(auto-corrected double-escaped regex: `{}` → `{}`)",
+                                query, fixed
+                            ));
+                            output.push_str(&format::compact_next_step_hint(&[
+                                "inspect_match (deep-dive one hit)",
+                                "get_file_context (file overview)",
+                                "search_symbols (name-based lookup)",
+                            ]));
+                            return output;
                         }
                     }
                 }
@@ -2420,34 +2425,32 @@ impl SymForgeServer {
 
             if wants_git {
                 let temporal = self.index.git_temporal();
-                if temporal.state == crate::live_index::git_temporal::GitTemporalState::Ready {
-                    if let Some(history) = temporal.files.get(&params.0.path) {
-                        use crate::live_index::git_temporal::{
-                            churn_bar, churn_label, relative_time,
-                        };
+                if temporal.state == crate::live_index::git_temporal::GitTemporalState::Ready
+                    && let Some(history) = temporal.files.get(&params.0.path)
+                {
+                    use crate::live_index::git_temporal::{churn_bar, churn_label, relative_time};
 
-                        found.git_activity = Some(crate::live_index::GitActivityView {
-                            churn_score: history.churn_score,
-                            churn_bar: churn_bar(history.churn_score),
-                            churn_label: churn_label(history.churn_score).to_string(),
-                            commit_count: history.commit_count,
-                            last_relative: relative_time(history.last_commit.days_ago),
-                            last_hash: history.last_commit.hash.clone(),
-                            last_message: history.last_commit.message_head.clone(),
-                            last_author: history.last_commit.author.clone(),
-                            last_timestamp: history.last_commit.timestamp.clone(),
-                            owners: history
-                                .contributors
-                                .iter()
-                                .map(|c| format!("{} {:.0}%", c.author, c.percentage))
-                                .collect(),
-                            co_changes: history
-                                .co_changes
-                                .iter()
-                                .map(|e| (e.path.clone(), e.coupling_score, e.shared_commits))
-                                .collect(),
-                        });
-                    }
+                    found.git_activity = Some(crate::live_index::GitActivityView {
+                        churn_score: history.churn_score,
+                        churn_bar: churn_bar(history.churn_score),
+                        churn_label: churn_label(history.churn_score).to_string(),
+                        commit_count: history.commit_count,
+                        last_relative: relative_time(history.last_commit.days_ago),
+                        last_hash: history.last_commit.hash.clone(),
+                        last_message: history.last_commit.message_head.clone(),
+                        last_author: history.last_commit.author.clone(),
+                        last_timestamp: history.last_commit.timestamp.clone(),
+                        owners: history
+                            .contributors
+                            .iter()
+                            .map(|c| format!("{} {:.0}%", c.author, c.percentage))
+                            .collect(),
+                        co_changes: history
+                            .co_changes
+                            .iter()
+                            .map(|e| (e.path.clone(), e.coupling_score, e.shared_commits))
+                            .collect(),
+                    });
                 }
             }
         }
@@ -2788,11 +2791,9 @@ impl SymForgeServer {
                                 if params.0.include_symbol_diff.unwrap_or(false)
                                     && !filtered.is_empty()
                                 {
-                                    let base = if git_ref.starts_with("branch:") {
-                                        &git_ref[7..]
-                                    } else {
-                                        git_ref.as_str()
-                                    };
+                                    let base = git_ref
+                                        .strip_prefix("branch:")
+                                        .unwrap_or(git_ref.as_str());
                                     let changed_refs: Vec<&str> =
                                         filtered.iter().map(|s| s.as_str()).collect();
                                     let sym_diff = format::diff_symbols_result_view(
@@ -2837,7 +2838,10 @@ impl SymForgeServer {
             Err(message) => return message,
         };
         freshen_exact_path_for_targeted_retrieval(self, &options.path_scope);
-        let mode_annotation = match (&options.content_context.mode_name, options.content_context.mode_explicit) {
+        let mode_annotation = match (
+            &options.content_context.mode_name,
+            options.content_context.mode_explicit,
+        ) {
             (Some(mode), true) => format!("── mode: {} (explicit) ──\n", mode),
             _ => String::new(),
         };
@@ -3011,9 +3015,9 @@ impl SymForgeServer {
                     );
                 }
                 // Check if the symbol exists at all in the indexed project
-                let exists_in_project = guard.all_files().any(|(_, file)| {
-                    file.symbols.iter().any(|s| s.name == input.name)
-                });
+                let exists_in_project = guard
+                    .all_files()
+                    .any(|(_, file)| file.symbols.iter().any(|s| s.name == input.name));
                 drop(guard);
                 if !exists_in_project {
                     return format!(
@@ -3241,10 +3245,10 @@ impl SymForgeServer {
         // Filter Phase 1 results by language and path_prefix
         if lang_filter.is_some() || params.0.path_prefix.is_some() {
             match_counts.retain(|(_, _, path), _| {
-                if let Some(ref prefix) = params.0.path_prefix {
-                    if !path.starts_with(prefix.as_str()) {
-                        return false;
-                    }
+                if let Some(ref prefix) = params.0.path_prefix
+                    && !path.starts_with(prefix.as_str())
+                {
+                    return false;
                 }
                 if let Some(ref lang) = lang_filter {
                     let ext = path.rsplit('.').next().unwrap_or("");
@@ -3383,7 +3387,7 @@ impl SymForgeServer {
         related_files.truncate(limit);
 
         // Depth 2+: enrich top symbol hits with signatures and dependents
-        let depth = params.0.depth.unwrap_or(1).max(1).min(3);
+        let depth = params.0.depth.unwrap_or(1).clamp(1, 3);
         let mut enriched_symbols: Vec<(String, String, String, Option<String>, Vec<String>)> =
             Vec::new();
         // (name, kind, path, signature, dependent_files)
@@ -3528,10 +3532,10 @@ impl SymForgeServer {
             .iter()
             .map(|s| s.as_str())
             .filter(|p| {
-                if let Some(ref prefix) = params.0.path_prefix {
-                    if !p.starts_with(prefix.as_str()) {
-                        return false;
-                    }
+                if let Some(ref prefix) = params.0.path_prefix
+                    && !p.starts_with(prefix.as_str())
+                {
+                    return false;
                 }
                 if let Some(ref lang) = lang_filter {
                     let ext = p.rsplit('.').next().unwrap_or("");
@@ -4935,12 +4939,36 @@ mod tests {
     #[test]
     fn test_symbol_candidate_paths_sorts_all_matches() {
         let index = make_live_index_ready(vec![
-            make_file("src/zeta.rs", b"fn connect() {}\n", vec![make_symbol("connect", SymbolKind::Function, 1, 1)]),
-            make_file("src/echo.rs", b"fn connect() {}\n", vec![make_symbol("connect", SymbolKind::Function, 1, 1)]),
-            make_file("src/bravo.rs", b"fn connect() {}\n", vec![make_symbol("connect", SymbolKind::Function, 1, 1)]),
-            make_file("src/alpha.rs", b"fn connect() {}\n", vec![make_symbol("connect", SymbolKind::Function, 1, 1)]),
-            make_file("src/delta.rs", b"fn connect() {}\n", vec![make_symbol("connect", SymbolKind::Function, 1, 1)]),
-            make_file("src/charlie.rs", b"fn connect() {}\n", vec![make_symbol("connect", SymbolKind::Function, 1, 1)]),
+            make_file(
+                "src/zeta.rs",
+                b"fn connect() {}\n",
+                vec![make_symbol("connect", SymbolKind::Function, 1, 1)],
+            ),
+            make_file(
+                "src/echo.rs",
+                b"fn connect() {}\n",
+                vec![make_symbol("connect", SymbolKind::Function, 1, 1)],
+            ),
+            make_file(
+                "src/bravo.rs",
+                b"fn connect() {}\n",
+                vec![make_symbol("connect", SymbolKind::Function, 1, 1)],
+            ),
+            make_file(
+                "src/alpha.rs",
+                b"fn connect() {}\n",
+                vec![make_symbol("connect", SymbolKind::Function, 1, 1)],
+            ),
+            make_file(
+                "src/delta.rs",
+                b"fn connect() {}\n",
+                vec![make_symbol("connect", SymbolKind::Function, 1, 1)],
+            ),
+            make_file(
+                "src/charlie.rs",
+                b"fn connect() {}\n",
+                vec![make_symbol("connect", SymbolKind::Function, 1, 1)],
+            ),
         ]);
 
         let candidates = super::symbol_candidate_paths(&index, "connect");

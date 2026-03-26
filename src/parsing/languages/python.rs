@@ -30,29 +30,27 @@ fn walk_node(
                     "class_definition" => Some(SymbolKind::Class),
                     _ => None,
                 };
-                if let Some(k) = inner_kind {
-                    if let Some(name) = find_name(&child, source) {
-                        push_symbol(
-                            node,
-                            source,
-                            name,
-                            k,
-                            depth,
-                            sort_order,
-                            symbols,
-                            &NO_DOC_SPEC,
-                        );
-                        // Recurse into the inner definition's children (nested classes/methods)
-                        walk_children(
-                            &child,
-                            source,
-                            depth,
-                            sort_order,
-                            symbols,
-                            Some(k),
-                            walk_node,
-                        );
-                    }
+                if let Some(k) = inner_kind && let Some(name) = find_name(&child, source) {
+                    push_symbol(
+                        node,
+                        source,
+                        name,
+                        k,
+                        depth,
+                        sort_order,
+                        symbols,
+                        &NO_DOC_SPEC,
+                    );
+                    // Recurse into the inner definition's children (nested classes/methods)
+                    walk_children(
+                        &child,
+                        source,
+                        depth,
+                        sort_order,
+                        symbols,
+                        Some(k),
+                        walk_node,
+                    );
                 }
             }
             return;

@@ -60,7 +60,7 @@ pub(super) fn scan_doc_range(
         let is_comment_node = spec.comment_node_types.contains(&sibling.kind());
         let is_custom_doc = spec
             .custom_doc_check
-            .map_or(false, |check| check(&sibling, source));
+            .is_some_and(|check| check(&sibling, source));
 
         if !is_comment_node && !is_custom_doc {
             break;
@@ -83,17 +83,14 @@ pub(super) fn scan_doc_range(
         }
 
         // If doc_prefixes is set, check the text prefix.
-        if is_comment_node {
-            if let Some(prefixes) = spec.doc_prefixes {
-                let text_start = sibling.start_byte();
-                let text_end = sibling.end_byte();
-                if text_end <= source.len() {
-                    let text =
-                        std::str::from_utf8(&source.as_bytes()[text_start..text_end]).unwrap_or("");
-                    let trimmed = text.trim_start();
-                    if !prefixes.iter().any(|p| trimmed.starts_with(p)) {
-                        break;
-                    }
+        if is_comment_node && let Some(prefixes) = spec.doc_prefixes {
+            let text_start = sibling.start_byte();
+            let text_end = sibling.end_byte();
+            if text_end <= source.len() {
+                let text = &source[text_start..text_end];
+                let trimmed = text.trim_start();
+                if !prefixes.iter().any(|p| trimmed.starts_with(p)) {
+                    break;
                 }
             }
         }

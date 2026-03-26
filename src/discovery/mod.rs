@@ -51,8 +51,8 @@ pub fn discover_files(root: &Path) -> Result<Vec<DiscoveredFile>> {
         .build()
         .filter_map(|entry_result| {
             let entry = entry_result.ok()?;
-            let path = std::fs::canonicalize(entry.path())
-                .unwrap_or_else(|_| entry.path().to_path_buf());
+            let path =
+                std::fs::canonicalize(entry.path()).unwrap_or_else(|_| entry.path().to_path_buf());
 
             // Use the already-known file_type from the walker instead of
             // path.is_file() which would issue a redundant stat() syscall.
@@ -105,8 +105,8 @@ pub fn discover_all_files(root: &Path) -> Result<Vec<DiscoveredEntry>> {
         .build()
         .filter_map(|entry_result| {
             let entry = entry_result.ok()?;
-            let path = std::fs::canonicalize(entry.path())
-                .unwrap_or_else(|_| entry.path().to_path_buf());
+            let path =
+                std::fs::canonicalize(entry.path()).unwrap_or_else(|_| entry.path().to_path_buf());
 
             if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
                 return None;
@@ -174,25 +174,25 @@ pub fn load_gitignore(root: &Path) -> Option<ignore::gitignore::Gitignore> {
 
     while let Some((dir, depth)) = queue.pop_front() {
         let gitignore_path = dir.join(".gitignore");
-        if gitignore_path.is_file() {
-            if let Some(err) = builder.add(&gitignore_path) {
-                tracing::debug!("failed to load {:?}: {}", gitignore_path, err);
-            }
+        if gitignore_path.is_file()
+            && let Some(err) = builder.add(&gitignore_path)
+        {
+            tracing::debug!("failed to load {:?}: {}", gitignore_path, err);
         }
 
-        if depth < max_depth {
-            if let Ok(entries) = std::fs::read_dir(&dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_dir() {
-                        // Skip common directories that won't have relevant .gitignore files
-                        let name = entry.file_name();
-                        let name_str = name.to_string_lossy();
-                        if name_str.starts_with('.') && name_str != ".github" {
-                            continue;
-                        }
-                        queue.push_back((path, depth + 1));
+        if depth < max_depth
+            && let Ok(entries) = std::fs::read_dir(&dir)
+        {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    // Skip common directories that won't have relevant .gitignore files
+                    let name = entry.file_name();
+                    let name_str = name.to_string_lossy();
+                    if name_str.starts_with('.') && name_str != ".github" {
+                        continue;
                     }
+                    queue.push_back((path, depth + 1));
                 }
             }
         }
@@ -388,21 +388,21 @@ pub fn classify_admission(
     if file_size > HARD_SKIP_BYTES {
         return AdmissionDecision::skip(AdmissionTier::HardSkip, SkipReason::SizeCeiling);
     }
-    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-        if is_denylisted_extension(ext) {
-            return AdmissionDecision::skip(
-                AdmissionTier::MetadataOnly,
-                SkipReason::DenylistedExtension,
-            );
-        }
+    if let Some(ext) = path.extension().and_then(|e| e.to_str())
+        && is_denylisted_extension(ext)
+    {
+        return AdmissionDecision::skip(
+            AdmissionTier::MetadataOnly,
+            SkipReason::DenylistedExtension,
+        );
     }
     if file_size > METADATA_ONLY_BYTES {
         return AdmissionDecision::skip(AdmissionTier::MetadataOnly, SkipReason::SizeThreshold);
     }
-    if let Some(content) = content_sample {
-        if is_binary_content(content) {
-            return AdmissionDecision::skip(AdmissionTier::MetadataOnly, SkipReason::BinaryContent);
-        }
+    if let Some(content) = content_sample
+        && is_binary_content(content)
+    {
+        return AdmissionDecision::skip(AdmissionTier::MetadataOnly, SkipReason::BinaryContent);
     }
     AdmissionDecision::normal()
 }

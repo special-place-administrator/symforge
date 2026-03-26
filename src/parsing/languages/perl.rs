@@ -33,7 +33,7 @@ fn walk_node(
         sort_order,
         symbols,
         kind,
-        |node, source, kind| find_name(node, source, kind),
+        find_name,
         &DOC_SPEC,
     );
     walk_children(node, source, depth, sort_order, symbols, kind, walk_node);

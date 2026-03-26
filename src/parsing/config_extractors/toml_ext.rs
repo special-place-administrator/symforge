@@ -476,10 +476,7 @@ fn line_starts_with_key(line: &[u8], key: &[u8]) -> bool {
     // Check quoted form: "key" =
     if line.first() == Some(&b'"') {
         let expected_len = 1 + key.len() + 1; // opening quote + key + closing quote
-        if line.len() >= expected_len
-            && line[1..].starts_with(key)
-            && line[1 + key.len()] == b'"'
-        {
+        if line.len() >= expected_len && line[1..].starts_with(key) && line[1 + key.len()] == b'"' {
             let after = &line[expected_len..];
             return after
                 .first()

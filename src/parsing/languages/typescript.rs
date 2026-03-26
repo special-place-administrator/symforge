@@ -43,15 +43,27 @@ fn walk_node(
                     match child.kind() {
                         "arrow_function" | "function_expression" | "generator_function" => {
                             push_symbol(
-                                node, source, "default".to_string(), SymbolKind::Function,
-                                depth, sort_order, symbols, &DOC_SPEC,
+                                node,
+                                source,
+                                "default".to_string(),
+                                SymbolKind::Function,
+                                depth,
+                                sort_order,
+                                symbols,
+                                &DOC_SPEC,
                             );
                             break;
                         }
                         "class" => {
                             push_symbol(
-                                node, source, "default".to_string(), SymbolKind::Class,
-                                depth, sort_order, symbols, &DOC_SPEC,
+                                node,
+                                source,
+                                "default".to_string(),
+                                SymbolKind::Class,
+                                depth,
+                                sort_order,
+                                symbols,
+                                &DOC_SPEC,
                             );
                             break;
                         }

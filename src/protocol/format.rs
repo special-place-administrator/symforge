@@ -1,7 +1,7 @@
-/// Pure formatting functions for all 10 tool responses.
-///
-/// All functions take `&LiveIndex` (or data derived from it) and return `String`.
-/// No I/O, no async. Output matches the locked formats defined in CONTEXT.md.
+//! Pure formatting functions for all 10 tool responses.
+//!
+//! All functions take `&LiveIndex` (or data derived from it) and return `String`.
+//! No I/O, no async. Output matches the locked formats defined in CONTEXT.md.
 
 /// Budget limits for reference/dependent output to prevent unbounded token usage.
 pub struct OutputLimits {
@@ -108,7 +108,7 @@ pub fn symbol_detail_from_indexed_file(
     kind_filter: Option<&str>,
     symbol_line: Option<u32>,
 ) -> String {
-    use crate::live_index::query::{resolve_symbol_selector, SymbolSelectorMatch};
+    use crate::live_index::query::{SymbolSelectorMatch, resolve_symbol_selector};
 
     match resolve_symbol_selector(file, name, kind_filter, symbol_line) {
         SymbolSelectorMatch::Selected(_idx, sym) => {
@@ -446,23 +446,23 @@ pub fn search_text_result_view(
                                 enc.line_range.0 + 1,
                                 enc.line_range.1 + 1,
                             );
-                            if !symbol_counts.contains_key(&key) {
-                                symbol_order.push(key.clone());
-                                symbol_counts.insert(key, 1);
-                            } else {
-                                *symbol_counts.get_mut(&key).unwrap() += 1;
+                            match symbol_counts.entry(key.clone()) {
+                                std::collections::hash_map::Entry::Vacant(entry) => {
+                                    symbol_order.push(key);
+                                    entry.insert(1);
+                                }
+                                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                                    *entry.get_mut() += 1;
+                                }
                             }
                         } else {
                             no_symbol_count += 1;
                         }
                     }
                     for (sym_name, kind, start, end) in &symbol_order {
-                        if let Some(count) = symbol_counts.get(&(
-                            sym_name.clone(),
-                            kind.clone(),
-                            *start,
-                            *end,
-                        )) {
+                        if let Some(count) =
+                            symbol_counts.get(&(sym_name.clone(), kind.clone(), *start, *end))
+                        {
                             let match_word = if *count == 1 { "match" } else { "matches" };
                             lines.push(format!(
                                 "  {} {} (lines {}-{}): {} {}",
@@ -573,7 +573,10 @@ pub fn search_text_result_view(
         .any(|f| f.callers.as_ref().is_some_and(|c| !c.is_empty()));
     if has_nonempty_callers {
         lines.push(String::new());
-        lines.push("Note: Caller information is for the enclosing symbol, not for the search text itself.".to_string());
+        lines.push(
+            "Note: Caller information is for the enclosing symbol, not for the search text itself."
+                .to_string(),
+        );
     }
     lines.join("\n")
 }

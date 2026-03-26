@@ -586,8 +586,7 @@ pub async fn run_watcher(
                                     info.last_reconcile_at = Some(SystemTime::now());
                                 });
                             }
-                            session_errors +=
-                                u32::try_from(errors.len()).unwrap_or(u32::MAX);
+                            session_errors += u32::try_from(errors.len()).unwrap_or(u32::MAX);
                             if session_errors >= MAX_SESSION_ERRORS {
                                 warn!("watcher: too many session errors, restarting watcher");
                                 break;
