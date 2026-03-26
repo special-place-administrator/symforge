@@ -177,13 +177,6 @@ use super::SymForgeServer;
 
 // ─── Input parameter structs ────────────────────────────────────────────────
 
-/// Input for `get_file_outline`.
-#[derive(Deserialize, Serialize, JsonSchema)]
-pub struct GetFileOutlineInput {
-    /// Relative path to the file (e.g. "src/lib.rs").
-    pub path: String,
-}
-
 /// Input for `get_symbol`.
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct GetSymbolInput {
@@ -225,14 +218,6 @@ pub struct SymbolTarget {
     /// End byte offset for code slice (inclusive).
     #[serde(default, deserialize_with = "lenient_u32")]
     pub end_byte: Option<u32>,
-}
-
-/// Input for `get_symbols` (batch).
-#[derive(Deserialize, Serialize, JsonSchema)]
-pub struct GetSymbolsInput {
-    /// List of symbol or code-slice targets.
-    #[serde(deserialize_with = "lenient_vec_required")]
-    pub targets: Vec<SymbolTarget>,
 }
 
 /// Input for `search_symbols`.
@@ -319,7 +304,7 @@ pub struct SearchTextInput {
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct SearchFilesInput {
     /// Filename, folder name, or partial path. Required for search and resolve modes. Optional when `changed_with` is provided.
-    #[serde(default, alias = "hint")]
+    #[serde(default)]
     pub query: String,
     /// Optional maximum number of matches to return (default 20, capped at 50).
     #[serde(default, deserialize_with = "lenient_u32")]
@@ -331,14 +316,6 @@ pub struct SearchFilesInput {
     /// Set to true for exact path resolution mode: resolves an ambiguous filename or partial path to one exact project path.
     #[serde(default, deserialize_with = "lenient_bool")]
     pub resolve: Option<bool>,
-}
-
-/// Input for `resolve_path`.
-#[derive(Deserialize, Serialize, JsonSchema)]
-pub struct ResolvePathInput {
-    /// Filename, partial path, or ambiguous path hint.
-    #[serde(alias = "query")]
-    pub hint: String,
 }
 
 /// Input for `index_folder`.
@@ -476,18 +453,6 @@ pub struct FindDependentsInput {
     pub compact: Option<bool>,
 }
 
-/// Input for `find_implementations`.
-#[derive(Deserialize, Serialize, JsonSchema)]
-pub struct FindImplementationsInput {
-    /// Trait/interface name or implementing type name to search for.
-    pub name: String,
-    /// Search direction: "trait" (find implementors of a trait), "type" (find traits a type implements), or "auto" (default: search both directions).
-    pub direction: Option<String>,
-    /// Maximum entries to show (default 200).
-    #[serde(default, deserialize_with = "lenient_u32")]
-    pub limit: Option<u32>,
-}
-
 /// Input for `get_repo_map`.
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct GetRepoMapInput {
@@ -501,32 +466,6 @@ pub struct GetRepoMapInput {
     /// Maximum number of files to include in the output (only used when detail="full", default: 200).
     #[serde(default, deserialize_with = "lenient_u32")]
     pub max_files: Option<u32>,
-}
-
-/// Input for `get_file_tree` (backward compat).
-#[derive(Deserialize, Serialize, JsonSchema)]
-pub struct GetFileTreeInput {
-    /// Subtree path to browse (default: project root).
-    pub path: Option<String>,
-    /// Max depth levels to expand (default: 2, max: 5).
-    #[serde(default, deserialize_with = "lenient_u32")]
-    pub depth: Option<u32>,
-}
-
-/// Input for `get_context_bundle`.
-#[derive(Deserialize, Serialize, JsonSchema)]
-pub struct GetContextBundleInput {
-    /// File path containing the symbol.
-    pub path: String,
-    /// Symbol name to get context for.
-    pub name: String,
-    /// Optional kind filter for the symbol lookup (e.g., "fn", "struct").
-    pub kind: Option<String>,
-    /// Optional selected symbol line from `search_symbols`.
-    #[serde(default, deserialize_with = "lenient_u32")]
-    pub symbol_line: Option<u32>,
-    /// Output verbosity: "signature" (name+params+return only, ~80% smaller), "compact" (signature + first doc line), "full" (default — complete body).
-    pub verbosity: Option<String>,
 }
 
 /// Input for `get_file_context`.
@@ -648,16 +587,6 @@ pub struct ExploreInput {
     pub language: Option<String>,
     /// Optional relative path prefix scope (e.g., "src/", "backend/").
     pub path_prefix: Option<String>,
-}
-
-/// Input for `get_co_changes`.
-#[derive(Deserialize, Serialize, JsonSchema)]
-pub struct GetCoChangesInput {
-    /// Relative path to the file to query co-changes for.
-    pub path: String,
-    /// Maximum number of co-changing files to return (default 10).
-    #[serde(default, deserialize_with = "lenient_u32")]
-    pub limit: Option<u32>,
 }
 
 /// Input for `diff_symbols`.
@@ -1714,16 +1643,12 @@ impl SymForgeServer {
         description = "Start here for project orientation and the first code-reading pass before any broad raw file read. Returns a structural overview of the repository. Modes: (1) default/compact: ~500 token overview with file count, languages, and directory tree. (2) detail='full': complete symbol outline of every file — warning: large output. (3) detail='tree': browsable file tree with per-file symbol counts and language tags — supports path and depth params for subtree browsing. NOT for file details (use get_file_context) or finding symbols (use search_symbols)."
     )]
     pub(crate) async fn get_repo_map(&self, params: Parameters<GetRepoMapInput>) -> String {
+        if let Some(result) = self.proxy_tool_call("get_repo_map", &params.0).await {
+            return result;
+        }
         let detail = params.0.detail.as_deref().unwrap_or("compact");
         match detail {
             "full" => {
-                // Full symbol outline (old get_repo_outline behavior)
-                if let Some(result) = self
-                    .proxy_tool_call_without_params("get_repo_outline")
-                    .await
-                {
-                    return result;
-                }
                 let published = self.index.published_state();
                 if let Some(message) = loading_guard_message_from_published(&published) {
                     return message;
@@ -1792,19 +1717,6 @@ impl SymForgeServer {
                 }
             }
             "tree" => {
-                // Browsable file tree (old get_file_tree behavior)
-                if let Some(result) = self
-                    .proxy_tool_call(
-                        "get_file_tree",
-                        &serde_json::json!({
-                            "path": params.0.path,
-                            "depth": params.0.depth,
-                        }),
-                    )
-                    .await
-                {
-                    return result;
-                }
                 let published = self.index.published_state();
                 if let Some(message) = loading_guard_message_from_published(&published) {
                     return message;
@@ -1818,10 +1730,6 @@ impl SymForgeServer {
                 format::file_tree_view_with_skipped(&view.files, &skipped, path, depth)
             }
             _ => {
-                // Compact overview (default)
-                if let Some(result) = self.proxy_tool_call_without_params("get_repo_map").await {
-                    return result;
-                }
                 let guard = self.index.read();
                 loading_guard!(guard);
                 drop(guard);
@@ -1848,7 +1756,7 @@ impl SymForgeServer {
     }
 
     /// Rich file summary: symbol outline, imports, consumers, references, and git activity.
-    /// Use sections=['outline'] for a compact symbol outline only (replaces the old get_file_outline tool).
+    /// Use sections=['outline'] for a compact symbol outline only.
     /// Use sections=['outline','imports'] to limit output. Best tool for understanding a file before editing.
     /// Much smaller than reading the raw file.
     /// NOT for reading actual source code (use get_file_content or get_symbol).
@@ -1911,27 +1819,14 @@ impl SymForgeServer {
         &self,
         params: Parameters<GetSymbolContextInput>,
     ) -> String {
+        if let Some(result) = self.proxy_tool_call("get_symbol_context", &params.0).await {
+            return result;
+        }
         if params.0.bundle.unwrap_or(false) {
-            // Bundle mode (old get_context_bundle behavior)
             let path = match params.0.path.as_deref() {
                 Some(p) => p.to_string(),
                 None => return "Error: bundle=true requires the 'path' parameter.".to_string(),
             };
-            if let Some(result) = self
-                .proxy_tool_call(
-                    "get_context_bundle",
-                    &serde_json::json!({
-                        "path": path,
-                        "name": params.0.name,
-                        "kind": params.0.symbol_kind,
-                        "symbol_line": params.0.symbol_line,
-                        "verbosity": params.0.verbosity,
-                    }),
-                )
-                .await
-            {
-                return result;
-            }
             let (view, raw_chars) = {
                 let guard = self.index.read();
                 loading_guard!(guard);
@@ -2963,24 +2858,13 @@ impl SymForgeServer {
         description = "Find all references or implementations for a symbol. Modes: (1) default/references: call sites, imports, type usages grouped by file - set compact=true for ~60-75% smaller output. (2) mode='implementations': find trait/interface implementors bidirectionally - set direction='trait'/'type'/'auto'. Use when you need 'who calls this?' or 'who implements this?' NOT for file-level dependencies (use find_dependents). NOT for full refactoring context (use get_symbol_context with sections=[...])."
     )]
     pub(crate) async fn find_references(&self, params: Parameters<FindReferencesInput>) -> String {
+        if let Some(result) = self.proxy_tool_call("find_references", &params.0).await {
+            return result;
+        }
         let input = &params.0;
         let mode = input.mode.as_deref().unwrap_or("references");
 
         if mode == "implementations" {
-            // Implementations mode (old find_implementations behavior)
-            if let Some(result) = self
-                .proxy_tool_call(
-                    "find_implementations",
-                    &serde_json::json!({
-                        "name": input.name,
-                        "direction": input.direction,
-                        "limit": input.limit,
-                    }),
-                )
-                .await
-            {
-                return result;
-            }
             let view = {
                 let guard = self.index.read();
                 loading_guard!(guard);
@@ -8973,38 +8857,9 @@ mod tests {
 
     #[test]
     fn test_lenient_depth_accepts_string() {
-        let json = r#"{"depth":"1"}"#;
-        let input: super::GetFileTreeInput = serde_json::from_str(json).unwrap();
+        let json = r#"{"detail":"tree","depth":"1"}"#;
+        let input: super::GetRepoMapInput = serde_json::from_str(json).unwrap();
         assert_eq!(input.depth, Some(1));
-    }
-
-    #[test]
-    fn test_resolve_path_accepts_query_alias() {
-        let json = r#"{"query":"daemon"}"#;
-        let input: super::ResolvePathInput = serde_json::from_str(json).unwrap();
-        assert_eq!(input.hint, "daemon");
-    }
-
-    #[test]
-    fn test_resolve_path_accepts_hint() {
-        let json = r#"{"hint":"daemon"}"#;
-        let input: super::ResolvePathInput = serde_json::from_str(json).unwrap();
-        assert_eq!(input.hint, "daemon");
-    }
-
-    #[test]
-    fn test_get_co_changes_input_deserializes() {
-        let json = r#"{"path":"src/lib.rs","limit":5}"#;
-        let input: super::GetCoChangesInput = serde_json::from_str(json).unwrap();
-        assert_eq!(input.path, "src/lib.rs");
-        assert_eq!(input.limit, Some(5));
-    }
-
-    #[test]
-    fn test_get_co_changes_input_limit_as_string() {
-        let json = r#"{"path":"src/lib.rs","limit":"10"}"#;
-        let input: super::GetCoChangesInput = serde_json::from_str(json).unwrap();
-        assert_eq!(input.limit, Some(10));
     }
 
     #[tokio::test]

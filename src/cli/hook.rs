@@ -1432,7 +1432,7 @@ mod tests {
     }
 
     #[test]
-    fn test_proxy_path_keeps_legacy_sidecar_route_without_session() {
+    fn test_proxy_path_returns_base_path_without_session() {
         let path = proxy_path("/repo-map", None);
         assert_eq!(path, "/repo-map");
     }

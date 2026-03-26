@@ -322,13 +322,6 @@ fn home_dir() -> Option<PathBuf> {
     }
 }
 
-/// Deprecated: use `find_project_root()` instead.
-#[deprecated(note = "use find_project_root() which returns Option and checks forbidden dirs")]
-pub fn find_git_root() -> PathBuf {
-    find_project_root()
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
-}
-
 /// Check if content appears to be binary.
 /// Examines up to BINARY_SNIFF_BYTES of the content using three heuristics:
 /// 1. NUL byte present -> binary
@@ -541,27 +534,6 @@ mod tests {
                 .is_generated,
             "generated path should set is_generated"
         );
-    }
-
-    #[test]
-    fn test_find_git_root_returns_git_containing_dir() {
-        let tmp = TempDir::new().unwrap();
-        fs::create_dir(tmp.path().join(".git")).unwrap();
-
-        // Verify the walk-up logic finds .git
-        let mut found = false;
-        let mut current = tmp.path().to_path_buf();
-        loop {
-            if current.join(".git").exists() {
-                found = true;
-                break;
-            }
-            match current.parent() {
-                Some(p) => current = p.to_path_buf(),
-                None => break,
-            }
-        }
-        assert!(found, "should find .git directory");
     }
 
     #[test]

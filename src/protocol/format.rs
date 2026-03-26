@@ -1142,11 +1142,6 @@ pub fn what_changed_paths_result(paths: &[String], empty_message: &str) -> Strin
     normalized_paths.join("\n")
 }
 
-pub fn resolve_path_result(index: &LiveIndex, hint: &str) -> String {
-    let view = index.capture_resolve_path_view(hint);
-    resolve_path_result_view(&view)
-}
-
 pub fn resolve_path_result_view(view: &ResolvePathView) -> String {
     match view {
         ResolvePathView::EmptyHint => "Path hint must not be empty.".to_string(),

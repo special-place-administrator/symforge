@@ -721,7 +721,7 @@ pub struct WhatChangedTimestampView {
     pub paths: Vec<String>,
 }
 
-/// Owned path-resolution result for `resolve_path`.
+/// Owned path-resolution result for `search_files` resolve mode.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolvePathView {
     EmptyHint,
@@ -820,7 +820,7 @@ pub struct FindReferencesView {
     pub files: Vec<ReferenceFileView>,
 }
 
-/// One entry in a `find_implementations` result.
+/// One entry in an implementations-mode `find_references` result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImplementationEntryView {
     /// The trait/interface name.
@@ -833,7 +833,7 @@ pub struct ImplementationEntryView {
     pub line: u32,
 }
 
-/// Owned grouped view for `find_implementations`.
+/// Owned grouped view for implementations-mode `find_references`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FindImplementationsView {
     pub entries: Vec<ImplementationEntryView>,
@@ -887,7 +887,7 @@ pub struct TypeDependencyView {
     pub depth: u8,
 }
 
-/// Owned definition-and-sections view for `get_context_bundle`.
+/// Owned definition-and-sections view for bundle-mode `get_symbol_context`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextBundleFoundView {
     pub file_path: String,
@@ -904,7 +904,7 @@ pub struct ContextBundleFoundView {
     pub implementation_suggestions: Vec<ImplBlockSuggestionView>,
 }
 
-/// Owned result view for `get_context_bundle`.
+/// Owned result view for bundle-mode `get_symbol_context`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContextBundleView {
     FileNotFound {
