@@ -7,10 +7,10 @@ pub mod resources;
 pub mod tools;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 
 use rmcp::RoleServer;
 use rmcp::handler::server::router::prompt::PromptRouter;

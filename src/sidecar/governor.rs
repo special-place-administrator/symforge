@@ -11,8 +11,10 @@
 //! - Full observability: in-flight requests visible in health output
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+
+use parking_lot::Mutex;
 use std::time::{Duration, Instant};
 
 use tokio::sync::{RwLock, Semaphore};
@@ -119,7 +121,15 @@ pub fn classify_tool(tool_name: &str) -> ToolWeight {
         }
 
         // Medium: operations that scan many files but only read
-        "analyze_file_impact" => ToolWeight::Medium,
+        "analyze_file_impact" | "sidecar/impact" => ToolWeight::Medium,
+
+        // Light: sidecar endpoints (reads, lookups, health)
+        "sidecar/outline"
+        | "sidecar/prompt-context"
+        | "sidecar/repo-map"
+        | "sidecar/symbol-context"
+        | "sidecar/health"
+        | "sidecar/stats" => ToolWeight::Light,
 
         // Light: everything else (reads, searches, lookups)
         _ => ToolWeight::Light,
@@ -237,7 +247,7 @@ impl RequestGovernor {
     /// Snapshot of governor state including all in-flight requests.
     pub fn snapshot(&self) -> GovernorSnapshot {
         let now = Instant::now();
-        let active = self.active.lock().unwrap();
+        let active = self.active.lock();
         let in_flight: Vec<TrackedRequest> = active
             .iter()
             .map(|(&id, entry)| TrackedRequest {
@@ -282,7 +292,7 @@ impl RequestGovernor {
         // Register the request as Queued.
         self.stats.total_submitted.fetch_add(1, Ordering::Relaxed);
         {
-            let mut active = self.active.lock().unwrap();
+            let mut active = self.active.lock();
             active.insert(
                 req_id,
                 RequestEntry {
@@ -394,7 +404,7 @@ impl RequestGovernor {
 
     /// Transition a tracked request from Queued to Executing.
     fn transition_to_executing(&self, req_id: u64) {
-        let mut active = self.active.lock().unwrap();
+        let mut active = self.active.lock();
         if let Some(entry) = active.get_mut(&req_id) {
             entry.phase = RequestPhase::Executing;
             entry.phase_started_at = Instant::now();
@@ -409,12 +419,12 @@ impl RequestGovernor {
     }
 
     fn remove_request(&self, id: u64) {
-        let mut active = self.active.lock().unwrap();
+        let mut active = self.active.lock();
         active.remove(&id);
     }
 
     fn active_count(&self) -> usize {
-        self.active.lock().unwrap().len()
+        self.active.lock().len()
     }
 }
 

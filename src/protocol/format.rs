@@ -1873,7 +1873,7 @@ pub fn find_references_result_view(
     } else {
         vec![format!("{total} references in {total_files} files")]
     };
-    if view.total_refs > 100 && name.len() <= 4 {
+    if view.total_refs > 50 {
         lines.push(format!(
             "Note: '{}' is a very common identifier — results may include unrelated symbols. \
              Add path or symbol_kind to scope the search.",
@@ -1953,7 +1953,7 @@ pub fn find_references_compact_view(
             view.total_refs, name, total_files
         )]
     };
-    if view.total_refs > 100 && name.len() <= 4 {
+    if view.total_refs > 50 {
         lines.push(format!(
             "Note: '{}' is a very common identifier — results may include unrelated symbols. \
              Add path or symbol_kind to scope the search.",

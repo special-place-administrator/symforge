@@ -48,6 +48,18 @@ pub async fn spawn_sidecar(
     port_file::write_port_file(port)?;
     port_file::write_pid_file(std::process::id())?;
 
+    // Install panic hook to clean up port files if the process panics.
+    let symforge_dir = std::env::current_dir()
+        .map(|d| d.join(port_file::DIR_NAME))
+        .ok();
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if let Some(ref dir) = symforge_dir {
+            port_file::cleanup_files_at(dir);
+        }
+        previous_hook(info);
+    }));
+
     info!("sidecar listening on {resolved_host}:{port}");
 
     // Construct SidecarState with fresh TokenStats and empty symbol cache.

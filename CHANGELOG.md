@@ -1,5 +1,47 @@
 # Changelog
 
+## [3.1.5](https://github.com/special-place-administrator/symforge/compare/v3.1.4...v3.1.5) (2026-03-25)
+
+
+### Bug Fixes
+
+* emit strict MCP array schemas for optional list params ([3519470](https://github.com/special-place-administrator/symforge/commit/3519470c2cafc36cd1d4c7e9b4455b8f3020623f))
+* make SymForge MCP schemas compatible with strict OpenAI clients ([aaa42f2](https://github.com/special-place-administrator/symforge/commit/aaa42f2aa6cb17af2a7d149abd5d0483f8086513))
+
+## [3.1.4](https://github.com/special-place-administrator/symforge/compare/v3.1.3...v3.1.4) (2026-03-23)
+
+
+### Bug Fixes
+
+* add panic hook to clean up sidecar port files on crash ([6758696](https://github.com/special-place-administrator/symforge/commit/6758696a02d052d6646721629a51c67ee8978f93))
+* replace std::sync::Mutex with parking_lot::Mutex to prevent poison cascades ([04651d0](https://github.com/special-place-administrator/symforge/commit/04651d09f5fccbad4e4ee267b2cf4c2ee953ea44))
+* sidecar reliability + reviewer feedback remediation ([8b41990](https://github.com/special-place-administrator/symforge/commit/8b419904451053df06d82f06ba7921f435395af0))
+* wrap daemon sidecar handlers with governor + spawn_blocking ([d665e41](https://github.com/special-place-administrator/symforge/commit/d665e415a5f889229ef7c5dc8a18a4c9cadc36bd))
+* wrap repair_file_indices in catch_unwind to prevent double-panic abort ([e2d2e97](https://github.com/special-place-administrator/symforge/commit/e2d2e976f4bef08ca678ad5e2a2142f5f5c48f2a))
+
+## [3.1.3](https://github.com/special-place-administrator/symforge/compare/v3.1.2...v3.1.3) (2026-03-22)
+
+
+### Bug Fixes
+
+* explore depth=2 shows symbol-level callers, get_symbol uses tier disambiguation ([9a22035](https://github.com/special-place-administrator/symforge/commit/9a22035872fb0ad58026a9dc50d66f0440e98f4b))
+* explore depth=2 shows symbol-level callers, get_symbol uses tier… ([4c1f588](https://github.com/special-place-administrator/symforge/commit/4c1f588fc1bd7282f74251eadb587913f89658a2))
+
+## [3.1.2](https://github.com/special-place-administrator/symforge/compare/v3.1.1...v3.1.2) (2026-03-21)
+
+
+### Bug Fixes
+
+* widen common-name warning in find_references to trigger on ref c… ([32b22b4](https://github.com/special-place-administrator/symforge/commit/32b22b432d54e1a02fced916ebfbdb08d21b8c1a))
+* widen common-name warning in find_references to trigger on ref count alone ([2c3cc4b](https://github.com/special-place-administrator/symforge/commit/2c3cc4b472d1df4645b3008d32451ffe1a104082))
+
+## [3.1.1](https://github.com/special-place-administrator/symforge/compare/v3.1.0...v3.1.1) (2026-03-21)
+
+
+### Bug Fixes
+
+* add NOT-for tips to 5 tool descriptions missing them ([14a8fad](https://github.com/special-place-administrator/symforge/commit/14a8fad0de46c1b3aa35711a8bbda3f8efee2c94))
+
 ## [3.1.0](https://github.com/special-place-administrator/symforge/compare/v3.0.1...v3.1.0) (2026-03-21)
 
 

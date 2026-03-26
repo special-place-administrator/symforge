@@ -1,3 +1,4 @@
+use parking_lot::Mutex;
 /// Integration tests for the file watcher — proves FRSH-01 through FRSH-06 and RELY-03.
 ///
 /// Each test uses a real tempdir, spawns the watcher via tokio::spawn, performs a
@@ -17,7 +18,7 @@
 ///   test_watcher_ignores_non_source_files          → filter correctness
 use std::fs;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use symforge::live_index::LiveIndex;
@@ -251,7 +252,7 @@ async fn test_watcher_hash_skip_on_noop_write() {
     };
 
     let watcher_info = spawn_watcher(&dir, &shared).await;
-    let events_before = watcher_info.lock().unwrap().events_processed;
+    let events_before = watcher_info.lock().events_processed;
 
     // Overwrite with SAME content — hash-skip should fire
     write_file(dir.path(), "src/stable.rs", content);
@@ -273,7 +274,7 @@ async fn test_watcher_hash_skip_on_noop_write() {
     }
 
     // Verify watcher processed the event (counted it) or at minimum didn't crash
-    let events_after = watcher_info.lock().unwrap().events_processed;
+    let events_after = watcher_info.lock().events_processed;
     let _ = events_before; // events_after may or may not be > events_before (hash-skip counts the event)
     let _ = events_after;
 }
@@ -316,7 +317,7 @@ async fn test_watcher_enoent_handled_gracefully() {
 
     // Verify watcher is still Active (RELY-03: no crash, graceful degradation path not taken)
     {
-        let info = watcher_info.lock().unwrap();
+        let info = watcher_info.lock();
         assert_eq!(
             info.state,
             WatcherState::Active,
@@ -406,7 +407,7 @@ async fn test_watcher_state_reports_active() {
     // Allow up to 200ms more for slower CI environments.
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let state = watcher_info.lock().unwrap().state.clone();
+    let state = watcher_info.lock().state.clone();
     assert_eq!(
         state,
         WatcherState::Active,

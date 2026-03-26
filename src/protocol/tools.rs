@@ -195,6 +195,7 @@ pub struct GetSymbolInput {
     /// Optional batch mode: provide multiple targets to retrieve 2+ symbols or code slices in one call.
     /// Each target is a file path + symbol name or byte range. When provided, path/name/kind above are ignored.
     #[serde(default, deserialize_with = "lenient_option_vec")]
+    #[schemars(with = "Vec<SymbolTarget>")]
     pub targets: Option<Vec<SymbolTarget>>,
 }
 
@@ -251,6 +252,7 @@ pub struct SearchTextInput {
     pub query: Option<String>,
     /// Optional list of terms to match with OR semantics.
     #[serde(default, deserialize_with = "lenient_option_vec")]
+    #[schemars(with = "Vec<String>")]
     pub terms: Option<Vec<String>>,
     /// Interpret `query` as a regex pattern instead of a literal substring.
     #[serde(default, deserialize_with = "lenient_bool")]
@@ -478,6 +480,7 @@ pub struct GetFileContextInput {
     pub max_tokens: Option<u64>,
     /// Optional list of sections to include. Allowed values: "outline", "imports", "consumers", "references", "git". Omit to include all sections.
     #[serde(default, deserialize_with = "lenient_option_vec")]
+    #[schemars(with = "Vec<String>")]
     pub sections: Option<Vec<String>>,
 }
 
@@ -505,6 +508,7 @@ pub struct GetSymbolContextInput {
     /// Valid values: "dependents", "siblings", "implementations", "git".
     /// Omit for default symbol-context mode. Pass empty array for all trace sections.
     #[serde(default, deserialize_with = "lenient_option_vec")]
+    #[schemars(with = "Vec<String>")]
     pub sections: Option<Vec<String>>,
     /// Optional max token budget for bundle mode. When set, preserves the main
     /// symbol body and sections, then includes type dependencies in priority
@@ -2485,7 +2489,7 @@ impl SymForgeServer {
             return result;
         }
         let published = self.index.published_state();
-        let watcher_guard = self.watcher_info.lock().unwrap_or_else(|e| e.into_inner());
+        let watcher_guard = self.watcher_info.lock();
         let mut result = format::health_report_from_published_state(&published, &watcher_guard);
 
         // Append token savings section if the sidecar's TokenStats are available.
@@ -4139,7 +4143,7 @@ mod tests {
 
     fn make_server_with_root(index: LiveIndex, repo_root: Option<PathBuf>) -> SymForgeServer {
         use crate::watcher::WatcherInfo;
-        use std::sync::Mutex;
+        use parking_lot::Mutex;
         let shared = crate::live_index::SharedIndexHandle::shared(index);
         let watcher_info = Arc::new(Mutex::new(WatcherInfo::default()));
         SymForgeServer::new(
