@@ -147,6 +147,7 @@ pub(super) fn collect_symbols(node: &Node, source: &str, walk: WalkNodeFn) -> Ve
     symbols
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn push_symbol(
     node: &Node,
     source: &str,
@@ -175,6 +176,7 @@ pub(super) fn push_symbol(
     *sort_order += 1;
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn push_named_symbol<F>(
     node: &Node,
     source: &str,

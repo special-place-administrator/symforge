@@ -852,7 +852,7 @@ pub(crate) fn execute_batch_edit(
                     let indent = detect_indentation(&content, r.sym.byte_range.0);
                     let normalized = normalize_line_endings(new_body.as_bytes(), line_ending);
                     let normalized_str = std::str::from_utf8(&normalized).unwrap_or(new_body);
-                    let indented = apply_indentation(&normalized_str, &indent, line_ending);
+                    let indented = apply_indentation(normalized_str, &indent, line_ending);
                     content = apply_splice(&content, (line_start, r.sym.byte_range.1), &indented);
                     file_summaries.push(super::edit_format::format_replace(
                         path,
@@ -1648,12 +1648,10 @@ pub fn find_qualified_usages(identifier: &str, source: &str) -> Vec<QualifiedMat
     // Track raw string state: None = not in raw string, Some(n) = in raw string with n #s.
     let mut in_raw_string: Option<usize> = None;
 
-    let mut line_num = 0usize;
     let mut line_byte_offset = 0usize;
 
-    for line in source.split('\n') {
-        line_num += 1;
-
+    for (line_num, line) in source.split('\n').enumerate() {
+        let line_num = line_num + 1;
         // Scan this line for occurrences of `identifier`, updating parse state.
         let line_bytes = line.as_bytes();
         let id_len = identifier.len();
@@ -1673,20 +1671,18 @@ pub fn find_qualified_usages(identifier: &str, source: &str) -> Vec<QualifiedMat
             // --- Update parse state at current col ---
 
             // Check for raw string start: r" or r#..."#
-            if !in_block_comment && in_raw_string.is_none() {
-                if line_bytes[col] == b'r' {
-                    // Count leading #s
-                    let mut hashes = 0usize;
-                    let mut j = col + 1;
-                    while j < line_bytes.len() && line_bytes[j] == b'#' {
-                        hashes += 1;
-                        j += 1;
-                    }
-                    if j < line_bytes.len() && line_bytes[j] == b'"' {
-                        in_raw_string = Some(hashes);
-                        col = j + 1;
-                        continue;
-                    }
+            if !in_block_comment && in_raw_string.is_none() && line_bytes[col] == b'r' {
+                // Count leading #s
+                let mut hashes = 0usize;
+                let mut j = col + 1;
+                while j < line_bytes.len() && line_bytes[j] == b'#' {
+                    hashes += 1;
+                    j += 1;
+                }
+                if j < line_bytes.len() && line_bytes[j] == b'"' {
+                    in_raw_string = Some(hashes);
+                    col = j + 1;
+                    continue;
                 }
             }
 

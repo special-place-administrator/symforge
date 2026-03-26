@@ -179,7 +179,7 @@ mod tests {
 
     fn parse_scss(source: &str) -> Vec<SymbolRecord> {
         let mut parser = Parser::new();
-        let lang: tree_sitter::Language = tree_sitter_scss::language().into();
+        let lang: tree_sitter::Language = tree_sitter_scss::language();
         parser.set_language(&lang).expect("set SCSS language");
         let tree = parser.parse(source, None).expect("parse SCSS source");
         extract_symbols(&tree.root_node(), source)

@@ -611,10 +611,10 @@ fn parse_git_log(raw: &str, now_unix: u64) -> Vec<ParsedCommit> {
         let line = line.trim_end();
 
         if line == COMMIT_DELIMITER {
-            if let Some(builder) = current.take() {
-                if let Some(commit) = builder.build() {
-                    commits.push(commit);
-                }
+            if let Some(builder) = current.take()
+                && let Some(commit) = builder.build()
+            {
+                commits.push(commit);
             }
             current = Some(ParsedCommitBuilder::new());
             continue;
@@ -637,17 +637,17 @@ fn parse_git_log(raw: &str, now_unix: u64) -> Vec<ParsedCommit> {
             builder.author = rest.to_string();
         } else if let Some(rest) = line.strip_prefix("M:") {
             builder.message = rest.to_string();
-        } else if !line.is_empty() {
-            if let Some(path) = parse_numstat_line(line) {
-                builder.files.push(normalize_git_path(&path));
-            }
+        } else if !line.is_empty()
+            && let Some(path) = parse_numstat_line(line)
+        {
+            builder.files.push(normalize_git_path(&path));
         }
     }
 
-    if let Some(builder) = current.take() {
-        if let Some(commit) = builder.build() {
-            commits.push(commit);
-        }
+    if let Some(builder) = current.take()
+        && let Some(commit) = builder.build()
+    {
+        commits.push(commit);
     }
 
     commits
@@ -712,6 +712,7 @@ impl ParsedCommitBuilder {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
 
@@ -942,7 +943,7 @@ mod tests {
     #[test]
     fn test_churn_score_multiple_commits_beats_single() {
         let now_unix = 1_741_520_000_u64;
-        let ts1 = now_unix - (1 * 86400);
+        let ts1 = now_unix - 86400;
         let ts2 = now_unix - (3 * 86400);
         let ts3 = now_unix - (5 * 86400);
         let log = format!(

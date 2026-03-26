@@ -1212,8 +1212,12 @@ fn json_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use once_cell::sync::Lazy;
     use serde_json::Value;
+    use std::sync::Mutex;
     use tempfile::TempDir;
+
+    static HOOK_VERBOSE_ENV_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
     // --- fail_open_json ---
 
@@ -1799,6 +1803,7 @@ mod tests {
 
     #[test]
     fn hook_verbose_returns_false_when_unset() {
+        let _guard = HOOK_VERBOSE_ENV_LOCK.lock().unwrap();
         // SAFETY: test-only env manipulation; tests run with --test-threads=1.
         unsafe { std::env::remove_var("SYMFORGE_HOOK_VERBOSE") };
         assert!(!is_hook_verbose());
@@ -1806,6 +1811,7 @@ mod tests {
 
     #[test]
     fn hook_verbose_returns_true_when_set_to_1() {
+        let _guard = HOOK_VERBOSE_ENV_LOCK.lock().unwrap();
         // SAFETY: test-only env manipulation; tests run with --test-threads=1.
         unsafe { std::env::set_var("SYMFORGE_HOOK_VERBOSE", "1") };
         let result = is_hook_verbose();
@@ -1815,6 +1821,7 @@ mod tests {
 
     #[test]
     fn hook_verbose_returns_false_for_other_values() {
+        let _guard = HOOK_VERBOSE_ENV_LOCK.lock().unwrap();
         for val in &["0", "true", "yes", "2", ""] {
             // SAFETY: test-only env manipulation; tests run with --test-threads=1.
             unsafe { std::env::set_var("SYMFORGE_HOOK_VERBOSE", val) };

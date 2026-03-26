@@ -30,7 +30,9 @@ fn walk_node(
                     "class_definition" => Some(SymbolKind::Class),
                     _ => None,
                 };
-                if let Some(k) = inner_kind && let Some(name) = find_name(&child, source) {
+                if let Some(k) = inner_kind
+                    && let Some(name) = find_name(&child, source)
+                {
                     push_symbol(
                         node,
                         source,

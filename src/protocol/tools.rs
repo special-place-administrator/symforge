@@ -791,10 +791,10 @@ fn filter_paths_by_prefix_and_language(
     Ok(paths
         .into_iter()
         .filter(|path| {
-            if let Some(ref pfx) = prefix {
-                if !path.starts_with(pfx.as_str()) {
-                    return false;
-                }
+            if let Some(ref pfx) = prefix
+                && !path.starts_with(pfx.as_str())
+            {
+                return false;
             }
             if let Some(ref lang) = lang_filter {
                 let ext = path.rsplit('.').next().unwrap_or("");
@@ -2063,13 +2063,12 @@ impl SymForgeServer {
                 if params.0.path.is_none()
                     && params.0.file.is_none()
                     && auto_resolved_candidate_count > 1
+                    && let Some(ref resolved) = resolved_path
                 {
-                    if let Some(ref resolved) = resolved_path {
-                        output.push_str(&format!(
-                            "\n\nNote: {} symbols named \"{}\" found — showing from {}. Specify path for precision.",
-                            auto_resolved_candidate_count, params.0.name, resolved
-                        ));
-                    }
+                    output.push_str(&format!(
+                        "\n\nNote: {} symbols named \"{}\" found — showing from {}. Specify path for precision.",
+                        auto_resolved_candidate_count, params.0.name, resolved
+                    ));
                 }
                 let saved = raw_chars.saturating_sub(output.len());
                 let footer = format::compact_savings_footer(output.len(), raw_chars);
@@ -2269,23 +2268,21 @@ impl SymForgeServer {
         // query contains unambiguous regex sequences (\w, \d, \s, \b, .+, .*),
         // enable regex mode automatically. These sequences never appear
         // literally in code, so treating them as literals always gives 0 results.
-        if !is_regex {
-            if let Some(ref q) = params.0.query {
-                let has_regex_escape = q.contains("\\w")
-                    || q.contains("\\d")
-                    || q.contains("\\s")
-                    || q.contains("\\b")
-                    || q.contains("\\W")
-                    || q.contains("\\D")
-                    || q.contains("\\S");
-                if has_regex_escape {
-                    is_regex = true;
-                    // Relax noise policy for auto-detected regex — the user
-                    // is doing a targeted pattern search and expects grep-like
-                    // completeness, so include test files by default.
-                    if params.0.include_tests.is_none() {
-                        options.noise_policy.include_tests = true;
-                    }
+        if !is_regex && let Some(ref q) = params.0.query {
+            let has_regex_escape = q.contains("\\w")
+                || q.contains("\\d")
+                || q.contains("\\s")
+                || q.contains("\\b")
+                || q.contains("\\W")
+                || q.contains("\\D")
+                || q.contains("\\S");
+            if has_regex_escape {
+                is_regex = true;
+                // Relax noise policy for auto-detected regex — the user
+                // is doing a targeted pattern search and expects grep-like
+                // completeness, so include test files by default.
+                if params.0.include_tests.is_none() {
+                    options.noise_policy.include_tests = true;
                 }
             }
         }
@@ -2320,11 +2317,11 @@ impl SymForgeServer {
                 &options,
             );
             // Enrich with callers if follow_refs is set
-            if params.0.follow_refs.unwrap_or(false) {
-                if let Ok(ref mut text_result) = r {
-                    let limit = params.0.follow_refs_limit.unwrap_or(3) as usize;
-                    enrich_with_callers(&guard, text_result, limit);
-                }
+            if params.0.follow_refs.unwrap_or(false)
+                && let Ok(ref mut text_result) = r
+            {
+                let limit = params.0.follow_refs_limit.unwrap_or(3) as usize;
+                enrich_with_callers(&guard, text_result, limit);
             }
             r
         };
@@ -2338,46 +2335,47 @@ impl SymForgeServer {
                 Ok(r) if r.files.is_empty() => true,
                 _ => false,
             };
-            if should_retry {
-                if let Some(ref query) = original_query {
-                    if let Some(fixed) = fix_common_double_escapes(query) {
-                        let retry_result = {
-                            let guard = self.index.read();
-                            loading_guard!(guard);
-                            let mut r = search::search_text_with_options(
-                                &guard,
-                                Some(fixed.as_str()),
-                                params.0.terms.as_deref(),
-                                true,
-                                &options,
-                            );
-                            if params.0.follow_refs.unwrap_or(false) {
-                                if let Ok(ref mut text_result) = r {
-                                    let limit = params.0.follow_refs_limit.unwrap_or(3) as usize;
-                                    enrich_with_callers(&guard, text_result, limit);
-                                }
-                            }
-                            r
-                        };
-                        // Use the retry result if it actually produced matches
-                        if let Ok(ref retry_ok) = retry_result && !retry_ok.files.is_empty() {
-                            let mut output = format::search_text_result_view(
-                                retry_result,
-                                params.0.group_by.as_deref(),
-                                params.0.terms.as_deref(),
-                            );
-                            output.push_str(&format!(
-                                "\n(auto-corrected double-escaped regex: `{}` → `{}`)",
-                                query, fixed
-                            ));
-                            output.push_str(&format::compact_next_step_hint(&[
-                                "inspect_match (deep-dive one hit)",
-                                "get_file_context (file overview)",
-                                "search_symbols (name-based lookup)",
-                            ]));
-                            return output;
-                        }
+            if should_retry
+                && let Some(ref query) = original_query
+                && let Some(fixed) = fix_common_double_escapes(query)
+            {
+                let retry_result = {
+                    let guard = self.index.read();
+                    loading_guard!(guard);
+                    let mut r = search::search_text_with_options(
+                        &guard,
+                        Some(fixed.as_str()),
+                        params.0.terms.as_deref(),
+                        true,
+                        &options,
+                    );
+                    if params.0.follow_refs.unwrap_or(false)
+                        && let Ok(ref mut text_result) = r
+                    {
+                        let limit = params.0.follow_refs_limit.unwrap_or(3) as usize;
+                        enrich_with_callers(&guard, text_result, limit);
                     }
+                    r
+                };
+                // Use the retry result if it actually produced matches
+                if let Ok(ref retry_ok) = retry_result
+                    && !retry_ok.files.is_empty()
+                {
+                    let mut output = format::search_text_result_view(
+                        retry_result,
+                        params.0.group_by.as_deref(),
+                        params.0.terms.as_deref(),
+                    );
+                    output.push_str(&format!(
+                        "\n(auto-corrected double-escaped regex: `{}` → `{}`)",
+                        query, fixed
+                    ));
+                    output.push_str(&format::compact_next_step_hint(&[
+                        "inspect_match (deep-dive one hit)",
+                        "get_file_context (file overview)",
+                        "search_symbols (name-based lookup)",
+                    ]));
+                    return output;
                 }
             }
         }
@@ -2791,9 +2789,8 @@ impl SymForgeServer {
                                 if params.0.include_symbol_diff.unwrap_or(false)
                                     && !filtered.is_empty()
                                 {
-                                    let base = git_ref
-                                        .strip_prefix("branch:")
-                                        .unwrap_or(git_ref.as_str());
+                                    let base =
+                                        git_ref.strip_prefix("branch:").unwrap_or(git_ref.as_str());
                                     let changed_refs: Vec<&str> =
                                         filtered.iter().map(|s| s.as_str()).collect();
                                     let sym_diff = format::diff_symbols_result_view(
@@ -3211,8 +3208,7 @@ impl SymForgeServer {
                     })
                     .max();
                 if let Some(weight) = best_match {
-                    let mut injected = 0;
-                    for sym in &file.symbols {
+                    for (injected, sym) in file.symbols.iter().enumerate() {
                         if injected >= limit {
                             break;
                         }
@@ -3221,7 +3217,6 @@ impl SymForgeServer {
                         // matches.  This prevents path-matching files from
                         // dominating over content-matching files.
                         match_counts.entry(entry).or_insert(weight.min(1));
-                        injected += 1;
                     }
                 }
             }
@@ -3388,8 +3383,7 @@ impl SymForgeServer {
 
         // Depth 2+: enrich top symbol hits with signatures and dependents
         let depth = params.0.depth.unwrap_or(1).clamp(1, 3);
-        let mut enriched_symbols: Vec<(String, String, String, Option<String>, Vec<String>)> =
-            Vec::new();
+        let mut enriched_symbols: Vec<format::ExploreEnrichedSymbol> = Vec::new();
         // (name, kind, path, signature, dependent_files)
 
         if depth >= 2 {
@@ -3465,16 +3459,16 @@ impl SymForgeServer {
             }
         }
 
-        let mut output = format::explore_result_view(
-            &label,
-            &symbol_hits,
-            &text_hits,
-            &related_files,
-            &enriched_symbols,
-            &symbol_impls,
-            &symbol_deps,
+        let mut output = format::explore_result_view(format::ExploreResultViewInput {
+            label: &label,
+            symbol_hits: &symbol_hits,
+            text_hits: &text_hits,
+            related_files: &related_files,
+            enriched_symbols: &enriched_symbols,
+            symbol_impls: &symbol_impls,
+            symbol_deps: &symbol_deps,
             depth,
-        );
+        });
 
         if noise_hidden > 0 {
             output.push_str(&format!(

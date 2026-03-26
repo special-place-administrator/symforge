@@ -226,6 +226,7 @@ fn walk_object(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn walk_array(
     content: &[u8],
     line_starts: &[u32],

@@ -27,14 +27,7 @@ fn walk_node(
     };
 
     push_named_symbol(
-        node,
-        source,
-        depth,
-        sort_order,
-        symbols,
-        kind,
-        find_name,
-        &DOC_SPEC,
+        node, source, depth, sort_order, symbols, kind, find_name, &DOC_SPEC,
     );
     walk_children(node, source, depth, sort_order, symbols, kind, walk_node);
 }

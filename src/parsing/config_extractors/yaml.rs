@@ -278,6 +278,7 @@ fn walk_mapping(
 }
 
 /// Walk a YAML sequence, emitting a SymbolRecord per element and recursing.
+#[allow(clippy::too_many_arguments)]
 fn walk_sequence(
     content: &[u8],
     line_starts: &[u32],

@@ -645,12 +645,8 @@ mod tests {
     #[test]
     fn test_binary_sniff_detects_high_control_ratio() {
         let mut content = Vec::new();
-        for _ in 0..80 {
-            content.push(0x01); // SOH — control char
-        }
-        for _ in 0..20 {
-            content.push(b'A'); // printable
-        }
+        content.extend(std::iter::repeat_n(0x01, 80)); // SOH — control char
+        content.extend(std::iter::repeat_n(b'A', 20)); // printable
         // 80% control bytes > 30% threshold -> binary
         assert!(is_binary_content(&content));
     }

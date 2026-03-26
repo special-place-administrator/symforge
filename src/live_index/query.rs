@@ -920,7 +920,7 @@ pub enum ContextBundleView {
         symbol_names: Vec<String>,
         name: String,
     },
-    Found(ContextBundleFoundView),
+    Found(Box<ContextBundleFoundView>),
 }
 
 /// A sibling symbol at the same depth within the same file.
@@ -973,7 +973,7 @@ pub enum TraceSymbolView {
         symbol_names: Vec<String>,
         name: String,
     },
-    Found(TraceSymbolFoundView),
+    Found(Box<TraceSymbolFoundView>),
 }
 
 /// A focused symbol summary for `inspect_match`.
@@ -1907,7 +1907,7 @@ impl LiveIndex {
             Vec::new()
         };
 
-        ContextBundleView::Found(ContextBundleFoundView {
+        ContextBundleView::Found(Box::new(ContextBundleFoundView {
             file_path: file.relative_path.clone(),
             body,
             kind_label: sym_rec.kind.to_string(),
@@ -1918,7 +1918,7 @@ impl LiveIndex {
             type_usages: capture_section(&type_usages),
             dependencies,
             implementation_suggestions,
-        })
+        }))
     }
 
     /// Capture a full trace view for a symbol, composing existing captures.
@@ -1962,7 +1962,7 @@ impl LiveIndex {
                     name,
                 };
             }
-            ContextBundleView::Found(view) => view,
+            ContextBundleView::Found(view) => *view,
         };
 
         let wants = |section: &str| -> bool {
@@ -2018,13 +2018,13 @@ impl LiveIndex {
             FindImplementationsView { entries: vec![] }
         };
 
-        TraceSymbolView::Found(TraceSymbolFoundView {
+        TraceSymbolView::Found(Box::new(TraceSymbolFoundView {
             context_bundle: found,
             dependents,
             siblings,
             implementations,
             git_activity: None, // Filled in by the tool method which has access to git_temporal.
-        })
+        }))
     }
 
     /// Capture a focused inspection view around a specific line.

@@ -115,6 +115,7 @@ fn walk_table(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn walk_item(
     item: &toml_edit::Item,
     raw_key: &str,
@@ -144,22 +145,22 @@ fn walk_item(
             ));
             *sort_order += 1;
 
-            if depth + 1 < MAX_DEPTH {
-                if let Some(inline_table) = value.as_inline_table() {
-                    for (k, v) in inline_table.iter() {
-                        let child_path = join_key_path(key_path, k);
-                        walk_item(
-                            &toml_edit::Item::Value(v.clone()),
-                            k,
-                            &child_path,
-                            depth + 1,
-                            raw,
-                            line_starts,
-                            symbols,
-                            sort_order,
-                            search_from,
-                        );
-                    }
+            if depth + 1 < MAX_DEPTH
+                && let Some(inline_table) = value.as_inline_table()
+            {
+                for (k, v) in inline_table.iter() {
+                    let child_path = join_key_path(key_path, k);
+                    walk_item(
+                        &toml_edit::Item::Value(v.clone()),
+                        k,
+                        &child_path,
+                        depth + 1,
+                        raw,
+                        line_starts,
+                        symbols,
+                        sort_order,
+                        search_from,
+                    );
                 }
             }
         }
@@ -384,10 +385,11 @@ fn find_key_value_bytes(raw: &[u8], key: &str, search_from: usize) -> (usize, us
             .unwrap_or(len);
         let line = &raw[line_start..line_end];
         let trimmed = trim_leading_whitespace(line);
-        if !trimmed.starts_with(b"#") && !trimmed.starts_with(b"[") {
-            if line_starts_with_key(trimmed, key_bytes) {
-                return (line_start, line_end.min(len));
-            }
+        if !trimmed.starts_with(b"#")
+            && !trimmed.starts_with(b"[")
+            && line_starts_with_key(trimmed, key_bytes)
+        {
+            return (line_start, line_end.min(len));
         }
         i = line_end;
     }

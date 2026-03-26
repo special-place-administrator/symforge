@@ -1368,13 +1368,13 @@ pub(crate) fn render_file_content_bytes(
     let line_count = lines.len() as u32;
 
     // Validate explicit line range against file length.
-    if let Some(start) = context.start_line {
-        if start > line_count {
-            return format!(
-                "{path} [error: requested range (lines {start}-{}) exceeds file length ({line_count} lines)]",
-                context.end_line.unwrap_or(start),
-            );
-        }
+    if let Some(start) = context.start_line
+        && start > line_count
+    {
+        return format!(
+            "{path} [error: requested range (lines {start}-{}) exceeds file length ({line_count} lines)]",
+            context.end_line.unwrap_or(start),
+        );
     }
 
     if let Some(around_line) = context.around_line {
@@ -2309,7 +2309,7 @@ pub fn context_bundle_result_view_with_max_tokens(
             name,
         } => not_found_symbol_names(relative_path, symbol_names, name),
         ContextBundleView::Found(view) => {
-            render_context_bundle_found_with_max_tokens(view, verbosity, max_tokens)
+            render_context_bundle_found_with_max_tokens(view.as_ref(), verbosity, max_tokens)
         }
     }
 }
@@ -3199,6 +3199,7 @@ pub fn git_temporal_health_line(
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
     use crate::domain::{LanguageId, SymbolKind, SymbolRecord};
@@ -5274,7 +5275,7 @@ mod tests {
             unique_count: 0,
         };
         let result = context_bundle_result_view(
-            &ContextBundleView::Found(ContextBundleFoundView {
+            &ContextBundleView::Found(Box::new(ContextBundleFoundView {
                 file_path: "src/actors.rs".to_string(),
                 body: "struct MyActor;".to_string(),
                 kind_label: "struct".to_string(),
@@ -5296,7 +5297,7 @@ mod tests {
                         line_number: 7,
                     },
                 ],
-            }),
+            })),
             "full",
         );
 
@@ -5323,7 +5324,7 @@ mod tests {
             unique_count: 0,
         };
         let result = context_bundle_result_view_with_max_tokens(
-            &ContextBundleView::Found(ContextBundleFoundView {
+            &ContextBundleView::Found(Box::new(ContextBundleFoundView {
                 file_path: "src/lib.rs".to_string(),
                 body: "fn plan(alpha: Alpha) -> Output { todo!() }".to_string(),
                 kind_label: "fn".to_string(),
@@ -5354,7 +5355,7 @@ mod tests {
                     },
                 ],
                 implementation_suggestions: vec![],
-            }),
+            })),
             "full",
             Some(100),
         );
@@ -6271,17 +6272,32 @@ mod tests {
     }
 }
 
+pub(crate) type ExploreEnrichedSymbol = (String, String, String, Option<String>, Vec<String>);
+
 /// Format the output of the `explore` tool.
-pub fn explore_result_view(
-    label: &str,
-    symbol_hits: &[(String, String, String)], // (name, kind, path)
-    text_hits: &[(String, String, usize)],    // (path, line, line_number)
-    related_files: &[(String, usize)],        // (path, count)
-    enriched_symbols: &[(String, String, String, Option<String>, Vec<String>)],
-    symbol_impls: &[(String, Vec<String>)],
-    symbol_deps: &[(String, Vec<String>)],
-    depth: u32,
-) -> String {
+pub struct ExploreResultViewInput<'a> {
+    pub label: &'a str,
+    pub symbol_hits: &'a [(String, String, String)],
+    pub text_hits: &'a [(String, String, usize)],
+    pub related_files: &'a [(String, usize)],
+    pub enriched_symbols: &'a [ExploreEnrichedSymbol],
+    pub symbol_impls: &'a [(String, Vec<String>)],
+    pub symbol_deps: &'a [(String, Vec<String>)],
+    pub depth: u32,
+}
+
+pub fn explore_result_view(input: ExploreResultViewInput<'_>) -> String {
+    let ExploreResultViewInput {
+        label,
+        symbol_hits,
+        text_hits,
+        related_files,
+        enriched_symbols,
+        symbol_impls,
+        symbol_deps,
+        depth,
+    } = input;
+
     let mut lines = vec![format!("── Exploring: {label} ──")];
     lines.push(String::new());
 
