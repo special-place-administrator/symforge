@@ -2036,9 +2036,7 @@ impl SymForgeServer {
                     match temporal.files.get(path) {
                         Some(history) => {
                             result.push_str("\n\n");
-                            result.push_str(&format::get_co_changes_result_view(
-                                path, history, limit,
-                            ));
+                            result.push_str(&format::co_changes_result_view(path, history, limit));
                         }
                         None => {
                             result.push_str("\n\nNo git co-change data found for this file.");
@@ -2395,9 +2393,9 @@ impl SymForgeServer {
             let view = {
                 let guard = self.index.read();
                 loading_guard!(guard);
-                guard.capture_resolve_path_view(&params.0.query)
+                guard.capture_search_files_resolve_view(&params.0.query)
             };
-            return format::resolve_path_result_view(&view);
+            return format::search_files_resolve_result_view(&view);
         }
 
         // Handle changed_with (git temporal coupling)
@@ -2868,11 +2866,11 @@ impl SymForgeServer {
             let view = {
                 let guard = self.index.read();
                 loading_guard!(guard);
-                guard.capture_find_implementations_view(&input.name, input.direction.as_deref())
+                guard.capture_implementations_view(&input.name, input.direction.as_deref())
             };
             let cap = input.limit.unwrap_or(200).min(500);
             let limits = format::OutputLimits::new(cap, cap);
-            let result = format::find_implementations_result_view(&view, &input.name, &limits);
+            let result = format::implementations_result_view(&view, &input.name, &limits);
             if view.entries.is_empty() {
                 let guard = self.index.read();
                 let is_concrete = guard.all_files().any(|(_, file)| {
@@ -2912,10 +2910,6 @@ impl SymForgeServer {
             return result;
         }
 
-        // Default: references mode
-        if let Some(result) = self.proxy_tool_call("find_references", &params.0).await {
-            return result;
-        }
         let limits =
             format::OutputLimits::new(input.limit.unwrap_or(20), input.max_per_file.unwrap_or(10));
         let result = {
@@ -3311,7 +3305,7 @@ impl SymForgeServer {
             let impl_limit = 3.min(enriched_symbols.len());
             for (name, _kind, path, _, _) in &enriched_symbols[..impl_limit] {
                 // Implementations (trait → implementors)
-                let impl_view = guard.capture_find_implementations_view(name, None);
+                let impl_view = guard.capture_implementations_view(name, None);
                 let impl_names: Vec<String> = impl_view
                     .entries
                     .iter()

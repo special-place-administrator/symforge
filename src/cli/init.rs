@@ -1107,10 +1107,10 @@ mod tests {
             "should include get_symbol"
         );
         assert!(
-            !allowed
+            allowed
                 .iter()
-                .any(|v| v.as_str() == Some("mcp__symforge__get_file_outline")),
-            "should not include alias-only tool names"
+                .any(|v| v.as_str() == Some("mcp__symforge__get_file_context")),
+            "should include get_file_context"
         );
         let first_len = allowed.len();
         // Should not duplicate on re-run
@@ -1134,8 +1134,8 @@ mod tests {
             "should contain canonical raw-read tool: {content}"
         );
         assert!(
-            !content.contains("get_file_outline"),
-            "should not write alias-only tool names: {content}"
+            content.contains("get_file_context"),
+            "should contain canonical context tool: {content}"
         );
         assert!(
             content.contains("project_doc_fallback_filenames = [\"AGENTS.md\", \"CLAUDE.md\"]"),

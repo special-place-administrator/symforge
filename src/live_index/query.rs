@@ -723,7 +723,7 @@ pub struct WhatChangedTimestampView {
 
 /// Owned path-resolution result for `search_files` resolve mode.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ResolvePathView {
+pub enum SearchFilesResolveView {
     EmptyHint,
     Resolved {
         path: String,
@@ -835,7 +835,7 @@ pub struct ImplementationEntryView {
 
 /// Owned grouped view for implementations-mode `find_references`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FindImplementationsView {
+pub struct ImplementationsView {
     pub entries: Vec<ImplementationEntryView>,
 }
 
@@ -953,7 +953,7 @@ pub struct TraceSymbolFoundView {
     pub context_bundle: ContextBundleFoundView,
     pub dependents: FindDependentsView,
     pub siblings: Vec<SiblingSymbolView>,
-    pub implementations: FindImplementationsView,
+    pub implementations: ImplementationsView,
     pub git_activity: Option<GitActivityView>,
 }
 
@@ -1118,15 +1118,15 @@ impl LiveIndex {
     }
 
     /// Resolve a path hint to one exact indexed path, or a bounded ambiguous result.
-    pub fn capture_resolve_path_view(&self, hint: &str) -> ResolvePathView {
+    pub fn capture_search_files_resolve_view(&self, hint: &str) -> SearchFilesResolveView {
         const RESOLVE_PATH_AMBIGUOUS_CAP: usize = 10;
         let normalized_hint = normalize_path_query(hint);
         if normalized_hint.is_empty() {
-            return ResolvePathView::EmptyHint;
+            return SearchFilesResolveView::EmptyHint;
         }
 
         if self.get_file(&normalized_hint).is_some() {
-            return ResolvePathView::Resolved {
+            return SearchFilesResolveView::Resolved {
                 path: normalized_hint,
             };
         }
@@ -1183,15 +1183,15 @@ impl LiveIndex {
         candidates.dedup();
 
         match candidates.len() {
-            0 => ResolvePathView::NotFound {
+            0 => SearchFilesResolveView::NotFound {
                 hint: normalized_hint,
             },
-            1 => ResolvePathView::Resolved {
+            1 => SearchFilesResolveView::Resolved {
                 path: candidates.pop().expect("single candidate"),
             },
             len => {
                 let overflow_count = len.saturating_sub(RESOLVE_PATH_AMBIGUOUS_CAP);
-                ResolvePathView::Ambiguous {
+                SearchFilesResolveView::Ambiguous {
                     hint: normalized_hint,
                     matches: candidates
                         .into_iter()
@@ -1495,11 +1495,11 @@ impl LiveIndex {
     /// `direction`: `None` or `Some("auto")` searches both directions.
     ///   `Some("trait")` treats `name` as a trait and returns implementors.
     ///   `Some("type")` treats `name` as a type and returns its traits.
-    pub fn capture_find_implementations_view(
+    pub fn capture_implementations_view(
         &self,
         name: &str,
         direction: Option<&str>,
-    ) -> FindImplementationsView {
+    ) -> ImplementationsView {
         let mut entries: Vec<ImplementationEntryView> = Vec::new();
 
         for (file_path, file) in &self.files {
@@ -1537,7 +1537,7 @@ impl LiveIndex {
                 .then(a.implementor.cmp(&b.implementor))
         });
 
-        FindImplementationsView { entries }
+        ImplementationsView { entries }
     }
 
     pub fn capture_find_references_view_for_symbol(
@@ -1728,7 +1728,7 @@ impl LiveIndex {
         }
     }
 
-    /// Capture the full owned data needed for `get_context_bundle`.
+    /// Capture the full owned data needed for `get_symbol_context` bundle mode.
     pub fn capture_context_bundle_view(
         &self,
         path: &str,
@@ -1924,7 +1924,7 @@ impl LiveIndex {
     /// Capture a full trace view for a symbol, composing existing captures.
     ///
     /// This is the one-call semantic investigation that replaces the common
-    /// search_symbols → get_context_bundle → find_dependents → get_file_context pattern.
+    /// search_symbols → get_symbol_context(bundle) → find_dependents → get_file_context pattern.
     pub fn capture_trace_symbol_view(
         &self,
         path: &str,
@@ -2013,9 +2013,9 @@ impl LiveIndex {
 
         // Trait implementations.
         let implementations = if wants("implementations") {
-            self.capture_find_implementations_view(name, None)
+            self.capture_implementations_view(name, None)
         } else {
-            FindImplementationsView { entries: vec![] }
+            ImplementationsView { entries: vec![] }
         };
 
         TraceSymbolView::Found(Box::new(TraceSymbolFoundView {
@@ -2678,7 +2678,7 @@ impl LiveIndex {
     /// `enclosing_symbol_index` equals `symbol_index`.
     ///
     /// These are the "callees" — functions called from within the target symbol.
-    /// Consumed by `get_context_bundle` (Plan 03).
+    /// Consumed by `get_symbol_context` bundle mode (Plan 03).
     pub fn callees_for_symbol(
         &self,
         file_path: &str,
@@ -2864,7 +2864,7 @@ impl LiveIndex {
 #[cfg(test)]
 mod tests {
     use super::{
-        ContextBundleView, ResolvePathView, SearchFilesHit, SearchFilesTier, SearchFilesView,
+        ContextBundleView, SearchFilesHit, SearchFilesResolveView, SearchFilesTier, SearchFilesView,
     };
     use crate::domain::{LanguageId, ReferenceKind, ReferenceRecord, SymbolKind, SymbolRecord};
     use crate::live_index::store::{
@@ -3259,7 +3259,7 @@ mod tests {
     }
 
     #[test]
-    fn test_capture_resolve_path_view_returns_exact_path_match() {
+    fn test_capture_search_files_resolve_view_returns_exact_path_match() {
         let index = make_index(
             vec![(
                 "src/protocol/tools.rs",
@@ -3268,18 +3268,18 @@ mod tests {
             false,
         );
 
-        let view = index.capture_resolve_path_view("./src\\protocol\\tools.rs");
+        let view = index.capture_search_files_resolve_view("./src\\protocol\\tools.rs");
 
         assert_eq!(
             view,
-            ResolvePathView::Resolved {
+            SearchFilesResolveView::Resolved {
                 path: "src/protocol/tools.rs".to_string()
             }
         );
     }
 
     #[test]
-    fn test_capture_resolve_path_view_uses_basename_and_dir_component_narrowing() {
+    fn test_capture_search_files_resolve_view_uses_basename_and_dir_component_narrowing() {
         let index = make_index(
             vec![
                 (
@@ -3294,18 +3294,18 @@ mod tests {
             false,
         );
 
-        let view = index.capture_resolve_path_view("protocol/tools.rs");
+        let view = index.capture_search_files_resolve_view("protocol/tools.rs");
 
         assert_eq!(
             view,
-            ResolvePathView::Resolved {
+            SearchFilesResolveView::Resolved {
                 path: "src/protocol/tools.rs".to_string()
             }
         );
     }
 
     #[test]
-    fn test_capture_resolve_path_view_falls_back_to_partial_path_match() {
+    fn test_capture_search_files_resolve_view_falls_back_to_partial_path_match() {
         let index = make_index(
             vec![(
                 "src/protocol/tools.rs",
@@ -3314,18 +3314,18 @@ mod tests {
             false,
         );
 
-        let view = index.capture_resolve_path_view("protocol/tools");
+        let view = index.capture_search_files_resolve_view("protocol/tools");
 
         assert_eq!(
             view,
-            ResolvePathView::Resolved {
+            SearchFilesResolveView::Resolved {
                 path: "src/protocol/tools.rs".to_string()
             }
         );
     }
 
     #[test]
-    fn test_capture_resolve_path_view_returns_bounded_ambiguous_matches() {
+    fn test_capture_search_files_resolve_view_returns_bounded_ambiguous_matches() {
         let index = make_index(
             vec![
                 (
@@ -3340,11 +3340,11 @@ mod tests {
             false,
         );
 
-        let view = index.capture_resolve_path_view("lib.rs");
+        let view = index.capture_search_files_resolve_view("lib.rs");
 
         assert_eq!(
             view,
-            ResolvePathView::Ambiguous {
+            SearchFilesResolveView::Ambiguous {
                 hint: "lib.rs".to_string(),
                 matches: vec!["src/lib.rs".to_string(), "tests/lib.rs".to_string()],
                 overflow_count: 0,

@@ -992,23 +992,26 @@ fn test_what_changed_paths_result_sorts_and_deduplicates() {
 }
 
 #[test]
-fn test_resolve_path_result_view_returns_exact_path() {
-    let view = ResolvePathView::Resolved {
+fn test_search_files_resolve_result_view_returns_exact_path() {
+    let view = SearchFilesResolveView::Resolved {
         path: "src/protocol/tools.rs".to_string(),
     };
 
-    assert_eq!(resolve_path_result_view(&view), "src/protocol/tools.rs");
+    assert_eq!(
+        search_files_resolve_result_view(&view),
+        "src/protocol/tools.rs"
+    );
 }
 
 #[test]
-fn test_resolve_path_result_view_formats_ambiguous_output() {
-    let view = ResolvePathView::Ambiguous {
+fn test_search_files_resolve_result_view_formats_ambiguous_output() {
+    let view = SearchFilesResolveView::Ambiguous {
         hint: "lib.rs".to_string(),
         matches: vec!["src/lib.rs".to_string(), "tests/lib.rs".to_string()],
         overflow_count: 1,
     };
 
-    let result = resolve_path_result_view(&view);
+    let result = search_files_resolve_result_view(&view);
 
     assert!(result.contains("Ambiguous path hint 'lib.rs' (3 matches)"));
     assert!(result.contains("  src/lib.rs"));
@@ -1017,13 +1020,13 @@ fn test_resolve_path_result_view_formats_ambiguous_output() {
 }
 
 #[test]
-fn test_resolve_path_result_view_not_found() {
-    let view = ResolvePathView::NotFound {
+fn test_search_files_resolve_result_view_not_found() {
+    let view = SearchFilesResolveView::NotFound {
         hint: "README.md".to_string(),
     };
 
     assert_eq!(
-        resolve_path_result_view(&view),
+        search_files_resolve_result_view(&view),
         "No indexed source path matched 'README.md'"
     );
 }

@@ -2191,10 +2191,13 @@ mod tests {
             resolved_path.status()
         );
 
-        let resolve_path_body = resolved_path.text().await.expect("search_files resolve body");
+        let resolved_path_body = resolved_path
+            .text()
+            .await
+            .expect("search_files resolve body");
         assert!(
-            resolve_path_body.contains("src/main.rs"),
-            "search_files resolve mode should return the indexed file, got: {resolve_path_body}"
+            resolved_path_body.contains("src/main.rs"),
+            "search_files resolve mode should return the indexed file, got: {resolved_path_body}"
         );
 
         let _ = handle.shutdown_tx.send(());

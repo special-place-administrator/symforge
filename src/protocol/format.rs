@@ -36,9 +36,9 @@ impl Default for OutputLimits {
 use crate::domain::index::{AdmissionTier, SkippedFile};
 use crate::live_index::{
     ContextBundleFoundView, ContextBundleSectionView, ContextBundleView, FileContentView,
-    FileOutlineView, FindDependentsView, FindImplementationsView, FindReferencesView, HealthStats,
-    ImplBlockSuggestionView, IndexedFile, InspectMatchView, LiveIndex, PublishedIndexState,
-    RepoOutlineFileView, RepoOutlineView, ResolvePathView, SearchFilesTier, SearchFilesView,
+    FileOutlineView, FindDependentsView, FindReferencesView, HealthStats, ImplBlockSuggestionView,
+    ImplementationsView, IndexedFile, InspectMatchView, LiveIndex, PublishedIndexState,
+    RepoOutlineFileView, RepoOutlineView, SearchFilesResolveView, SearchFilesTier, SearchFilesView,
     SymbolDetailView, TypeDependencyView, WhatChangedTimestampView, search,
 };
 use crate::{cli::hook::HookAdoptionSnapshot, sidecar::StatsSnapshot};
@@ -1142,14 +1142,14 @@ pub fn what_changed_paths_result(paths: &[String], empty_message: &str) -> Strin
     normalized_paths.join("\n")
 }
 
-pub fn resolve_path_result_view(view: &ResolvePathView) -> String {
+pub fn search_files_resolve_result_view(view: &SearchFilesResolveView) -> String {
     match view {
-        ResolvePathView::EmptyHint => "Path hint must not be empty.".to_string(),
-        ResolvePathView::Resolved { path } => path.clone(),
-        ResolvePathView::NotFound { hint } => {
+        SearchFilesResolveView::EmptyHint => "Path hint must not be empty.".to_string(),
+        SearchFilesResolveView::Resolved { path } => path.clone(),
+        SearchFilesResolveView::NotFound { hint } => {
             format!("No indexed source path matched '{hint}'")
         }
-        ResolvePathView::Ambiguous {
+        SearchFilesResolveView::Ambiguous {
             hint,
             matches,
             overflow_count,
@@ -1996,9 +1996,9 @@ pub fn find_references_compact_view(
     lines.join("\n")
 }
 
-/// Format results of `find_implementations`.
-pub fn find_implementations_result_view(
-    view: &FindImplementationsView,
+/// Format results of `find_references` implementations mode.
+pub fn implementations_result_view(
+    view: &ImplementationsView,
     name: &str,
     limits: &OutputLimits,
 ) -> String {
@@ -2410,7 +2410,7 @@ pub fn trace_symbol_result_view(
 
             if !found.implementations.entries.is_empty() {
                 output.push_str("\n\n");
-                output.push_str(&find_implementations_result_view(
+                output.push_str(&implementations_result_view(
                     &found.implementations,
                     name,
                     &OutputLimits::default(),
@@ -3308,7 +3308,7 @@ pub fn explore_result_view(input: ExploreResultViewInput<'_>) -> String {
 }
 
 /// Format git temporal data for a single file: churn, ownership, co-changes, last commit.
-pub fn get_co_changes_result_view(
+pub fn co_changes_result_view(
     path: &str,
     history: &crate::live_index::git_temporal::GitFileHistory,
     limit: usize,
