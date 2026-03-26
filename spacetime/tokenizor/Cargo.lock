@@ -736,6 +736,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "symforge_spacetime_module"
+version = "0.1.0"
+dependencies = [
+ "spacetimedb",
+]
+
+[[package]]
 name = "syn"
 version = "2.0.117"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -764,13 +771,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "tokenizor_spacetime_module"
-version = "0.1.0"
-dependencies = [
- "spacetimedb",
 ]
 
 [[package]]
