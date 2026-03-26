@@ -430,36 +430,39 @@ pub fn search_text_result_view(
             match group_by {
                 Some("symbol") => {
                     // One entry per unique enclosing symbol, showing match count
-                    // Preserve insertion order by tracking symbol names in order
-                    let mut symbol_order: Vec<String> = Vec::new();
+                    // Preserve insertion order by tracking fully-qualified buckets,
+                    // not just names, so duplicate names in one file stay distinct.
+                    let mut symbol_order: Vec<(String, String, u32, u32)> = Vec::new();
                     let mut symbol_counts: std::collections::HashMap<
-                        String,
-                        (usize, String, u32, u32),
+                        (String, String, u32, u32),
+                        usize,
                     > = std::collections::HashMap::new();
                     let mut no_symbol_count = 0usize;
                     for line_match in &file.matches {
                         if let Some(ref enc) = line_match.enclosing_symbol {
-                            let key = enc.name.clone();
+                            let key = (
+                                enc.name.clone(),
+                                enc.kind.clone(),
+                                enc.line_range.0 + 1,
+                                enc.line_range.1 + 1,
+                            );
                             if !symbol_counts.contains_key(&key) {
                                 symbol_order.push(key.clone());
-                                symbol_counts.insert(
-                                    key,
-                                    (
-                                        1,
-                                        enc.kind.clone(),
-                                        enc.line_range.0 + 1,
-                                        enc.line_range.1 + 1,
-                                    ),
-                                );
+                                symbol_counts.insert(key, 1);
                             } else {
-                                symbol_counts.get_mut(&enc.name).unwrap().0 += 1;
+                                *symbol_counts.get_mut(&key).unwrap() += 1;
                             }
                         } else {
                             no_symbol_count += 1;
                         }
                     }
-                    for sym_name in &symbol_order {
-                        if let Some((count, kind, start, end)) = symbol_counts.get(sym_name) {
+                    for (sym_name, kind, start, end) in &symbol_order {
+                        if let Some(count) = symbol_counts.get(&(
+                            sym_name.clone(),
+                            kind.clone(),
+                            *start,
+                            *end,
+                        )) {
                             let match_word = if *count == 1 { "match" } else { "matches" };
                             lines.push(format!(
                                 "  {} {} (lines {}-{}): {} {}",
@@ -3713,6 +3716,53 @@ mod tests {
         assert!(
             rendered.contains("> 9: needle 9"),
             "later match missing: {rendered}"
+        );
+    }
+
+    #[test]
+    fn test_search_text_result_view_group_by_symbol_keeps_duplicate_names_separate() {
+        let rendered = search_text_result_view(
+            Ok(search::TextSearchResult {
+                label: "'needle'".to_string(),
+                total_matches: 2,
+                files: vec![search::TextFileMatches {
+                    path: "src/lib.rs".to_string(),
+                    matches: vec![
+                        search::TextLineMatch {
+                            line_number: 2,
+                            line: "needle alpha".to_string(),
+                            enclosing_symbol: Some(search::EnclosingMatchSymbol {
+                                name: "connect".to_string(),
+                                kind: "fn".to_string(),
+                                line_range: (0, 1),
+                            }),
+                        },
+                        search::TextLineMatch {
+                            line_number: 5,
+                            line: "needle beta".to_string(),
+                            enclosing_symbol: Some(search::EnclosingMatchSymbol {
+                                name: "connect".to_string(),
+                                kind: "fn".to_string(),
+                                line_range: (3, 4),
+                            }),
+                        },
+                    ],
+                    rendered_lines: None,
+                    callers: None,
+                }],
+                suppressed_by_noise: 0,
+            }),
+            Some("symbol"),
+            None,
+        );
+
+        assert!(
+            rendered.contains("fn connect (lines 1-2): 1 match"),
+            "missing first symbol bucket: {rendered}"
+        );
+        assert!(
+            rendered.contains("fn connect (lines 4-5): 1 match"),
+            "missing second symbol bucket: {rendered}"
         );
     }
 

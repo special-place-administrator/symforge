@@ -1,0 +1,7 @@
+{
+  "consecutiveFailures": 2,
+  "lifetimeTrips": 2,
+  "lastFailedTool": "Bash",
+  "lastFailureTime": "2026-03-20T19:12:12.931Z",
+  "lastError": "Exit code 1\n\\!/c/Program\\ Files/GitHub\\ CLI/gh.exe auth git-credential store: line 1: !/c/Program Files/GitHub CLI/gh.exe: No such file or directory\nTo https://github.com/special-place-administrator/s"
+}

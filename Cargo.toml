@@ -6,6 +6,10 @@ description = "SymForge — in-memory code intelligence MCP server for Claude Co
 license-file = "LICENSE"
 repository = "https://github.com/special-place-administrator/symforge"
 
+[lib]
+name = "symforge"
+path = "src/lib.rs"
+
 [[bin]]
 name = "symforge"
 path = "src/main.rs"

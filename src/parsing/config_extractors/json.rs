@@ -236,17 +236,14 @@ fn walk_array(
     symbols: &mut Vec<SymbolRecord>,
     sort_order: &mut u32,
 ) {
+    let item_ranges = find_array_item_ranges(content, parent_byte_range);
     for (i, value) in arr.iter().enumerate() {
         if i >= MAX_ARRAY_ITEMS {
             break;
         }
 
         let elem_path = join_array_index(parent_path, i);
-
-        // TODO: compute exact per-element byte ranges by scanning for element
-        // boundaries in the raw bytes. For now, fall back to the parent array's
-        // range, which is strictly better than the full-file span.
-        let byte_range = parent_byte_range;
+        let byte_range = item_ranges.get(i).copied().unwrap_or(parent_byte_range);
         let start_line = byte_to_line(line_starts, byte_range.0);
         let end_line = byte_to_line(
             line_starts,
@@ -294,6 +291,71 @@ fn walk_array(
             }
         }
     }
+}
+
+fn find_array_item_ranges(content: &[u8], parent_byte_range: (u32, u32)) -> Vec<(u32, u32)> {
+    let start = parent_byte_range.0 as usize;
+    let end = (parent_byte_range.1 as usize).min(content.len());
+    if start >= end {
+        return Vec::new();
+    }
+
+    let Some(value_start) = find_value_start_in_range(content, start, end) else {
+        return Vec::new();
+    };
+    if value_start >= end || content[value_start] != b'[' {
+        return Vec::new();
+    }
+
+    let array_end = scan_container_end(content, value_start).min(end);
+    let mut cursor = value_start + 1;
+    let mut ranges = Vec::new();
+    while cursor < array_end {
+        cursor = skip_whitespace(content, cursor);
+        if cursor >= array_end || content[cursor] == b']' {
+            break;
+        }
+
+        let item_start = cursor;
+        let item_end = scan_value_end(content, item_start).min(array_end);
+        ranges.push((item_start as u32, item_end as u32));
+
+        cursor = skip_whitespace(content, item_end);
+        if cursor < array_end && content[cursor] == b',' {
+            cursor += 1;
+        }
+    }
+
+    ranges
+}
+
+fn find_value_start_in_range(content: &[u8], start: usize, end: usize) -> Option<usize> {
+    if start >= end || start >= content.len() {
+        return None;
+    }
+
+    let mut i = start;
+    let mut in_string = false;
+    let mut escaped = false;
+    while i < end {
+        let byte = content[i];
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+        } else if byte == b'"' {
+            in_string = true;
+        } else if byte == b':' {
+            return Some(skip_whitespace(content, i + 1).min(end));
+        }
+        i += 1;
+    }
+
+    Some(skip_whitespace(content, start).min(end))
 }
 
 /// Search the raw bytes for `"key":` starting from `*search_from`, returning
@@ -522,6 +584,38 @@ mod tests {
                 content.len()
             );
         }
+    }
+
+    #[test]
+    fn test_array_items_get_precise_byte_ranges() {
+        let content = br#"{"items": [1, {"nested": true}, 3]}"#;
+        let result = JsonExtractor.extract(content);
+        assert!(matches!(result.outcome, ExtractionOutcome::Ok));
+
+        let first = result
+            .symbols
+            .iter()
+            .find(|sym| sym.name == "items[0]")
+            .expect("first array item");
+        let second = result
+            .symbols
+            .iter()
+            .find(|sym| sym.name == "items[1]")
+            .expect("second array item");
+        let third = result
+            .symbols
+            .iter()
+            .find(|sym| sym.name == "items[2]")
+            .expect("third array item");
+
+        assert_eq!(&content[first.byte_range.0 as usize..first.byte_range.1 as usize], b"1");
+        assert_eq!(
+            &content[second.byte_range.0 as usize..second.byte_range.1 as usize],
+            br#"{"nested": true}"#
+        );
+        assert_eq!(&content[third.byte_range.0 as usize..third.byte_range.1 as usize], b"3");
+        assert_ne!(first.byte_range, second.byte_range);
+        assert_ne!(second.byte_range, third.byte_range);
     }
 
     #[test]

@@ -1484,6 +1484,51 @@ fn sidecar_state_for_server(server: &SymForgeServer) -> SidecarState {
     }
 }
 
+fn symbol_candidate_paths(index: &crate::live_index::store::LiveIndex, name: &str) -> Vec<String> {
+    let mut candidates: Vec<String> = index
+        .all_files()
+        .filter_map(|(path, file)| {
+            if file.symbols.iter().any(|s| s.name == name) {
+                Some(path.to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
+    candidates.sort();
+    candidates.dedup();
+    candidates
+}
+
+fn render_symbol_context_header(
+    file: &IndexedFile,
+    name: &str,
+    symbol_kind: Option<&str>,
+    symbol_line: Option<u32>,
+    verbosity: &str,
+) -> Option<String> {
+    use crate::live_index::query::{resolve_symbol_selector, SymbolSelectorMatch};
+
+    match resolve_symbol_selector(file, name, symbol_kind, symbol_line) {
+        SymbolSelectorMatch::Selected(_, sym) => {
+            let body = std::str::from_utf8(
+                &file.content[sym.byte_range.0 as usize..sym.byte_range.1 as usize],
+            )
+            .ok()?;
+            let rendered = format::apply_verbosity(body, verbosity);
+            Some(format!(
+                "{}\n[{}, {}:{}-{}]",
+                rendered,
+                sym.kind,
+                file.relative_path,
+                sym.line_range.0 + 1,
+                sym.line_range.1 + 1
+            ))
+        }
+        SymbolSelectorMatch::NotFound | SymbolSelectorMatch::Ambiguous(_) => None,
+    }
+}
+
 enum CapturedGetSymbolsEntry {
     SymbolLookup {
         file: Arc<IndexedFile>,
@@ -1940,25 +1985,16 @@ impl SymForgeServer {
         let file_path_hint = params.0.path.as_deref().or(params.0.file.as_deref());
         // Auto-resolve path from index when not provided
         let resolved_path: Option<String>;
+        let auto_resolved_candidate_count: usize;
         let file_path_hint = if file_path_hint.is_some() {
             resolved_path = None;
+            auto_resolved_candidate_count = 0;
             file_path_hint
         } else {
             let guard = self.index.read();
-            let mut candidates: Vec<String> = guard
-                .all_files()
-                .filter_map(|(path, file)| {
-                    if file.symbols.iter().any(|s| s.name == params.0.name) {
-                        Some(path.to_string())
-                    } else {
-                        None
-                    }
-                })
-                .take(5)
-                .collect();
-            // Sort for deterministic selection when multiple files match.
-            candidates.sort();
+            let candidates = symbol_candidate_paths(&guard, &params.0.name);
             drop(guard);
+            auto_resolved_candidate_count = candidates.len();
             if candidates.len() == 1 {
                 resolved_path = Some(candidates.into_iter().next().unwrap());
                 resolved_path.as_deref()
@@ -1983,33 +2019,13 @@ impl SymForgeServer {
             let raw = file.as_ref().map(|f| f.content.len()).unwrap_or(0);
 
             let header = file.and_then(|f| {
-                let sym = f.symbols.iter().find(|s| {
-                    s.name == params.0.name
-                        && params
-                            .0
-                            .symbol_kind
-                            .as_deref()
-                            .map(|k| s.kind.to_string().eq_ignore_ascii_case(k))
-                            .unwrap_or(true)
-                        && params
-                            .0
-                            .symbol_line
-                            .map(|l| s.line_range.0 + 1 == l)
-                            .unwrap_or(true)
-                })?;
-                let body = std::str::from_utf8(
-                    &f.content[sym.byte_range.0 as usize..sym.byte_range.1 as usize],
+                render_symbol_context_header(
+                    f.as_ref(),
+                    &params.0.name,
+                    params.0.symbol_kind.as_deref(),
+                    params.0.symbol_line,
+                    verbosity,
                 )
-                .ok()?;
-                let rendered = format::apply_verbosity(body, verbosity);
-                Some(format!(
-                    "{}\n[{}, {}:{}-{}]",
-                    rendered,
-                    sym.kind,
-                    f.relative_path,
-                    sym.line_range.0 + 1,
-                    sym.line_range.1 + 1
-                ))
             });
 
             (header, raw)
@@ -2037,22 +2053,15 @@ impl SymForgeServer {
                     "edit_within_symbol / replace_symbol_body (edits)",
                 ]));
                 // Add disambiguation note when path was auto-resolved from multiple candidates
-                if params.0.path.is_none() && params.0.file.is_none() {
+                if params.0.path.is_none()
+                    && params.0.file.is_none()
+                    && auto_resolved_candidate_count > 1
+                {
                     if let Some(ref resolved) = resolved_path {
-                        let guard = self.index.read();
-                        let count = guard
-                            .all_files()
-                            .filter(|(_, file)| {
-                                file.symbols.iter().any(|s| s.name == params.0.name)
-                            })
-                            .count();
-                        drop(guard);
-                        if count > 1 {
-                            output.push_str(&format!(
-                                "\n\nNote: {} symbols named \"{}\" found — showing from {}. Specify path for precision.",
-                                count, params.0.name, resolved
-                            ));
-                        }
+                        output.push_str(&format!(
+                            "\n\nNote: {} symbols named \"{}\" found — showing from {}. Specify path for precision.",
+                            auto_resolved_candidate_count, params.0.name, resolved
+                        ));
                     }
                 }
                 let saved = raw_chars.saturating_sub(output.len());
@@ -4109,6 +4118,25 @@ mod tests {
         }
     }
 
+    fn make_symbol_with_bytes(
+        name: &str,
+        kind: SymbolKind,
+        line_start: u32,
+        line_end: u32,
+        byte_range: (u32, u32),
+    ) -> SymbolRecord {
+        SymbolRecord {
+            name: name.to_string(),
+            kind,
+            depth: 0,
+            sort_order: 0,
+            byte_range,
+            item_byte_range: Some(byte_range),
+            line_range: (line_start, line_end),
+            doc_byte_range: None,
+        }
+    }
+
     fn make_file(path: &str, content: &[u8], symbols: Vec<SymbolRecord>) -> (String, IndexedFile) {
         (
             path.to_string(),
@@ -4870,10 +4898,10 @@ mod tests {
     async fn test_get_symbol_context_exact_selector_requires_line_for_ambiguous_symbol() {
         let target = make_file(
             "src/db.rs",
-            b"fn connect() {}\nfn connect() {}\n",
+            b"fn connect() { first(); }\nfn connect() { second(); }\n",
             vec![
-                make_symbol("connect", SymbolKind::Function, 1, 1),
-                make_symbol("connect", SymbolKind::Function, 2, 2),
+                make_symbol_with_bytes("connect", SymbolKind::Function, 1, 1, (0, 25)),
+                make_symbol_with_bytes("connect", SymbolKind::Function, 2, 2, (26, 52)),
             ],
         );
         let server = make_server(make_live_index_ready(vec![target]));
@@ -4896,8 +4924,29 @@ mod tests {
             result.contains("Ambiguous symbol selector"),
             "got: {result}"
         );
+        assert!(
+            !result.contains("first()"),
+            "ambiguous selector should not prepend an arbitrary definition: {result}"
+        );
         assert!(result.contains("1"), "got: {result}");
         assert!(result.contains("2"), "got: {result}");
+    }
+
+    #[test]
+    fn test_symbol_candidate_paths_sorts_all_matches() {
+        let index = make_live_index_ready(vec![
+            make_file("src/zeta.rs", b"fn connect() {}\n", vec![make_symbol("connect", SymbolKind::Function, 1, 1)]),
+            make_file("src/echo.rs", b"fn connect() {}\n", vec![make_symbol("connect", SymbolKind::Function, 1, 1)]),
+            make_file("src/bravo.rs", b"fn connect() {}\n", vec![make_symbol("connect", SymbolKind::Function, 1, 1)]),
+            make_file("src/alpha.rs", b"fn connect() {}\n", vec![make_symbol("connect", SymbolKind::Function, 1, 1)]),
+            make_file("src/delta.rs", b"fn connect() {}\n", vec![make_symbol("connect", SymbolKind::Function, 1, 1)]),
+            make_file("src/charlie.rs", b"fn connect() {}\n", vec![make_symbol("connect", SymbolKind::Function, 1, 1)]),
+        ]);
+
+        let candidates = super::symbol_candidate_paths(&index, "connect");
+        assert_eq!(candidates.len(), 6);
+        assert_eq!(candidates.first().map(String::as_str), Some("src/alpha.rs"));
+        assert_eq!(candidates.last().map(String::as_str), Some("src/zeta.rs"));
     }
 
     #[tokio::test]

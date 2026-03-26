@@ -288,17 +288,14 @@ fn walk_sequence(
     symbols: &mut Vec<SymbolRecord>,
     sort_order: &mut u32,
 ) {
+    let item_ranges = find_sequence_item_ranges(content, parent_byte_range);
     for (i, v) in seq.iter().enumerate() {
         if i >= MAX_ARRAY_ITEMS {
             break;
         }
 
         let elem_path = join_array_index(parent_path, i);
-
-        // TODO: compute exact per-element byte ranges by scanning for `- ` list
-        // markers at the appropriate indentation level. For now, fall back to the
-        // parent sequence's range, which is strictly better than the full-file span.
-        let byte_range = parent_byte_range;
+        let byte_range = item_ranges.get(i).copied().unwrap_or(parent_byte_range);
         let start_line = byte_to_line(line_starts, byte_range.0);
         let end_line = byte_to_line(
             line_starts,
@@ -346,6 +343,64 @@ fn walk_sequence(
             }
         }
     }
+}
+
+fn find_sequence_item_ranges(content: &[u8], parent_byte_range: (u32, u32)) -> Vec<(u32, u32)> {
+    let start = parent_byte_range.0 as usize;
+    let end = (parent_byte_range.1 as usize).min(content.len());
+    if start >= end {
+        return Vec::new();
+    }
+
+    let mut cursor = start;
+    let mut item_indent: Option<usize> = None;
+    let mut current_start: Option<usize> = None;
+    let mut ranges = Vec::new();
+    while cursor < end {
+        let line_start = cursor;
+        let line_end = content[cursor..end]
+            .iter()
+            .position(|&b| b == b'\n')
+            .map_or(end, |offset| cursor + offset + 1);
+        cursor = line_end;
+
+        let line = &content[line_start..line_end];
+        let indent = line
+            .iter()
+            .take_while(|&&b| b == b' ' || b == b'\t')
+            .count();
+        let rest = &line[indent..];
+        if rest.is_empty() || matches!(rest[0], b'#' | b'\r' | b'\n') {
+            continue;
+        }
+
+        let is_item = rest[0] == b'-'
+            && rest
+                .get(1)
+                .is_some_and(|next| matches!(next, b' ' | b'\t' | b'\r' | b'\n'));
+        if !is_item {
+            continue;
+        }
+
+        match item_indent {
+            None => {
+                item_indent = Some(indent);
+                current_start = Some(line_start);
+            }
+            Some(existing_indent) if indent == existing_indent => {
+                if let Some(previous_start) = current_start.replace(line_start) {
+                    ranges.push((previous_start as u32, line_start as u32));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(previous_start) = current_start {
+        ranges.push((previous_start as u32, end as u32));
+    }
+
+    ranges
 }
 
 #[cfg(test)]
@@ -439,5 +494,46 @@ mod tests {
                 content.len()
             );
         }
+    }
+
+    #[test]
+    fn test_sequence_items_get_precise_byte_ranges() {
+        let content = b"items:\n  - alpha\n  - nested:\n      ok: true\n  - gamma\n";
+        let result = YamlExtractor.extract(content);
+        assert!(matches!(result.outcome, ExtractionOutcome::Ok));
+
+        let first = result
+            .symbols
+            .iter()
+            .find(|sym| sym.name == "items[0]")
+            .expect("first sequence item");
+        let second = result
+            .symbols
+            .iter()
+            .find(|sym| sym.name == "items[1]")
+            .expect("second sequence item");
+        let third = result
+            .symbols
+            .iter()
+            .find(|sym| sym.name == "items[2]")
+            .expect("third sequence item");
+
+        let first_text =
+            std::str::from_utf8(&content[first.byte_range.0 as usize..first.byte_range.1 as usize])
+                .unwrap();
+        let second_text = std::str::from_utf8(
+            &content[second.byte_range.0 as usize..second.byte_range.1 as usize],
+        )
+        .unwrap();
+        let third_text =
+            std::str::from_utf8(&content[third.byte_range.0 as usize..third.byte_range.1 as usize])
+                .unwrap();
+
+        assert!(first_text.trim_end().ends_with("- alpha"));
+        assert!(second_text.contains("- nested:"));
+        assert!(second_text.contains("ok: true"));
+        assert!(third_text.trim_end().ends_with("- gamma"));
+        assert_ne!(first.byte_range, second.byte_range);
+        assert_ne!(second.byte_range, third.byte_range);
     }
 }
