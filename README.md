@@ -75,24 +75,63 @@ The server does the graph traversal, the agent gets a focused answer. The index 
 
 ## Token Savings — Measured
 
-Every applicable tool response includes a footer showing estimated tokens saved compared to reading the raw file. These are real measurements from SymForge's own codebase (~159 files, ~7500 symbols):
+Benchmarked on SymForge's own codebase (536 files, 13,604 symbols). Two benchmark types are shown: **per-tool** (one SymForge call vs one traditional equivalent) and **end-to-end workflow** (completing a realistic multi-step task). All numbers are approximate — see Methodology for caveats.
 
 > [!TIP]
-> Real session wins on SymForge's own codebase reached **99.7% peak savings** ◆ and a **largest single win of ~66,800 tokens** ◆
-> The `health` tool reports both **token savings** ◇ and **owned-workflow adoption** ◇ for the current session.
+> The `health` tool reports per-session **token savings** and **owned-workflow adoption**.
 
-| Operation | Raw file approach | SymForge | Savings |
-|-----------|------------------|-----------|---------|
-| Understand a 5700-line file's structure | `cat` the file: ~67,000 tokens | `get_file_context(sections=['outline'])`: ~200 tokens | **~66,800 tokens saved (99.7%)** |
-| Read a function + all its type dependencies | Read 3-5 files: ~15,000 tokens | `get_symbol_context(bundle=true)`: ~800 tokens | **~64,000 tokens saved (98.8%)** |
-| Understand a 1600-line file's structure | `cat` the file: ~16,000 tokens | `get_file_context(sections=['outline'])`: ~800 tokens | **~15,200 tokens saved (95%)** |
-| Find callers of a function | grep + read enclosing functions: ~5,000 tokens | `get_symbol_context`: ~700 tokens | **~15,300 tokens saved (96%)** |
-| Edit a function by name | Read file, find position, send full content: ~5,000 tokens | `replace_symbol_body(name=..., new_body=...)`: ~200 tokens | **~4,800 tokens saved (96%)** |
-| Explore a concept | grep + read results + follow imports: ~10,000 tokens | `explore(query=..., depth=2)`: ~1,500 tokens | **~8,500 tokens saved (85%)** |
+### Per-tool comparisons
 
-Savings scale with file size. On large files (5000+ lines), `get_file_context` routinely saves 50,000-70,000 tokens per call. Over a coding session, cumulative savings typically reach 200,000-400,000 tokens.
+Each row compares one SymForge tool call against the traditional equivalent on the same target.
 
-Token savings and owned-workflow hook adoption are tracked per session and reported by the `health` tool. Skeptical? Run a session with SymForge, check `health`, then try the same tasks with raw file reads and compare. The numbers speak for themselves on any codebase.
+**File structure understanding** — `get_file_context(outline)` returns the symbol outline instead of the raw file. The comparison assumes the agent would read the entire file to understand its structure, which is the common default when agents don't know what they're looking for. An agent that already knows the exact line range it needs would see smaller savings.
+
+| File | Lines | Read entire file | `get_file_context(outline)` | Saved |
+|------|------:|:----------------:|:---------------------------:|:-----:|
+| `src/protocol/tools.rs` | 10,122 | ~104,700 tokens | ~4,800 tokens | **95%** |
+| `src/live_index/query.rs` | 5,803 | ~54,000 tokens | ~3,200 tokens | **94%** |
+| `src/sidecar/handlers.rs` | 4,626 | ~43,600 tokens | ~1,800 tokens | **96%** |
+| `src/protocol/edit.rs` | 3,711 | ~36,400 tokens | ~2,200 tokens | **94%** |
+| `src/daemon.rs` | 3,184 | ~29,400 tokens | ~1,800 tokens | **94%** |
+
+**Search and reference lookups** — per-call savings are smaller. SymForge returns enclosing symbol names and filters test noise by default; grep returns raw lines including test code.
+
+| Operation | grep | SymForge | Saved |
+|-----------|------|----------|:-----:|
+| Find all callers of `reindex_after_write` | ~575 tokens (20 raw lines, includes tests) | `find_references(compact=true)`: ~188 tokens (14 refs with enclosing function names) | **67%** |
+| Search for `atomic_write_file` in source | ~675 tokens (24 matches, includes tests) | `search_text`: ~275 tokens (9 source matches grouped by enclosing function) | **59%** |
+
+### End-to-end workflow comparisons
+
+Per-tool numbers show individual call savings, but agents chain multiple calls to complete a task. Every tool output stays in the conversation window, so total context consumed is what matters.
+
+The **traditional path** below uses Read with its default 2,000-line limit (the typical behavior when an agent doesn't know exact locations) plus Grep. An agent that uses targeted reads with precise line ranges would consume less — but that requires already knowing where things are, which is what SymForge's index provides.
+
+| Workflow | Traditional | SymForge | Saved |
+|----------|:----------:|:--------:|:-----:|
+| **Prepare to edit a function** — need body, parameter types, callers, callees for `resolve_symbol_selector` | ~45,300 tokens across ~8 calls (Read first 2000 lines of 3 files + 5 greps) | ~2,500 tokens in 1 call (`get_symbol_context` bundle: body + 11 type defs from 3 files + 9 callers + 31 callees) | **94%** |
+| **Understand the edit pipeline** — how `replace_symbol_body` flows through `atomic_write` to `reindex` | ~43,000 tokens across 4 calls (Read first 2000 lines of edit.rs and tools.rs) | ~3,900 tokens in 2 calls (`explore` + `get_symbol_context` bundle) | **91%** |
+| **Find circuit breaker implementation** — where it fires, what triggers it, how state flows | ~37,100 tokens across 4 calls (Read first 2000 lines of store.rs and query.rs) | ~700 tokens in 2 calls (`explore` + `get_symbol_context`) | **98%** |
+
+The traditional numbers above represent typical agent behavior, not worst-case. Agents often read more than 2,000 lines (requesting additional chunks) or read the full file. A highly disciplined agent that uses `grep` first and then reads only the matching lines would see smaller differences — though it would still need multiple calls to assemble the same information SymForge returns in one.
+
+### Where savings are minimal or zero
+
+SymForge is not always better:
+
+- **Small files (<100 lines)** — the file is cheap to read directly; the outline adds metadata overhead for little gain
+- **Exact config/doc reads** — when you need the literal text of a TOML, YAML, or Markdown file, `get_file_context` doesn't help. Use `get_file_content` or Read
+- **Simple existence checks** — "does this file exist?" is already one Glob call
+- **Writing new code** — SymForge read/search tools don't assist with creating new files
+- **Agent already knows exact locations** — if the agent has precise line numbers from a prior call, a targeted Read is fast and cheap
+
+### Methodology and caveats
+
+- **Traditional approach** = `Read` (full file or targeted section, default 2,000-line limit), `Grep` (pattern search), `Glob` (file discovery). File read counts assume the agent doesn't know exact line ranges in advance, which is the common case when exploring or preparing to edit.
+- **SymForge approach** = tool output measured from the response. SymForge's per-call savings footer provides a cross-check.
+- **Token estimation** uses ~4 characters per token, the standard approximation for BPE tokenizers on English/code text. Real tokenizers vary — actual token counts may differ by 20–30% depending on the model. The relative savings percentages are more stable than the absolute numbers.
+- **Self-benchmarking caveat**: these measurements were taken on SymForge's own codebase (536 files, 13,604 symbols, Rust-dominant). Results on other codebases will vary — projects with many small files will show less dramatic savings than projects with large files. The per-tool savings percentages for `get_file_context` should hold across languages since they depend on file size, not language.
+- All measurements taken in a single Claude Code (Opus 4.6) session. Workflow benchmarks are reproducible: run the same sequence of Read/Grep calls, then the same SymForge calls, and compare total output sizes.
 
 ## Tools
 
