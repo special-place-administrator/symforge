@@ -86,13 +86,20 @@ Each row compares one SymForge tool call against the traditional equivalent on t
 
 **File structure understanding** — `get_file_context(outline)` returns the symbol outline instead of the raw file. The comparison assumes the agent would read the entire file to understand its structure, which is the common default when agents don't know what they're looking for. An agent that already knows the exact line range it needs would see smaller savings.
 
-| File | Lines | Read entire file | `get_file_context(outline)` | Saved |
-|------|------:|:----------------:|:---------------------------:|:-----:|
-| `src/protocol/tools.rs` | 10,122 | ~104,700 tokens | ~4,800 tokens | **95%** |
-| `src/live_index/query.rs` | 5,803 | ~54,000 tokens | ~3,200 tokens | **94%** |
-| `src/sidecar/handlers.rs` | 4,626 | ~43,600 tokens | ~1,800 tokens | **96%** |
-| `src/protocol/edit.rs` | 3,711 | ~36,400 tokens | ~2,200 tokens | **94%** |
-| `src/daemon.rs` | 3,184 | ~29,400 tokens | ~1,800 tokens | **94%** |
+Measured across 3 codebases and 3 languages:
+
+| File | Language | Lines | Read entire file | `get_file_context(outline)` | Saved |
+|------|----------|------:|:----------------:|:---------------------------:|:-----:|
+| `src/protocol/tools.rs` | Rust | 10,122 | ~104,700 tokens | ~4,800 tokens | **95%** |
+| `src/live_index/query.rs` | Rust | 5,803 | ~54,000 tokens | ~3,200 tokens | **94%** |
+| `src/daemon.rs` | Rust | 3,184 | ~29,400 tokens | ~1,800 tokens | **94%** |
+| `ReferenceDataManager.cs` | C# | 1,688 | ~16,500 tokens | ~500 tokens | **97%** |
+| `StateEngine.cs` | C# | 2,165 | ~20,200 tokens | ~1,400 tokens | **93%** |
+| `testing.service.ts` | TypeScript | 1,102 | ~10,700 tokens | ~1,400 tokens | **87%** |
+| `test-results-panel.component.ts` | TypeScript | 1,093 | ~13,000 tokens | ~1,400 tokens | **89%** |
+| `feature-access.store.ts` | TypeScript | 1,569 | ~13,300 tokens | ~2,400 tokens | **82%** |
+
+Savings by language: **Rust 94%** · **C# 95%** · **TypeScript 85%** · Overall average **91%**. TypeScript outlines are larger because Angular signal-style patterns (`let x = signal(...)`) produce more extracted symbols per line.
 
 **Search and reference lookups** — per-call savings are smaller. SymForge returns enclosing symbol names and filters test noise by default; grep returns raw lines including test code.
 
@@ -130,7 +137,7 @@ SymForge is not always better:
 - **Traditional approach** = `Read` (full file or targeted section, default 2,000-line limit), `Grep` (pattern search), `Glob` (file discovery). File read counts assume the agent doesn't know exact line ranges in advance, which is the common case when exploring or preparing to edit.
 - **SymForge approach** = tool output measured from the response. SymForge's per-call savings footer provides a cross-check.
 - **Token estimation** uses ~4 characters per token, the standard approximation for BPE tokenizers on English/code text. Real tokenizers vary — actual token counts may differ by 20–30% depending on the model. The relative savings percentages are more stable than the absolute numbers.
-- **Self-benchmarking caveat**: these measurements were taken on a single Rust-dominant codebase (SymForge itself — 536 files, 13,604 symbols). Other languages, frameworks, and project structures have not been systematically benchmarked. Results will vary — projects with many small files will show less dramatic savings than projects with large files. The per-tool savings percentages for `get_file_context` should hold across languages since they depend on file size rather than language, but workflow-level savings depend on how the agent navigates the codebase, which varies by language and project layout.
+- **Cross-language coverage**: per-tool file outline savings were measured across 3 codebases and 3 languages (Rust, C#, TypeScript/Angular). End-to-end workflow benchmarks were only run on the Rust codebase (SymForge itself — 536 files). Results will vary — projects with many small files will show less dramatic savings than projects with large files. TypeScript outlines are ~10% larger than Rust/C# outlines for the same file size due to more extracted local symbols.
 - All measurements taken in a single Claude Code (Opus 4.6) session. Workflow benchmarks are reproducible: run the same sequence of Read/Grep calls, then the same SymForge calls, and compare total output sizes.
 
 ## Tools
