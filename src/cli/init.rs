@@ -223,6 +223,12 @@ const SYMFORGE_TOOL_NAMES: &[&str] = &[
     "mcp__symforge__batch_edit",
     "mcp__symforge__batch_insert",
     "mcp__symforge__batch_rename",
+    "mcp__symforge__ask",
+    "mcp__symforge__conventions",
+    "mcp__symforge__edit_plan",
+    "mcp__symforge__context_inventory",
+    "mcp__symforge__investigation_suggest",
+    "mcp__symforge__trace_symbol",
 ];
 
 const KILO_ALWAYS_ALLOW: &[&str] = &[
@@ -251,6 +257,12 @@ const KILO_ALWAYS_ALLOW: &[&str] = &[
     "batch_edit",
     "batch_insert",
     "batch_rename",
+    "ask",
+    "conventions",
+    "edit_plan",
+    "context_inventory",
+    "investigation_suggest",
+    "trace_symbol",
 ];
 
 const CLAUDE_ALWAYS_ALLOW: &[&str] = &[
@@ -279,6 +291,12 @@ const CLAUDE_ALWAYS_ALLOW: &[&str] = &[
     "batch_edit",
     "batch_rename",
     "batch_insert",
+    "ask",
+    "conventions",
+    "edit_plan",
+    "context_inventory",
+    "investigation_suggest",
+    "trace_symbol",
 ];
 
 fn merge_allowed_tools(settings: &mut Value) {
@@ -711,6 +729,12 @@ SymForge MCP is installed and active. It provides indexed code search, symbol ex
 \n\
 9. **When resuming work**, call `what_changed` — it shows uncommitted changes so you can pick up where you left off.\n\
 \n\
+10. **When unsure which tool to use**, call `ask` — it accepts natural language questions like 'who calls X' or 'how does Y work' and routes to the right tool internally.\n\
+\n\
+11. **Before writing new code**, call `conventions` — it auto-detects project patterns (error handling, naming, test organization) so your code fits in.\n\
+\n\
+12. **Before editing a symbol**, call `edit_plan` — it counts callers, assesses impact, and suggests the right edit tool sequence.\n\
+\n\
 ### When to use `get_file_content`\n\
 - Reading non-code files (docs, configs) where exact wording matters\n\
 - When you need the full file content including whitespace and formatting\n\
@@ -752,6 +776,10 @@ Preferred tools for reading:\n\
 - `what_changed` — files changed since timestamp, ref, or uncommitted\n\
 - `diff_symbols` — symbol-level diff between git refs\n\
 - `explore` — concept-driven exploration across the codebase\n\
+- `ask` — natural language questions routed to the right tool\n\
+- `conventions` — auto-detect project coding patterns\n\
+- `context_inventory` — see what you've already fetched this session\n\
+- `investigation_suggest` — find gaps in your loaded context\n\
 \n\
 Preferred tools for editing:\n\
 - `replace_symbol_body` — replace a symbol's entire definition by name\n\
@@ -761,6 +789,7 @@ Preferred tools for editing:\n\
 - `batch_edit` — multiple symbol-addressed edits atomically across files\n\
 - `batch_rename` — rename a symbol and update all references project-wide\n\
 - `batch_insert` — insert code before/after multiple symbols across files\n\
+- `edit_plan` — analyze impact and suggest the right edit tool sequence\n\
 \n\
 Default rule:\n\
 - use SymForge to narrow and target code inspection first\n\
