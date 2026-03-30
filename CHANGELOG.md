@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.7.2](https://github.com/special-place-administrator/symforge/compare/v4.7.1...v4.7.2) (2026-03-30)
+
+
+### Bug Fixes
+
+* break infinite reconciliation loop caused by hash-skip mtime drift ([54a03f8](https://github.com/special-place-administrator/symforge/commit/54a03f88ffc6862e5096531b1f705589994120b9))
+
 ## [4.7.1](https://github.com/special-place-administrator/symforge/compare/v4.7.0...v4.7.1) (2026-03-30)
 
 
