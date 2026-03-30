@@ -3831,9 +3831,12 @@ impl SymForgeServer {
         description = "Show what symbols and files have been fetched this session. Returns a context inventory with token counts. Use to track your context budget and avoid re-fetching content you already have."
     )]
     pub(crate) async fn context_inventory(&self) -> String {
-        let snap = self.session_context.snapshot();
-        crate::protocol::session::format_context_inventory(&snap)
-    }
+            if let Some(result) = self.proxy_tool_call_without_params("context_inventory").await {
+                return result;
+            }
+            let snap = self.session_context.snapshot();
+            crate::protocol::session::format_context_inventory(&snap)
+        }
 
     #[tool(
         description = "Natural language entry point — ask any question about the codebase and SymForge routes to the right tool internally. Use when unsure which specific tool to call. Examples: 'who calls X', 'where is X defined', 'how does X work', 'what changed', 'find file X'. Returns the result plus which tool was used, so you can call it directly next time."
