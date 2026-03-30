@@ -4,6 +4,7 @@ pub mod explore;
 pub mod format;
 pub mod prompts;
 pub mod resources;
+pub mod smart_query;
 pub mod tools;
 
 use std::path::PathBuf;

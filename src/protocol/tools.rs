@@ -593,6 +593,14 @@ pub struct ExploreInput {
     pub path_prefix: Option<String>,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SmartQueryInput {
+    /// Natural language question about the codebase. Examples:
+    /// "who calls optimize_deterministic", "where is LiveIndex defined",
+    /// "how does the parser work", "what changed", "find file tools.rs"
+    pub query: String,
+}
+
 /// Input for `diff_symbols`.
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct DiffSymbolsInput {
@@ -3419,6 +3427,145 @@ impl SymForgeServer {
 
         self.record_tool_savings_named("explore", (output.len() * 10 / 4) as u64, (output.len() / 4) as u64);
         output
+    }
+
+    #[tool(
+        description = "Natural language entry point — ask any question about the codebase and SymForge routes to the right tool internally. Use when unsure which specific tool to call. Examples: 'who calls X', 'where is X defined', 'how does X work', 'what changed', 'find file X'. Returns the result plus which tool was used, so you can call it directly next time."
+    )]
+    pub(crate) async fn ask(&self, params: Parameters<SmartQueryInput>) -> String {
+        use crate::protocol::smart_query;
+
+        let q = params.0.query.trim();
+        if q.is_empty() {
+            return "query requires a non-empty question.".to_string();
+        }
+
+        let intent = smart_query::classify_intent(q);
+        let route_desc = smart_query::route_description(&intent);
+
+        let result = match intent {
+            smart_query::QueryIntent::FindCallers { symbol } => {
+                let input = FindReferencesInput {
+                    name: symbol,
+                    kind: None,
+                    path: None,
+                    symbol_kind: None,
+                    symbol_line: None,
+                    limit: None,
+                    max_per_file: None,
+                    compact: Some(true),
+                    mode: None,
+                    direction: None,
+                };
+                self.find_references(Parameters(input)).await
+            }
+            smart_query::QueryIntent::FindSymbol { name, kind } => {
+                let input = SearchSymbolsInput {
+                    query: Some(name),
+                    kind,
+                    path_prefix: None,
+                    language: None,
+                    limit: None,
+                    include_generated: None,
+                    include_tests: None,
+                };
+                self.search_symbols(Parameters(input)).await
+            }
+            smart_query::QueryIntent::FindFile { hint } => {
+                let input = SearchFilesInput {
+                    query: hint,
+                    limit: None,
+                    current_file: None,
+                    changed_with: None,
+                    resolve: None,
+                };
+                self.search_files(Parameters(input)).await
+            }
+            smart_query::QueryIntent::FindChanges => {
+                let input = WhatChangedInput {
+                    since: None,
+                    git_ref: None,
+                    uncommitted: Some(true),
+                    path_prefix: None,
+                    language: None,
+                    code_only: Some(true),
+                    include_symbol_diff: Some(true),
+                };
+                self.what_changed(Parameters(input)).await
+            }
+            smart_query::QueryIntent::Understand { concept } => {
+                let input = ExploreInput {
+                    query: concept,
+                    limit: None,
+                    depth: Some(2),
+                    include_noise: None,
+                    language: None,
+                    path_prefix: None,
+                };
+                self.explore(Parameters(input)).await
+            }
+            smart_query::QueryIntent::SearchCode { pattern } => {
+                let input = SearchTextInput {
+                    query: Some(pattern),
+                    terms: None,
+                    regex: None,
+                    path_prefix: None,
+                    language: None,
+                    limit: None,
+                    max_per_file: None,
+                    glob: None,
+                    exclude_glob: None,
+                    context: None,
+                    case_sensitive: None,
+                    whole_word: None,
+                    group_by: None,
+                    follow_refs: None,
+                    follow_refs_limit: None,
+                    ranked: None,
+                    include_generated: None,
+                    include_tests: None,
+                };
+                self.search_text(Parameters(input)).await
+            }
+            smart_query::QueryIntent::FindDependents { target } => {
+                let input = FindDependentsInput {
+                    path: target,
+                    limit: None,
+                    max_per_file: None,
+                    format: None,
+                    compact: Some(true),
+                };
+                self.find_dependents(Parameters(input)).await
+            }
+            smart_query::QueryIntent::FindImplementations { name } => {
+                let input = FindReferencesInput {
+                    name,
+                    kind: None,
+                    path: None,
+                    symbol_kind: None,
+                    symbol_line: None,
+                    limit: None,
+                    max_per_file: None,
+                    compact: None,
+                    mode: Some("implementations".to_string()),
+                    direction: None,
+                };
+                self.find_references(Parameters(input)).await
+            }
+            smart_query::QueryIntent::Explore { query } => {
+                let input = ExploreInput {
+                    query,
+                    limit: None,
+                    depth: Some(2),
+                    include_noise: None,
+                    language: None,
+                    path_prefix: None,
+                };
+                self.explore(Parameters(input)).await
+            }
+        };
+
+        format!("{route_desc}\n\n{result}")
     }
 
     /// Symbol-level diff between two git refs. Shows +added, -removed, ~modified symbols per changed
