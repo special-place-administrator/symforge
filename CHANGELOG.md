@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.5.0](https://github.com/special-place-administrator/symforge/compare/v4.4.0...v4.5.0) (2026-03-30)
+
+
+### Features
+
+* add estimate parameter for context budget planning (Suggestion 4) ([b1e3239](https://github.com/special-place-administrator/symforge/commit/b1e3239ce622b77fb9d56bf2e7529e9ee72072cf))
+
 ## [4.4.0](https://github.com/special-place-administrator/symforge/compare/v4.3.0...v4.4.0) (2026-03-30)
 
 
