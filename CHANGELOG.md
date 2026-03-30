@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.8.1](https://github.com/special-place-administrator/symforge/compare/v4.8.0...v4.8.1) (2026-03-30)
+
+
+### Bug Fixes
+
+* new tools broken in daemon mode — missing proxy_tool_call ([cdde2a9](https://github.com/special-place-administrator/symforge/commit/cdde2a977fc0a78622c14c5227585271201bb926))
+
 ## [4.8.0](https://github.com/special-place-administrator/symforge/compare/v4.7.2...v4.8.0) (2026-03-30)
 
 
