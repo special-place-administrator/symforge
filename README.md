@@ -5,7 +5,7 @@ A code-native MCP server that gives AI coding agents structured, symbol-aware ac
 Works with any MCP-compatible client — CLI agents (Claude Code, Codex, Gemini CLI), VS Code extensions (Kilo Code, Roo Code, Cline, Continue), JetBrains plugins, and custom agents.
 
 > [!IMPORTANT]
-> **Rust-native** ◆ **25 tools** ◆ **19 source languages** ◆ **5 config formats** ◆ **Built-in prompts and resources**
+> **Rust-native** ◆ **31 tools** ◆ **19 source languages** ◆ **5 config formats** ◆ **6 prompts** ◆ **Built-in resources**
 >
 > **SymForge First** ◆ for source-code reads, search, repo orientation, and symbol tracing.
 > **Literal raw reads are still correct** ◇ for docs and config when exact wording is the point.
@@ -142,7 +142,7 @@ SymForge is not always better:
 
 ## Tools
 
-25 unique tools + 7 backward-compatible aliases, organized by workflow stage. Edit tools accept symbol names — no need to read files first.
+31 unique tools + 7 backward-compatible aliases, organized by workflow stage. Edit tools accept symbol names — no need to read files first.
 
 ### Orientation
 
@@ -159,7 +159,7 @@ SymForge is not always better:
 | `get_file_content` | Read files with line ranges, `around_line`, `around_match`, `around_symbol`, or chunked paging |
 | `get_file_context` | Rich file summary: symbol outline, imports, consumers, references, git activity. Use `sections=['outline']` for symbol-only outline |
 | `get_symbol` | Look up symbol(s) by file path and name. Single mode or batch mode with `targets[]` array for multiple symbols or byte-range code slices |
-| `get_symbol_context` | Three modes: (1) Default — definition + callers + callees + type usages (auto-resolves `path` from index when omitted). (2) `bundle=true` — symbol body + all referenced type definitions, resolved recursively. (3) `sections=[...]` — trace analysis with dependents, siblings, implementations, git activity. Supports `verbosity` levels (`signature`, `compact`, `full`) |
+| `get_symbol_context` | Three modes: (1) Default — definition + callers + callees + type usages (auto-resolves `path` from index when omitted). (2) `bundle=true` — symbol body + all referenced type definitions, resolved recursively. (3) `sections=[...]` — trace analysis with dependents, siblings, implementations, git activity. Supports `verbosity` levels (`summary`, `signature`, `compact`, `full`). Set `estimate=true` on any read tool for token-cost preview without fetching content |
 
 ### Searching
 
@@ -208,6 +208,16 @@ SymForge is not always better:
 | `batch_rename` | Rename a symbol and update all references project-wide — uses indexed references plus supplemental literal scan to catch path-qualified usages like `Type::new()` |
 | `batch_insert` | Insert the same code before/after multiple symbols across files |
 
+### LLM Intelligence
+
+| Tool | Purpose |
+|------|---------|
+| `ask` | Natural language entry point — "who calls X", "where is X defined", "how does X work". Routes to the right specialized tool internally and shows which tool was used so you learn the mapping |
+| `conventions` | Auto-detect project coding conventions from the index — error handling style, naming patterns, test organization, common imports, file structure. Use when writing code that should fit the project |
+| `edit_plan` | Analyze a target symbol before editing — counts references, assesses impact, and suggests the right sequence of edit tools (rename vs replace vs edit_within) |
+| `context_inventory` | Show what symbols and files have been fetched this session with token counts. Use to track context budget |
+| `investigation_suggest` | Suggest what to investigate next based on session context — finds symbols referenced by loaded code but not yet fetched |
+
 ### Indexing
 
 | Tool | Purpose |
@@ -233,11 +243,16 @@ Agent gets:   "src/auth.rs — replaced fn `validate_token` (342 → 287 bytes)"
 
 ## Prompts
 
+Each prompt returns a multi-step procedural workflow with specific SymForge tool calls, conditional logic, and decision points — not just generic instructions.
+
 | Prompt | Purpose |
 |--------|---------|
-| `symforge-review` | Structured code review plan using SymForge context surfaces |
-| `symforge-architecture` | Architecture mapping plan using repo-level context and cross-reference tools |
-| `symforge-triage` | Debugging and failure-triage plan using health, changed files, and local context |
+| `symforge-review` | 5-step code review: scope changes → prioritize by caller count → deep-review high-risk symbols → check test coverage → report |
+| `symforge-architecture` | 5-step architecture mapping: project overview → subsystem boundaries → core types → data flow tracing → report |
+| `symforge-triage` | 6-step failure triage: check recent changes → locate error origin → trace call chain → check type contracts → narrow root cause → report |
+| `symforge-onboard` | 6-step codebase onboarding: project overview → architecture → core types → trace key flow → test patterns → mental model summary |
+| `symforge-refactor` | 5-step refactoring plan: understand current state → assess impact radius → plan edit sequence → dry_run preview → verify with impact analysis |
+| `symforge-debug` | 6-step debugging: find error origin → understand failing function → check recent changes → check callers → check dependencies → root cause report |
 
 ## Resources
 
@@ -312,7 +327,7 @@ Running `npm install -g symforge` does the following automatically:
 
    | Client | Files written |
    |--------|--------------|
-   | **Claude Code** | `~/.claude.json` — MCP server entry with `alwaysAllow` for all 25 tools<br>`~/.claude/settings.json` — hook entries (PostToolUse, PreToolUse, SessionStart, UserPromptSubmit)<br>`~/.claude/CLAUDE.md` — SymForge guidance block (Decision Rules + Tooling Preference) |
+   | **Claude Code** | `~/.claude.json` — MCP server entry with `alwaysAllow` for all tools<br>`~/.claude/settings.json` — hook entries (PostToolUse, PreToolUse, SessionStart, UserPromptSubmit)<br>`~/.claude/CLAUDE.md` — SymForge guidance block (Decision Rules + Tooling Preference) |
    | **Codex** | `~/.codex/config.toml` — MCP server entry with timeouts and allowed tools<br>`~/.codex/AGENTS.md` — guidance block |
    | **Gemini CLI** | `~/.gemini/settings.json` — MCP server entry with `trust: true`<br>`~/.gemini/GEMINI.md` — guidance block |
 
