@@ -615,13 +615,13 @@ pub struct SmartQueryInput {
     pub query: String,
 }
 
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 pub struct EditPlanInput {
     /// The symbol name or file path you want to edit.
     pub target: String,
 }
 
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 pub struct InvestigationInput {
     /// Optional focus area to filter suggestions.
     pub focus: Option<String>,
@@ -1724,6 +1724,7 @@ impl SymForgeServer {
                     ])
                 );
                 self.record_tool_savings_named("get_symbol", (output.len() * 5 / 4) as u64, (output.len() / 4) as u64);
+                self.session_context.record_symbol(&params.0.path, &params.0.name, (output.len() / 4) as u32);
                 output
             }
             None => {
@@ -2238,6 +2239,10 @@ impl SymForgeServer {
         ]);
         let output = format!("{output}{hint}");
         self.record_tool_savings_named("search_symbols", (output.len() * 10 / 4) as u64, (output.len() / 4) as u64);
+        // Session tracking: record each symbol hit
+        for hit in &result.hits {
+            self.session_context.record_symbol(&hit.path, &hit.name, 0);
+        }
         output
     }
 
@@ -2858,6 +2863,7 @@ impl SymForgeServer {
                     options.content_context,
                 );
                 self.record_tool_savings_named("get_file_content", (raw_chars / 4) as u64, (output.len() / 4) as u64);
+                self.session_context.record_file(&input.path, (output.len() / 4) as u32);
                 format!("{}{}", mode_annotation, output)
             }
             None => {
@@ -3051,6 +3057,7 @@ impl SymForgeServer {
             Ok(view) if input.compact.unwrap_or(false) => {
                 let output = format::find_references_compact_view(&view, &input.name, &limits);
                 self.record_tool_savings_named("find_references", (output.len() * 8 / 4) as u64, (output.len() / 4) as u64);
+                self.session_context.record_symbol("", &input.name, (output.len() / 4) as u32);
                 output
             }
             Ok(view) => {
@@ -3470,6 +3477,7 @@ impl SymForgeServer {
         }
 
         self.record_tool_savings_named("explore", (output.len() * 10 / 4) as u64, (output.len() / 4) as u64);
+        self.session_context.record_file("(explore)", (output.len() / 4) as u32);
         output
     }
 

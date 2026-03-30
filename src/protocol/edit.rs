@@ -1356,7 +1356,7 @@ pub enum InsertPosition {
     After,
 }
 
-#[derive(Deserialize, Serialize, JsonSchema)]
+#[derive(Serialize, JsonSchema)]
 pub struct InsertTarget {
     /// Relative file path.
     pub path: String,
@@ -1367,6 +1367,53 @@ pub struct InsertTarget {
     /// Line number to disambiguate.
     #[serde(default, deserialize_with = "super::tools::lenient_u32")]
     pub symbol_line: Option<u32>,
+}
+
+/// Accept both structured `{"path":"...","name":"..."}` and shorthand `"path::name"` strings.
+impl<'de> serde::Deserialize<'de> for InsertTarget {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error;
+
+        #[derive(serde::Deserialize)]
+        #[serde(untagged)]
+        enum TargetOrStr {
+            Struct {
+                path: String,
+                name: String,
+                kind: Option<String>,
+                #[serde(default, deserialize_with = "super::tools::lenient_u32")]
+                symbol_line: Option<u32>,
+            },
+            Str(String),
+        }
+
+        match TargetOrStr::deserialize(deserializer)? {
+            TargetOrStr::Struct { path, name, kind, symbol_line } => {
+                Ok(InsertTarget { path, name, kind, symbol_line })
+            }
+            TargetOrStr::Str(s) => {
+                // Accept "path::name" or "path:name" shorthand
+                let (path, name) = if let Some(pos) = s.find("::") {
+                    (s[..pos].to_string(), s[pos + 2..].to_string())
+                } else if let Some(pos) = s.rfind(':') {
+                    (s[..pos].to_string(), s[pos + 1..].to_string())
+                } else {
+                    return Err(D::Error::custom(format!(
+                        "InsertTarget string must be 'path::name', got '{s}'"
+                    )));
+                };
+                if path.is_empty() || name.is_empty() {
+                    return Err(D::Error::custom(format!(
+                        "InsertTarget string must have non-empty path and name, got '{s}'"
+                    )));
+                }
+                Ok(InsertTarget { path, name, kind: None, symbol_line: None })
+            }
+        }
+    }
 }
 
 /// Insert the same code before or after multiple symbols across the project.
