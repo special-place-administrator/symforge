@@ -159,7 +159,9 @@ SymForge is not always better:
 | `get_file_content` | Read files with line ranges, `around_line`, `around_match`, `around_symbol`, or chunked paging |
 | `get_file_context` | Rich file summary: symbol outline, imports, consumers, references, git activity. Use `sections=['outline']` for symbol-only outline |
 | `get_symbol` | Look up symbol(s) by file path and name. Single mode or batch mode with `targets[]` array for multiple symbols or byte-range code slices |
-| `get_symbol_context` | Three modes: (1) Default — definition + callers + callees + type usages (auto-resolves `path` from index when omitted). (2) `bundle=true` — symbol body + all referenced type definitions, resolved recursively. (3) `sections=[...]` — trace analysis with dependents, siblings, implementations, git activity. Supports `verbosity` levels (`summary`, `signature`, `compact`, `full`). Set `estimate=true` on any read tool for token-cost preview without fetching content |
+| `get_symbol_context` | Three modes: (1) Default — definition + callers + callees + type usages (auto-resolves `path` from index when omitted). (2) `bundle=true` — symbol body + all referenced type definitions, resolved recursively. (3) `sections=[...]` — trace analysis with dependents, siblings, implementations, git activity. Supports `verbosity` levels (`summary`, `signature`, `compact`, `full`) |
+
+> **Token cost preview:** Set `estimate=true` on any read tool (`get_file_content`, `get_file_context`, `get_symbol`, `get_symbol_context`, `get_repo_map`, `search_text`, `search_symbols`, `explore`, `find_references`, `find_dependents`, `what_changed`, `diff_symbols`, `inspect_match`, `analyze_file_impact`, `search_files`, `validate_file_syntax`) to get an approximate token count without fetching the actual content. Useful for context budget planning.
 
 ### Searching
 
@@ -181,7 +183,7 @@ SymForge is not always better:
 
 | Tool | Purpose |
 |------|---------|
-| `what_changed` | Files changed since a timestamp, git ref, or uncommitted. Filter with `path_prefix`, `language`, or `code_only=true` to exclude non-source files |
+| `what_changed` | Files changed since a timestamp, git ref, or uncommitted. Filter with `path_prefix`, `language`, or `code_only=true` to exclude non-source files. Set `include_symbol_diff=true` to inline a symbol-level diff alongside the file list |
 | `analyze_file_impact` | Re-read a file from disk, update the index, report symbol-level impact. Set `include_co_changes=true` for git temporal coupling data |
 | `diff_symbols` | Symbol-level diff between git refs — added, removed, and modified symbols per file. Filter by `language` or `path_prefix` |
 
@@ -524,6 +526,7 @@ All tool parameters accept both native JSON types and stringified values for com
 - Booleans: `"true"` / `"false"` accepted alongside native `true` / `false`
 - Numbers: `"5"` accepted alongside native `5`
 - Arrays: `"[{\"path\": \"...\"}]"` (stringified JSON array) accepted alongside native arrays — enables batch tools (`get_symbol` targets, `batch_edit` edits, `search_text` terms, etc.) to work with clients like Kilo Code that stringify array parameters
+- Arrays of stringified objects: `["{\"path\": \"...\"}", "{\"path\": \"...\"}"]` (native array where each element is a stringified JSON object) also accepted — handles clients like Codex that stringify individual array elements
 
 ## Migrating to v2.0.0
 
