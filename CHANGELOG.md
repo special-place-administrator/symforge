@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.9.7](https://github.com/special-place-administrator/symforge/compare/v4.9.6...v4.9.7) (2026-03-30)
+
+
+### Bug Fixes
+
+* **ci:** enforce conventional commits and verify main pushes ([5ec0b78](https://github.com/special-place-administrator/symforge/commit/5ec0b789af1012550db40128c9e501635e14de0a))
+* **ci:** use cargo check for workflow verification ([5c6a13b](https://github.com/special-place-administrator/symforge/commit/5c6a13b5cea9be1efc4df14fbbda5b21072df338))
+
 ## [4.9.6](https://github.com/special-place-administrator/symforge/compare/v4.9.5...v4.9.6) (2026-03-30)
 
 
