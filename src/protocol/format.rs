@@ -3591,7 +3591,8 @@ pub fn diff_symbols_result_view(
     use std::collections::HashMap;
 
     let mut lines = Vec::new();
-    lines.push(format!("Symbol diff: {base}...{target}"));
+    let target_label = if target.is_empty() { "working tree" } else { target };
+    lines.push(format!("Symbol diff: {base}...{target_label}"));
     lines.push(format!("{} files changed", changed_files.len()));
     lines.push(String::new());
 
@@ -3607,10 +3608,18 @@ pub fn diff_symbols_result_view(
             .unwrap_or_default()
             .unwrap_or_default();
 
-        let target_content = repo
-            .file_at_ref(target, file_path)
-            .unwrap_or_default()
-            .unwrap_or_default();
+        // When target is empty, we're in uncommitted mode — read from the
+        // working tree instead of a git ref (file_at_ref("") returns None,
+        // which would make every symbol appear "removed").
+        let target_content = if target.is_empty() {
+            repo.file_from_workdir(file_path)
+                .unwrap_or_default()
+                .unwrap_or_default()
+        } else {
+            repo.file_at_ref(target, file_path)
+                .unwrap_or_default()
+                .unwrap_or_default()
+        };
 
         // Extract symbol names from both versions
         let base_symbols = extract_symbol_signatures(&base_content);

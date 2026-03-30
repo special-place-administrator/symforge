@@ -25,11 +25,11 @@ use crate::protocol::edit::{
     InsertSymbolInput, ReplaceSymbolBodyInput,
 };
 use crate::protocol::tools::{
-    AnalyzeFileImpactInput, DiffSymbolsInput, ExploreInput, FindDependentsInput,
+    AnalyzeFileImpactInput, DiffSymbolsInput, EditPlanInput, ExploreInput, FindDependentsInput,
     FindReferencesInput, GetFileContentInput, GetFileContextInput, GetRepoMapInput,
-    GetSymbolContextInput, GetSymbolInput, IndexFolderInput, InspectMatchInput, SearchFilesInput,
-    SearchSymbolsInput, SearchTextInput, TraceSymbolInput, ValidateFileSyntaxInput,
-    WhatChangedInput,
+    GetSymbolContextInput, GetSymbolInput, IndexFolderInput, InspectMatchInput, InvestigationInput,
+    SearchFilesInput, SearchSymbolsInput, SearchTextInput, SmartQueryInput, TraceSymbolInput,
+    ValidateFileSyntaxInput, WhatChangedInput,
 };
 use crate::sidecar::{SidecarState, SymbolSnapshot, TokenStats};
 use crate::watcher::{self, WatcherInfo};
@@ -1631,6 +1631,17 @@ async fn execute_tool_call(
             .validate_file_syntax(Parameters(decode_params::<ValidateFileSyntaxInput>(
                 params,
             )?))
+            .await),
+        "conventions" => Ok(server.conventions().await),
+        "edit_plan" => Ok(server
+            .edit_plan(Parameters(decode_params::<EditPlanInput>(params)?))
+            .await),
+        "investigation_suggest" => Ok(server
+            .investigation_suggest(Parameters(decode_params::<InvestigationInput>(params)?))
+            .await),
+        "context_inventory" => Ok(server.context_inventory().await),
+        "ask" => Ok(server
+            .ask(Parameters(decode_params::<SmartQueryInput>(params)?))
             .await),
         other => anyhow::bail!("unknown tool '{other}'"),
     }

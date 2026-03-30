@@ -149,6 +149,24 @@ impl GitRepo {
         Ok(String::from_utf8(blob.content().to_vec()).ok())
     }
 
+    /// Read file content from the working tree (on disk). Returns None if the file doesn't exist.
+        ///
+        /// Used for uncommitted-mode diffs where the target is the current working tree
+        /// rather than a git ref.
+        pub fn file_from_workdir(&self, path: &str) -> Result<Option<String>, String> {
+            let Some(workdir) = self.repo.workdir() else {
+                return Err("bare repository has no working directory".to_string());
+            };
+            let full_path = workdir.join(path);
+            if !full_path.is_file() {
+                return Ok(None);
+            }
+            match std::fs::read(&full_path) {
+                Ok(bytes) => Ok(String::from_utf8(bytes).ok()),
+                Err(e) => Err(format!("cannot read working tree file: {e}")),
+            }
+        }
+
     /// Walk the commit log and return entries with file stats.
     ///
     /// Replaces: `git log --format=... --numstat --max-count=N --since=D days ago`
