@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.2.0](https://github.com/special-place-administrator/symforge/compare/v4.1.0...v4.2.0) (2026-03-30)
+
+
+### Features
+
+* add 'ask' smart query tool + token metrics (Suggestions 2 & 10) ([291f544](https://github.com/special-place-administrator/symforge/commit/291f5448e59f7eba497e0dd732489a9eb0d25487))
+* per-tool token efficiency tracking (Suggestion 10) ([a588365](https://github.com/special-place-administrator/symforge/commit/a5883651c7bc384b431e7964bd3f0e1e04a4682c))
+
 ## [4.1.0](https://github.com/special-place-administrator/symforge/compare/v4.0.0...v4.1.0) (2026-03-30)
 
 
