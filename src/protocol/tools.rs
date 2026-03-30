@@ -1645,7 +1645,7 @@ impl SymForgeServer {
                 })
                 .collect::<Vec<_>>()
                 .join("\n---\n");
-            self.record_tool_savings((output.len() * 5 / 4) as u64, (output.len() / 4) as u64);
+            self.record_tool_savings_named("get_symbol", (output.len() * 5 / 4) as u64, (output.len() / 4) as u64);
             return output;
         }
 
@@ -1671,7 +1671,7 @@ impl SymForgeServer {
                         "edit_within_symbol / replace_symbol_body (edits)",
                     ])
                 );
-                self.record_tool_savings((output.len() * 5 / 4) as u64, (output.len() / 4) as u64);
+                self.record_tool_savings_named("get_symbol", (output.len() * 5 / 4) as u64, (output.len() / 4) as u64);
                 output
             }
             None => {
@@ -2185,7 +2185,7 @@ impl SymForgeServer {
             "get_file_context (file overview)",
         ]);
         let output = format!("{output}{hint}");
-        self.record_tool_savings((output.len() * 10 / 4) as u64, (output.len() / 4) as u64);
+        self.record_tool_savings_named("search_symbols", (output.len() * 10 / 4) as u64, (output.len() / 4) as u64);
         output
     }
 
@@ -2554,6 +2554,14 @@ impl SymForgeServer {
                 result.push('\n');
                 result.push_str(&counts_section);
             }
+
+            // Append per-tool token efficiency breakdown.
+            let token_details = stats.tool_token_details();
+            let breakdown = format::format_tool_token_breakdown(&token_details);
+            if !breakdown.is_empty() {
+                result.push('\n');
+                result.push_str(&breakdown);
+            }
         }
 
         let adoption =
@@ -2797,7 +2805,7 @@ impl SymForgeServer {
                     file.as_ref(),
                     options.content_context,
                 );
-                self.record_tool_savings((raw_chars / 4) as u64, (output.len() / 4) as u64);
+                self.record_tool_savings_named("get_file_content", (raw_chars / 4) as u64, (output.len() / 4) as u64);
                 format!("{}{}", mode_annotation, output)
             }
             None => {
@@ -2990,12 +2998,12 @@ impl SymForgeServer {
         match result {
             Ok(view) if input.compact.unwrap_or(false) => {
                 let output = format::find_references_compact_view(&view, &input.name, &limits);
-                self.record_tool_savings((output.len() * 8 / 4) as u64, (output.len() / 4) as u64);
+                self.record_tool_savings_named("find_references", (output.len() * 8 / 4) as u64, (output.len() / 4) as u64);
                 output
             }
             Ok(view) => {
                 let output = format::find_references_result_view(&view, &input.name, &limits);
-                self.record_tool_savings((output.len() * 8 / 4) as u64, (output.len() / 4) as u64);
+                self.record_tool_savings_named("find_references", (output.len() * 8 / 4) as u64, (output.len() / 4) as u64);
                 output
             }
             Err(error) => error,
@@ -3409,7 +3417,7 @@ impl SymForgeServer {
             ));
         }
 
-        self.record_tool_savings((output.len() * 10 / 4) as u64, (output.len() / 4) as u64);
+        self.record_tool_savings_named("explore", (output.len() * 10 / 4) as u64, (output.len() / 4) as u64);
         output
     }
 

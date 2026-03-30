@@ -3057,6 +3057,53 @@ pub fn format_token_savings(snap: &StatsSnapshot) -> String {
     lines.join("\n")
 }
 
+/// Format a per-tool token breakdown section showing tokens served, saved, and efficiency ratio.
+///
+/// Input: `details` — sorted Vec of `(tool_name, tokens_served, tokens_saved)`.
+/// Returns empty string when details is empty.
+pub fn format_tool_token_breakdown(details: &[(String, u64, u64)]) -> String {
+    if details.is_empty() {
+        return String::new();
+    }
+
+    let total_served: u64 = details.iter().map(|(_, s, _)| s).sum();
+    let total_saved: u64 = details.iter().map(|(_, _, s)| s).sum();
+    let total_naive = total_served + total_saved;
+    let efficiency = if total_served > 0 {
+        total_naive as f64 / total_served as f64
+    } else {
+        1.0
+    };
+    let reduction_pct = if total_naive > 0 {
+        (total_saved as f64 / total_naive as f64 * 100.0) as u64
+    } else {
+        0
+    };
+
+    let mut lines = vec![format!(
+        "\u{2500}\u{2500} Session Efficiency \u{2500}\u{2500}\nTokens served: {}\nNaive equivalent: {}\nEfficiency: {:.1}x ({reduction_pct}% reduction)",
+        total_served, total_naive, efficiency
+    )];
+
+    lines.push(String::new());
+    lines.push("\u{2500}\u{2500} Per-Tool Breakdown \u{2500}\u{2500}".to_string());
+    let max_name = details.iter().map(|(n, _, _)| n.len()).max().unwrap_or(0);
+    for (name, served, saved) in details.iter().take(10) {
+        let tool_naive = served + saved;
+        let tool_eff = if *served > 0 {
+            format!("{:.1}x", tool_naive as f64 / *served as f64)
+        } else {
+            "-".to_string()
+        };
+        lines.push(format!(
+            "  {:<width$}  {} served, {} saved ({})",
+            name, served, saved, tool_eff, width = max_name
+        ));
+    }
+
+    lines.join("\n")
+}
+
 /// Format a "Tool Call Counts (this session)" section from per-tool invocation counts.
 ///
 /// Input: `counts` — sorted slice of `(tool_name, count)` from `TokenStats::tool_call_counts()`.

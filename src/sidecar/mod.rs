@@ -60,6 +60,12 @@ pub struct TokenStats {
     pub grep_saved_tokens: AtomicU64,
     /// Per-tool invocation counts since daemon start.
     pub tool_calls: Mutex<HashMap<String, usize>>,
+    /// Per-tool token tracking: tool_name -> (tokens_served, tokens_saved).
+    pub tool_token_details: Mutex<HashMap<String, (u64, u64)>>,
+    /// Total tokens served across all tool calls this session.
+    pub total_tokens_served: AtomicU64,
+    /// Total estimated naive-equivalent tokens (what raw file reads would cost).
+    pub total_tokens_naive: AtomicU64,
 }
 
 impl TokenStats {
@@ -74,6 +80,9 @@ impl TokenStats {
             grep_fires: AtomicUsize::new(0),
             grep_saved_tokens: AtomicU64::new(0),
             tool_calls: Mutex::new(HashMap::new()),
+            tool_token_details: Mutex::new(HashMap::new()),
+            total_tokens_served: AtomicU64::new(0),
+            total_tokens_naive: AtomicU64::new(0),
         })
     }
 
@@ -107,6 +116,24 @@ impl TokenStats {
     pub fn record_tool_call(&self, name: &str) {
         let mut map = self.tool_calls.lock();
         *map.entry(name.to_string()).or_insert(0) += 1;
+    }
+
+    /// Record per-tool token details: tokens served and tokens saved.
+    pub fn record_tool_tokens(&self, tool_name: &str, tokens_served: u64, tokens_saved: u64) {
+        let mut map = self.tool_token_details.lock();
+        let entry = map.entry(tool_name.to_string()).or_insert((0, 0));
+        entry.0 += tokens_served;
+        entry.1 += tokens_saved;
+        self.total_tokens_served.fetch_add(tokens_served, Ordering::Relaxed);
+        self.total_tokens_naive.fetch_add(tokens_served + tokens_saved, Ordering::Relaxed);
+    }
+
+    /// Return per-tool token details sorted by tokens saved descending.
+    pub fn tool_token_details(&self) -> Vec<(String, u64, u64)> {
+        let map = self.tool_token_details.lock();
+        let mut details: Vec<(String, u64, u64)> = map.iter().map(|(k, (served, saved))| (k.clone(), *served, *saved)).collect();
+        details.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
+        details
     }
 
     /// Return per-tool invocation counts sorted by count descending, then name ascending.
