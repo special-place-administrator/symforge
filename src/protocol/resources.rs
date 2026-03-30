@@ -140,6 +140,7 @@ impl SymForgeServer {
                     path: None,
                     depth: None,
                     max_files: None,
+                    estimate: None,
                 }))
                 .await
             }
@@ -149,6 +150,7 @@ impl SymForgeServer {
                     path: None,
                     depth: None,
                     max_files: None,
+                    estimate: None,
                 }))
                 .await
             }
@@ -161,6 +163,7 @@ impl SymForgeServer {
                     language: None,
                     code_only: None,
                     include_symbol_diff: None,
+                    estimate: None,
                 }))
                 .await
             }

@@ -661,8 +661,8 @@ pub struct BatchEditInput {
     pub edits: Vec<SingleEdit>,
     /// When true, validate and plan all edits but skip disk writes and index mutation.
     /// Returns per-edit preview lines prefixed with `[DRY RUN]`.
-    #[serde(default)]
-    pub dry_run: bool,
+    #[serde(default, deserialize_with = "super::tools::lenient_bool")]
+    pub dry_run: Option<bool>,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -1347,8 +1347,8 @@ pub struct BatchInsertInput {
     pub targets: Vec<InsertTarget>,
     /// When true, validate and preview but skip disk writes and index mutation.
     /// Returns per-target preview lines prefixed with `[DRY RUN]`.
-    #[serde(default)]
-    pub dry_run: bool,
+    #[serde(default, deserialize_with = "super::tools::lenient_bool")]
+    pub dry_run: Option<bool>,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -1456,7 +1456,7 @@ pub(crate) fn execute_batch_insert(
             InsertPosition::After => build_insert_after(&file.content, &sym, &input.content, le),
         };
 
-        if input.dry_run {
+        if input.dry_run.unwrap_or(false) {
             summaries.push(format!(
                 "[DRY RUN] Would insert {} `{}` in {} ({} bytes)",
                 position_label,
@@ -2662,7 +2662,7 @@ mod tests {
                     symbol_line: None,
                 },
             ],
-            dry_run: false,
+            dry_run: Some(false),
         };
 
         let summaries = execute_batch_insert(&handle, dir.path(), &input).unwrap();
@@ -2709,7 +2709,7 @@ mod tests {
                     symbol_line: None,
                 },
             ],
-            dry_run: true,
+            dry_run: Some(true),
         };
 
         let summaries = execute_batch_insert(&handle, dir.path(), &input).unwrap();
@@ -2878,6 +2878,7 @@ mod tests {
             kind: None,
             symbol_line: None,
             dry_run: Some(false),
+        code_only: None,
         };
 
         let result = execute_batch_rename(&handle, dir.path(), &input);
