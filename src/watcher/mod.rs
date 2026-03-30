@@ -251,6 +251,15 @@ pub(crate) fn maybe_reindex(
         if let Some(existing) = index.get_file(relative_path)
             && existing.content_hash == new_hash
         {
+            // Content unchanged but mtime may have drifted (e.g., git rebase, touch).
+            // Update the stored mtime so the reconciliation loop doesn't re-check
+            // this file on every sweep. Without this, a hash-skip leaves the old
+            // mtime in the index, causing an infinite stale → hash-skip → stale loop.
+            let needs_mtime_touch = existing.mtime_secs != mtime_secs && mtime_secs != 0;
+            drop(index); // release read lock before potential write
+            if needs_mtime_touch {
+                shared.touch_mtime(relative_path, mtime_secs);
+            }
             debug!("watcher: hash-skip {relative_path}");
             return ReindexResult::HashSkip;
         }

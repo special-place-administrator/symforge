@@ -475,6 +475,23 @@ impl SharedIndexHandle {
         self.publish_locked(&live);
     }
 
+    /// Update only the stored mtime for a file without re-parsing.
+    ///
+    /// Used by the watcher when a file's content hash matches but its mtime has
+    /// drifted (e.g., after `git rebase` or `touch`). Without this, the
+    /// reconciliation loop detects the mtime difference and re-checks the file
+    /// on every sweep, causing an infinite stale → hash-skip → stale loop.
+    pub fn touch_mtime(&self, path: &str, new_mtime: u64) {
+        let mut live = self.live.write();
+        if let Some(file) = live.files.get_mut(path) {
+            if file.mtime_secs != new_mtime {
+                let mut updated = (**file).clone();
+                updated.mtime_secs = new_mtime;
+                *file = std::sync::Arc::new(updated);
+            }
+        }
+    }
+
     pub fn add_file(&self, path: String, file: IndexedFile) {
         let mut live = self.live.write();
         let path_clone = path.clone();
