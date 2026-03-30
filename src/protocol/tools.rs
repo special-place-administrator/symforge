@@ -615,6 +615,18 @@ pub struct SmartQueryInput {
     pub query: String,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct EditPlanInput {
+    /// The symbol name or file path you want to edit.
+    pub target: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct InvestigationInput {
+    /// Optional focus area to filter suggestions.
+    pub focus: Option<String>,
+}
+
 /// Input for `diff_symbols`.
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct DiffSymbolsInput {
@@ -3459,6 +3471,40 @@ impl SymForgeServer {
 
         self.record_tool_savings_named("explore", (output.len() * 10 / 4) as u64, (output.len() / 4) as u64);
         output
+    }
+
+    #[tool(
+        description = "Detect project coding conventions from the indexed codebase. Returns error handling style, naming patterns, test organization, common imports, and file structure. Use when you need to write code that fits the project's existing patterns."
+    )]
+    pub(crate) async fn conventions(&self) -> String {
+        let conv = {
+            let guard = self.index.read();
+            loading_guard!(guard);
+            crate::protocol::conventions::detect_conventions(&guard)
+        };
+        crate::protocol::conventions::format_conventions(&conv)
+    }
+
+    #[tool(
+        description = "Plan an edit: analyzes a target symbol or file, counts references, and suggests the right sequence of SymForge edit tools. Use before making changes to understand impact."
+    )]
+    pub(crate) async fn edit_plan(&self, params: Parameters<EditPlanInput>) -> String {
+        let guard = self.index.read();
+        loading_guard!(guard);
+        crate::protocol::edit_plan::plan_edit(&guard, &params.0.target)
+    }
+
+    #[tool(
+        description = "Suggest what to investigate next based on what you've already loaded. Analyzes session context to find referenced-but-not-loaded symbols. Use during deep investigations to find gaps."
+    )]
+    pub(crate) async fn investigation_suggest(&self, params: Parameters<InvestigationInput>) -> String {
+        let guard = self.index.read();
+        loading_guard!(guard);
+        crate::protocol::investigation::suggest_next_steps(
+            &guard,
+            &self.session_context,
+            params.0.focus.as_deref(),
+        )
     }
 
     #[tool(
