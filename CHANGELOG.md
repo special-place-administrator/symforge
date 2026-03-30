@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.9.6](https://github.com/special-place-administrator/symforge/compare/v4.9.5...v4.9.6) (2026-03-30)
+
+
+### Bug Fixes
+
+* find_dependents_for_file catches qualified calls without imports ([8e1fd7d](https://github.com/special-place-administrator/symforge/commit/8e1fd7d442c74fc20a5fa1bd6bbd69a295d42cc9))
+
 ## [4.9.5](https://github.com/special-place-administrator/symforge/compare/v4.9.4...v4.9.5) (2026-03-30)
 
 
