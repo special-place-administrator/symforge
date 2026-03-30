@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.1.0](https://github.com/special-place-administrator/symforge/compare/v4.0.0...v4.1.0) (2026-03-30)
+
+
+### Features
+
+* improve error context on failures (Suggestion 7) ([8169a6e](https://github.com/special-place-administrator/symforge/commit/8169a6e2ed0c1a7d212e865456ecabf29018dfed))
+
 ## [4.0.0](https://github.com/special-place-administrator/symforge/compare/v3.1.6...v4.0.0) (2026-03-26)
 
 
