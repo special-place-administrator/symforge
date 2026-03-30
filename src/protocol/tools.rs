@@ -197,6 +197,10 @@ pub struct GetSymbolInput {
     #[serde(default, deserialize_with = "lenient_option_vec")]
     #[schemars(with = "Vec<SymbolTarget>")]
     pub targets: Option<Vec<SymbolTarget>>,
+    /// When true, return an approximate token cost estimate instead of actual content.
+    /// Useful for budget planning before fetching large symbols.
+    #[serde(default, deserialize_with = "lenient_bool")]
+    pub estimate: Option<bool>,
 }
 
 /// A single target in a `get_symbols` batch request.
@@ -398,6 +402,9 @@ pub struct GetFileContentInput {
     /// Prepend a stable path or path-plus-range header for ordinary full-file or explicit-range reads.
     #[serde(default, deserialize_with = "lenient_bool")]
     pub header: Option<bool>,
+    /// When true, return an approximate token count for the file instead of content.
+    #[serde(default, deserialize_with = "lenient_bool")]
+    pub estimate: Option<bool>,
 }
 
 /// Input for `validate_file_syntax`.
@@ -482,6 +489,9 @@ pub struct GetFileContextInput {
     #[serde(default, deserialize_with = "lenient_option_vec")]
     #[schemars(with = "Vec<String>")]
     pub sections: Option<Vec<String>>,
+    /// When true, return an approximate token cost estimate instead of actual content.
+    #[serde(default, deserialize_with = "lenient_bool")]
+    pub estimate: Option<bool>,
 }
 
 /// Input for `get_symbol_context`.
@@ -516,6 +526,10 @@ pub struct GetSymbolContextInput {
     /// (~4 chars per token) is exhausted.
     #[serde(default, deserialize_with = "lenient_u64")]
     pub max_tokens: Option<u64>,
+    /// When true, return an approximate token cost estimate instead of actual content.
+    /// Shows estimated tokens for body, callers, bundle, and raw file.
+    #[serde(default, deserialize_with = "lenient_bool")]
+    pub estimate: Option<bool>,
 }
 
 /// Input for `analyze_file_impact`.
@@ -1663,6 +1677,24 @@ impl SymForgeServer {
             loading_guard!(guard);
             guard.capture_shared_file(&params.0.path)
         };
+
+        // Estimate mode: return token cost without full content
+        if params.0.estimate == Some(true) {
+            if let Some(ref file) = file {
+                let file_tokens = file.content.len() / 4;
+                let sym_tokens = file.symbols.iter()
+                    .find(|s| s.name == params.0.name)
+                    .map(|s| (s.byte_range.1 - s.byte_range.0) as usize / 4)
+                    .unwrap_or(0);
+                return format!(
+                    "Estimate for get_symbol(path=\"{}\", name=\"{}\"):\n  Symbol body: ~{} tokens\n  Raw file: ~{} tokens",
+                    params.0.path, params.0.name, sym_tokens, file_tokens
+                );
+            } else {
+                return format::not_found_file(&params.0.path);
+            }
+        }
+
         match file {
             Some(file) => {
                 let body = format::symbol_detail_from_indexed_file(
