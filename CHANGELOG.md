@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.3.0](https://github.com/special-place-administrator/symforge/compare/v4.2.0...v4.3.0) (2026-03-30)
+
+
+### Features
+
+* workflow recipe prompts + 3 new prompts (Suggestion 5) ([cb6ccdc](https://github.com/special-place-administrator/symforge/commit/cb6ccdccfeab232f6e529f8553da5df4db28b4ae))
+
 ## [4.2.0](https://github.com/special-place-administrator/symforge/compare/v4.1.0...v4.2.0) (2026-03-30)
 
 
