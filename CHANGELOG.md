@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.8.3](https://github.com/special-place-administrator/symforge/compare/v4.8.2...v4.8.3) (2026-03-30)
+
+
+### Bug Fixes
+
+* batch schema parity + find_references supplemental text fallback ([dffb8b8](https://github.com/special-place-administrator/symforge/commit/dffb8b8276da05dd927b5b3530843ce1e958aa55))
+
 ## [4.8.2](https://github.com/special-place-administrator/symforge/compare/v4.8.1...v4.8.2) (2026-03-30)
 
 
