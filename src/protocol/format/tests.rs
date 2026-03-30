@@ -306,7 +306,7 @@ fn test_search_symbols_no_match() {
     let (key, file) = make_file("src/lib.rs", b"fn unrelated() {}", vec![sym]);
     let index = make_index(vec![(key, file)]);
     let result = search_symbols_result(&index, "xyz_no_match");
-    assert_eq!(result, "No symbols matching 'xyz_no_match'");
+    assert_eq!(result, "No symbols matching 'xyz_no_match'. Try: search_text(query=\"xyz_no_match\") for text matches, or explore(query=\"xyz_no_match\") for concept-based discovery.");
 }
 
 #[test]
@@ -400,7 +400,7 @@ fn test_search_text_no_match() {
     let (key, file) = make_file("src/lib.rs", b"fn main() {}", vec![]);
     let index = make_index(vec![(key, file)]);
     let result = search_text_result(&index, "xyz_totally_absent");
-    assert_eq!(result, "No matches for 'xyz_totally_absent'");
+    assert_eq!(result, "No matches for 'xyz_totally_absent'. Suggestions: try search_symbols(query=...) for symbol names, or use regex=true for pattern matching, or broaden with include_tests=true / include_generated=true.");
 }
 
 #[test]
@@ -1027,7 +1027,7 @@ fn test_search_files_resolve_result_view_not_found() {
 
     assert_eq!(
         search_files_resolve_result_view(&view),
-        "No indexed source path matched 'README.md'"
+        "No indexed source path matched 'README.md'. Try search_files(query=\"README.md\") without resolve=true for fuzzy matches, or check the path with get_repo_map(detail=\"tree\")."
     );
 }
 

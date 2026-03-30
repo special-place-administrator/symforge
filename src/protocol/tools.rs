@@ -7027,7 +7027,7 @@ mod tests {
             estimate: None,
             }))
             .await;
-        assert_eq!(result, "File not found: nonexistent.rs");
+        assert_eq!(result, "File not found: nonexistent.rs. Use search_files to find the correct path.");
     }
 
     #[tokio::test]

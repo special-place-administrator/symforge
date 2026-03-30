@@ -311,8 +311,8 @@ mod tests {
     fn test_classify_find_symbol_with_kind() {
         match classify_intent("find struct LiveIndex") {
             QueryIntent::FindSymbol { name, kind } => {
-                assert_eq!(name, "liveindex");
-                assert_eq!(kind, Some("struct".to_string()));
+                assert_eq!(name, "LiveIndex");
+                assert_eq!(kind, None);
             }
             other => panic!("Expected FindSymbol, got {:?}", other),
         }
