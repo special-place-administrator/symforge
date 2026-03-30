@@ -657,6 +657,7 @@ pub struct EditWithinSymbolInput {
 pub struct BatchEditInput {
     /// List of individual edits to apply atomically.
     #[serde(deserialize_with = "super::tools::lenient_vec_required")]
+    #[schemars(with = "Vec<SingleEdit>")]
     pub edits: Vec<SingleEdit>,
     /// When true, validate and plan all edits but skip disk writes and index mutation.
     /// Returns per-edit preview lines prefixed with `[DRY RUN]`.
@@ -1342,6 +1343,7 @@ pub struct BatchInsertInput {
     pub position: InsertPosition,
     /// Target symbols to insert adjacent to.
     #[serde(deserialize_with = "super::tools::lenient_vec_required")]
+    #[schemars(with = "Vec<InsertTarget>")]
     pub targets: Vec<InsertTarget>,
     /// When true, validate and preview but skip disk writes and index mutation.
     /// Returns per-target preview lines prefixed with `[DRY RUN]`.

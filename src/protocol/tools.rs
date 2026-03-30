@@ -3054,15 +3054,42 @@ impl SymForgeServer {
             }
         };
         match result {
-            Ok(view) if input.compact.unwrap_or(false) => {
-                let output = format::find_references_compact_view(&view, &input.name, &limits);
+            Ok(view) => {
+                let mut output = if input.compact.unwrap_or(false) {
+                    format::find_references_compact_view(&view, &input.name, &limits)
+                } else {
+                    format::find_references_result_view(&view, &input.name, &limits)
+                };
+
+                // Supplemental: if index-based refs are empty, try text search to catch
+                // qualified-path calls (e.g., module::func()) that the xref extractor misses.
+                // This aligns find_references results with what search_text(follow_refs=true) finds.
+                if view.files.is_empty() {
+                    let text_options = search::TextSearchOptions::for_current_code_search(5, 3);
+                    let text_result = {
+                        let guard = self.index.read();
+                        search::search_text_with_options(
+                            &guard,
+                            Some(&input.name),
+                            None,
+                            false,
+                            &text_options,
+                        )
+                    };
+                    if let Ok(tr) = text_result {
+                        if !tr.files.is_empty() {
+                            output.push_str(&format!(
+                                "\n\nNote: no indexed references found, but search_text found {} file(s) \
+                                 containing \"{}\". The index may miss qualified-path calls (e.g., \
+                                 module::{}()). Use search_text(query=\"{}\") for full coverage.",
+                                tr.files.len(), input.name, input.name, input.name
+                            ));
+                        }
+                    }
+                }
+
                 self.record_tool_savings_named("find_references", (output.len() * 8 / 4) as u64, (output.len() / 4) as u64);
                 self.session_context.record_symbol("", &input.name, (output.len() / 4) as u32);
-                output
-            }
-            Ok(view) => {
-                let output = format::find_references_result_view(&view, &input.name, &limits);
-                self.record_tool_savings_named("find_references", (output.len() * 8 / 4) as u64, (output.len() / 4) as u64);
                 output
             }
             Err(error) => error,
