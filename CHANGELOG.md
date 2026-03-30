@@ -1,5 +1,17 @@
 # Changelog
 
+## [4.9.0](https://github.com/special-place-administrator/symforge/compare/v4.8.3...v4.9.0) (2026-03-30)
+
+
+### Features
+
+* add estimate field to all read tool inputs + fix dry_run deserialization bug ([537fa16](https://github.com/special-place-administrator/symforge/commit/537fa165c33f403ce5b828c26c164e921792c9e5))
+
+
+### Bug Fixes
+
+* remove stale args from for_current_code_search() and suppress unused variable warning ([9652e53](https://github.com/special-place-administrator/symforge/commit/9652e53ca1c4a22d1968ba8f552191e830b47386))
+
 ## [4.8.3](https://github.com/special-place-administrator/symforge/compare/v4.8.2...v4.8.3) (2026-03-30)
 
 
