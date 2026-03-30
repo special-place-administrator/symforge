@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.9.4](https://github.com/special-place-administrator/symforge/compare/v4.9.3...v4.9.4) (2026-03-30)
+
+
+### Bug Fixes
+
+* qualified Rust caller resolution + context_inventory daemon proxy ([175b53e](https://github.com/special-place-administrator/symforge/commit/175b53edef61b7541310a430f87acffb08eea563))
+
 ## [4.9.3](https://github.com/special-place-administrator/symforge/compare/v4.9.2...v4.9.3) (2026-03-30)
 
 
