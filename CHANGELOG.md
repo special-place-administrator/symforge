@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.7.1](https://github.com/special-place-administrator/symforge/compare/v4.7.0...v4.7.1) (2026-03-30)
+
+
+### Bug Fixes
+
+* improve reconciliation logging to diagnose stale-file loops ([cff17ed](https://github.com/special-place-administrator/symforge/commit/cff17edd4fac7250275654b90fba7c88709317ea))
+
 ## [4.7.0](https://github.com/special-place-administrator/symforge/compare/v4.6.0...v4.7.0) (2026-03-30)
 
 
