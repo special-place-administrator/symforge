@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.9.3](https://github.com/special-place-administrator/symforge/compare/v4.9.2...v4.9.3) (2026-03-30)
+
+
+### Bug Fixes
+
+* lenient SingleEdit deserialization — accept shorthand DSL strings ([d61fd79](https://github.com/special-place-administrator/symforge/commit/d61fd7924117c7a2eee7ee703c4f1a875abc1ae1))
+
 ## [4.9.2](https://github.com/special-place-administrator/symforge/compare/v4.9.1...v4.9.2) (2026-03-30)
 
 
