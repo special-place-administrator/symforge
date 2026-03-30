@@ -665,7 +665,7 @@ pub struct BatchEditInput {
     pub dry_run: Option<bool>,
 }
 
-#[derive(Deserialize, Serialize, JsonSchema)]
+#[derive(Serialize, JsonSchema)]
 pub struct SingleEdit {
     /// Relative file path.
     pub path: String,
@@ -680,7 +680,145 @@ pub struct SingleEdit {
     pub operation: EditOperation,
 }
 
-#[derive(Deserialize, Serialize, JsonSchema)]
+impl SingleEdit {
+    /// Parse a shorthand string into a `SingleEdit`.
+    ///
+    /// Accepted formats:
+    /// - `"path::name => replace body"`
+    /// - `"path::name => insert_before content"`
+    /// - `"path::name => insert_after content"`
+    /// - `"path::name => delete"`
+    /// - `"path::name => edit_within old_text >>> new_text"`
+    ///
+    /// The `path::name` portion uses `::` as the separator between file path
+    /// and symbol name.  Single `:` is also accepted as a fallback (last `:`).
+    fn from_shorthand(s: &str) -> Option<Self> {
+        // Split on " => " to get target and operation
+        let (target, op_str) = s.split_once(" => ")?;
+
+        // Parse path::name
+        let (path, name) = if let Some(pos) = target.find("::") {
+            (target[..pos].trim(), &target[pos + 2..])
+        } else if let Some(pos) = target.rfind(':') {
+            (target[..pos].trim(), &target[pos + 1..])
+        } else {
+            return None;
+        };
+
+        if path.is_empty() || name.is_empty() {
+            return None;
+        }
+
+        let op_str = op_str.trim();
+
+        // Parse operation keyword and body
+        let operation = if op_str == "delete" {
+            EditOperation::Delete
+        } else if let Some(body) = op_str.strip_prefix("replace ") {
+            EditOperation::Replace {
+                new_body: body.to_string(),
+            }
+        } else if let Some(body) = op_str.strip_prefix("insert_before ") {
+            EditOperation::InsertBefore {
+                content: body.to_string(),
+            }
+        } else if let Some(body) = op_str.strip_prefix("insert_after ") {
+            EditOperation::InsertAfter {
+                content: body.to_string(),
+            }
+        } else if let Some(body) = op_str.strip_prefix("edit_within ") {
+            // Format: "old_text >>> new_text"
+            let (old_text, new_text) = body.split_once(" >>> ")?;
+            EditOperation::EditWithin {
+                old_text: old_text.to_string(),
+                new_text: new_text.to_string(),
+            }
+        } else {
+            return None;
+        };
+
+        Some(SingleEdit {
+            path: path.to_string(),
+            name: name.trim().to_string(),
+            kind: None,
+            symbol_line: None,
+            operation,
+        })
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for SingleEdit {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error;
+
+        #[derive(serde::Deserialize)]
+        #[serde(untagged)]
+        enum EditOrStr {
+            Struct {
+                path: String,
+                name: String,
+                #[serde(default)]
+                kind: Option<String>,
+                #[serde(default, deserialize_with = "super::tools::lenient_u32")]
+                symbol_line: Option<u32>,
+                operation: EditOperation,
+            },
+            Str(String),
+        }
+
+        match EditOrStr::deserialize(deserializer)? {
+            EditOrStr::Struct {
+                path,
+                name,
+                kind,
+                symbol_line,
+                operation,
+            } => Ok(SingleEdit {
+                path,
+                name,
+                kind,
+                symbol_line,
+                operation,
+            }),
+            EditOrStr::Str(s) => {
+                // Try JSON parse first (stringified object)
+                if let Ok(edit) = serde_json::from_str::<serde_json::Value>(&s) {
+                    if edit.is_object() {
+                        // Re-deserialize with the struct variant logic
+                        // We need manual extraction since we can't recurse
+                        let path = edit.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let name = edit.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let kind = edit.get("kind").and_then(|v| v.as_str()).map(String::from);
+                        let symbol_line = edit.get("symbol_line").and_then(|v| v.as_u64()).map(|n| n as u32);
+                        let operation: EditOperation = edit.get("operation")
+                            .ok_or_else(|| D::Error::custom("missing 'operation' in stringified SingleEdit"))
+                            .and_then(|op| serde_json::from_value(op.clone()).map_err(D::Error::custom))?;
+                        if path.is_empty() || name.is_empty() {
+                            return Err(D::Error::custom(format!(
+                                "SingleEdit stringified object must have non-empty path and name, got '{s}'"
+                            )));
+                        }
+                        return Ok(SingleEdit { path, name, kind, symbol_line, operation });
+                    }
+                }
+
+                // Try shorthand DSL: "path::name => operation body"
+                SingleEdit::from_shorthand(&s).ok_or_else(|| {
+                    D::Error::custom(format!(
+                        "SingleEdit string must be 'path::name => operation body' \
+                         (operations: replace, insert_before, insert_after, delete, \
+                         edit_within old >>> new), got '{s}'"
+                    ))
+                })
+            }
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "type")]
 pub enum EditOperation {
     /// Replace the entire symbol definition.
@@ -3755,5 +3893,127 @@ mod tests {
                 );
             }
         }
+    }
+
+
+    #[test]
+    fn test_single_edit_shorthand_replace() {
+        let json = serde_json::json!("src/lib.rs::beta => replace fn beta(x: i32) -> i32 { x * 4 }");
+        let edit: SingleEdit = serde_json::from_value(json).unwrap();
+        assert_eq!(edit.path, "src/lib.rs");
+        assert_eq!(edit.name, "beta");
+        assert!(edit.kind.is_none());
+        assert!(edit.symbol_line.is_none());
+        match &edit.operation {
+            EditOperation::Replace { new_body } => {
+                assert_eq!(new_body, "fn beta(x: i32) -> i32 { x * 4 }");
+            }
+            other => panic!("expected Replace, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_single_edit_shorthand_delete() {
+        let json = serde_json::json!("src/lib.rs::old_fn => delete");
+        let edit: SingleEdit = serde_json::from_value(json).unwrap();
+        assert_eq!(edit.path, "src/lib.rs");
+        assert_eq!(edit.name, "old_fn");
+        assert!(matches!(edit.operation, EditOperation::Delete));
+    }
+
+    #[test]
+    fn test_single_edit_shorthand_insert_before() {
+        let json = serde_json::json!("src/lib.rs::main => insert_before fn setup() {}");
+        let edit: SingleEdit = serde_json::from_value(json).unwrap();
+        assert_eq!(edit.name, "main");
+        match &edit.operation {
+            EditOperation::InsertBefore { content } => {
+                assert_eq!(content, "fn setup() {}");
+            }
+            other => panic!("expected InsertBefore, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_single_edit_shorthand_insert_after() {
+        let json = serde_json::json!("src/lib.rs::main => insert_after fn teardown() {}");
+        let edit: SingleEdit = serde_json::from_value(json).unwrap();
+        match &edit.operation {
+            EditOperation::InsertAfter { content } => {
+                assert_eq!(content, "fn teardown() {}");
+            }
+            other => panic!("expected InsertAfter, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_single_edit_shorthand_edit_within() {
+        let json = serde_json::json!("src/lib.rs::process => edit_within x + 1 >>> x + 2");
+        let edit: SingleEdit = serde_json::from_value(json).unwrap();
+        match &edit.operation {
+            EditOperation::EditWithin { old_text, new_text } => {
+                assert_eq!(old_text, "x + 1");
+                assert_eq!(new_text, "x + 2");
+            }
+            other => panic!("expected EditWithin, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_single_edit_shorthand_in_batch_array() {
+        // The original failing case: batch_edit with string elements
+        let json = serde_json::json!({
+            "dry_run": true,
+            "edits": [
+                "src/lib.rs::beta => replace fn beta(x: i32) -> i32 { x * 4 }"
+            ]
+        });
+        let input: BatchEditInput = serde_json::from_value(json).unwrap();
+        assert!(input.dry_run == Some(true));
+        assert_eq!(input.edits.len(), 1);
+        assert_eq!(input.edits[0].path, "src/lib.rs");
+        assert_eq!(input.edits[0].name, "beta");
+    }
+
+    #[test]
+    fn test_single_edit_shorthand_invalid_no_separator() {
+        let json = serde_json::json!("src/lib.rs beta replace something");
+        let result = serde_json::from_value::<SingleEdit>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_single_edit_struct_still_works() {
+        // Normal JSON struct path must still work
+        let json = serde_json::json!({
+            "path": "src/lib.rs",
+            "name": "beta",
+            "operation": {
+                "type": "replace",
+                "new_body": "fn beta() {}"
+            }
+        });
+        let edit: SingleEdit = serde_json::from_value(json).unwrap();
+        assert_eq!(edit.path, "src/lib.rs");
+        assert_eq!(edit.name, "beta");
+        match &edit.operation {
+            EditOperation::Replace { new_body } => assert_eq!(new_body, "fn beta() {}"),
+            other => panic!("expected Replace, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_single_edit_stringified_json_object() {
+        // Stringified JSON object (Codex pattern)
+        let inner = serde_json::json!({
+            "path": "src/lib.rs",
+            "name": "gamma",
+            "operation": { "type": "delete" }
+        });
+        let json = serde_json::json!(inner.to_string());
+        let edit: SingleEdit = serde_json::from_value(json).unwrap();
+        assert_eq!(edit.path, "src/lib.rs");
+        assert_eq!(edit.name, "gamma");
+        assert!(matches!(edit.operation, EditOperation::Delete));
     }
 }
