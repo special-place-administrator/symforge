@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.6.0](https://github.com/special-place-administrator/symforge/compare/v4.5.0...v4.6.0) (2026-03-30)
+
+
+### Features
+
+* session context tracking + context_inventory tool (Suggestion 6) ([40c8de5](https://github.com/special-place-administrator/symforge/commit/40c8de54c8e0de9e78b6c6cd3cdc03950e4d21ce))
+
 ## [4.5.0](https://github.com/special-place-administrator/symforge/compare/v4.4.0...v4.5.0) (2026-03-30)
 
 
