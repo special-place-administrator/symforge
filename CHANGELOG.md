@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.4.0](https://github.com/special-place-administrator/symforge/compare/v4.3.0...v4.4.0) (2026-03-30)
+
+
+### Features
+
+* add 'summary' verbosity level with heuristic summaries (Suggestion 1) ([90cda29](https://github.com/special-place-administrator/symforge/commit/90cda292fda858c4460dd37c7ec3b48ef79fc65b))
+
 ## [4.3.0](https://github.com/special-place-administrator/symforge/compare/v4.2.0...v4.3.0) (2026-03-30)
 
 
