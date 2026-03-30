@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.8.0](https://github.com/special-place-administrator/symforge/compare/v4.7.2...v4.8.0) (2026-03-30)
+
+
+### Features
+
+* update init templates with new tools and guidance rules ([be7d687](https://github.com/special-place-administrator/symforge/commit/be7d687464f9d89a465e8a104904f18aa065c17d))
+
 ## [4.7.2](https://github.com/special-place-administrator/symforge/compare/v4.7.1...v4.7.2) (2026-03-30)
 
 
