@@ -3065,7 +3065,7 @@ impl SymForgeServer {
                 // qualified-path calls (e.g., module::func()) that the xref extractor misses.
                 // This aligns find_references results with what search_text(follow_refs=true) finds.
                 if view.files.is_empty() {
-                    let text_options = search::TextSearchOptions::for_current_code_search(5, 3);
+                    let text_options = search::TextSearchOptions::for_current_code_search();
                     let text_result = {
                         let guard = self.index.read();
                         search::search_text_with_options(

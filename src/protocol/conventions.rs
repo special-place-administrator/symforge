@@ -40,7 +40,7 @@ pub fn detect_conventions(index: &LiveIndex) -> ProjectConventions {
     let mut max_file_bytes = 0u64;
     let mut code_file_count = 0u32;
 
-    for (path, file) in index.all_files() {
+    for (_path, file) in index.all_files() {
         total_files += 1;
         total_symbols += file.symbols.len() as u32;
         total_file_bytes += file.byte_len as u64;
