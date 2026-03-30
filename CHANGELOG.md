@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.8.2](https://github.com/special-place-administrator/symforge/compare/v4.8.1...v4.8.2) (2026-03-30)
+
+
+### Bug Fixes
+
+* wire session tracking into tool handlers + InsertTarget string shorthand ([5c7feb3](https://github.com/special-place-administrator/symforge/commit/5c7feb3cefed0ea9af8980a5622d82532d88e7b5))
+
 ## [4.8.1](https://github.com/special-place-administrator/symforge/compare/v4.8.0...v4.8.1) (2026-03-30)
 
 
