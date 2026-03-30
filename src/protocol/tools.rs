@@ -3477,6 +3477,9 @@ impl SymForgeServer {
         description = "Detect project coding conventions from the indexed codebase. Returns error handling style, naming patterns, test organization, common imports, and file structure. Use when you need to write code that fits the project's existing patterns."
     )]
     pub(crate) async fn conventions(&self) -> String {
+        if let Some(result) = self.proxy_tool_call_without_params("conventions").await {
+            return result;
+        }
         let conv = {
             let guard = self.index.read();
             loading_guard!(guard);
@@ -3489,6 +3492,9 @@ impl SymForgeServer {
         description = "Plan an edit: analyzes a target symbol or file, counts references, and suggests the right sequence of SymForge edit tools. Use before making changes to understand impact."
     )]
     pub(crate) async fn edit_plan(&self, params: Parameters<EditPlanInput>) -> String {
+        if let Some(result) = self.proxy_tool_call("edit_plan", &params.0).await {
+            return result;
+        }
         let guard = self.index.read();
         loading_guard!(guard);
         crate::protocol::edit_plan::plan_edit(&guard, &params.0.target)
@@ -3498,6 +3504,9 @@ impl SymForgeServer {
         description = "Suggest what to investigate next based on what you've already loaded. Analyzes session context to find referenced-but-not-loaded symbols. Use during deep investigations to find gaps."
     )]
     pub(crate) async fn investigation_suggest(&self, params: Parameters<InvestigationInput>) -> String {
+        if let Some(result) = self.proxy_tool_call("investigation_suggest", &params.0).await {
+            return result;
+        }
         let guard = self.index.read();
         loading_guard!(guard);
         crate::protocol::investigation::suggest_next_steps(
