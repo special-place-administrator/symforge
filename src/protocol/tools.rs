@@ -3035,6 +3035,22 @@ impl SymForgeServer {
         if let Some(result) = self.proxy_tool_call("get_file_content", &input).await {
             return result;
         }
+        // Estimate mode: return token cost without reading content
+        if input.estimate == Some(true) {
+            let guard = self.index.read();
+            loading_guard!(guard);
+            if let Some(file) = guard.capture_shared_file(&input.path) {
+                let file_tokens = file.content.len() / 4;
+                let line_count = file.content.iter().filter(|&&b| b == b'\n').count();
+                return format!(
+                    "Estimate for get_file_content(path=\"{}\"):\n  ~{} tokens (~{} lines)",
+                    input.path, file_tokens, line_count
+                );
+            } else {
+                return format::not_found_file(&input.path);
+            }
+        }
+
         let options = match file_content_options_from_input(&input) {
             Ok(options) => options,
             Err(message) => return message,
