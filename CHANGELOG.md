@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.9.2](https://github.com/special-place-administrator/symforge/compare/v4.9.1...v4.9.2) (2026-03-30)
+
+
+### Bug Fixes
+
+* codex audit — uncommitted symbol diff, daemon tool dispatch, lenient vec deserialization ([26f2528](https://github.com/special-place-administrator/symforge/commit/26f2528d34f6057621f12e828ae1171269966618))
+
 ## [4.9.1](https://github.com/special-place-administrator/symforge/compare/v4.9.0...v4.9.1) (2026-03-30)
 
 
