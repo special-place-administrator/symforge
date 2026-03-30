@@ -340,7 +340,34 @@ pub(crate) fn reconcile_stale_files(repo_root: &Path, shared: &SharedIndex) -> u
     }
 
     if stale_count > 0 {
-        warn!("reconciliation found and re-indexed {stale_count} stale file(s)");
+        // Collect stale paths for diagnostic logging to help debug reconciliation loops.
+        let stale_paths: Vec<&str> = paths
+            .iter()
+            .filter(|p| {
+                let abs = repo_root.join(p.as_str());
+                let disk = std::fs::metadata(&abs)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let indexed = {
+                    let idx = shared.read();
+                    idx.get_file(p).map(|f| f.mtime_secs).unwrap_or(0)
+                };
+                disk != indexed
+            })
+            .map(|p| p.as_str())
+            .take(5)
+            .collect();
+        if stale_paths.is_empty() {
+            warn!("reconciliation re-indexed {stale_count} file(s) (now fresh)");
+        } else {
+            warn!(
+                "reconciliation found {stale_count} stale file(s), still divergent: {}",
+                stale_paths.join(", ")
+            );
+        }
     }
     stale_count
 }
