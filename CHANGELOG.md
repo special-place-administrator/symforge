@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.9.1](https://github.com/special-place-administrator/symforge/compare/v4.9.0...v4.9.1) (2026-03-30)
+
+
+### Bug Fixes
+
+* add missing estimate=true handler to get_file_content ([72cd834](https://github.com/special-place-administrator/symforge/commit/72cd834b87ec852d7967557a66869e716c6ab2ff))
+
 ## [4.9.0](https://github.com/special-place-administrator/symforge/compare/v4.8.3...v4.9.0) (2026-03-30)
 
 
