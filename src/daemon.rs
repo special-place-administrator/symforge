@@ -1574,6 +1574,7 @@ async fn execute_tool_call(
                     bundle: None,
                     sections: Some(sections),
                     max_tokens: None,
+                    estimate: None,
                 }))
                 .await)
         }

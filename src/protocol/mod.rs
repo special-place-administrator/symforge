@@ -4,6 +4,7 @@ pub mod explore;
 pub mod format;
 pub mod prompts;
 pub mod resources;
+pub mod session;
 pub mod smart_query;
 pub mod tools;
 
@@ -57,6 +58,8 @@ pub struct SymForgeServer {
     /// Set to `true` after a failed reconnection attempt. Prevents repeated reconnect
     /// storms — once degraded, all subsequent calls fall through to local execution.
     pub(crate) daemon_degraded: Arc<AtomicBool>,
+    /// Session context tracking: records what the LLM has fetched this session.
+    pub(crate) session_context: Arc<session::SessionContext>,
 }
 
 impl SymForgeServer {
@@ -81,6 +84,7 @@ impl SymForgeServer {
             token_stats,
             daemon_client: None,
             daemon_degraded: Arc::new(AtomicBool::new(false)),
+            session_context: Arc::new(session::SessionContext::new()),
         }
     }
 
@@ -99,6 +103,7 @@ impl SymForgeServer {
             token_stats: None,
             daemon_client: Some(Arc::new(tokio::sync::RwLock::new(daemon_client))),
             daemon_degraded: Arc::new(AtomicBool::new(false)),
+            session_context: Arc::new(session::SessionContext::new()),
         }
     }
 

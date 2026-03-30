@@ -169,6 +169,7 @@ impl SymForgeServer {
                     path,
                     max_tokens,
                     sections: None,
+                    estimate: None,
                 }))
                 .await
             }
@@ -198,6 +199,7 @@ impl SymForgeServer {
                     context_lines,
                     show_line_numbers,
                     header,
+                    estimate: None,
                 }))
                 .await
             }
@@ -208,6 +210,7 @@ impl SymForgeServer {
                     kind,
                     symbol_line: None,
                     targets: None,
+                    estimate: None,
                 }))
                 .await
             }
@@ -222,6 +225,7 @@ impl SymForgeServer {
                     bundle: None,
                     sections: None,
                     max_tokens: None,
+                    estimate: None,
                 }))
                 .await
             }
