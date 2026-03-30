@@ -2590,6 +2590,56 @@ impl LiveIndex {
             );
         }
 
+        // --- Qualified-call dependents (no import required) ---
+        //
+        // Files that use fully-qualified calls (e.g. `engine::optimize()`) without
+        // a separate `use engine;` import are not caught by matching_imports above.
+        // Scan for Call references whose qualified_name suffix-matches the target's
+        // module path, so find_dependents stays consistent with find_references.
+        if let Some(ref mp) = module_path {
+            let separator = match target_language {
+                LanguageId::Python => ".",
+                LanguageId::JavaScript | LanguageId::TypeScript => "/",
+                _ => "::",
+            };
+            let already_found: HashSet<&str> = results.iter().map(|(p, _)| *p).collect();
+
+            for (file_path, file) in &self.files {
+                if file_path.as_str() == target_path || already_found.contains(file_path.as_str()) {
+                    continue;
+                }
+
+                let qualified_refs: Vec<&ReferenceRecord> = file
+                    .references
+                    .iter()
+                    .filter(|reference| {
+                        reference.kind == ReferenceKind::Call
+                            && reference.qualified_name.as_deref().map_or(false, |qn| {
+                                // The qualified_name must refer to a symbol in the target file.
+                                // Check: the ref's simple name is a public symbol in target,
+                                // AND the qualified_name suffix-matches the module path.
+                                target_symbol_names.contains(reference.name.as_str())
+                                    && Self::has_pub_symbol(target_file, &reference.name)
+                                    && matches_exact_symbol_qualified_name(
+                                        &target_language,
+                                        qn,
+                                        &reference.name,
+                                        Some(mp),
+                                    )
+                            })
+                    })
+                    .collect();
+
+                if !qualified_refs.is_empty() {
+                    results.extend(
+                        qualified_refs
+                            .into_iter()
+                            .map(|reference| (file_path.as_str(), reference)),
+                    );
+                }
+            }
+        }
+
         // --- Re-export chain resolution (Rust only, max 2 hops) ---
         //
         // If file X is re-exported via `pub use` in file Y, then files that
@@ -5249,6 +5299,49 @@ public class PacketsController {
         );
     }
 
+
+    #[test]
+    fn test_find_dependents_qualified_call_without_import() {
+        // A file that calls engine::optimize_deterministic() without
+        // `use engine;` should still be a dependent of src/engine.rs.
+        let target_sym = make_symbol_with_kind_and_line("optimize_deterministic", SymbolKind::Function, 10);
+        let target_file = make_file_with_refs_and_content(
+            "src/engine.rs",
+            LanguageId::Rust,
+            "pub fn optimize_deterministic() { todo!() }\n",
+            vec![],
+            vec![target_sym],
+        );
+
+        let call_ref = make_ref(
+            "optimize_deterministic",
+            Some("engine::optimize_deterministic"),
+            ReferenceKind::Call,
+            Some(0),
+            100,
+        );
+        let caller_file = make_file_with_refs(
+            "src/ui/optimization.rs",
+            vec![call_ref],
+            HashMap::new(),
+        );
+
+        let index = make_index(
+            vec![
+                ("src/engine.rs", target_file),
+                ("src/ui/optimization.rs", caller_file),
+            ],
+            false,
+        );
+
+        let deps = index.find_dependents_for_file("src/engine.rs");
+        assert!(
+            deps.iter().any(|(path, _)| *path == "src/ui/optimization.rs"),
+            "Should find qualified caller as dependent, got: {:?}",
+            deps.iter().map(|(p, _)| p).collect::<Vec<_>>()
+        );
+    }
+
     #[test]
     fn test_resolve_module_path_rust_cases() {
         use super::resolve_module_path;
@@ -5882,11 +5975,16 @@ public class PacketsController {
 
     #[test]
     fn test_collect_exact_refs_finds_qualified_call_without_import() {
-        // Simulates: optimization.rs calls engine::optimize_deterministic()
-        // but has no `use engine;` import — only a fully-qualified call.
-        let target_sym = make_symbol_with_kind_and_line("optimize_deterministic", SymbolKind::Function, 10);
-        let mut target_file = make_file_with_refs("src/engine.rs", vec![], HashMap::new());
-        target_file.symbols = vec![target_sym];
+    // Simulates: optimization.rs calls engine::optimize_deterministic()
+    // but has no `use engine;` import — only a fully-qualified call.
+    let target_sym = make_symbol_with_kind_and_line("optimize_deterministic", SymbolKind::Function, 10);
+    let target_file = make_file_with_refs_and_content(
+        "src/engine.rs",
+        LanguageId::Rust,
+        "pub fn optimize_deterministic() { todo!() }\n",
+        vec![],
+        vec![target_sym],
+    );
 
         // Caller file: has a Call ref with qualified_name but NO import ref for "engine"
         let call_ref = make_ref(
