@@ -890,6 +890,46 @@ fn fix_common_double_escapes(pattern: &str) -> Option<String> {
     Some(RE.replace_all(pattern, r"\$1").to_string())
 }
 
+/// Find up to 5 similar file paths for "file not found" suggestions.
+/// Extracts the basename from the failed path and searches the index.
+fn suggest_similar_files(index: &crate::live_index::LiveIndex, path: &str) -> Vec<String> {
+    let basename = std::path::Path::new(path)
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or(path);
+    // Try basename match first
+    let mut suggestions: Vec<String> = index
+        .find_files_by_basename(basename)
+        .into_iter()
+        .take(5)
+        .map(|s| s.to_string())
+        .collect();
+    // If no basename match, try the stem (without extension)
+    if suggestions.is_empty() {
+        let stem = std::path::Path::new(path)
+            .file_stem()
+            .and_then(|f| f.to_str())
+            .unwrap_or(basename);
+        if stem.len() >= 3 {
+            let stem_lower = stem.to_ascii_lowercase();
+            suggestions = index
+                .all_files()
+                .map(|(p, _)| p.as_str())
+                .filter(|p| {
+                    let file_stem = std::path::Path::new(p)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("");
+                    file_stem.to_ascii_lowercase().contains(&stem_lower)
+                })
+                .take(5)
+                .map(|s| s.to_string())
+                .collect();
+        }
+    }
+    suggestions
+}
+
 fn enrich_with_callers(
     index: &crate::live_index::LiveIndex,
     result: &mut search::TextSearchResult,
@@ -1634,7 +1674,13 @@ impl SymForgeServer {
                 self.record_tool_savings((output.len() * 5 / 4) as u64, (output.len() / 4) as u64);
                 output
             }
-            None => format::not_found_file(&params.0.path),
+            None => {
+                let suggestions = {
+                    let guard = self.index.read();
+                    suggest_similar_files(&guard, &params.0.path)
+                };
+                format::not_found_file_with_suggestions(&params.0.path, &suggestions)
+            }
         }
     }
 
@@ -2778,7 +2824,12 @@ impl SymForgeServer {
                         }
                     }
                 }
-                format::not_found_file(&input.path)
+                // Suggest similar files from the index
+                let suggestions = {
+                    let guard = self.index.read();
+                    suggest_similar_files(&guard, &input.path)
+                };
+                format::not_found_file_with_suggestions(&input.path, &suggestions)
             }
         }
     }
@@ -3824,18 +3875,35 @@ impl SymForgeServer {
                     1,
                 ),
                 None => {
+                    // Show a preview of the symbol body so the LLM can see what's actually there
+                    let preview_len = 800.min(body_str.len());
+                    let preview = &body_str[..preview_len];
+                    let truncated = if preview_len < body_str.len() {
+                        format!("\n... ({} more bytes)", body_str.len() - preview_len)
+                    } else {
+                        String::new()
+                    };
                     return format!(
-                        "Error: `{}` not found within symbol `{}`",
-                        params.0.old_text, params.0.name
+                        "Error: `{}` not found within symbol `{}`. \
+                         The symbol body is ({} bytes):\n```\n{}{}\n```",
+                        params.0.old_text, params.0.name, body_str.len(), preview, truncated
                     );
                 }
             }
         };
         if params.0.dry_run == Some(true) {
             if count == 0 {
+                let preview_len = 800.min(body_str.len());
+                let preview = &body_str[..preview_len];
+                let truncated = if preview_len < body_str.len() {
+                    format!("\n... ({} more bytes)", body_str.len() - preview_len)
+                } else {
+                    String::new()
+                };
                 return format!(
-                    "Error: `{}` not found within symbol `{}`",
-                    params.0.old_text, params.0.name
+                    "Error: `{}` not found within symbol `{}`. \
+                     The symbol body is ({} bytes):\n```\n{}{}\n```",
+                    params.0.old_text, params.0.name, body_str.len(), preview, truncated
                 );
             }
             return format!(
@@ -3844,9 +3912,17 @@ impl SymForgeServer {
             );
         }
         if count == 0 {
+            let preview_len = 800.min(body_str.len());
+            let preview = &body_str[..preview_len];
+            let truncated = if preview_len < body_str.len() {
+                format!("\n... ({} more bytes)", body_str.len() - preview_len)
+            } else {
+                String::new()
+            };
             return format!(
-                "Error: `{}` not found within symbol `{}`",
-                params.0.old_text, params.0.name
+                "Error: `{}` not found within symbol `{}`. \
+                 The symbol body is ({} bytes):\n```\n{}{}\n```",
+                params.0.old_text, params.0.name, body_str.len(), preview, truncated
             );
         }
         let old_sym_bytes = sym_end - sym_start;

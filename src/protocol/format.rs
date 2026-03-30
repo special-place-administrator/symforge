@@ -265,7 +265,11 @@ pub fn search_symbols_result_with_kind(
 
 pub fn search_symbols_result_view(result: &search::SymbolSearchResult, query: &str) -> String {
     if result.hits.is_empty() {
-        return format!("No symbols matching '{query}'");
+        return format!(
+            "No symbols matching '{query}'. \
+             Try: search_text(query=\"{query}\") for text matches, \
+             or explore(query=\"{query}\") for concept-based discovery."
+        );
     }
 
     let mut lines = vec![format!(
@@ -403,7 +407,13 @@ pub fn search_text_result_view(
                 result.label, result.suppressed_by_noise
             );
         }
-        return format!("No matches for {}", result.label);
+        return format!(
+            "No matches for {}. Suggestions: \
+             try search_symbols(query=...) for symbol names, \
+             or use regex=true for pattern matching, \
+             or broaden with include_tests=true / include_generated=true.",
+            result.label
+        );
     }
 
     let mut lines = vec![format!(
@@ -1147,7 +1157,11 @@ pub fn search_files_resolve_result_view(view: &SearchFilesResolveView) -> String
         SearchFilesResolveView::EmptyHint => "Path hint must not be empty.".to_string(),
         SearchFilesResolveView::Resolved { path } => path.clone(),
         SearchFilesResolveView::NotFound { hint } => {
-            format!("No indexed source path matched '{hint}'")
+            format!(
+                "No indexed source path matched '{hint}'. \
+                 Try search_files(query=\"{hint}\") without resolve=true for fuzzy matches, \
+                 or check the path with get_repo_map(detail=\"tree\")."
+            )
         }
         SearchFilesResolveView::Ambiguous {
             hint,
@@ -1742,6 +1756,22 @@ fn render_numbered_around_line_excerpt(
 /// "File not found: {path}"
 pub fn not_found_file(path: &str) -> String {
     format!("File not found: {path}")
+}
+
+/// Richer "file not found" with suggested similar paths.
+/// Call this from tool handlers where the index is available.
+pub fn not_found_file_with_suggestions(path: &str, suggestions: &[String]) -> String {
+    if suggestions.is_empty() {
+        format!(
+            "File not found: {path}. Use search_files to find the correct path."
+        )
+    } else {
+        let top: Vec<&str> = suggestions.iter().take(5).map(|s| s.as_str()).collect();
+        format!(
+            "File not found: {path}. Did you mean: {}?",
+            top.join(", ")
+        )
+    }
 }
 
 /// "No matches for '{query}' in {path}"
