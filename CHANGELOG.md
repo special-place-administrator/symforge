@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.7.0](https://github.com/special-place-administrator/symforge/compare/v4.6.0...v4.7.0) (2026-03-30)
+
+
+### Features
+
+* conventions detection, edit planning, investigation mode (Suggestions 3, 8, 9) ([aebf288](https://github.com/special-place-administrator/symforge/commit/aebf28899278be7554f02200ea124ab269e49232))
+
 ## [4.6.0](https://github.com/special-place-administrator/symforge/compare/v4.5.0...v4.6.0) (2026-03-30)
 
 
