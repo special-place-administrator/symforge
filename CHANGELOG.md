@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.9.5](https://github.com/special-place-administrator/symforge/compare/v4.9.4...v4.9.5) (2026-03-30)
+
+
+### Bug Fixes
+
+* update 5 stale test assertions to match improved error messages ([4ebb8b5](https://github.com/special-place-administrator/symforge/commit/4ebb8b56a09b538bfcc171dfdee07a35576ceb90))
+
 ## [4.9.4](https://github.com/special-place-administrator/symforge/compare/v4.9.3...v4.9.4) (2026-03-30)
 
 
