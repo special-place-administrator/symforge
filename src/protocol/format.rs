@@ -2829,11 +2829,13 @@ fn extract_first_doc_line(body: &str) -> Option<String> {
 
 /// Apply verbosity filter to a symbol body.
 ///
+/// - `"summary"`: one-line natural language summary (doc comment or heuristic from name/signature).
 /// - `"signature"`: full declaration line — visibility, name, generics, params, return type (~80% smaller).
 /// - `"compact"`: signature + first doc-comment line.
 /// - `"full"` or anything else: complete body (default).
 pub(crate) fn apply_verbosity(body: &str, verbosity: &str) -> String {
     match verbosity {
+        "summary" => auto_summarize(body),
         "signature" => extract_signature(body),
         "compact" => {
             let sig = extract_signature(body);
@@ -2845,6 +2847,143 @@ pub(crate) fn apply_verbosity(body: &str, verbosity: &str) -> String {
         }
         _ => body.to_string(),
     }
+}
+
+/// Generate a one-line natural language summary for a symbol body.
+///
+/// Priority:
+/// 1. First doc-comment line (if present and meaningful)
+/// 2. Heuristic from function name patterns (get_, set_, is_, new, from_, etc.)
+/// 3. Signature-based fallback with parameter/return type info
+fn auto_summarize(body: &str) -> String {
+    // Try doc comment first
+    if let Some(doc) = extract_first_doc_line(body) {
+        // Ensure it's meaningful (not just a tag or very short)
+        if doc.len() > 5 && !doc.starts_with('@') && !doc.starts_with('<') {
+            return doc;
+        }
+    }
+
+    let sig = extract_signature(body);
+
+    // Extract the function/type name from the signature
+    let name = extract_declaration_name(&sig).unwrap_or_default();
+    if name.is_empty() {
+        return sig;
+    }
+
+    // Try heuristic summary based on name patterns
+    if let Some(heuristic) = heuristic_from_name(&name, &sig) {
+        return heuristic;
+    }
+
+    // Fallback: signature-based summary
+    sig
+}
+
+/// Generate a heuristic summary from common naming patterns.
+fn heuristic_from_name(name: &str, sig: &str) -> Option<String> {
+    let lower = name.to_ascii_lowercase();
+
+    // Common prefixes with semantic meaning
+    let patterns: &[(&str, &str)] = &[
+        ("test_", "Test: "),
+        ("get_", "Returns the "),
+        ("set_", "Sets the "),
+        ("is_", "Checks whether "),
+        ("has_", "Checks whether it has "),
+        ("should_", "Checks whether it should "),
+        ("can_", "Checks whether it can "),
+        ("with_", "Creates a copy with "),
+        ("from_", "Constructs from "),
+        ("into_", "Converts into "),
+        ("try_", "Attempts to "),
+        ("parse_", "Parses "),
+        ("render_", "Renders "),
+        ("format_", "Formats "),
+        ("validate_", "Validates "),
+        ("build_", "Builds "),
+        ("create_", "Creates "),
+        ("make_", "Creates "),
+        ("load_", "Loads "),
+        ("save_", "Saves "),
+        ("read_", "Reads "),
+        ("write_", "Writes "),
+        ("find_", "Finds "),
+        ("search_", "Searches for "),
+        ("collect_", "Collects "),
+        ("compute_", "Computes "),
+        ("calculate_", "Calculates "),
+        ("update_", "Updates "),
+        ("delete_", "Deletes "),
+        ("remove_", "Removes "),
+        ("add_", "Adds "),
+        ("insert_", "Inserts "),
+        ("handle_", "Handles "),
+        ("process_", "Processes "),
+        ("run_", "Runs "),
+        ("execute_", "Executes "),
+        ("start_", "Starts "),
+        ("stop_", "Stops "),
+        ("init_", "Initializes "),
+        ("setup_", "Sets up "),
+        ("cleanup_", "Cleans up "),
+        ("resolve_", "Resolves "),
+        ("normalize_", "Normalizes "),
+        ("convert_", "Converts "),
+        ("transform_", "Transforms "),
+        ("apply_", "Applies "),
+        ("check_", "Checks "),
+        ("ensure_", "Ensures "),
+        ("spawn_", "Spawns "),
+        ("emit_", "Emits "),
+        ("dispatch_", "Dispatches "),
+        ("register_", "Registers "),
+        ("detect_", "Detects "),
+        ("extract_", "Extracts "),
+        ("capture_", "Captures "),
+        ("record_", "Records "),
+    ];
+
+    for (prefix, verb) in patterns {
+        if lower.starts_with(prefix) {
+            let rest = &name[prefix.len()..];
+            let readable = rest.replace('_', " ");
+            return Some(format!("{verb}{readable}"));
+        }
+    }
+
+    // Special cases
+    if lower == "new" || lower == "default" {
+        // Check if it's inside an impl block
+        if sig.contains("impl") || sig.contains("Self") || sig.contains("->") {
+            return Some("Constructor".to_string());
+        }
+    }
+
+    if lower == "drop" {
+        return Some("Destructor / cleanup on drop".to_string());
+    }
+
+    if lower == "fmt" && sig.contains("Formatter") {
+        return Some("Display/Debug formatting implementation".to_string());
+    }
+
+    // Struct/enum/type with field count
+    if sig.contains("struct ") || sig.contains("class ") {
+        return Some(format!("Data type: {name}"));
+    }
+    if sig.contains("enum ") {
+        return Some(format!("Enumeration: {name}"));
+    }
+    if sig.contains("trait ") || sig.contains("interface ") {
+        return Some(format!("Interface/trait: {name}"));
+    }
+    if sig.contains("impl ") {
+        return Some(format!("Implementation block for {name}"));
+    }
+
+    None
 }
 
 fn format_type_dependencies(deps: &[TypeDependencyView]) -> String {
