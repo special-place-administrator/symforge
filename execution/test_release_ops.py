@@ -53,6 +53,43 @@ class ReleaseOpsTests(unittest.TestCase):
         rendered = [" ".join(args) for _, args, _ in release_ops.preflight_steps(root)]
         self.assertTrue(any("version_sync.py check" in command for command in rendered))
 
+    def test_npm_version_exists_returns_true_for_matching_registry_version(self) -> None:
+        root = release_ops.repo_root()
+        completed = mock.Mock(returncode=0, stdout="4.9.8\n")
+        with mock.patch("release_ops.subprocess.run", return_value=completed):
+            self.assertTrue(release_ops.npm_version_exists(root, "symforge", "4.9.8"))
+
+    def test_publish_npm_tarball_skips_when_version_already_exists(self) -> None:
+        root = release_ops.repo_root()
+        with mock.patch("release_ops.npm_version_exists", return_value=True):
+            with mock.patch("release_ops.run_checked") as run_checked:
+                result = release_ops.publish_npm_tarball(
+                    root,
+                    "./dist/symforge-4.9.8.tgz",
+                    package_name="symforge",
+                    version="4.9.8",
+                )
+
+        self.assertEqual(result, "skipped")
+        run_checked.assert_not_called()
+
+    def test_publish_npm_tarball_runs_publish_when_version_missing(self) -> None:
+        root = release_ops.repo_root()
+        with mock.patch("release_ops.npm_version_exists", return_value=False):
+            with mock.patch("release_ops.run_checked") as run_checked:
+                result = release_ops.publish_npm_tarball(
+                    root,
+                    "./dist/symforge-4.9.8.tgz",
+                    package_name="symforge",
+                    version="4.9.8",
+                )
+
+        self.assertEqual(result, "published")
+        run_checked.assert_called_once_with(
+            ["npm", "publish", "./dist/symforge-4.9.8.tgz", "--access", "public"],
+            cwd=root,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

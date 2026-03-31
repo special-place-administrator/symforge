@@ -223,6 +223,28 @@ def release_metadata_is_aligned(root: Path) -> bool:
     return completed.returncode == 0
 
 
+def npm_version_exists(root: Path, package_name: str, version: str) -> bool:
+    completed = subprocess.run(
+        [resolve_executable("npm"), "view", f"{package_name}@{version}", "version"],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        return False
+    return completed.stdout.strip() == version
+
+
+def publish_npm_tarball(root: Path, tarball_path: str, *, package_name: str, version: str) -> str:
+    if npm_version_exists(root, package_name, version):
+        print(f"{package_name}@{version} already exists on npm; skipping publish.")
+        return "skipped"
+
+    run_checked(["npm", "publish", tarball_path, "--access", "public"], cwd=root)
+    return "published"
+
+
 def preflight_steps(root: Path) -> list[tuple[str, list[str], Path]]:
     return [
         (
@@ -323,6 +345,19 @@ def cmd_rebuild(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_publish_npm(args: argparse.Namespace) -> int:
+    root = repo_root(args.root)
+    result = publish_npm_tarball(
+        root,
+        args.tarball,
+        package_name=args.package_name,
+        version=args.version,
+    )
+    if result == "published":
+        print(f"Published {args.package_name}@{args.version} from {args.tarball}.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Canonical operator commands for SymForge release and publish workflow."
@@ -360,6 +395,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rebuild.add_argument("--tag", required=True, help="Existing release tag, for example v0.3.12.")
     rebuild.set_defaults(func=cmd_rebuild)
+
+    publish_npm = subparsers.add_parser(
+        "publish-npm",
+        help="Publish an npm tarball unless that package version already exists in the registry.",
+    )
+    publish_npm.add_argument("--tarball", required=True, help="Path to the .tgz artifact to publish.")
+    publish_npm.add_argument("--package-name", required=True, help="Package name in the npm registry.")
+    publish_npm.add_argument("--version", required=True, help="Version to check and publish.")
+    publish_npm.set_defaults(func=cmd_publish_npm)
 
     return parser
 

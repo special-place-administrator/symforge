@@ -318,6 +318,14 @@ jobs:
     runs-on: ubuntu-latest
     environment: npm-publish
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-release.outputs.release_ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -337,6 +345,10 @@ jobs:
           ls -l "$TAR_PATH"
 
       - name: Publish to npm
-        run: npm publish "./dist/symforge-${{ needs.prepare-release.outputs.version }}.tgz" --access public
+        run: >
+          python execution/release_ops.py publish-npm
+          --tarball "./dist/symforge-${{ needs.prepare-release.outputs.version }}.tgz"
+          --package-name symforge
+          --version "${{ needs.prepare-release.outputs.version }}"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
