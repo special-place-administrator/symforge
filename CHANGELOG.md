@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.9.8](https://github.com/special-place-administrator/symforge/compare/v4.9.7...v4.9.8) (2026-03-31)
+
+
+### Bug Fixes
+
+* **ci:** force Node 24 for GitHub Actions runtime ([98b666a](https://github.com/special-place-administrator/symforge/commit/98b666afe6a2157ec85b80a1c91cfa812247cfbd))
+
 ## [4.9.7](https://github.com/special-place-administrator/symforge/compare/v4.9.6...v4.9.7) (2026-03-30)
 
 
