@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.9.9](https://github.com/special-place-administrator/symforge/compare/v4.9.8...v4.9.9) (2026-03-31)
+
+
+### Bug Fixes
+
+* **ci:** make npm publish idempotent ([bdddc47](https://github.com/special-place-administrator/symforge/commit/bdddc47bf1558be1f5068e0b6a25dcfa4a9f7aab))
+
 ## [4.9.8](https://github.com/special-place-administrator/symforge/compare/v4.9.7...v4.9.8) (2026-03-31)
 
 
