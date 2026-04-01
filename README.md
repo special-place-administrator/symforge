@@ -385,7 +385,7 @@ symforge init --client gemini
 /mcp
 ```
 
-You should see `symforge — Ready` with 25 tools listed. If the server shows `DISCONNECTED`, check that the binary exists at `~/.symforge/bin/symforge` (or `symforge.exe` on Windows).
+You should see `symforge — Ready` with 31 tools listed. If the server shows `DISCONNECTED`, check that the binary exists at `~/.symforge/bin/symforge` (or `symforge.exe` on Windows).
 
 ### VS Code Extensions (Kilo Code, Roo Code, Cline, etc.)
 
@@ -407,14 +407,16 @@ This creates `.kilocode/mcp.json` and `.kilocode/rules/symforge.md` in your work
       "args": [],
       "disabled": false,
       "alwaysAllow": [
-        "health", "get_repo_map", "explore", "get_file_content",
-        "validate_file_syntax", "get_file_context", "get_symbol", "get_symbol_context",
-        "search_symbols", "search_text", "search_files",
+        "health", "index_folder", "validate_file_syntax", "get_repo_map",
+        "get_file_content", "search_symbols", "search_text", "search_files",
+        "get_file_context", "get_symbol", "get_symbol_context",
         "find_references", "find_dependents", "inspect_match",
         "what_changed", "analyze_file_impact", "diff_symbols",
-        "index_folder", "replace_symbol_body", "edit_within_symbol",
+        "explore", "replace_symbol_body", "edit_within_symbol",
         "insert_symbol", "delete_symbol", "batch_edit",
-        "batch_rename", "batch_insert"
+        "batch_insert", "batch_rename", "ask", "conventions",
+        "edit_plan", "context_inventory", "investigation_suggest",
+        "trace_symbol"
       ]
     }
   }
@@ -425,21 +427,44 @@ On macOS/Linux, use `~/.symforge/bin/symforge` (no `.exe`). The `alwaysAllow` li
 
 **Kilo / Codex / Gemini schema errors:** if a strict provider shows an error like `Invalid schema for function ... array schema missing items`, the named function usually belongs to a different MCP server in the active client config, not SymForge. Strict providers reject the whole tool list if any loaded MCP server advertises invalid JSON Schema. In Kilo Code, check both workspace and global MCP settings for extra servers such as Claude hook bridges or flow servers, and temporarily disable the server named in the error.
 
-Other VS Code extensions and MCP clients follow a similar pattern — point the MCP stdio transport at the SymForge binary with no arguments. The standard MCP handshake handles the rest.
+Other VS Code extensions and MCP clients follow a similar pattern — point the MCP stdio transport at the SymForge binary with no arguments. Native VS Code MCP uses a workspace or user `mcp.json` file with a top-level `servers` object, while extension-managed clients such as Cline and Kilo usually use their own JSON file with a top-level `mcpServers` object. Do not paste one client's schema into another unchanged.
 
 > [!IMPORTANT]
-> **NOTICE — Post-install prompt for AI agents**
+> **NOTICE — One prompt for any AI agent after SymForge install**
 >
-> If your AI agent still falls back to built-in file reads, grep, or text-based edits after SymForge is installed, give it the following prompt once and let it update the relevant client instruction files.
+> If your AI agent still falls back to built-in file reads, grep, or text-based edits after SymForge is installed, give it the following prompt once. It is written to work whether the machine has one client or several.
 >
 > ```text
-> SymForge is already installed on this machine. First verify that the SymForge MCP server is configured and connected for the active client. If the client is not configured yet, run `symforge init` for the relevant client before modifying any instruction files.
+> SymForge is already installed on this machine. Your job is to detect which supported AI clients are actually installed on this computer or in this workspace, configure SymForge for the ones you find, and update only the relevant instruction files. Do not assume every client is installed.
 >
-> Then update the active global or workspace instruction files so the agent treats SymForge as the primary code navigation and structural editing layer.
+> Work in this order:
+> 1. Detect installed clients and existing config files before editing anything.
+> 2. Prefer running `symforge init` for any client that supports it.
+> 3. Repair or add the SymForge MCP entry in that client's MCP config only if needed.
+> 4. Update the corresponding global or workspace instruction file so the agent treats SymForge as the primary code navigation and structural editing layer.
+> 5. Validate the edited config, reload the client if needed, and confirm that SymForge is connected or ready.
 >
 > Requirements:
-> - Preserve existing user instructions. Append or merge missing SymForge rules; do not duplicate or overwrite unrelated content.
-> - When SymForge is available, prefer it over built-in file/search/edit tools for source code.
+> - First inspect what exists. Only modify files for clients you actually detect.
+> - Preserve existing user instructions and existing MCP servers. Merge missing SymForge settings; do not duplicate entries or overwrite unrelated content.
+> - Use the SymForge binary path for the current OS: `~/.symforge/bin/symforge` on macOS/Linux or `C:\Users\<user>\.symforge\bin\symforge.exe` on Windows. Use no arguments unless that client already requires extra fields.
+> - For JSON-based MCP clients, keep the client's existing schema. Native VS Code MCP uses a top-level `servers` object in `mcp.json`. Many extension-managed clients use a top-level `mcpServers` object. Reuse the schema already present in that client's config file instead of forcing one client's format into another.
+> - Preserve client-specific keys such as `disabled`, `alwaysAllow`, `autoApprove`, `timeout`, `type`, `env`, or trust fields if that client supports them. Do not invent unsupported keys.
+> - If a SymForge entry already exists, update it in place. Do not create duplicate `symforge` entries.
+> - After editing any JSON config, validate that it is still valid JSON and confirm the client can start the SymForge MCP server.
+>
+> Detect and update whichever of these are actually present:
+> - Claude Code: `~/.claude.json`, `~/.claude/settings.json`, `~/.claude/CLAUDE.md`
+> - Codex: `~/.codex/config.toml`, `~/.codex/AGENTS.md`
+> - Gemini CLI: `~/.gemini/settings.json`, `~/.gemini/GEMINI.md`
+> - Native VS Code MCP: workspace or user `mcp.json` and the nearest project instruction file such as `AGENTS.md`
+> - Cline: its MCP JSON settings file plus its rules file such as `~/Documents/Cline/Rules/mandatory.md`
+> - Kilo Code: `.kilocode/mcp.json` and `.kilocode/rules/symforge.md`
+> - Roo Code and similar extensions: their existing MCP JSON file if present, otherwise the nearest MCP config file the extension already uses, plus the nearest project instruction file the client already consumes
+> - If a client is not installed or you cannot find its real config path from existing files, do not guess and do not create random paths for it
+>
+> Add or merge a SymForge rule block with this behavior:
+> - When SymForge is available, prefer it over built-in file, search, and edit tools for source code work.
 > - Use SymForge first for: `search_symbols`, `search_text`, `get_file_context`, `get_repo_map`, `get_symbol`, `get_symbol_context`, `find_references`, `find_dependents`, `inspect_match`, `what_changed`, `diff_symbols`, `explore`, `ask`, `conventions`, `edit_plan`, `context_inventory`, `investigation_suggest`.
 > - Prefer SymForge edit tools: `replace_symbol_body`, `edit_within_symbol`, `insert_symbol`, `delete_symbol`, `batch_edit`, `batch_rename`, `batch_insert`.
 > - Do not default to built-in tools such as `read_file`, `search_files`, `list_files`, `write_to_file`, `replace_in_file`, grep, or broad raw file reads for normal source-code work.
@@ -450,79 +475,13 @@ Other VS Code extensions and MCP clients follow a similar pattern — point the 
 > - After larger multi-file jobs, major refactors, or sprint-sized tasks, run `index_folder` on the workspace root so the index is fresh.
 > - Before finishing a large task, do a final `health` check and reindex if needed.
 >
-> Update whichever instruction files exist for the active client:
-> - Claude Code: `~/.claude/CLAUDE.md`
-> - Codex: `~/.codex/AGENTS.md`
-> - Gemini CLI: `~/.gemini/GEMINI.md`
-> - Cline: `~/Documents/Cline/Rules/mandatory.md`
-> - Kilo Code (workspace-local): `.kilocode/rules/symforge.md`
->
-> Report exactly which files you changed and show the SymForge rule block you added or updated.
+> Your output must include:
+> - which clients you detected
+> - which files you changed
+> - which files you intentionally left untouched because the client was not installed or no real config file was found
+> - the SymForge rule block you added or updated
+> - confirmation that each edited MCP config still parses and points to the SymForge binary
 > ```
-
-### Getting the Most Out of SymForge
-
-The `init` command writes a guidance block to your agent's system file (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, or `.kilocode/rules/symforge.md` for Kilo Code), but agents don't always follow it — they tend to fall back to built-in file reads and grep out of habit. For best results, add the following to your global or per-project system file so your agent treats SymForge as the primary code navigation layer:
-
-```markdown
-## Tooling Preference
-
-When SymForge MCP is available, prefer its tools for repository and code
-inspection before falling back to direct file reads.
-
-Use SymForge first for:
-- symbol discovery
-- text/code search
-- file outlines and context
-- repository outlines
-- targeted symbol/source retrieval
-- surgical editing (symbol replacements, renames)
-- impact analysis (what changed, what breaks)
-- inspection of implementation code under `src/`, `tests/`, and similar
-  code-bearing directories
-
-Preferred tools for reading:
-- `search_text` — full-text search with enclosing symbol context
-- `search_symbols` — find symbols by name, kind, language, path
-- `search_files` — ranked file path discovery, co-change coupling
-- `get_file_context` — rich file summary with outline, imports, consumers
-- `get_file_content` — read files with line ranges or around a symbol
-- `get_repo_map` — repository overview at adjustable detail levels
-- `get_symbol` — look up symbols by name, batch mode supported
-- `get_symbol_context` — symbol body + callers + callees + type deps
-- `find_references` — call sites, imports, type usages, implementations
-- `find_dependents` — file-level dependency graph
-- `inspect_match` — deep-dive a search match with full symbol context
-- `analyze_file_impact` — re-read file, update index, report impact
-- `what_changed` — files changed since timestamp, ref, or uncommitted
-- `diff_symbols` — symbol-level diff between git refs
-- `explore` — concept-driven exploration across the codebase
-
-Preferred tools for editing:
-- `replace_symbol_body` — replace a symbol's entire definition by name
-- `edit_within_symbol` — scoped find-and-replace within a symbol's range
-- `insert_symbol` — insert code before or after a named symbol
-- `delete_symbol` — remove a symbol and its doc comments by name
-- `batch_edit` — multiple symbol-addressed edits atomically across files
-- `batch_rename` — rename a symbol and update all references project-wide
-- `batch_insert` — insert code before/after multiple symbols across files
-
-Default rule:
-- use SymForge to narrow and target code inspection first
-- use direct file reads only when exact full-file source or surrounding
-  context is still required after tool-based narrowing
-- use SymForge editing tools (`replace_symbol_body`, `batch_edit`,
-  `edit_within_symbol`) over text-based find-and-replace whenever
-  possible to ensure structural integrity and automatic re-indexing
-
-Direct file reads are still appropriate for:
-- exact document text in `docs/` or planning artifacts where literal
-  wording matters
-- configuration files where exact raw contents are the point of inspection
-
-Do not default to broad raw file reads for source-code inspection when
-SymForge can answer the question more directly.
-```
 
 ## Runtime Model
 
