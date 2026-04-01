@@ -1,5 +1,13 @@
 # Changelog
 
+## [5.1.0](https://github.com/special-place-administrator/symforge/compare/v5.0.0...v5.1.0) (2026-04-01)
+
+
+### Features
+
+* derive fallback explore clusters ([2173acb](https://github.com/special-place-administrator/symforge/commit/2173acbe9da35ae966b7e25ac78706117335fcc6))
+* improve init trust detection and query routing ([82b433a](https://github.com/special-place-administrator/symforge/commit/82b433ad6f104437ae9e165d71481c42a58c1b43))
+
 ## [5.0.0](https://github.com/special-place-administrator/symforge/compare/v4.9.10...v5.0.0) (2026-04-01)
 
 
