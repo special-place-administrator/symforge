@@ -2874,8 +2874,6 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn test_batch_edit_partial_success_reindexes_completed() {
-        use std::os::unix::fs::PermissionsExt;
-
         let dir = tempfile::tempdir().unwrap();
         let src = dir.path().join("src");
         std::fs::create_dir_all(&src).unwrap();
