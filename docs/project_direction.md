@@ -102,7 +102,7 @@ The project should keep its original center of gravity:
 
 - Rust everywhere practical
 - tree-sitter parsing in Rust
-- local byte-exact CAS in Rust
+- local byte-exact persistence in Rust
 - deterministic retrieval in Rust
 - MCP protocol surface in Rust
 
@@ -186,21 +186,18 @@ The engine does the real work:
 
 This is the true successor to SymForge.
 
-### Layer 2: Control plane
+### Layer 2: Local runtime state
 
-SpacetimeDB acts as the authoritative control plane for:
+SymForge itself should own:
 
 - repositories
 - workspaces
-- index runs
-- checkpoints
-- leases
+- live index state
 - health events
 - repair actions
-- idempotency records
-- file and symbol metadata
+- local metadata needed for warm restarts
 
-Raw bytes should remain in local CAS, not be forced into SpacetimeDB.
+Raw bytes and recovery artifacts should remain local, not be forced through an external control plane.
 
 ### Layer 3: MCP surface
 
@@ -325,7 +322,7 @@ The following should not drive early architecture:
 - exact UI/UX parity with every existing client
 - forcing all edits through SymForge
 - embedding-first or vector-first design
-- storing all raw file data in SpacetimeDB
+- storing all raw file data in an external control plane
 - building plugins before core retrieval parity exists
 - chasing provider-specific packaging before the engine is worth preferring
 
@@ -341,8 +338,8 @@ Needed outcomes:
 
 - domain models
 - config and error model
-- local byte-exact CAS
-- SpacetimeDB boundary
+- local byte-exact persistence
+- snapshot boundary
 - indexing skeleton
 - `search_text`
 - `get_file_outline`

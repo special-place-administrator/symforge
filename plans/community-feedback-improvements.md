@@ -178,7 +178,7 @@ To have Kilo implement a sprint, use this prompt pattern:
 Read `plans/community-feedback-improvements.md` — section "Sprint N". Implement all items in that sprint.
 
 ### Rules
-1. You and ALL subagents MUST use Tokenizor MCP tools for codebase navigation and editing.
+1. You and ALL subagents MUST use SymForge MCP tools for codebase navigation and editing.
 2. Each item has exact files, symbols, and effort estimates — follow them.
 3. Add tests for every change. Follow existing test patterns in the affected files.
 4. Run `cargo check` and `cargo test --lib` after each item.
@@ -192,7 +192,7 @@ Items within a sprint are independent — parallelize where files don't overlap.
 
 ## Sprint 0: Index Freshness Guarantee (P0 — Critical Infrastructure)
 
-Discovered during the SymForge rename: Tokenizor's file watcher missed rapid bulk writes (30+ files via PowerShell), causing `search_text` to return stale results. The index silently served outdated data. **An index that lies is worse than no index at all.**
+Discovered during the SymForge rename: the old file watcher implementation missed rapid bulk writes (30+ files via PowerShell), causing `search_text` to return stale results. The index silently served outdated data. **An index that lies is worse than no index at all.**
 
 ### 0.1 — Mtime guard on read (the primary fix)
 **Files:** `src/live_index/store.rs` → `read()` or query entry points, `src/live_index/search.rs`

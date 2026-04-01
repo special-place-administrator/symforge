@@ -18,15 +18,15 @@ It is not a carbon copy of SymForge. The design should optimize for:
 
 ## Design Position
 
-The system should use a hybrid architecture:
+The system should use a local-first architecture:
 - Rust application and MCP surface
-- SpacetimeDB as the authoritative control plane
-- local byte-exact content-addressed storage for raw file bytes and large artifacts
+- in-process LiveIndex for the hot query path
+- local snapshot persistence under `.symforge/`
 - tree-sitter parsing and extraction in Rust
 
 This split is deliberate.
 
-SpacetimeDB is a strong fit for durable operational state, subscriptions, reducers, and scheduled recovery work. It is not the best default place for every raw source blob. Raw bytes need exact handling because symbol spans and later retrieval must remain correct on every platform, including Windows.
+The hot path stays in memory for speed, while restart recovery and warm startup come from local serialized state. Raw bytes need exact handling because symbol spans and later retrieval must remain correct on every platform, including Windows.
 
 ## Goals
 
@@ -49,7 +49,7 @@ Secondary goals:
 
 Not first-phase goals:
 - exact parity with Python MCPs
-- storing all repository bytes inside the database
+- pushing the read path behind an external data service
 - embedding-first retrieval
 - hiding failure states behind blind retries
 
@@ -68,8 +68,8 @@ Core subsystems:
   - repository, file, symbol, run, checkpoint, lease, idempotency, health models
   - core invariants
 - `storage`
-  - SpacetimeDB integration
-  - local content-addressed blob store
+  - local snapshot persistence
+  - byte-exact local artifacts when persistence is needed
   - snapshots and integrity verification
 - `indexing`
   - discovery
@@ -90,35 +90,30 @@ Core subsystems:
 
 ## Data Ownership
 
-### SpacetimeDB: authoritative control plane
+### In-process runtime state
 
-SpacetimeDB should own structured operational state:
-- repository registration
-- index runs
-- checkpoints
-- leases
-- health events
-- repair jobs
-- idempotency records
-- file metadata
-- symbol metadata
-- operational history
+The running process should own hot operational state:
+- repository registration for the current session
+- loaded files and content hashes
+- symbol and reference metadata
+- watcher state
+- health and verification state
+- transient mutation coordination
 
 This gives us:
-- transactional mutation boundaries
-- resumable runs
-- clearer concurrency control
-- durable replay after failure
-- subscriptions for live run status and health
+- zero-hop query serving
+- simpler concurrency control
+- deterministic local behavior
+- cheaper updates after file changes
 
-### Local CAS: authoritative raw content plane
+### Local persistence: authoritative raw content plane
 
-Raw file bytes should live in a local content-addressed store.
+Raw file bytes and derived recovery artifacts should remain local when persisted.
 
 Why:
 - symbol retrieval depends on exact bytes
 - newline or encoding normalization can corrupt spans
-- large blobs are better handled outside the DB
+- large blobs are better handled outside the hot query path
 - integrity verification is simpler with direct hash-addressed blobs
 
 Suggested layout:
@@ -408,7 +403,7 @@ The project should eventually support multiple memory layers.
 
 ### Authoritative memory
 
-Use SpacetimeDB for:
+Use local persisted state for:
 - architecture decisions
 - run history
 - checkpoints
@@ -431,7 +426,7 @@ Optional later layer:
 - embeddings for fuzzy retrieval over docs, notes, conversations, and maybe chunks
 
 Current position:
-- SpacetimeDB is not a dedicated vector database
+- local persistence is not a dedicated vector database
 - do not contort phase one around ANN requirements
 - add semantic retrieval later if it proves useful
 
@@ -476,11 +471,11 @@ Safety principle:
 - config model
 - health tool
 - logging and tracing bootstrap
-- storage traits for DB and CAS
+- storage traits for local snapshots and byte-exact artifacts
 
 ### M2 Durable control plane
 
-- SpacetimeDB boundary crate or integration module
+- local snapshot boundary and recovery module
 - repository and run domain types
 - idempotency model
 - checkpoint model
@@ -510,24 +505,24 @@ Safety principle:
 
 ## Current Strategic Decision
 
-Adopt SpacetimeDB as the control plane, not the universal storage layer.
+Keep the query path local-first and keep durability local unless a concrete scaling need proves otherwise.
 
 That gives us:
-- strong operational state
-- better recovery semantics
-- a durable memory model for the project
-- room for future agentic workflows
+- strong operational state without extra moving parts
+- better recovery semantics through local snapshots
+- a simpler memory model for the project
+- room for future agentic workflows without premature infrastructure
 
 And it avoids:
 - blob misuse
 - byte corruption risk
-- turning a strong coordination store into a poor raw-content store
+- turning the query path into a distributed systems problem
 
 ## Final Recommendation
 
 Build SymForge as a Rust-first MCP platform with:
-- SpacetimeDB for durable structured state
-- local byte-exact CAS for raw content
+- local durable state under `.symforge/`
+- local byte-exact persistence for raw content when needed
 - tree-sitter extraction with verification before commit
 - checkpointed idempotent jobs
 - explicit recovery and repair tooling
