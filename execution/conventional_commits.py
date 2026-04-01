@@ -7,6 +7,7 @@ import argparse
 import subprocess
 import sys
 from pathlib import Path
+from typing import Sequence
 
 ALLOWED_TYPES = (
     "build",
@@ -88,6 +89,43 @@ def read_commit_subjects(root: Path, rev_range: str) -> list[str]:
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
+def run_git(root: Path, args: Sequence[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def commit_exists(root: Path, rev: str) -> bool:
+    result = run_git(root, ["rev-parse", "-q", "--verify", f"{rev}^{{commit}}"])
+    return result.returncode == 0
+
+
+def is_ancestor(root: Path, older: str, newer: str) -> bool:
+    result = run_git(root, ["merge-base", "--is-ancestor", older, newer])
+    return result.returncode == 0
+
+
+def resolve_push_range(root: Path, before: str, after: str) -> tuple[str, str | None]:
+    zero = "0000000000000000000000000000000000000000"
+    if before == zero:
+        return f"{after}^!", "push.before is all-zero; validating only the pushed commit"
+    if not commit_exists(root, before):
+        return (
+            f"{after}^!",
+            f"push.before {before} is not present after checkout (likely force-push); validating only {after}",
+        )
+    if not is_ancestor(root, before, after):
+        return (
+            f"{after}^!",
+            f"push.before {before} is not an ancestor of {after}; validating only the rewritten tip commit",
+        )
+    return f"{before}..{after}", None
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Validate commit subjects against release-please-friendly conventional commits."
@@ -111,6 +149,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     check_range.add_argument("rev_range", help="Git revision range, for example HEAD~3..HEAD.")
 
+    check_push_range = subparsers.add_parser(
+        "check-push-range",
+        help="Validate commit subjects for a GitHub push event, tolerating force-push rewrites.",
+    )
+    check_push_range.add_argument("before", help="github.event.before SHA")
+    check_push_range.add_argument("after", help="GitHub SHA after the push")
+
     return parser
 
 
@@ -127,6 +172,15 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"No commits found in range {args.rev_range}.")
                 return 0
             problems = check_subjects(subjects)
+        elif args.command == "check-push-range":
+            rev_range, note = resolve_push_range(root, args.before, args.after)
+            if note:
+                print(note, file=sys.stderr)
+            subjects = read_commit_subjects(root, rev_range)
+            if not subjects:
+                print(f"No commits found in range {rev_range}.")
+                return 0
+            problems = check_subjects(subjects)
         else:
             return 2
     except RuntimeError as error:
@@ -140,8 +194,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "check-subject":
         print("Conventional commit subject check passed.")
-    else:
+    elif args.command == "check-range":
         print(f"Conventional commit range check passed: {args.rev_range}")
+    else:
+        rev_range, _ = resolve_push_range(root, args.before, args.after)
+        print(f"Conventional commit push-range check passed: {rev_range}")
     return 0
 
 

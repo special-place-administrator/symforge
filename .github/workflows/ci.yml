@@ -28,15 +28,7 @@ jobs:
 
       - name: Validate pushed commit subjects
         if: github.event_name == 'push'
-        shell: bash
-        run: |
-          BEFORE="${{ github.event.before }}"
-          if [[ "$BEFORE" == "0000000000000000000000000000000000000000" ]]; then
-            RANGE="$GITHUB_SHA^!"
-          else
-            RANGE="$BEFORE..$GITHUB_SHA"
-          fi
-          python execution/conventional_commits.py check-range "$RANGE"
+        run: python execution/conventional_commits.py check-push-range "${{ github.event.before }}" "$GITHUB_SHA"
 
       - name: Validate manual run HEAD commit subject
         if: github.event_name == 'workflow_dispatch'
