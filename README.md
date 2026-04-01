@@ -427,6 +427,39 @@ On macOS/Linux, use `~/.symforge/bin/symforge` (no `.exe`). The `alwaysAllow` li
 
 Other VS Code extensions and MCP clients follow a similar pattern — point the MCP stdio transport at the SymForge binary with no arguments. The standard MCP handshake handles the rest.
 
+> [!IMPORTANT]
+> **NOTICE — Post-install prompt for AI agents**
+>
+> If your AI agent still falls back to built-in file reads, grep, or text-based edits after SymForge is installed, give it the following prompt once and let it update the relevant client instruction files.
+>
+> ```text
+> SymForge is already installed on this machine. First verify that the SymForge MCP server is configured and connected for the active client. If the client is not configured yet, run `symforge init` for the relevant client before modifying any instruction files.
+>
+> Then update the active global or workspace instruction files so the agent treats SymForge as the primary code navigation and structural editing layer.
+>
+> Requirements:
+> - Preserve existing user instructions. Append or merge missing SymForge rules; do not duplicate or overwrite unrelated content.
+> - When SymForge is available, prefer it over built-in file/search/edit tools for source code.
+> - Use SymForge first for: `search_symbols`, `search_text`, `get_file_context`, `get_repo_map`, `get_symbol`, `get_symbol_context`, `find_references`, `find_dependents`, `inspect_match`, `what_changed`, `diff_symbols`, `explore`, `ask`, `conventions`, `edit_plan`, `context_inventory`, `investigation_suggest`.
+> - Prefer SymForge edit tools: `replace_symbol_body`, `edit_within_symbol`, `insert_symbol`, `delete_symbol`, `batch_edit`, `batch_rename`, `batch_insert`.
+> - Do not default to built-in tools such as `read_file`, `search_files`, `list_files`, `write_to_file`, `replace_in_file`, grep, or broad raw file reads for normal source-code work.
+> - Raw reads are still acceptable for non-code files where exact wording matters, such as docs and config files.
+> - If SymForge reports that the project is empty, missing, stale, loading, degraded, or otherwise unavailable, do not give up on SymForge. Run `health`, then run `index_folder` on the workspace root if needed, then retry the original SymForge operation.
+> - Only fall back to built-in code tools after SymForge recovery was attempted and still failed for a non-indexing reason.
+> - After small edits, run `analyze_file_impact` on changed files.
+> - After larger multi-file jobs, major refactors, or sprint-sized tasks, run `index_folder` on the workspace root so the index is fresh.
+> - Before finishing a large task, do a final `health` check and reindex if needed.
+>
+> Update whichever instruction files exist for the active client:
+> - Claude Code: `~/.claude/CLAUDE.md`
+> - Codex: `~/.codex/AGENTS.md`
+> - Gemini CLI: `~/.gemini/GEMINI.md`
+> - Cline: `~/Documents/Cline/Rules/mandatory.md`
+> - Kilo Code (workspace-local): `.kilocode/rules/symforge.md`
+>
+> Report exactly which files you changed and show the SymForge rule block you added or updated.
+> ```
+
 ### Getting the Most Out of SymForge
 
 The `init` command writes a guidance block to your agent's system file (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, or `.kilocode/rules/symforge.md` for Kilo Code), but agents don't always follow it — they tend to fall back to built-in file reads and grep out of habit. For best results, add the following to your global or per-project system file so your agent treats SymForge as the primary code navigation layer:
