@@ -1,5 +1,16 @@
 # Changelog
 
+## [5.0.0](https://github.com/special-place-administrator/symforge/compare/v4.9.10...v5.0.0) (2026-04-01)
+
+
+### ⚠ BREAKING CHANGES
+
+* ships a broad trust-calibration pass across sidecar hints, read/query outputs, edit safety signaling, transactional batch operations, and harness init guidance deduplication.
+
+### Features
+
+* trust-calibrate SymForge release ([b585660](https://github.com/special-place-administrator/symforge/commit/b585660b707f2a3f32b8e2b64ab6bdb807f3753e))
+
 ## [4.9.10](https://github.com/special-place-administrator/symforge/compare/v4.9.9...v4.9.10) (2026-04-01)
 
 
