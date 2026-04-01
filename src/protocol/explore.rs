@@ -8,8 +8,37 @@ pub struct ConceptPattern {
     pub kind_filters: &'static [&'static str],
 }
 
+const FALLBACK_STOP_WORDS: &[&str] = &[
+    "a", "an", "and", "are", "as", "at", "be", "but", "by", "does", "for", "from", "has", "he",
+    "how", "in", "is", "it", "its", "not", "of", "on", "or", "that", "the", "this", "to", "was",
+    "were", "what", "when", "where", "which", "who", "why", "will", "with",
+];
+
 // Sorted by key length descending so longer/more-specific keys match first.
 pub const CONCEPT_MAP: &[(&str, ConceptPattern)] = &[
+    (
+        "actor supervision",
+        ConceptPattern {
+            label: "Actor Supervision",
+            symbol_queries: &[
+                "Actor",
+                "ActorRef",
+                "supervisor",
+                "supervision",
+                "mailbox",
+                "spawn",
+                "message",
+            ],
+            text_queries: &[
+                "handle_supervisor_evt",
+                "SupervisionEvent",
+                "ActorProcessingErr",
+                "Actor::spawn",
+                "ActorRef",
+            ],
+            kind_filters: &["struct", "fn", "impl"],
+        },
+    ),
     (
         "error handling",
         ConceptPattern {
@@ -234,8 +263,12 @@ pub fn match_concept(query: &str) -> Option<(&'static str, &'static ConceptPatte
 pub fn fallback_terms(query: &str) -> Vec<String> {
     query
         .split_whitespace()
-        .map(|w| w.to_lowercase())
-        .filter(|w| w.len() >= 2)
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != ':' && c != '-')
+                .to_ascii_lowercase()
+        })
+        .filter(|w| w.len() >= 3)
+        .filter(|w| !FALLBACK_STOP_WORDS.contains(&w.as_str()))
         .collect()
 }
 
@@ -272,7 +305,23 @@ mod tests {
     #[test]
     fn test_fallback_terms_filters_short_words() {
         let terms = fallback_terms("a bb ccc");
-        assert_eq!(terms, vec!["bb", "ccc"]);
+        assert_eq!(terms, vec!["ccc"]);
+    }
+
+    #[test]
+    fn test_fallback_terms_filters_stop_words_and_punctuation() {
+        let terms = fallback_terms("how does actor supervision and error recovery work?");
+        assert_eq!(
+            terms,
+            vec!["actor", "supervision", "error", "recovery", "work"]
+        );
+    }
+
+    #[test]
+    fn test_match_concept_finds_actor_supervision() {
+        let concept = match_concept("actor supervision and error recovery");
+        assert!(concept.is_some());
+        assert_eq!(concept.unwrap().1.label, "Actor Supervision");
     }
 
     #[test]

@@ -35,6 +35,7 @@ struct InitPaths {
     codex_agents: PathBuf,
     gemini_settings: PathBuf,
     gemini_memory: PathBuf,
+    gemini_trusted_folders: PathBuf,
     kilo_vscode_config: PathBuf,
     kilo_rules_guidance: PathBuf,
 }
@@ -49,6 +50,7 @@ impl InitPaths {
             codex_agents: home.join(".codex").join("AGENTS.md"),
             gemini_settings: home.join(".gemini").join("settings.json"),
             gemini_memory: home.join(".gemini").join("GEMINI.md"),
+            gemini_trusted_folders: home.join(".gemini").join("trustedFolders.json"),
             kilo_vscode_config: working_dir.join(".kilocode").join("mcp.json"),
             kilo_rules_guidance: working_dir
                 .join(".kilocode")
@@ -140,6 +142,19 @@ pub fn run_init_with_context(
             "Gemini guidance written to {}",
             paths.gemini_memory.display()
         );
+
+        match gemini_workspace_trust_warning(
+            &paths.gemini_settings,
+            &paths.gemini_trusted_folders,
+            working_dir,
+        ) {
+            Ok(Some(warning)) => eprintln!("{warning}"),
+            Ok(None) => {}
+            Err(error) => eprintln!(
+                "warning: could not evaluate Gemini folder trust from {}: {error}",
+                paths.gemini_trusted_folders.display()
+            ),
+        }
     }
 
     if matches!(client, InitClient::KiloCode | InitClient::All) {
@@ -686,6 +701,127 @@ fn upsert_guidance_markdown(path: &std::path::Path, guidance_block: &str) -> any
     std::fs::write(path, merged).with_context(|| format!("writing {}", path.display()))?;
 
     Ok(())
+}
+
+fn gemini_workspace_trust_warning(
+    gemini_settings_path: &std::path::Path,
+    gemini_trusted_folders_path: &std::path::Path,
+    working_dir: &std::path::Path,
+) -> anyhow::Result<Option<String>> {
+    if !gemini_folder_trust_enabled(gemini_settings_path)? {
+        return Ok(None);
+    }
+
+    if gemini_workspace_is_trusted(gemini_trusted_folders_path, working_dir)? {
+        return Ok(None);
+    }
+
+    Ok(Some(format!(
+        "warning: Gemini folder trust is enabled, but this workspace is not trusted in {}. \
+stdio MCP servers like SymForge will not connect here until the workspace is trusted. \
+Trust {} in Gemini (for example via `gemini trust` or Gemini `/permissions`) and restart Gemini.",
+        gemini_trusted_folders_path.display(),
+        working_dir.display()
+    )))
+}
+
+fn gemini_folder_trust_enabled(gemini_settings_path: &std::path::Path) -> anyhow::Result<bool> {
+    if !gemini_settings_path.exists() {
+        return Ok(false);
+    }
+
+    let raw = std::fs::read_to_string(gemini_settings_path)
+        .with_context(|| format!("reading {}", gemini_settings_path.display()))?;
+    let config: Value = serde_json::from_str(&raw)
+        .with_context(|| format!("parsing {}", gemini_settings_path.display()))?;
+
+    Ok(config["security"]["folderTrust"]["enabled"]
+        .as_bool()
+        .unwrap_or(false))
+}
+
+fn gemini_workspace_is_trusted(
+    gemini_trusted_folders_path: &std::path::Path,
+    working_dir: &std::path::Path,
+) -> anyhow::Result<bool> {
+    if !gemini_trusted_folders_path.exists() {
+        return Ok(false);
+    }
+
+    let raw = std::fs::read_to_string(gemini_trusted_folders_path)
+        .with_context(|| format!("reading {}", gemini_trusted_folders_path.display()))?;
+    let trust_rules: Value = serde_json::from_str(&raw)
+        .with_context(|| format!("parsing {}", gemini_trusted_folders_path.display()))?;
+    let Some(entries) = trust_rules.as_object() else {
+        return Ok(false);
+    };
+
+    let normalized_working_dir = gemini_real_trust_path(working_dir);
+    let mut longest_match_len = 0usize;
+    let mut longest_match_status: Option<String> = None;
+
+    for (rule_path, status) in entries {
+        let Some(status) = status.as_str() else {
+            continue;
+        };
+
+        let status = status.to_ascii_uppercase();
+        let rule_path = std::path::Path::new(rule_path);
+        let effective_path = if status == "TRUST_PARENT" {
+            rule_path.parent().unwrap_or(rule_path)
+        } else {
+            rule_path
+        };
+        let normalized_effective_path = gemini_real_trust_path(effective_path);
+        if !gemini_is_within_root(&normalized_working_dir, &normalized_effective_path) {
+            continue;
+        }
+
+        let normalized_rule_path = gemini_real_trust_path(rule_path);
+        if normalized_rule_path.len() > longest_match_len {
+            longest_match_len = normalized_rule_path.len();
+            longest_match_status = Some(status);
+        }
+    }
+
+    Ok(matches!(
+        longest_match_status.as_deref(),
+        Some("TRUST_FOLDER" | "TRUST_PARENT")
+    ))
+}
+
+fn normalize_gemini_trust_path(path: &std::path::Path) -> String {
+    let mut normalized = path.to_string_lossy().into_owned();
+    if cfg!(windows) {
+        normalized = normalized.replace('/', "\\");
+        if normalized.len() > 3 {
+            normalized = normalized.trim_end_matches('\\').to_string();
+        }
+        normalized = normalized.to_ascii_lowercase();
+    } else {
+        normalized = normalized.replace('\\', "/");
+        if normalized.len() > 1 {
+            normalized = normalized.trim_end_matches('/').to_string();
+        }
+    }
+    normalized
+}
+
+fn gemini_real_trust_path(path: &std::path::Path) -> String {
+    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    normalize_gemini_trust_path(&canonical)
+}
+
+fn gemini_is_within_root(location: &str, root: &str) -> bool {
+    if location == root {
+        return true;
+    }
+
+    let Some(suffix) = location.strip_prefix(root) else {
+        return false;
+    };
+
+    suffix.starts_with('\\') || suffix.starts_with('/')
 }
 
 fn existing_external_behavioral_overrides(path: &std::path::Path) -> anyhow::Result<bool> {
@@ -1436,6 +1572,175 @@ mod tests {
         assert_eq!(
             first, second,
             "running registration twice must produce identical output"
+        );
+    }
+
+    #[test]
+    fn test_gemini_folder_trust_enabled_defaults_false_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings_path = dir.path().join("settings.json");
+        assert!(
+            !gemini_folder_trust_enabled(&settings_path).unwrap(),
+            "missing settings should not claim Gemini folder trust is enabled"
+        );
+    }
+
+    #[test]
+    fn test_gemini_folder_trust_enabled_reads_true_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings_path = dir.path().join("settings.json");
+        std::fs::write(
+            &settings_path,
+            serde_json::to_string_pretty(&json!({
+                "security": { "folderTrust": { "enabled": true } }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert!(
+            gemini_folder_trust_enabled(&settings_path).unwrap(),
+            "explicit folder trust flag should be honored"
+        );
+    }
+
+    #[test]
+    fn test_gemini_workspace_is_trusted_for_exact_folder_rule() {
+        let dir = tempfile::tempdir().unwrap();
+        let working_dir = dir.path().join("workspace");
+        std::fs::create_dir_all(&working_dir).unwrap();
+        let trusted_folders_path = dir.path().join("trustedFolders.json");
+        std::fs::write(
+            &trusted_folders_path,
+            serde_json::to_string_pretty(&json!({
+                working_dir.to_string_lossy().to_string(): "TRUST_FOLDER"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert!(
+            gemini_workspace_is_trusted(&trusted_folders_path, &working_dir).unwrap(),
+            "exact TRUST_FOLDER rule should trust the current workspace"
+        );
+    }
+
+    #[test]
+    fn test_gemini_workspace_is_trusted_for_trust_parent_rule() {
+        let dir = tempfile::tempdir().unwrap();
+        let projects_dir = dir.path().join("projects");
+        let trusted_rule_dir = projects_dir.join("seed-project");
+        let working_dir = projects_dir.join("active-project");
+        std::fs::create_dir_all(&trusted_rule_dir).unwrap();
+        std::fs::create_dir_all(&working_dir).unwrap();
+        let trusted_folders_path = dir.path().join("trustedFolders.json");
+        std::fs::write(
+            &trusted_folders_path,
+            serde_json::to_string_pretty(&json!({
+                trusted_rule_dir.to_string_lossy().to_string(): "TRUST_PARENT"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert!(
+            gemini_workspace_is_trusted(&trusted_folders_path, &working_dir).unwrap(),
+            "TRUST_PARENT should trust sibling workspaces under the same parent"
+        );
+    }
+
+    #[test]
+    fn test_gemini_workspace_is_trusted_prefers_more_specific_do_not_trust_rule() {
+        let dir = tempfile::tempdir().unwrap();
+        let projects_dir = dir.path().join("projects");
+        let trusted_rule_dir = projects_dir.join("seed-project");
+        let working_dir = projects_dir.join("active-project");
+        std::fs::create_dir_all(&trusted_rule_dir).unwrap();
+        std::fs::create_dir_all(&working_dir).unwrap();
+        let trusted_folders_path = dir.path().join("trustedFolders.json");
+        std::fs::write(
+            &trusted_folders_path,
+            serde_json::to_string_pretty(&json!({
+                trusted_rule_dir.to_string_lossy().to_string(): "TRUST_PARENT",
+                working_dir.to_string_lossy().to_string(): "DO_NOT_TRUST"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert!(
+            !gemini_workspace_is_trusted(&trusted_folders_path, &working_dir).unwrap(),
+            "a more specific DO_NOT_TRUST rule should override inherited parent trust"
+        );
+    }
+
+    #[test]
+    fn test_gemini_workspace_trust_warning_reports_untrusted_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let working_dir = dir.path().join("workspace");
+        std::fs::create_dir_all(&working_dir).unwrap();
+        let settings_path = dir.path().join("settings.json");
+        let trusted_folders_path = dir.path().join("trustedFolders.json");
+        std::fs::write(
+            &settings_path,
+            serde_json::to_string_pretty(&json!({
+                "security": { "folderTrust": { "enabled": true } }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            &trusted_folders_path,
+            serde_json::to_string_pretty(&json!({
+                dir.path().join("elsewhere").to_string_lossy().to_string(): "TRUST_FOLDER"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let warning =
+            gemini_workspace_trust_warning(&settings_path, &trusted_folders_path, &working_dir)
+                .unwrap()
+                .expect("warning should be emitted for an untrusted workspace");
+        assert!(
+            warning.contains("Gemini folder trust is enabled"),
+            "warning should explain why Gemini MCP will not connect: {warning}"
+        );
+        assert!(
+            warning.contains(&working_dir.display().to_string()),
+            "warning should point to the exact workspace path: {warning}"
+        );
+    }
+
+    #[test]
+    fn test_gemini_workspace_trust_warning_suppresses_trusted_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let working_dir = dir.path().join("workspace");
+        std::fs::create_dir_all(&working_dir).unwrap();
+        let settings_path = dir.path().join("settings.json");
+        let trusted_folders_path = dir.path().join("trustedFolders.json");
+        std::fs::write(
+            &settings_path,
+            serde_json::to_string_pretty(&json!({
+                "security": { "folderTrust": { "enabled": true } }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            &trusted_folders_path,
+            serde_json::to_string_pretty(&json!({
+                working_dir.to_string_lossy().to_string(): "TRUST_FOLDER"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert!(
+            gemini_workspace_trust_warning(&settings_path, &trusted_folders_path, &working_dir)
+                .unwrap()
+                .is_none(),
+            "trusted workspaces should not produce a Gemini trust warning"
         );
     }
 }

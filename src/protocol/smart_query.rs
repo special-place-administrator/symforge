@@ -14,6 +14,8 @@ pub enum QueryIntent {
     FindChanges,
     /// "how does X work", "explain X", "understand X"
     Understand { concept: String },
+    /// Broad explanation query upgraded to a direct symbol walkthrough.
+    UnderstandSymbol { symbol: String },
     /// "search for X in code", "grep X", code pattern
     SearchCode { pattern: String },
     /// "what depends on X", "dependents of X"
@@ -426,6 +428,13 @@ pub fn assess_route(query: &str, intent: &QueryIntent) -> RouteAssessment {
                 }
             }
         }
+        QueryIntent::UnderstandSymbol { .. } => RouteAssessment {
+            confidence: RouteConfidence::Inferred,
+            rationale: "detected an exact indexed symbol inside a broad explanation query",
+            suggested_next_step: Some(
+                "If this route is too narrow, ask about the wider concept explicitly or call `explore` directly.",
+            ),
+        },
         QueryIntent::SearchCode { .. } => {
             if strip_prefix_phrase(
                 &lower,
@@ -493,6 +502,9 @@ pub fn route_invocation(intent: &QueryIntent) -> String {
         QueryIntent::Understand { concept } => {
             format!("explore(query=\"{concept}\", depth=2)")
         }
+        QueryIntent::UnderstandSymbol { symbol } => {
+            format!("get_symbol_context(name=\"{symbol}\")")
+        }
         QueryIntent::SearchCode { pattern } => {
             format!("search_text(query=\"{pattern}\")")
         }
@@ -515,6 +527,7 @@ pub fn route_tool_name(intent: &QueryIntent) -> &'static str {
         QueryIntent::FindFile { .. } => "search_files",
         QueryIntent::FindChanges => "what_changed",
         QueryIntent::Understand { .. } => "explore",
+        QueryIntent::UnderstandSymbol { .. } => "get_symbol_context",
         QueryIntent::SearchCode { .. } => "search_text",
         QueryIntent::FindDependents { .. } => "find_dependents",
         QueryIntent::FindImplementations { .. } => "find_references",
