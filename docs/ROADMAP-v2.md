@@ -35,8 +35,8 @@
   doesn't act on. Adds token overhead without value.
 - **Model doesn't use it** — the model's native Read/Grep/Edit tools are preferred. MCP tools are
   second-class citizens. No integration with the model's actual workflow.
-- **SpacetimeDB scaffolding** — exists as an unused alternative backend replicating the JSON registry
-  model. Not designed as the in-memory project model it should be.
+- **Legacy external-store scaffolding** — duplicated local persistence ideas without serving the
+  in-memory query path. It added complexity without improving the product.
 
 ### What v2 must deliver
 
@@ -57,11 +57,10 @@
 ### AD-1: In-Process LiveIndex is the primary data store
 
 All queries resolve from Rust HashMaps/BTreeMaps in the MCP server process. No disk I/O on the
-read path. No external database for queries. SpacetimeDB is deferred to Phase 5+ (if cold start
-on very large repos becomes a problem).
+read path. No external database for queries.
 
 **Rationale**: For repos under 10,000 files (~50MB source), in-process data structures are faster
-than any external database including SpacetimeDB. The MCP server is a long-running process — data
+than an external query service. The MCP server is a long-running process — data
 persists for the session. On restart, re-index from disk (takes 2-5 seconds in Rust with tree-sitter).
 
 ### AD-2: Parasitic hook integration, not tool replacement
@@ -135,8 +134,8 @@ parses and discards. Match the model's expectations.
 | JSON registry | `registry_persistence.rs` | 1,686 | LiveIndex in-memory |
 | ControlPlane trait + impl | `control_plane.rs` | 2,039 | LiveIndex |
 | CAS blob store | `local_cas.rs` + `sha256.rs` + `blob.rs` | 644 | LiveIndex stores content directly |
-| SpacetimeDB store | `spacetime_store.rs` | 766 | Deferred |
-| SpacetimeDB module + generated | `spacetime/` | ~2,500 | Deferred |
+| Legacy external-store backend | `legacy external-store backend` | 766 | Remove |
+| Legacy external-store module | `legacy module directory` | ~2,500 | Remove |
 | Init/deployment | `init.rs` + `deployment.rs` | 3,886 | Simple startup |
 | Health system | `domain/health.rs` + `application/health.rs` | 1,204 | Simple health check |
 | Pipeline (checkpoint/resume parts) | `pipeline.rs` (partial) | ~800 | Simple parallel parse |
@@ -172,7 +171,7 @@ parses and discards. Match the model's expectations.
 
 | Crate | Why |
 |-------|-----|
-| `spacetimedb-sdk` | Deferred — not needed for v2 core |
+| Legacy external-store SDK | Deferred — not needed for v2 core |
 | `fs2` | No more file-level locking on JSON registry |
 
 ---

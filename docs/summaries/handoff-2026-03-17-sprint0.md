@@ -1,8 +1,8 @@
 # Session Handoff — 2026-03-17 — Sprint 0 + Rename Cleanup
 
 ## Project
-**SymForge** (formerly Tokenizor) — Rust MCP server for AI code intelligence.
-**Repo:** `C:/AI_STUFF/PROGRAMMING/symforge` (renamed from `tokenizor_agentic_mcp`)
+**SymForge** — Rust MCP server for AI code intelligence.
+**Repo:** `C:/AI_STUFF/PROGRAMMING/symforge` (renamed from the pre-SymForge repository name)
 **GitHub:** `github.com/special-place-administrator/symforge`
 
 ## What Was Completed This Session
@@ -14,7 +14,7 @@
 - Cargo.lock conflict resolved (missing `[[package]]` header — fixed in `67d9327`) ✓
 - npm/package.json, Cargo.toml, CHANGELOG.md all updated to `symforge` v0.33.0 ✓
 - symforge npm package is now LIVE on npm registry ✓
-- tokenizor-mcp to be deprecated/uninstalled by user after this session
+- legacy npm package to be deprecated/uninstalled by user after this session
 
 ### Sprint 0 — Index Freshness Guarantee (COMMITTED, not yet pushed)
 Commit message: `feat: Sprint 0 — index freshness guarantee`
@@ -35,8 +35,8 @@ Commit message: `feat: Sprint 0 — index freshness guarantee`
   - Call it before file-specific queries in tools.rs
 
 ## Pending Actions (User)
-1. `npm uninstall -g tokenizor-mcp` ← do this after exiting
-2. `npm deprecate tokenizor-mcp "Renamed to symforge. Install with: npm install -g symforge"` ← run this
+1. Uninstall the legacy npm package after exiting
+2. Deprecate the legacy npm package in favor of `symforge`
 3. Push Sprint 0 commit: `git push origin main` (from `C:/AI_STUFF/PROGRAMMING/symforge`)
 4. Verify crates.io email → re-check if `cargo publish` now works in CI
 5. Check Actions tab for release workflow green run
@@ -58,4 +58,4 @@ Sprint 1 quick wins (from `plans/community-feedback-improvements.md`):
 - Health: `src/live_index/query.rs` — `HealthStats` struct at L596
 
 ## CLAUDE.md Note
-CLAUDE.md now has BOTH a "Tokenizor MCP" section AND a "SymForge MCP" section (the init hook added the SymForge section). The Tokenizor section should be removed — it's a duplicate. File: `~/.claude/CLAUDE.md`
+CLAUDE.md now has BOTH a legacy MCP section AND a "SymForge MCP" section (the init hook added the SymForge section). The legacy section should be removed because it duplicates the SymForge one. File: `~/.claude/CLAUDE.md`

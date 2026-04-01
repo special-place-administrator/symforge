@@ -18,7 +18,7 @@ SymForge should become:
 - a local code-intelligence runtime
 - a project and workspace registry
 - a byte-exact retrieval system
-- a SpacetimeDB-backed operational control plane
+- a local-first runtime with durable local state
 - an MCP server
 - a provider-adapter platform
 
@@ -37,8 +37,8 @@ Core local daemon:
 Responsibilities:
 
 - project and workspace tracking
-- SpacetimeDB lifecycle management
-- local CAS lifecycle management
+- local state lifecycle management
+- snapshot and cache lifecycle management
 - indexing orchestration
 - file watching and change detection
 - repo outline, symbol, and text query services
@@ -67,7 +67,7 @@ Initial recommendation:
 
 - implement local daemon control over named pipe / Unix socket
 - keep the public AI-facing surface as MCP
-- do not make provider adapters talk directly to SpacetimeDB or CAS
+- do not make provider adapters talk directly to storage internals
 
 ### Layer 3: Provider adapters
 
@@ -135,7 +135,7 @@ If we stuff provider logic directly into the MCP binary:
 
 - one warm runtime
 - one authoritative project registry
-- one place for SpacetimeDB and CAS management
+- one place for index, snapshot, and adapter management
 - multiple lightweight provider adapters
 - easier to test and evolve
 
@@ -343,8 +343,8 @@ The native file edit/write tools in each client should remain the primary mutati
 
 - background runtime
 - project registry
-- SpacetimeDB manager
-- CAS manager
+- local state manager
+- snapshot manager
 - indexing coordinator
 
 `symforge`
@@ -377,10 +377,9 @@ src/
       doctor.rs
       migrate.rs
   control_plane/
-    spacetimedb/
-      client.rs
-      schema.rs
-      migrations.rs
+    local_state/
+      registry.rs
+      snapshots.rs
       bootstrap.rs
   daemon/
     server.rs
@@ -462,7 +461,7 @@ src/
 2. shim resolves current workspace
 3. shim connects to `SymForged`
 4. if daemon is absent, start it
-5. daemon verifies SpacetimeDB runtime
+5. daemon verifies local runtime state and snapshots
 6. daemon loads project and workspace context
 7. daemon returns readiness and context summary
 8. provider session continues with SymForge available
@@ -477,7 +476,7 @@ src/
 
 - MCP shim exits with provider client
 - daemon may remain running briefly with idle timeout
-- durable state stays in SpacetimeDB and CAS
+- durable state stays in local snapshots and caches
 
 ## Policy Model
 

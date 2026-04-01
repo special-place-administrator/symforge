@@ -2597,11 +2597,6 @@ impl LiveIndex {
         // Scan for Call references whose qualified_name suffix-matches the target's
         // module path, so find_dependents stays consistent with find_references.
         if let Some(ref mp) = module_path {
-            let separator = match target_language {
-                LanguageId::Python => ".",
-                LanguageId::JavaScript | LanguageId::TypeScript => "/",
-                _ => "::",
-            };
             let already_found: HashSet<&str> = results.iter().map(|(p, _)| *p).collect();
 
             for (file_path, file) in &self.files {

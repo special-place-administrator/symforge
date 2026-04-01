@@ -19,30 +19,18 @@ Primary qualities:
 
 ## Core Architecture Direction
 
-Use a hybrid architecture:
+Use a local-first architecture:
 - Rust MCP server for the protocol surface
-- SpacetimeDB as the authoritative control plane
-- local byte-exact content-addressed blob storage for raw file bytes and large derived artifacts
-- tree-sitter-based parsing and symbol extraction in Rust
+- in-process LiveIndex as the primary query engine
+- local snapshot persistence under `.symforge/` for warm startup and recovery
+- tree-sitter-based parsing and symbol/reference extraction in Rust
 
-SpacetimeDB is for:
-- repositories
-- index runs
-- checkpoints
-- leases
-- health
-- repair actions
-- idempotency records
-- symbol and file metadata
-- operational history
-- live progress and subscriptions
-
-Do not force every raw source blob into SpacetimeDB by default.
+The read path should stay in-process and memory-resident whenever possible.
 
 Reason:
-- raw file handling must be byte exact
-- symbol spans depend on exact bytes
-- large blobs are better handled by a local CAS
+- code-intelligence queries must be fast and deterministic
+- symbol spans depend on exact bytes from the current workspace
+- restart recovery should come from local snapshots, not an external control plane
 
 ## Product Principles
 
@@ -56,28 +44,25 @@ Reason:
 
 ## Storage Principles
 
-Use SpacetimeDB as the control plane, not the universal storage substrate.
+Use local-first persistence, not an external control plane.
 
 Recommended split:
-- SpacetimeDB:
-  - repo metadata
-  - file metadata
+- In-process LiveIndex:
+  - file contents needed for active queries
   - symbol metadata
-  - index runs
-  - job state
-  - idempotency keys
-  - checkpoints
-  - health events
-  - repair history
-- Local CAS:
-  - raw file bytes
-  - large derived artifacts
-  - anything where exact bytes matter for later retrieval
+  - reference metadata
+  - reverse indices and search structures
+  - watcher and health state
+- Local `.symforge/` state:
+  - serialized index snapshots
+  - temp files and quarantine artifacts
+  - sidecar/session coordination metadata
+  - future derived artifacts where local persistence is useful
 
-Raw file rules:
+Snapshot and retrieval rules:
 - write bytes exactly as read
 - never normalize line endings
-- never decode and re-encode for storage
+- never decode and re-encode for persistence
 - verify source slices against stored hashes
 
 ## Idempotency Rules
@@ -154,26 +139,24 @@ Likely useful prompts:
 ## Memory Strategy
 
 Project memory should be layered:
-- authoritative memory:
-  - architecture decisions
-  - run history
-  - checkpoints
-  - health and repair history
-- code memory:
+- runtime memory:
+  - live index state
+  - watcher state
+  - recent health and verification state
+- persisted local memory:
+  - snapshot files
   - file metadata
   - symbol metadata
-  - outlines
-  - hashes
+  - hashes and recovery artifacts
 - semantic memory:
   - optional embeddings for fuzzy recall over docs, notes, and conversations
 
-SpacetimeDB is not a purpose-built vector database.
+The current architecture does not require an external database for query serving.
 
-Use it confidently for authoritative and structured memory.
 If semantic search becomes important:
 - start simple
-- embeddings may be stored there for small-scale use
-- add a dedicated ANN/vector sidecar only if scale or latency requires it
+- keep the query path local-first
+- add a dedicated sidecar only if scale or latency requires it
 
 ## Current Known Context
 

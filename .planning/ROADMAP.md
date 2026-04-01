@@ -2,7 +2,7 @@
 
 ## Milestones
 
-- ✅ **v1.0 Tokenizor v2 Rewrite** — Phases 1-7 (shipped 2026-03-10)
+- ✅ **v1.0 Initial v2 Rewrite** — Phases 1-7 (shipped 2026-03-10)
 - ✅ **v2.0 Deep Understanding** — Phases 1-5 (shipped 2026-03-12)
 - ✅ **v1.6 RTK Adoption & Quality Fixes** — Phases 1-2 (shipped 2026-03-20)
 
