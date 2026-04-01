@@ -85,6 +85,17 @@ Practical defaults:
 - use `get_file_content` when exact docs/config text matters
 - run `analyze_file_impact` after small edits and `index_folder` after larger multi-file work
 
+## Need deeper reference?
+
+The README is intentionally action-first. For deeper reference material, use the wiki:
+
+- [SymForge Wiki Home](https://github.com/special-place-administrator/symforge/wiki)
+- [Architecture and How It Works](https://github.com/special-place-administrator/symforge/wiki/Architecture-and-How-It-Works)
+- [Tool Reference](https://github.com/special-place-administrator/symforge/wiki/Tool-Reference)
+- [Runtime Model](https://github.com/special-place-administrator/symforge/wiki/Runtime-Model)
+- [Supported Languages and Config Formats](https://github.com/special-place-administrator/symforge/wiki/Supported-Languages-and-Config-Formats)
+- [Benchmarks and Token Savings](https://github.com/special-place-administrator/symforge/wiki/Benchmarks-and-Token-Savings)
+
 > [!IMPORTANT]
 > **NOTICE — One prompt for any AI agent after SymForge install**
 >
@@ -162,7 +173,189 @@ Practical defaults:
 | `SYMFORGE_AUTO_INDEX` | `true` | Enables project discovery and startup indexing |
 | `SYMFORGE_HOOK_VERBOSE` | unset | Set to `1` for stderr hook diagnostics |
 | `SYMFORGE_CB_THRESHOLD` | `0.20` | Parse-failure circuit-breaker threshold |
+| `SYMFORGE_RECONCILE_INTERVAL` | `30` | Watcher reconciliation interval in seconds; set to `0` to disable periodic reconciliation sweeps |
 | `SYMFORGE_SIDECAR_BIND` | `127.0.0.1` | Sidecar bind host for local in-process mode |
+| `SYMFORGE_DAEMON_BIND` | loopback bind host | Overrides the daemon bind host used for the shared local daemon |
+
+> [!NOTE]
+> **Run This In Your Terminal**
+>
+> Most users do not need to set any environment variables. Use these commands only when you want to override SymForge defaults.
+
+> [!TIP]
+> **Most common changes**
+>
+> - move SymForge state with `SYMFORGE_HOME`
+> - disable startup indexing with `SYMFORGE_AUTO_INDEX=false`
+> - enable hook diagnostics with `SYMFORGE_HOOK_VERBOSE=1`
+> - tune watcher reconciliation with `SYMFORGE_RECONCILE_INTERVAL`
+> - change bind hosts with `SYMFORGE_SIDECAR_BIND` or `SYMFORGE_DAEMON_BIND`
+
+> [!WARNING]
+> **Copy carefully**
+>
+> The examples below set all supported user-facing variables at once. If you only need one variable, run just that line.
+> The persistent examples are written to be idempotent: re-running them updates the same variables instead of appending duplicate config blocks.
+
+### PowerShell
+
+Current terminal session only:
+
+```powershell
+$env:SYMFORGE_HOME = "$HOME\\.symforge"
+$env:SYMFORGE_AUTO_INDEX = "false"
+$env:SYMFORGE_HOOK_VERBOSE = "1"
+$env:SYMFORGE_CB_THRESHOLD = "0.20"
+$env:SYMFORGE_RECONCILE_INTERVAL = "30"
+$env:SYMFORGE_SIDECAR_BIND = "127.0.0.1"
+$env:SYMFORGE_DAEMON_BIND = "127.0.0.1"
+```
+
+Persist for the current Windows user:
+
+```powershell
+[Environment]::SetEnvironmentVariable("SYMFORGE_HOME", "$HOME\\.symforge", "User")
+[Environment]::SetEnvironmentVariable("SYMFORGE_AUTO_INDEX", "false", "User")
+[Environment]::SetEnvironmentVariable("SYMFORGE_HOOK_VERBOSE", "1", "User")
+[Environment]::SetEnvironmentVariable("SYMFORGE_CB_THRESHOLD", "0.20", "User")
+[Environment]::SetEnvironmentVariable("SYMFORGE_RECONCILE_INTERVAL", "30", "User")
+[Environment]::SetEnvironmentVariable("SYMFORGE_SIDECAR_BIND", "127.0.0.1", "User")
+[Environment]::SetEnvironmentVariable("SYMFORGE_DAEMON_BIND", "127.0.0.1", "User")
+```
+
+These calls overwrite the same user-level variable names, so re-running them is already idempotent.
+
+### CMD
+
+Current terminal session only:
+
+```bat
+set SYMFORGE_HOME=%USERPROFILE%\.symforge
+set SYMFORGE_AUTO_INDEX=false
+set SYMFORGE_HOOK_VERBOSE=1
+set SYMFORGE_CB_THRESHOLD=0.20
+set SYMFORGE_RECONCILE_INTERVAL=30
+set SYMFORGE_SIDECAR_BIND=127.0.0.1
+set SYMFORGE_DAEMON_BIND=127.0.0.1
+```
+
+Persist for the current Windows user:
+
+```bat
+setx SYMFORGE_HOME "%USERPROFILE%\.symforge"
+setx SYMFORGE_AUTO_INDEX "false"
+setx SYMFORGE_HOOK_VERBOSE "1"
+setx SYMFORGE_CB_THRESHOLD "0.20"
+setx SYMFORGE_RECONCILE_INTERVAL "30"
+setx SYMFORGE_SIDECAR_BIND "127.0.0.1"
+setx SYMFORGE_DAEMON_BIND "127.0.0.1"
+```
+
+`setx` updates the same variable names instead of creating duplicates. Open a new terminal after running it.
+
+### Linux Terminal
+
+Current shell session only:
+
+```bash
+export SYMFORGE_HOME="$HOME/.symforge"
+export SYMFORGE_AUTO_INDEX=false
+export SYMFORGE_HOOK_VERBOSE=1
+export SYMFORGE_CB_THRESHOLD=0.20
+export SYMFORGE_RECONCILE_INTERVAL=30
+export SYMFORGE_SIDECAR_BIND=127.0.0.1
+export SYMFORGE_DAEMON_BIND=127.0.0.1
+```
+
+Persist for future shells:
+
+```bash
+export SYMFORGE_RC_FILE="$HOME/.bashrc"
+python3 - <<'PY'
+from pathlib import Path
+import os, re
+
+path = Path(os.environ["SYMFORGE_RC_FILE"]).expanduser()
+start = "# >>> SymForge env >>>"
+end = "# <<< SymForge env <<<"
+block = """# >>> SymForge env >>>
+export SYMFORGE_HOME="$HOME/.symforge"
+export SYMFORGE_AUTO_INDEX=false
+export SYMFORGE_HOOK_VERBOSE=1
+export SYMFORGE_CB_THRESHOLD=0.20
+export SYMFORGE_RECONCILE_INTERVAL=30
+export SYMFORGE_SIDECAR_BIND=127.0.0.1
+export SYMFORGE_DAEMON_BIND=127.0.0.1
+# <<< SymForge env <<<"""
+
+text = path.read_text() if path.exists() else ""
+pattern = re.compile(re.escape(start) + r".*?" + re.escape(end), re.S)
+if pattern.search(text):
+    text = pattern.sub(block, text)
+else:
+    if text and not text.endswith("\n"):
+        text += "\n"
+    text += block + "\n"
+path.write_text(text)
+PY
+unset SYMFORGE_RC_FILE
+
+source ~/.bashrc
+```
+
+If you use `zsh`, put the same lines in `~/.zshrc` instead.
+
+### macOS Terminal
+
+Current shell session only:
+
+```bash
+export SYMFORGE_HOME="$HOME/.symforge"
+export SYMFORGE_AUTO_INDEX=false
+export SYMFORGE_HOOK_VERBOSE=1
+export SYMFORGE_CB_THRESHOLD=0.20
+export SYMFORGE_RECONCILE_INTERVAL=30
+export SYMFORGE_SIDECAR_BIND=127.0.0.1
+export SYMFORGE_DAEMON_BIND=127.0.0.1
+```
+
+Persist for future shells:
+
+```bash
+export SYMFORGE_RC_FILE="$HOME/.zshrc"
+python3 - <<'PY'
+from pathlib import Path
+import os, re
+
+path = Path(os.environ["SYMFORGE_RC_FILE"]).expanduser()
+start = "# >>> SymForge env >>>"
+end = "# <<< SymForge env <<<"
+block = """# >>> SymForge env >>>
+export SYMFORGE_HOME="$HOME/.symforge"
+export SYMFORGE_AUTO_INDEX=false
+export SYMFORGE_HOOK_VERBOSE=1
+export SYMFORGE_CB_THRESHOLD=0.20
+export SYMFORGE_RECONCILE_INTERVAL=30
+export SYMFORGE_SIDECAR_BIND=127.0.0.1
+export SYMFORGE_DAEMON_BIND=127.0.0.1
+# <<< SymForge env <<<"""
+
+text = path.read_text() if path.exists() else ""
+pattern = re.compile(re.escape(start) + r".*?" + re.escape(end), re.S)
+if pattern.search(text):
+    text = pattern.sub(block, text)
+else:
+    if text and not text.endswith("\n"):
+        text += "\n"
+    text += block + "\n"
+path.write_text(text)
+PY
+unset SYMFORGE_RC_FILE
+
+source ~/.zshrc
+```
+
+If you use `bash` on macOS, put the same lines in `~/.bash_profile` or `~/.bashrc`.
 
 ## Build from source
 
