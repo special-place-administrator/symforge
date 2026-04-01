@@ -599,6 +599,18 @@ fn test_run_init_codex_writes_symforge_agents_guidance() {
         raw.contains("Do not default to broad raw file reads"),
         "Codex AGENTS guidance must encode the stronger source-inspection rule: {raw}"
     );
+    assert!(
+        raw.contains("## Agent Directives: Mechanical Overrides"),
+        "Codex AGENTS guidance must include the mechanical overrides block: {raw}"
+    );
+    assert!(
+        raw.contains("THE \"STEP 0\" RULE"),
+        "Codex AGENTS guidance must include the structural cleanup directive: {raw}"
+    );
+    assert!(
+        raw.contains("FORCED VERIFICATION"),
+        "Codex AGENTS guidance must include the forced verification directive: {raw}"
+    );
 }
 
 #[test]
@@ -624,6 +636,32 @@ fn test_run_init_codex_preserves_existing_agents_content_and_is_idempotent() {
         "existing Codex guidance must survive"
     );
     assert_eq!(first, second, "Codex AGENTS guidance must be idempotent");
+}
+
+#[test]
+fn test_run_init_codex_skips_mechanical_overrides_when_already_present_externally() {
+    let home = TempDir::new().unwrap();
+    let cwd = TempDir::new().unwrap();
+    let binary_path = std::path::PathBuf::from(FAKE_BINARY);
+    let codex_dir = home.path().join(".codex");
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    let agents_path = codex_dir.join("AGENTS.md");
+    std::fs::write(
+        &agents_path,
+        "# Existing guidance\n\n## Agent Directives: Mechanical Overrides\n\nKeep external copy.\n",
+    )
+    .unwrap();
+
+    run_init_with_context(InitClient::Codex, home.path(), cwd.path(), &binary_path)
+        .expect("codex init must succeed");
+
+    let raw = read_text(&agents_path);
+    assert_eq!(
+        raw.matches("## Agent Directives: Mechanical Overrides")
+            .count(),
+        1,
+        "Codex AGENTS guidance must not duplicate an external overrides block: {raw}"
+    );
 }
 
 #[test]
@@ -658,6 +696,14 @@ fn test_run_init_claude_writes_symforge_memory_guidance() {
         raw.contains("validate_file_syntax"),
         "Claude memory guidance must include config validation guidance: {raw}"
     );
+    assert!(
+        raw.contains("## Agent Directives: Mechanical Overrides"),
+        "Claude memory guidance must include the mechanical overrides block: {raw}"
+    );
+    assert!(
+        raw.contains("SUB-AGENT SWARMING"),
+        "Claude memory guidance must include the context management directives: {raw}"
+    );
 }
 
 #[test]
@@ -683,6 +729,32 @@ fn test_run_init_claude_preserves_existing_memory_content_and_is_idempotent() {
         "existing Claude memory must survive"
     );
     assert_eq!(first, second, "Claude memory guidance must be idempotent");
+}
+
+#[test]
+fn test_run_init_claude_skips_mechanical_overrides_when_already_present_externally() {
+    let home = TempDir::new().unwrap();
+    let cwd = TempDir::new().unwrap();
+    let binary_path = std::path::PathBuf::from(FAKE_BINARY);
+    let claude_dir = home.path().join(".claude");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    let memory_path = claude_dir.join("CLAUDE.md");
+    std::fs::write(
+        &memory_path,
+        "# Existing memory\n\n## Agent Directives: Mechanical Overrides\n\nKeep external copy.\n",
+    )
+    .unwrap();
+
+    run_init_with_context(InitClient::Claude, home.path(), cwd.path(), &binary_path)
+        .expect("claude init must succeed");
+
+    let raw = read_text(&memory_path);
+    assert_eq!(
+        raw.matches("## Agent Directives: Mechanical Overrides")
+            .count(),
+        1,
+        "Claude memory guidance must not duplicate an external overrides block: {raw}"
+    );
 }
 
 #[test]
@@ -739,6 +811,10 @@ fn test_run_init_gemini_writes_full_symforge_guidance() {
     assert!(
         raw.contains("Do not default to broad raw file reads"),
         "Gemini guidance must encode the stronger source-inspection rule: {raw}"
+    );
+    assert!(
+        !raw.contains("## Agent Directives: Mechanical Overrides"),
+        "Gemini guidance must not include Claude/Codex-only mechanical overrides: {raw}"
     );
 }
 
@@ -800,5 +876,9 @@ fn test_run_init_kilo_writes_symforge_rules_guidance() {
     assert!(
         raw.contains("validate_file_syntax"),
         "Kilo rules guidance must include config validation guidance: {raw}"
+    );
+    assert!(
+        !raw.contains("## Agent Directives: Mechanical Overrides"),
+        "Kilo guidance must not include Claude/Codex-only mechanical overrides: {raw}"
     );
 }

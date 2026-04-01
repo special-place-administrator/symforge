@@ -306,7 +306,10 @@ fn test_search_symbols_no_match() {
     let (key, file) = make_file("src/lib.rs", b"fn unrelated() {}", vec![sym]);
     let index = make_index(vec![(key, file)]);
     let result = search_symbols_result(&index, "xyz_no_match");
-    assert_eq!(result, "No symbols matching 'xyz_no_match'. Try: search_text(query=\"xyz_no_match\") for text matches, or explore(query=\"xyz_no_match\") for concept-based discovery.");
+    assert_eq!(
+        result,
+        "No symbols matching 'xyz_no_match'. Try: search_text(query=\"xyz_no_match\") for text matches, or explore(query=\"xyz_no_match\") for concept-based discovery."
+    );
 }
 
 #[test]
@@ -400,7 +403,10 @@ fn test_search_text_no_match() {
     let (key, file) = make_file("src/lib.rs", b"fn main() {}", vec![]);
     let index = make_index(vec![(key, file)]);
     let result = search_text_result(&index, "xyz_totally_absent");
-    assert_eq!(result, "No matches for 'xyz_totally_absent'. Suggestions: try search_symbols(query=...) for symbol names, or use regex=true for pattern matching, or broaden with include_tests=true / include_generated=true.");
+    assert_eq!(
+        result,
+        "No matches for 'xyz_totally_absent'. Suggestions: try search_symbols(query=...) for symbol names, or use regex=true for pattern matching, or broaden with include_tests=true / include_generated=true."
+    );
 }
 
 #[test]
@@ -552,6 +558,7 @@ fn test_search_text_result_view_group_by_symbol_keeps_duplicate_names_separate()
                 callers: None,
             }],
             suppressed_by_noise: 0,
+            overflow_count: 0,
         }),
         Some("symbol"),
         None,
