@@ -1,5 +1,14 @@
 # Changelog
 
+## [5.1.1](https://github.com/special-place-administrator/symforge/compare/v5.1.0...v5.1.1) (2026-04-01)
+
+
+### Bug Fixes
+
+* **build:** silence tree-sitter-scss scanner warnings ([80c69e4](https://github.com/special-place-administrator/symforge/commit/80c69e4e6765ba64ba41522952b8e8b5e02e08b8))
+* **ci:** tolerate force-pushed conventional commit ranges ([8a70ffa](https://github.com/special-place-administrator/symforge/commit/8a70ffaa8cd3e401b0f19563c59ac99cf08a9290))
+* **trust:** calibrate temporal signals and health output ([e2fafbe](https://github.com/special-place-administrator/symforge/commit/e2fafbea393f55fde6e2b22d499c1ad3f0d96b3c))
+
 ## [5.1.0](https://github.com/special-place-administrator/symforge/compare/v5.0.0...v5.1.0) (2026-04-01)
 
 
