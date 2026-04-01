@@ -387,55 +387,13 @@ symforge init --client gemini
 
 You should see `symforge — Ready` with 31 tools listed. If the server shows `DISCONNECTED`, check that the binary exists at `~/.symforge/bin/symforge` (or `symforge.exe` on Windows).
 
-### VS Code Extensions (Kilo Code, Roo Code, Cline, etc.)
-
-Any VS Code extension with MCP support can use SymForge. For **Kilo Code**, run init manually from the workspace you want to configure:
-
-```bash
-symforge init --client kilo-code
-```
-
-This creates `.kilocode/mcp.json` and `.kilocode/rules/symforge.md` in your workspace, plus `.symforge/` for workspace-local runtime state. Global `npm install -g symforge` intentionally does not auto-write Kilo workspace files because npm postinstall runs from the package install directory, not from your project. For other extensions, configure manually through their MCP settings.
-
-**Kilo Code** manual config (sidebar → gear icon → MCP Servers, or `.kilocode/mcp.json`):
-
-```json
-{
-  "mcpServers": {
-    "symforge": {
-      "command": "C:\\Users\\<you>\\.symforge\\bin\\symforge.exe",
-      "args": [],
-      "disabled": false,
-      "alwaysAllow": [
-        "health", "index_folder", "validate_file_syntax", "get_repo_map",
-        "get_file_content", "search_symbols", "search_text", "search_files",
-        "get_file_context", "get_symbol", "get_symbol_context",
-        "find_references", "find_dependents", "inspect_match",
-        "what_changed", "analyze_file_impact", "diff_symbols",
-        "explore", "replace_symbol_body", "edit_within_symbol",
-        "insert_symbol", "delete_symbol", "batch_edit",
-        "batch_insert", "batch_rename", "ask", "conventions",
-        "edit_plan", "context_inventory", "investigation_suggest",
-        "trace_symbol"
-      ]
-    }
-  }
-}
-```
-
-On macOS/Linux, use `~/.symforge/bin/symforge` (no `.exe`). The `alwaysAllow` list bypasses per-tool approval prompts.
-
-**Kilo / Codex / Gemini schema errors:** if a strict provider shows an error like `Invalid schema for function ... array schema missing items`, the named function usually belongs to a different MCP server in the active client config, not SymForge. Strict providers reject the whole tool list if any loaded MCP server advertises invalid JSON Schema. In Kilo Code, check both workspace and global MCP settings for extra servers such as Claude hook bridges or flow servers, and temporarily disable the server named in the error.
-
-Other VS Code extensions and MCP clients follow a similar pattern — point the MCP stdio transport at the SymForge binary with no arguments. Native VS Code MCP uses a workspace or user `mcp.json` file with a top-level `servers` object, while extension-managed clients such as Cline and Kilo usually use their own JSON file with a top-level `mcpServers` object. Do not paste one client's schema into another unchanged.
-
 > [!IMPORTANT]
 > **NOTICE — One prompt for any AI agent after SymForge install**
 >
 > If your AI agent still falls back to built-in file reads, grep, or text-based edits after SymForge is installed, give it the following prompt once. It is written to work whether the machine has one client or several.
 >
 > ```text
-> SymForge is already installed on this machine. Your job is to detect which supported AI clients are actually installed on this computer or in this workspace, configure SymForge for the ones you find, and update only the relevant instruction files. Do not assume every client is installed.
+> SymForge is already installed on this machine. Your job is to detect which supported AI clients are actually installed on this computer or in this workspace, configure SymForge for the ones you find, and update only the relevant instruction files. Do not assume every client is installed. Do not split this into multiple partial tasks. Complete the whole setup flow for every detected client.
 >
 > Work in this order:
 > 1. Detect installed clients and existing config files before editing anything.
@@ -452,6 +410,7 @@ Other VS Code extensions and MCP clients follow a similar pattern — point the 
 > - Preserve client-specific keys such as `disabled`, `alwaysAllow`, `autoApprove`, `timeout`, `type`, `env`, or trust fields if that client supports them. Do not invent unsupported keys.
 > - If a SymForge entry already exists, update it in place. Do not create duplicate `symforge` entries.
 > - After editing any JSON config, validate that it is still valid JSON and confirm the client can start the SymForge MCP server.
+> - If a client reports MCP schema errors that mention another tool or server, do not blame SymForge by default. Check the other configured MCP servers in that client, because many strict clients reject the whole MCP set when any one server advertises invalid JSON Schema.
 >
 > Detect and update whichever of these are actually present:
 > - Claude Code: `~/.claude.json`, `~/.claude/settings.json`, `~/.claude/CLAUDE.md`
@@ -462,6 +421,13 @@ Other VS Code extensions and MCP clients follow a similar pattern — point the 
 > - Kilo Code: `.kilocode/mcp.json` and `.kilocode/rules/symforge.md`
 > - Roo Code and similar extensions: their existing MCP JSON file if present, otherwise the nearest MCP config file the extension already uses, plus the nearest project instruction file the client already consumes
 > - If a client is not installed or you cannot find its real config path from existing files, do not guess and do not create random paths for it
+>
+> Client-specific setup notes:
+> - Claude Code, Codex, and Gemini CLI are home-scoped clients. If their home directories already exist, prefer `symforge init` and then verify the written config instead of hand-authoring everything from scratch.
+> - Kilo Code is workspace-local. Run `symforge init --client kilo-code` from the target project directory when possible. That workspace should end up with `.kilocode/mcp.json`, `.kilocode/rules/symforge.md`, and `.symforge/`.
+> - Native VS Code MCP usually uses user- or workspace-level `mcp.json`. Keep its top-level `servers` shape intact.
+> - Cline, Roo Code, Kilo Code, and similar VS Code extensions may use extension-managed JSON files instead of native VS Code `mcp.json`. Detect the real file first and preserve its root key and surrounding schema.
+> - For VS Code-family extensions, update both sides when appropriate: the MCP JSON file that launches SymForge and the instruction/rules file the extension already consumes.
 >
 > Add or merge a SymForge rule block with this behavior:
 > - When SymForge is available, prefer it over built-in file, search, and edit tools for source code work.
