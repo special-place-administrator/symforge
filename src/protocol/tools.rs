@@ -13,7 +13,7 @@ use parking_lot::RwLock;
 /// - Never return JSON — always plain text String (AD-6)
 /// - Never use MCP error codes for not-found — return helpful text via format functions
 /// - Never hold RwLockReadGuard across await points — extract into owned values first
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -745,6 +745,24 @@ enum WhatChangedMode {
     Timestamp(i64),
     GitRef(String),
     Uncommitted,
+}
+
+#[derive(Default)]
+struct ExploreMatchScore {
+    raw_count: usize,
+    matched_terms: HashSet<String>,
+}
+
+#[derive(Default)]
+struct ExploreFileSignal {
+    raw_score: u64,
+    matched_terms: HashSet<String>,
+}
+
+struct DerivedExploreCluster {
+    seed_terms: Vec<String>,
+    promoted_symbols: Vec<String>,
+    seed_files: Vec<String>,
 }
 
 fn determine_what_changed_mode(
@@ -4331,6 +4349,252 @@ impl SymForgeServer {
             .collect()
     }
 
+    fn explore_symbol_segments(name: &str) -> Vec<String> {
+        let mut segments = Vec::new();
+        let mut current = String::new();
+        for ch in name.chars() {
+            let is_separator =
+                !ch.is_alphanumeric() || matches!(ch, '_' | ':' | '-' | '/' | '\\' | '.');
+            if is_separator {
+                if !current.is_empty() {
+                    segments.push(current.to_ascii_lowercase());
+                    current.clear();
+                }
+                continue;
+            }
+
+            let split_before = ch.is_uppercase()
+                && !current.is_empty()
+                && current
+                    .chars()
+                    .last()
+                    .is_some_and(|prev| prev.is_lowercase() || prev.is_ascii_digit());
+            if split_before {
+                segments.push(current.to_ascii_lowercase());
+                current.clear();
+            }
+            current.push(ch);
+        }
+        if !current.is_empty() {
+            segments.push(current.to_ascii_lowercase());
+        }
+
+        segments
+    }
+
+    fn explore_fallback_symbol_match(name: &str, term: &str) -> bool {
+        if name.eq_ignore_ascii_case(term) {
+            return true;
+        }
+
+        let segments = Self::explore_symbol_segments(name);
+        segments.iter().any(|segment| segment == term)
+    }
+
+    fn explore_terms_related(lhs: &str, rhs: &str) -> bool {
+        if lhs.eq_ignore_ascii_case(rhs) {
+            return true;
+        }
+
+        let lhs = lhs.to_ascii_lowercase();
+        let rhs = rhs.to_ascii_lowercase();
+        let shared_prefix = lhs
+            .chars()
+            .zip(rhs.chars())
+            .take_while(|(a, b)| a == b)
+            .count();
+        shared_prefix >= 5
+    }
+
+    fn record_explore_file_signal(
+        file_signals: &mut HashMap<String, ExploreFileSignal>,
+        path: &str,
+        term: &str,
+        weight: u64,
+    ) {
+        let signal = file_signals.entry(path.to_string()).or_default();
+        signal.raw_score += weight;
+        signal.matched_terms.insert(term.to_string());
+    }
+
+    fn derive_explore_cluster(
+        index: &crate::live_index::LiveIndex,
+        query_terms: &[String],
+        file_signals: &HashMap<String, ExploreFileSignal>,
+        limit: usize,
+    ) -> Option<DerivedExploreCluster> {
+        const GENERIC_SYMBOLS: &[&str] = &[
+            "build", "create", "error", "get", "handle", "init", "main", "new", "parse", "process",
+            "result", "run", "set", "test", "update",
+        ];
+
+        if query_terms.len() < 2 {
+            return None;
+        }
+
+        let mut ranked_files: Vec<(String, u64, usize)> = file_signals
+            .iter()
+            .filter_map(|(path, signal)| {
+                let coverage = signal.matched_terms.len();
+                if coverage < 2 {
+                    return None;
+                }
+                let score = signal.raw_score + ((coverage as u64) * (coverage as u64) * 10);
+                Some((path.clone(), score, coverage))
+            })
+            .collect();
+        ranked_files.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        ranked_files.truncate(limit.clamp(1, 3));
+        if ranked_files.is_empty() {
+            return None;
+        }
+
+        let mut candidate_scores: HashMap<String, u64> = HashMap::new();
+        for (path, file_score, coverage) in &ranked_files {
+            let Some(file) = index.get_file(path) else {
+                continue;
+            };
+
+            for symbol in &file.symbols {
+                let lower = symbol.name.to_ascii_lowercase();
+                if lower.len() < 4 || GENERIC_SYMBOLS.contains(&lower.as_str()) {
+                    continue;
+                }
+
+                let segments = Self::explore_symbol_segments(&symbol.name);
+                let overlap = query_terms
+                    .iter()
+                    .filter(|term| {
+                        segments
+                            .iter()
+                            .any(|segment| Self::explore_terms_related(segment, term))
+                    })
+                    .count();
+                if overlap == 0 {
+                    continue;
+                }
+
+                let kind_bonus = match symbol.kind.to_string().as_str() {
+                    "struct" | "class" | "trait" | "interface" | "enum" => 5,
+                    "fn" | "method" => 4,
+                    "impl" | "mod" | "module" => 3,
+                    _ => 1,
+                } as u64;
+                let reverse_hits = index
+                    .reverse_index
+                    .get(&symbol.name)
+                    .map(|hits| hits.len())
+                    .unwrap_or(0);
+                let rarity_bonus = match reverse_hits {
+                    0 => 8,
+                    1..=2 => 6,
+                    3..=5 => 4,
+                    6..=10 => 2,
+                    _ => 1,
+                } as u64;
+                let length_bonus = (symbol.name.len().min(24) / 6) as u64;
+                let score = *file_score
+                    + ((*coverage as u64) * 5)
+                    + ((overlap as u64) * 12)
+                    + kind_bonus
+                    + rarity_bonus
+                    + length_bonus;
+
+                let entry = candidate_scores.entry(symbol.name.clone()).or_insert(0);
+                if score > *entry {
+                    *entry = score;
+                }
+            }
+        }
+
+        let mut ranked_symbols: Vec<(String, u64)> = candidate_scores.into_iter().collect();
+        ranked_symbols.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        let promoted_symbols: Vec<String> = ranked_symbols
+            .into_iter()
+            .take(limit.clamp(1, 4))
+            .map(|(name, _)| name)
+            .collect();
+        if promoted_symbols.is_empty() {
+            return None;
+        }
+
+        Some(DerivedExploreCluster {
+            seed_terms: query_terms.to_vec(),
+            promoted_symbols,
+            seed_files: ranked_files.into_iter().map(|(path, _, _)| path).collect(),
+        })
+    }
+
+    fn ask_symbol_candidate_tokens(query: &str) -> Vec<String> {
+        let mut tokens = Vec::new();
+        for raw in query.split_whitespace() {
+            let token = raw
+                .trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != ':')
+                .to_string();
+            if token.is_empty() {
+                continue;
+            }
+            let is_symbol_like = token.contains('_')
+                || token.contains("::")
+                || token.chars().skip(1).any(|c| c.is_uppercase());
+            if !is_symbol_like || token.len() < 4 {
+                continue;
+            }
+            if tokens
+                .iter()
+                .any(|existing: &String| existing.eq_ignore_ascii_case(&token))
+            {
+                continue;
+            }
+            tokens.push(token);
+        }
+        tokens
+    }
+
+    fn extract_exact_symbol_understanding_candidate(
+        index: &crate::live_index::LiveIndex,
+        query: &str,
+    ) -> Option<String> {
+        const GENERIC_SYMBOLS: &[&str] = &[
+            "build", "create", "get", "handle", "init", "main", "new", "parse", "process", "run",
+            "set", "test", "update",
+        ];
+
+        let mut candidates = Vec::new();
+        for token in Self::ask_symbol_candidate_tokens(query) {
+            if GENERIC_SYMBOLS.contains(&token.to_ascii_lowercase().as_str()) {
+                continue;
+            }
+
+            let mut exact_match_count = 0usize;
+            let mut canonical_name: Option<String> = None;
+            for (_path, file) in index.all_files() {
+                for symbol in &file.symbols {
+                    if symbol.name.eq_ignore_ascii_case(&token) {
+                        exact_match_count += 1;
+                        if canonical_name.is_none() {
+                            canonical_name = Some(symbol.name.clone());
+                        }
+                    }
+                }
+            }
+
+            if exact_match_count == 1
+                && let Some(name) = canonical_name
+            {
+                candidates.push(name);
+            }
+        }
+
+        candidates.sort();
+        candidates.dedup();
+        if candidates.len() == 1 {
+            candidates.into_iter().next()
+        } else {
+            None
+        }
+    }
+
     /// Start here when you don't know where to look. Accepts a natural-language concept
     /// and returns related symbols, patterns, and files. Set depth=2 for signatures and
     /// callers of top symbols (~1500 tokens). Set depth=3 for implementations and type
@@ -4357,6 +4621,7 @@ impl SymForgeServer {
             Err(e) => return e,
         };
         let limit = params.0.limit.unwrap_or(10) as usize;
+        let include_noise = params.0.include_noise.unwrap_or(false);
         let guard = self.index.read();
         loading_guard!(guard);
 
@@ -4390,9 +4655,10 @@ impl SymForgeServer {
             )
         };
 
-        // Phase 1: Symbol search — over-fetch and count term matches per symbol
-        let mut match_counts: std::collections::HashMap<(String, String, String), usize> =
-            std::collections::HashMap::new();
+        // Phase 1: Symbol search — over-fetch and track both match counts and
+        // query-term coverage per symbol so multi-term hits outrank one-term noise.
+        let mut match_scores: HashMap<(String, String, String), ExploreMatchScore> = HashMap::new();
+        let mut file_signals: HashMap<String, ExploreFileSignal> = HashMap::new();
 
         // Phase 0: Module-path boosting — symbols from files whose path segment
         // matches a query term get a weight boost. +2 for exact segment match,
@@ -4429,15 +4695,25 @@ impl SymForgeServer {
                     })
                     .max();
                 if let Some(weight) = best_match {
+                    Self::record_explore_file_signal(
+                        &mut file_signals,
+                        file_path,
+                        &term_lower,
+                        weight as u64,
+                    );
                     for (injected, sym) in file.symbols.iter().enumerate() {
                         if injected >= limit {
                             break;
                         }
                         let entry = (sym.name.clone(), sym.kind.to_string(), file_path.clone());
-                        // Cap path-boost: only seed symbols that have no prior
-                        // matches.  This prevents path-matching files from
-                        // dominating over content-matching files.
-                        match_counts.entry(entry).or_insert(weight.min(1));
+                        let score = match_scores.entry(entry).or_default();
+                        if score.raw_count == 0 {
+                            // Cap path-boost: only seed symbols that have no prior
+                            // matches. This prevents path-matching files from
+                            // dominating over content-matching files.
+                            score.raw_count = weight.min(1);
+                        }
+                        score.matched_terms.insert(term_lower.clone());
                     }
                 }
             }
@@ -4450,17 +4726,28 @@ impl SymForgeServer {
         let mut all_text_queries = text_queries.clone();
         all_text_queries.extend(remainder_terms.iter().cloned());
 
+        let fallback_mode = concept.is_none();
         for sq in &all_symbol_queries {
+            let term_key = sq.to_ascii_lowercase();
             let result = search::search_symbols(&guard, sq, None, limit * 3);
+            let mut seen_paths = HashSet::new();
             for hit in &result.hits {
+                if fallback_mode && !Self::explore_fallback_symbol_match(&hit.name, &term_key) {
+                    continue;
+                }
                 let entry = (hit.name.clone(), hit.kind.clone(), hit.path.clone());
-                *match_counts.entry(entry).or_default() += 1;
+                let score = match_scores.entry(entry).or_default();
+                score.raw_count += 1;
+                score.matched_terms.insert(term_key.clone());
+                if seen_paths.insert(hit.path.clone()) {
+                    Self::record_explore_file_signal(&mut file_signals, &hit.path, &term_key, 2);
+                }
             }
         }
 
         // Filter Phase 1 results by language and path_prefix
         if lang_filter.is_some() || params.0.path_prefix.is_some() {
-            match_counts.retain(|(_, _, path), _| {
+            match_scores.retain(|(_, _, path), _| {
                 if let Some(ref prefix) = params.0.path_prefix
                     && !path.starts_with(prefix.as_str())
                 {
@@ -4474,6 +4761,29 @@ impl SymForgeServer {
                     }
                 }
                 true
+            });
+            file_signals.retain(|path, _| {
+                if let Some(ref prefix) = params.0.path_prefix
+                    && !path.starts_with(prefix.as_str())
+                {
+                    return false;
+                }
+                if let Some(ref lang) = lang_filter {
+                    let ext = path.rsplit('.').next().unwrap_or("");
+                    if crate::domain::index::LanguageId::from_extension(ext).as_ref() != Some(lang)
+                    {
+                        return false;
+                    }
+                }
+                true
+            });
+        }
+
+        if !include_noise {
+            let noise_policy = search::NoisePolicy::hide_classified_noise();
+            file_signals.retain(|path, _| {
+                let class = search::NoisePolicy::classify_path(path, None);
+                !noise_policy.should_hide(class)
             });
         }
 
@@ -4493,7 +4803,16 @@ impl SymForgeServer {
             }
             let result = search::search_text_with_options(&guard, Some(tq), None, false, &options);
             if let Ok(r) = result {
+                let term_key = tq.to_ascii_lowercase();
                 for file in &r.files {
+                    if !file.matches.is_empty() {
+                        Self::record_explore_file_signal(
+                            &mut file_signals,
+                            &file.path,
+                            &term_key,
+                            3,
+                        );
+                    }
                     for m in &file.matches {
                         if text_hits.len() < limit && !format::is_noise_line(&m.line) {
                             text_hits.push((file.path.clone(), m.line.clone(), m.line_number));
@@ -4502,7 +4821,9 @@ impl SymForgeServer {
                         // Weight 2 so content matches outweigh path-only boosts.
                         if let Some(ref enc) = m.enclosing_symbol {
                             let entry = (enc.name.clone(), enc.kind.clone(), file.path.clone());
-                            *match_counts.entry(entry).or_default() += 2;
+                            let score = match_scores.entry(entry).or_default();
+                            score.raw_count += 2;
+                            score.matched_terms.insert(term_key.clone());
                         }
                     }
                 }
@@ -4514,14 +4835,89 @@ impl SymForgeServer {
             text_hits.retain(|(path, _, _)| path.starts_with(prefix.as_str()));
         }
 
+        let derived_cluster = if fallback_mode {
+            Self::derive_explore_cluster(&guard, &symbol_queries, &file_signals, limit)
+        } else {
+            None
+        };
+
+        if let Some(cluster) = &derived_cluster {
+            for derived_query in &cluster.promoted_symbols {
+                let term_key = derived_query.to_ascii_lowercase();
+                if !all_symbol_queries
+                    .iter()
+                    .any(|existing| existing.eq_ignore_ascii_case(derived_query))
+                {
+                    let result = search::search_symbols(&guard, derived_query, None, limit * 2);
+                    let mut seen_paths = HashSet::new();
+                    for hit in &result.hits {
+                        let entry = (hit.name.clone(), hit.kind.clone(), hit.path.clone());
+                        let score = match_scores.entry(entry).or_default();
+                        score.raw_count += 1;
+                        score.matched_terms.insert(term_key.clone());
+                        if seen_paths.insert(hit.path.clone()) {
+                            Self::record_explore_file_signal(
+                                &mut file_signals,
+                                &hit.path,
+                                &term_key,
+                                2,
+                            );
+                        }
+                    }
+                }
+
+                let mut options = search::TextSearchOptions {
+                    total_limit: limit.min(50),
+                    max_per_file: limit,
+                    ..search::TextSearchOptions::for_current_code_search()
+                };
+                if let Some(ref prefix) = params.0.path_prefix {
+                    options.path_scope = search::PathScope::Prefix(prefix.clone());
+                }
+                if let Some(ref lang) = lang_filter {
+                    options.language_filter = Some(lang.clone());
+                }
+
+                if let Ok(result) = search::search_text_with_options(
+                    &guard,
+                    Some(derived_query),
+                    None,
+                    false,
+                    &options,
+                ) {
+                    for file in &result.files {
+                        if !file.matches.is_empty() {
+                            Self::record_explore_file_signal(
+                                &mut file_signals,
+                                &file.path,
+                                &term_key,
+                                2,
+                            );
+                        }
+                        for m in &file.matches {
+                            if text_hits.len() < limit && !format::is_noise_line(&m.line) {
+                                text_hits.push((file.path.clone(), m.line.clone(), m.line_number));
+                            }
+                            if let Some(ref enc) = m.enclosing_symbol {
+                                let entry = (enc.name.clone(), enc.kind.clone(), file.path.clone());
+                                let score = match_scores.entry(entry).or_default();
+                                score.raw_count += 1;
+                                score.matched_terms.insert(term_key.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Phase 3: Filter noise, weight by kind and path, sort, truncate to limit.
         // Exclude explore.rs itself (CONCEPT_MAP contains concept keywords in its body).
-        match_counts.retain(|(_, _, path), _| !path.ends_with("protocol/explore.rs"));
+        match_scores.retain(|(_, _, path), _| !path.ends_with("protocol/explore.rs"));
 
         // Score each symbol: match_count * kind_weight, penalized for doc/generated files.
-        let scored: Vec<((String, String, String), u64)> = match_counts
+        let scored: Vec<((String, String, String), u64)> = match_scores
             .into_iter()
-            .map(|((name, kind, path), count)| {
+            .map(|((name, kind, path), score_data)| {
                 // Kind weight: definition-like symbols rank higher than incidental matches.
                 let kind_weight: u64 = match kind.as_str() {
                     "fn" | "method" => 4,
@@ -4544,7 +4940,12 @@ impl SymForgeServer {
                 } else {
                     8 // no penalty (base multiplier for code files)
                 };
-                let score = (count as u64) * kind_weight * path_penalty;
+                let coverage_bonus: u64 = match score_data.matched_terms.len() as u64 {
+                    0 | 1 => 1,
+                    n => n * n,
+                };
+                let score =
+                    (score_data.raw_count as u64) * kind_weight * path_penalty * coverage_bonus;
                 ((name, kind, path), score)
             })
             .collect();
@@ -4558,7 +4959,6 @@ impl SymForgeServer {
             ranked.into_iter().map(|(k, _)| k).collect();
 
         // Noise filtering: hide vendor/generated/gitignored files by default.
-        let include_noise = params.0.include_noise.unwrap_or(false);
         let mut noise_hidden: usize = 0;
         let (symbol_hits, text_hits) = if !include_noise {
             let noise_policy = search::NoisePolicy::hide_classified_noise();
@@ -4688,6 +5088,18 @@ impl SymForgeServer {
             enriched_symbols: &enriched_symbols,
             symbol_impls: &symbol_impls,
             symbol_deps: &symbol_deps,
+            derived_seed_terms: derived_cluster
+                .as_ref()
+                .map(|cluster| cluster.seed_terms.as_slice())
+                .unwrap_or(&[]),
+            derived_symbols: derived_cluster
+                .as_ref()
+                .map(|cluster| cluster.promoted_symbols.as_slice())
+                .unwrap_or(&[]),
+            derived_seed_files: derived_cluster
+                .as_ref()
+                .map(|cluster| cluster.seed_files.as_slice())
+                .unwrap_or(&[]),
             depth,
         });
 
@@ -4781,7 +5193,16 @@ impl SymForgeServer {
             return "query requires a non-empty question.".to_string();
         }
 
-        let intent = smart_query::classify_intent(q);
+        let mut intent = smart_query::classify_intent(q);
+        if matches!(
+            intent,
+            smart_query::QueryIntent::Understand { .. } | smart_query::QueryIntent::Explore { .. }
+        ) {
+            let guard = self.index.read();
+            if let Some(symbol) = Self::extract_exact_symbol_understanding_candidate(&guard, q) {
+                intent = smart_query::QueryIntent::UnderstandSymbol { symbol };
+            }
+        }
         let assessment = smart_query::assess_route(q, &intent);
         let route_desc = smart_query::route_description(&intent);
 
@@ -4850,6 +5271,21 @@ impl SymForgeServer {
                     estimate: None,
                 };
                 self.explore(Parameters(input)).await
+            }
+            smart_query::QueryIntent::UnderstandSymbol { symbol } => {
+                let input = GetSymbolContextInput {
+                    name: symbol.clone(),
+                    file: None,
+                    path: None,
+                    symbol_kind: None,
+                    symbol_line: None,
+                    verbosity: Some("compact".to_string()),
+                    bundle: None,
+                    sections: None,
+                    max_tokens: None,
+                    estimate: None,
+                };
+                self.get_symbol_context(Parameters(input)).await
             }
             smart_query::QueryIntent::SearchCode { pattern } => {
                 let input = SearchTextInput {
@@ -9542,6 +9978,10 @@ mod tests {
             result.contains("Error"),
             "should find Error symbol, got: {result}"
         );
+        assert!(
+            !result.contains("Auto-derived cluster:"),
+            "static concept matches should not emit fallback-derived clustering: {result}"
+        );
     }
 
     #[tokio::test]
@@ -9652,6 +10092,119 @@ mod tests {
         assert!(
             result.contains("BurstTracker"),
             "BurstTracker should appear via enclosing-symbol injection from debounce text hit, got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_explore_cooccurrence_ranks_multi_term_symbol_above_single_term_noise() {
+        let actor_content =
+            b"pub fn handle_supervisor_evt() -> Result<(), ActorProcessingErr> { Ok(()) }\n";
+        let actor_sym = SymbolRecord {
+            name: "handle_supervisor_evt".to_string(),
+            kind: SymbolKind::Function,
+            depth: 0,
+            sort_order: 0,
+            byte_range: (0, actor_content.len() as u32),
+            line_range: (0, 0),
+            doc_byte_range: None,
+            item_byte_range: None,
+        };
+        let noise_content = b"pub fn recovery_words() {}\n";
+        let noise_sym = SymbolRecord {
+            name: "recovery_words".to_string(),
+            kind: SymbolKind::Function,
+            depth: 0,
+            sort_order: 0,
+            byte_range: (0, noise_content.len() as u32),
+            line_range: (0, 0),
+            doc_byte_range: None,
+            item_byte_range: None,
+        };
+        let actor_file = make_file("src/actors/supervisor.rs", actor_content, vec![actor_sym]);
+        let noise_file = make_file("src/auth/recovery.rs", noise_content, vec![noise_sym]);
+        let server = make_server(make_live_index_ready(vec![actor_file, noise_file]));
+
+        let result = server
+            .explore(Parameters(super::ExploreInput {
+                query: "actor supervision and error recovery".to_string(),
+                limit: Some(10),
+                depth: None,
+                include_noise: None,
+                language: None,
+                path_prefix: None,
+                estimate: None,
+            }))
+            .await;
+
+        let actor_pos = result.find("handle_supervisor_evt");
+        let noise_pos = result.find("recovery_words");
+        assert!(
+            actor_pos.is_some(),
+            "actor-supervision symbol should appear in results: {result}"
+        );
+        assert!(
+            noise_pos.is_none() || actor_pos < noise_pos,
+            "multi-term actor match should outrank single-term recovery noise: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_explore_fallback_surfaces_auto_derived_cluster() {
+        let content = b"pub struct EventFanoutBus;\npub fn dispatch_delivery_event() {}\n";
+        let bus_symbol = SymbolRecord {
+            name: "EventFanoutBus".to_string(),
+            kind: SymbolKind::Struct,
+            depth: 0,
+            sort_order: 0,
+            byte_range: (0, 23),
+            line_range: (0, 0),
+            doc_byte_range: None,
+            item_byte_range: None,
+        };
+        let delivery_symbol = SymbolRecord {
+            name: "dispatch_delivery_event".to_string(),
+            kind: SymbolKind::Function,
+            depth: 0,
+            sort_order: 1,
+            byte_range: (24, content.len() as u32),
+            line_range: (1, 1),
+            doc_byte_range: None,
+            item_byte_range: None,
+        };
+        let (key, file) = make_file(
+            "src/bus/fanout.rs",
+            content,
+            vec![bus_symbol, delivery_symbol],
+        );
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+
+        let result = server
+            .explore(Parameters(super::ExploreInput {
+                query: "event fanout delivery".to_string(),
+                limit: Some(10),
+                depth: None,
+                include_noise: None,
+                language: None,
+                path_prefix: None,
+                estimate: None,
+            }))
+            .await;
+
+        assert!(
+            result.contains("Auto-derived cluster:"),
+            "fallback explore should surface a derived cluster: {result}"
+        );
+        assert!(
+            result.contains("Promoted signals:"),
+            "derived cluster should expose promoted symbols: {result}"
+        );
+        assert!(
+            result.contains("EventFanoutBus") || result.contains("dispatch_delivery_event"),
+            "derived cluster should promote repo-specific symbol names: {result}"
+        );
+        assert!(
+            result.contains("src/bus/fanout.rs"),
+            "derived cluster should surface the seed file it learned from: {result}"
         );
     }
 
@@ -12259,6 +12812,75 @@ mod tests {
         );
         assert!(result.contains("Chosen tool: explore"), "result: {result}");
         assert!(result.contains("Suggested next step:"), "result: {result}");
+    }
+
+    #[tokio::test]
+    async fn test_ask_upgrades_exact_symbol_understanding_query() {
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+
+        let content = b"struct BusActor;\nimpl BusActor { fn handle(&self) {} }\n";
+        std::fs::write(src_dir.join("bus.rs"), content).unwrap();
+
+        let result = crate::parsing::process_file("src/bus.rs", content, LanguageId::Rust);
+        let indexed =
+            crate::live_index::store::IndexedFile::from_parse_result(result, content.to_vec());
+        let server = make_server_with_root(
+            make_live_index_ready(vec![("src/bus.rs".to_string(), indexed)]),
+            Some(dir.path().to_path_buf()),
+        );
+
+        let input = super::SmartQueryInput {
+            query: "how does BusActor work?".to_string(),
+        };
+        let result = server.ask(Parameters(input)).await;
+
+        assert!(
+            result.contains("Route confidence: inferred"),
+            "result: {result}"
+        );
+        assert!(
+            result.contains("Chosen tool: get_symbol_context"),
+            "result: {result}"
+        );
+        assert!(
+            result.contains("Invocation: get_symbol_context(name=\"BusActor\")"),
+            "result: {result}"
+        );
+        assert!(
+            result.contains("detected an exact indexed symbol inside a broad explanation query"),
+            "result: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ask_keeps_broad_explore_for_generic_understanding_query() {
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+
+        let content = b"fn handle() {}\n";
+        std::fs::write(src_dir.join("lib.rs"), content).unwrap();
+
+        let result = crate::parsing::process_file("src/lib.rs", content, LanguageId::Rust);
+        let indexed =
+            crate::live_index::store::IndexedFile::from_parse_result(result, content.to_vec());
+        let server = make_server_with_root(
+            make_live_index_ready(vec![("src/lib.rs".to_string(), indexed)]),
+            Some(dir.path().to_path_buf()),
+        );
+
+        let input = super::SmartQueryInput {
+            query: "how does handle work?".to_string(),
+        };
+        let result = server.ask(Parameters(input)).await;
+
+        assert!(result.contains("Chosen tool: explore"), "result: {result}");
+        assert!(
+            !result.contains("Chosen tool: get_symbol_context"),
+            "generic symbol names should not hijack broad explain queries: {result}"
+        );
     }
 
     #[test]

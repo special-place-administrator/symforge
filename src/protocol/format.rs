@@ -1762,15 +1762,10 @@ pub fn not_found_file(path: &str) -> String {
 /// Call this from tool handlers where the index is available.
 pub fn not_found_file_with_suggestions(path: &str, suggestions: &[String]) -> String {
     if suggestions.is_empty() {
-        format!(
-            "File not found: {path}. Use search_files to find the correct path."
-        )
+        format!("File not found: {path}. Use search_files to find the correct path.")
     } else {
         let top: Vec<&str> = suggestions.iter().take(5).map(|s| s.as_str()).collect();
-        format!(
-            "File not found: {path}. Did you mean: {}?",
-            top.join(", ")
-        )
+        format!("File not found: {path}. Did you mean: {}?", top.join(", "))
     }
 }
 
@@ -3236,7 +3231,11 @@ pub fn format_tool_token_breakdown(details: &[(String, u64, u64)]) -> String {
         };
         lines.push(format!(
             "  {:<width$}  {} served, {} saved ({})",
-            name, served, saved, tool_eff, width = max_name
+            name,
+            served,
+            saved,
+            tool_eff,
+            width = max_name
         ));
     }
 
@@ -3420,6 +3419,9 @@ pub struct ExploreResultViewInput<'a> {
     pub enriched_symbols: &'a [ExploreEnrichedSymbol],
     pub symbol_impls: &'a [(String, Vec<String>)],
     pub symbol_deps: &'a [(String, Vec<String>)],
+    pub derived_seed_terms: &'a [String],
+    pub derived_symbols: &'a [String],
+    pub derived_seed_files: &'a [String],
     pub depth: u32,
 }
 
@@ -3432,11 +3434,31 @@ pub fn explore_result_view(input: ExploreResultViewInput<'_>) -> String {
         enriched_symbols,
         symbol_impls,
         symbol_deps,
+        derived_seed_terms,
+        derived_symbols,
+        derived_seed_files,
         depth,
     } = input;
 
     let mut lines = vec![format!("── Exploring: {label} ──")];
     lines.push(String::new());
+
+    if !derived_symbols.is_empty() || !derived_seed_files.is_empty() {
+        lines.push("Auto-derived cluster:".to_string());
+        if !derived_seed_terms.is_empty() {
+            lines.push(format!("  Seed terms: {}", derived_seed_terms.join(", ")));
+        }
+        if !derived_symbols.is_empty() {
+            lines.push(format!(
+                "  Promoted signals: {}",
+                derived_symbols.join(", ")
+            ));
+        }
+        if !derived_seed_files.is_empty() {
+            lines.push(format!("  Seed files: {}", derived_seed_files.join(", ")));
+        }
+        lines.push(String::new());
+    }
 
     if depth >= 2 && !enriched_symbols.is_empty() {
         // Depth 2+: show enriched symbols with signatures
@@ -3591,7 +3613,11 @@ pub fn diff_symbols_result_view(
     use std::collections::HashMap;
 
     let mut lines = Vec::new();
-    let target_label = if target.is_empty() { "working tree" } else { target };
+    let target_label = if target.is_empty() {
+        "working tree"
+    } else {
+        target
+    };
     lines.push(format!("Symbol diff: {base}...{target_label}"));
     lines.push(format!("{} files changed", changed_files.len()));
     lines.push(String::new());
