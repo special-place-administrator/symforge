@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.9.10](https://github.com/special-place-administrator/symforge/compare/v4.9.9...v4.9.10) (2026-04-01)
+
+
+### Bug Fixes
+
+* **tests:** remove unused unix import in edit tests ([919aff6](https://github.com/special-place-administrator/symforge/commit/919aff668a88636a000c10b9f2ac1c4e3a01aba8))
+
 ## [4.9.9](https://github.com/special-place-administrator/symforge/compare/v4.9.8...v4.9.9) (2026-03-31)
 
 
