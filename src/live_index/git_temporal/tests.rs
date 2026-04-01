@@ -305,6 +305,45 @@ fn test_co_change_below_min_shared_excluded() {
     let index = GitTemporalIndex::compute_from_log(&log, now_unix);
     let a = index.files.get("a.rs").unwrap();
     assert!(a.co_changes.is_empty());
+    assert_eq!(a.weak_co_changes.len(), 1);
+    assert_eq!(a.weak_co_changes[0].path, "b.rs");
+    assert_eq!(a.weak_co_changes[0].shared_commits, 1);
+}
+
+#[test]
+fn test_co_change_low_jaccard_kept_as_weak_candidate() {
+    let now_unix = 1_741_520_000_u64;
+    let mut log = String::new();
+    for i in 0..2 {
+        let ts = now_unix - (i as u64 + 1) * 86400;
+        log.push_str(&format!(
+            "{d}\nH:shared{i}\nU:{ts}\nD:d\nA:X\nM:shared\n\n1\t0\ta.rs\n1\t0\tb.rs\n",
+            d = COMMIT_DELIMITER,
+        ));
+    }
+    for i in 0..8 {
+        let ts = now_unix - (i as u64 + 10) * 86400;
+        log.push_str(&format!(
+            "{d}\nH:a{i}\nU:{ts}\nD:d\nA:X\nM:a-only\n\n1\t0\ta.rs\n",
+            d = COMMIT_DELIMITER,
+        ));
+    }
+    for i in 0..8 {
+        let ts = now_unix - (i as u64 + 30) * 86400;
+        log.push_str(&format!(
+            "{d}\nH:b{i}\nU:{ts}\nD:d\nA:X\nM:b-only\n\n1\t0\tb.rs\n",
+            d = COMMIT_DELIMITER,
+        ));
+    }
+    let index = GitTemporalIndex::compute_from_log(&log, now_unix);
+    let a = index.files.get("a.rs").unwrap();
+    assert!(
+        a.co_changes.is_empty(),
+        "jaccard should stay below strong threshold"
+    );
+    assert_eq!(a.weak_co_changes.len(), 1);
+    assert_eq!(a.weak_co_changes[0].path, "b.rs");
+    assert_eq!(a.weak_co_changes[0].shared_commits, 2);
 }
 
 // ── Contributors ────────────────────────────────────────────────────

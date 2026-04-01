@@ -801,6 +801,10 @@ fn test_health_report_lists_partial_parse_files() {
         !report.contains("... and"),
         "should not show overflow hint for 3 files"
     );
+    assert!(
+        report.contains("Parse resilience: partial files kept best-effort symbols"),
+        "should explain partial parses as resilient degradation"
+    );
 }
 
 #[test]
@@ -2363,6 +2367,10 @@ fn test_format_hook_adoption_shows_workflow_totals_and_first_repo_start() {
         "missing totals line: {result}"
     );
     assert!(
+        result.contains("Fail-open outcomes: 3 (no sidecar 2, sidecar errors 1)"),
+        "missing fail-open breakdown: {result}"
+    );
+    assert!(
         result.contains("Source read: routed 3, no sidecar 1"),
         "missing source-read line: {result}"
     );
@@ -2377,6 +2385,42 @@ fn test_format_hook_adoption_shows_workflow_totals_and_first_repo_start() {
     assert!(
         result.contains("First repo start: routed"),
         "missing first repo-start line: {result}"
+    );
+    assert!(
+        result.contains("Actionable note: sidecar errors are real routing failures"),
+        "should distinguish actionable sidecar errors from no-sidecar outcomes: {result}"
+    );
+}
+
+#[test]
+fn test_format_hook_adoption_marks_no_sidecar_fail_open_as_mostly_benign() {
+    let snap = crate::cli::hook::HookAdoptionSnapshot {
+        source_read: crate::cli::hook::WorkflowAdoptionCounts {
+            routed: 0,
+            no_sidecar: 2,
+            sidecar_error: 0,
+            daemon_fallback: 1,
+        },
+        source_search: crate::cli::hook::WorkflowAdoptionCounts::default(),
+        repo_start: crate::cli::hook::WorkflowAdoptionCounts {
+            routed: 0,
+            no_sidecar: 1,
+            sidecar_error: 0,
+            daemon_fallback: 0,
+        },
+        prompt_context: crate::cli::hook::WorkflowAdoptionCounts::default(),
+        post_edit_impact: crate::cli::hook::WorkflowAdoptionCounts::default(),
+        first_repo_start: Some(crate::cli::hook::HookOutcome::NoSidecar),
+    };
+
+    let result = format_hook_adoption(&snap);
+    assert!(
+        result.contains("Daemon fallback counts as routed work"),
+        "should explain daemon fallback semantics: {result}"
+    );
+    assert!(
+        result.contains("Fail-open here is mostly benign"),
+        "no-sidecar-only fail-open should be framed as mostly benign: {result}"
     );
 }
 

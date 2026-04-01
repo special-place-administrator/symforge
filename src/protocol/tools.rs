@@ -1963,6 +1963,86 @@ fn implementations_evidence(view: &crate::live_index::ImplementationsView) -> St
     anchored_search_evidence(anchors, "implementation anchors")
 }
 
+fn explore_is_test_like_path(
+    path: &str,
+    classification: Option<&crate::domain::index::FileClassification>,
+) -> bool {
+    let path_lower = path.replace('\\', "/").to_ascii_lowercase();
+    classification.is_some_and(|c| c.is_test)
+        || path_lower.contains("/tests/")
+        || path_lower.contains("/test/")
+        || path_lower.contains("/__tests__/")
+        || path_lower.ends_with("/tests.rs")
+        || path_lower.ends_with("/test.rs")
+        || path_lower.ends_with("_test.rs")
+        || path_lower.ends_with("_spec.rs")
+}
+
+fn explore_should_skip_path_boost(
+    path: &str,
+    classification: &crate::domain::index::FileClassification,
+    include_noise: bool,
+) -> bool {
+    if include_noise {
+        return false;
+    }
+    explore_is_test_like_path(path, Some(classification))
+        || classification.is_vendor
+        || classification.is_generated
+        || classification.is_config
+}
+
+fn explore_path_penalty(
+    path: &str,
+    classification: Option<&crate::domain::index::FileClassification>,
+) -> u64 {
+    let path_lower = path.replace('\\', "/").to_ascii_lowercase();
+    if explore_is_test_like_path(path, classification) {
+        return 2;
+    }
+    if classification.is_some_and(|c| c.is_config)
+        || path_lower.ends_with(".md")
+        || path_lower.contains("/docs/")
+        || path_lower.contains("/plans/")
+        || path_lower.contains("/manual/")
+        || path_lower.contains("changelog")
+        || path_lower.contains(".planning/")
+        || path_lower.contains(".auto-claude")
+    {
+        return 2;
+    }
+    if path_lower.contains("/examples/")
+        || path_lower.contains("/fixtures/")
+        || path_lower.contains("/bench/")
+        || path_lower.contains("/benches/")
+        || path_lower.contains("/sample/")
+        || path_lower.contains("/samples/")
+    {
+        return 3;
+    }
+    8
+}
+
+fn explore_fallback_alignment_multiplier(
+    query_term_count: usize,
+    matched_term_count: usize,
+) -> u64 {
+    if query_term_count <= 1 {
+        return 8;
+    }
+    match (query_term_count, matched_term_count) {
+        (_, 0) => 1,
+        (2, 1) => 3,
+        (2, _) => 8,
+        (3, 1) => 2,
+        (3, 2) => 6,
+        (3, _) => 8,
+        (_, 1) => 1,
+        (_, 2) => 4,
+        _ => 8,
+    }
+}
+
 fn changed_paths_completeness_label(before_filter: usize, after_filter: usize) -> String {
     if before_filter == after_filter {
         "full for current scope".to_string()
@@ -2863,7 +2943,7 @@ impl SymForgeServer {
 
         // Capture the symbol definition from the index so we can prepend it
         // (the sidecar only returns reference locations, not the definition itself).
-        let (symbol_header, raw_chars) = {
+        let (symbol_header, impl_block_tip, raw_chars) = {
             let guard = self.index.read();
             loading_guard!(guard);
 
@@ -2880,7 +2960,19 @@ impl SymForgeServer {
                 )
             });
 
-            (header, raw)
+            let impl_block_tip = file_path_hint
+                .map(|path| {
+                    let view = guard.capture_context_bundle_view(
+                        path,
+                        &params.0.name,
+                        params.0.symbol_kind.as_deref(),
+                        params.0.symbol_line,
+                    );
+                    format::context_bundle_impl_suggestion_tip(&view)
+                })
+                .unwrap_or_default();
+
+            (header, impl_block_tip, raw)
         };
 
         let state = sidecar_state_for_server(self);
@@ -2899,6 +2991,9 @@ impl SymForgeServer {
                     output.push_str("\n\n");
                 }
                 output.push_str(&refs_text);
+                if !impl_block_tip.is_empty() {
+                    output.push_str(impl_block_tip.trim_start_matches('\n'));
+                }
                 output.push_str(&format::compact_next_step_hint(&[
                     "get_symbol_context (callers/callees/types)",
                     "find_references (usages)",
@@ -2924,13 +3019,17 @@ impl SymForgeServer {
                 // Sidecar unavailable — fall back to the index definition so callers
                 // always get at least the symbol body instead of an opaque error.
                 if let Some(header) = symbol_header {
-                    let body = format!(
-                        "{header}\n\n(Reference data unavailable — showing definition only){}",
-                        format::compact_next_step_hint(&[
-                            "get_symbol_context (callers/callees/types)",
-                            "find_references (usages)",
-                        ])
+                    let mut body = format!(
+                        "{header}\n\n(Reference data unavailable — showing definition only)"
                     );
+                    if !impl_block_tip.is_empty() {
+                        body.push('\n');
+                        body.push_str(impl_block_tip.trim_start_matches('\n'));
+                    }
+                    body.push_str(&format::compact_next_step_hint(&[
+                        "get_symbol_context (callers/callees/types)",
+                        "find_references (usages)",
+                    ]));
                     let footer = format::compact_savings_footer(body.len(), raw_chars);
                     let saved = raw_chars.saturating_sub(body.len());
                     self.record_read_savings((saved / 4) as u64);
@@ -3523,14 +3622,68 @@ impl SymForgeServer {
                         shared_commits: Some(entry.shared_commits),
                     })
                     .collect();
+                let weak_hits: Vec<SearchFilesHit> = history
+                    .weak_co_changes
+                    .iter()
+                    .map(|entry| SearchFilesHit {
+                        tier: SearchFilesTier::CoChange,
+                        path: entry.path.clone(),
+                        coupling_score: Some(entry.coupling_score),
+                        shared_commits: Some(entry.shared_commits),
+                    })
+                    .collect();
                 if hits.is_empty() {
+                    if !weak_hits.is_empty() {
+                        let total = weak_hits.len();
+                        let mut result =
+                            format::search_files_result_view(&SearchFilesView::Found {
+                                query: format!("weak co-changes with {target_path}"),
+                                total_matches: total,
+                                overflow_count: 0,
+                                hits: weak_hits,
+                            });
+                        let envelope = {
+                            let guard = self.index.read();
+                            search_format::format_search_envelope(
+                                "weak heuristic (git-temporal coupling)",
+                                "current index + git temporal",
+                                search_parse_state_for_paths(
+                                    &guard,
+                                    history
+                                        .weak_co_changes
+                                        .iter()
+                                        .map(|entry| entry.path.as_str()),
+                                ),
+                                "full for current scope",
+                                &format!(
+                                    "weak git-temporal co-change candidates for `{target_path}`"
+                                ),
+                                &search_paths_evidence(
+                                    history
+                                        .weak_co_changes
+                                        .iter()
+                                        .map(|entry| entry.path.as_str()),
+                                ),
+                            )
+                        };
+                        result = format!("{envelope}\n\n{result}");
+                        result.push_str(
+                            "\n\nLow confidence: these candidates missed the strong threshold (2 shared commits and Jaccard >= 0.15). Use them as hints, not proof.",
+                        );
+                        if commit_count < 50 {
+                            result.push_str(&format!(
+                                "\nOnly {commit_count} commit(s) were analyzed, so coupling may strengthen as history grows."
+                            ));
+                        }
+                        return result;
+                    }
                     return if commit_count < 50 {
                         format!(
-                            "No co-change data for '{target_path}'. Only {commit_count} commit(s) analyzed — co-change needs at least 2 shared commits per pair. Results improve with more history."
+                            "No high-confidence co-change data for '{target_path}'. Only {commit_count} commit(s) analyzed — strong co-change needs at least 2 shared commits and Jaccard >= 0.15. Results improve with more history."
                         )
                     } else {
                         format!(
-                            "No co-change data for '{target_path}' (analyzed {commit_count} commits). This file may change independently of others."
+                            "No high-confidence co-change data for '{target_path}' (analyzed {commit_count} commits). This file may change independently of others or only have weak coupling signals."
                         )
                     };
                 }
@@ -4435,11 +4588,14 @@ impl SymForgeServer {
         let mut ranked_files: Vec<(String, u64, usize)> = file_signals
             .iter()
             .filter_map(|(path, signal)| {
+                let file = index.get_file(path)?;
                 let coverage = signal.matched_terms.len();
                 if coverage < 2 {
                     return None;
                 }
-                let score = signal.raw_score + ((coverage as u64) * (coverage as u64) * 10);
+                let path_penalty = explore_path_penalty(path, Some(&file.classification));
+                let score = (signal.raw_score + ((coverage as u64) * (coverage as u64) * 10))
+                    * path_penalty;
                 Some((path.clone(), score, coverage))
             })
             .collect();
@@ -4525,7 +4681,7 @@ impl SymForgeServer {
         })
     }
 
-    fn ask_symbol_candidate_tokens(query: &str) -> Vec<String> {
+    fn ask_query_tokens(query: &str) -> Vec<String> {
         let mut tokens = Vec::new();
         for raw in query.split_whitespace() {
             let token = raw
@@ -4534,10 +4690,7 @@ impl SymForgeServer {
             if token.is_empty() {
                 continue;
             }
-            let is_symbol_like = token.contains('_')
-                || token.contains("::")
-                || token.chars().skip(1).any(|c| c.is_uppercase());
-            if !is_symbol_like || token.len() < 4 {
+            if token.len() < 2 {
                 continue;
             }
             if tokens
@@ -4549,6 +4702,18 @@ impl SymForgeServer {
             tokens.push(token);
         }
         tokens
+    }
+
+    fn ask_symbol_candidate_tokens(query: &str) -> Vec<String> {
+        Self::ask_query_tokens(query)
+            .into_iter()
+            .filter(|token| {
+                let is_symbol_like = token.contains('_')
+                    || token.contains("::")
+                    || token.chars().skip(1).any(|c| c.is_uppercase());
+                is_symbol_like && token.len() >= 4
+            })
+            .collect()
     }
 
     fn extract_exact_symbol_understanding_candidate(
@@ -4590,6 +4755,116 @@ impl SymForgeServer {
         candidates.dedup();
         if candidates.len() == 1 {
             candidates.into_iter().next()
+        } else {
+            None
+        }
+    }
+
+    fn extract_exact_implementation_understanding_candidate(
+        index: &crate::live_index::LiveIndex,
+        query: &str,
+    ) -> Option<String> {
+        const IMPLEMENTATION_CUES: &[&str] = &[
+            "type",
+            "types",
+            "implementation",
+            "implementations",
+            "implementor",
+            "implementors",
+            "implementer",
+            "implementers",
+            "implements",
+        ];
+        const GENERIC_QUERY_WORDS: &[&str] = &[
+            "a",
+            "all",
+            "an",
+            "and",
+            "are",
+            "describe",
+            "does",
+            "explain",
+            "help",
+            "how",
+            "main",
+            "me",
+            "of",
+            "the",
+            "through",
+            "tell",
+            "type",
+            "types",
+            "understand",
+            "walk",
+            "what",
+            "work",
+        ];
+        let tokens = Self::ask_query_tokens(query);
+        if !tokens.iter().any(|token| {
+            IMPLEMENTATION_CUES
+                .iter()
+                .any(|cue| token.eq_ignore_ascii_case(cue))
+        }) {
+            return None;
+        }
+
+        let mut candidates = Vec::new();
+        for token in tokens {
+            let lower = token.to_ascii_lowercase();
+            if GENERIC_QUERY_WORDS.contains(&lower.as_str()) {
+                continue;
+            }
+
+            if let Some(candidate) = Self::exact_trait_like_symbol_candidate(index, &token) {
+                candidates.push(candidate);
+                continue;
+            }
+
+            if lower.ends_with('s') && lower.len() > 4 {
+                let singular = &token[..token.len() - 1];
+                if let Some(candidate) = Self::exact_trait_like_symbol_candidate(index, singular) {
+                    candidates.push(candidate);
+                }
+            }
+        }
+
+        candidates.sort();
+        candidates.dedup();
+        if candidates.len() == 1 {
+            candidates.into_iter().next()
+        } else {
+            None
+        }
+    }
+
+    fn exact_trait_like_symbol_candidate(
+        index: &crate::live_index::LiveIndex,
+        token: &str,
+    ) -> Option<String> {
+        let mut exact_match_count = 0usize;
+        let mut canonical_name: Option<String> = None;
+        for (_path, file) in index.all_files() {
+            for symbol in &file.symbols {
+                if !symbol.name.eq_ignore_ascii_case(token) {
+                    continue;
+                }
+                if !matches!(
+                    symbol.kind,
+                    crate::domain::index::SymbolKind::Trait
+                        | crate::domain::index::SymbolKind::Interface
+                        | crate::domain::index::SymbolKind::Type
+                ) {
+                    continue;
+                }
+                exact_match_count += 1;
+                if canonical_name.is_none() {
+                    canonical_name = Some(symbol.name.clone());
+                }
+            }
+        }
+
+        if exact_match_count == 1 {
+            canonical_name
         } else {
             None
         }
@@ -4673,6 +4948,9 @@ impl SymForgeServer {
         for term in &boost_terms {
             let term_lower = term.to_ascii_lowercase();
             for (file_path, file) in guard.all_files() {
+                if explore_should_skip_path_boost(file_path, &file.classification, include_noise) {
+                    continue;
+                }
                 let segments: Vec<&str> = file_path.split(&['/', '\\'][..]).collect();
                 let best_match = segments
                     .iter()
@@ -4782,6 +5060,12 @@ impl SymForgeServer {
         if !include_noise {
             let noise_policy = search::NoisePolicy::hide_classified_noise();
             file_signals.retain(|path, _| {
+                let Some(file) = guard.get_file(path) else {
+                    return false;
+                };
+                if explore_is_test_like_path(path, Some(&file.classification)) {
+                    return false;
+                }
                 let class = search::NoisePolicy::classify_path(path, None);
                 !noise_policy.should_hide(class)
             });
@@ -4928,24 +5212,25 @@ impl SymForgeServer {
                     "key" | "section" => 1,
                     _ => 2, // "other" (selectors, etc.)
                 };
-                // Path penalty: doc, changelog, generated, planning files rank much lower.
-                let path_lower = path.to_ascii_lowercase();
-                let path_penalty: u64 = if path_lower.contains("changelog")
-                    || path_lower.contains(".auto-claude")
-                    || path_lower.contains(".planning/")
-                {
-                    1 // near-zero: changelogs/planning are almost never relevant
-                } else if path_lower.ends_with(".md") || path_lower.contains("/docs/") {
-                    2 // heavy penalty: docs only surface if they score very high
-                } else {
-                    8 // no penalty (base multiplier for code files)
-                };
+                let classification = guard.get_file(&path).map(|file| &file.classification);
+                let path_penalty = explore_path_penalty(&path, classification);
                 let coverage_bonus: u64 = match score_data.matched_terms.len() as u64 {
                     0 | 1 => 1,
                     n => n * n,
                 };
-                let score =
-                    (score_data.raw_count as u64) * kind_weight * path_penalty * coverage_bonus;
+                let alignment_multiplier = if fallback_mode {
+                    explore_fallback_alignment_multiplier(
+                        symbol_queries.len(),
+                        score_data.matched_terms.len(),
+                    )
+                } else {
+                    8
+                };
+                let score = (score_data.raw_count as u64)
+                    * kind_weight
+                    * path_penalty
+                    * coverage_bonus
+                    * alignment_multiplier;
                 ((name, kind, path), score)
             })
             .collect();
@@ -4965,6 +5250,13 @@ impl SymForgeServer {
             let filtered_symbols: Vec<(String, String, String)> = symbol_hits
                 .into_iter()
                 .filter(|(_, _, path)| {
+                    let Some(file) = guard.get_file(path) else {
+                        return false;
+                    };
+                    if explore_is_test_like_path(path, Some(&file.classification)) {
+                        noise_hidden += 1;
+                        return false;
+                    }
                     let class = search::NoisePolicy::classify_path(path, None);
                     let hide = noise_policy.should_hide(class);
                     if hide {
@@ -4976,6 +5268,13 @@ impl SymForgeServer {
             let filtered_text: Vec<(String, String, usize)> = text_hits
                 .into_iter()
                 .filter(|(path, _, _)| {
+                    let Some(file) = guard.get_file(path) else {
+                        return false;
+                    };
+                    if explore_is_test_like_path(path, Some(&file.classification)) {
+                        noise_hidden += 1;
+                        return false;
+                    }
                     let class = search::NoisePolicy::classify_path(path, None);
                     let hide = noise_policy.should_hide(class);
                     if hide {
@@ -5199,7 +5498,13 @@ impl SymForgeServer {
             smart_query::QueryIntent::Understand { .. } | smart_query::QueryIntent::Explore { .. }
         ) {
             let guard = self.index.read();
-            if let Some(symbol) = Self::extract_exact_symbol_understanding_candidate(&guard, q) {
+            if let Some(name) =
+                Self::extract_exact_implementation_understanding_candidate(&guard, q)
+            {
+                intent = smart_query::QueryIntent::UnderstandImplementations { name };
+            } else if let Some(symbol) =
+                Self::extract_exact_symbol_understanding_candidate(&guard, q)
+            {
                 intent = smart_query::QueryIntent::UnderstandSymbol { symbol };
             }
         }
@@ -5286,6 +5591,22 @@ impl SymForgeServer {
                     estimate: None,
                 };
                 self.get_symbol_context(Parameters(input)).await
+            }
+            smart_query::QueryIntent::UnderstandImplementations { name } => {
+                let input = FindReferencesInput {
+                    name: name.clone(),
+                    kind: None,
+                    path: None,
+                    symbol_kind: None,
+                    symbol_line: None,
+                    limit: None,
+                    max_per_file: None,
+                    compact: None,
+                    mode: Some("implementations".to_string()),
+                    direction: None,
+                    estimate: None,
+                };
+                self.find_references(Parameters(input)).await
             }
             smart_query::QueryIntent::SearchCode { pattern } => {
                 let input = SearchTextInput {
@@ -6986,6 +7307,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_get_symbol_context_surfaces_impl_guidance_for_zero_caller_struct() {
+        let content = b"pub struct ProjectOrchestratorActor;\n\nimpl ProjectOrchestratorActor {\n    pub fn new() -> Self {\n        Self\n    }\n}\n\nimpl Actor for ProjectOrchestratorActor {\n    fn handle(&self) {}\n}\n";
+        let symbols = vec![
+            SymbolRecord {
+                name: "ProjectOrchestratorActor".to_string(),
+                kind: SymbolKind::Struct,
+                depth: 0,
+                sort_order: 0,
+                byte_range: (0, 35),
+                line_range: (0, 0),
+                doc_byte_range: None,
+                item_byte_range: None,
+            },
+            SymbolRecord {
+                name: "impl ProjectOrchestratorActor".to_string(),
+                kind: SymbolKind::Impl,
+                depth: 0,
+                sort_order: 1,
+                byte_range: (37, 117),
+                line_range: (2, 6),
+                doc_byte_range: None,
+                item_byte_range: None,
+            },
+            SymbolRecord {
+                name: "impl Actor for ProjectOrchestratorActor".to_string(),
+                kind: SymbolKind::Impl,
+                depth: 0,
+                sort_order: 2,
+                byte_range: (119, content.len() as u32),
+                line_range: (8, 10),
+                doc_byte_range: None,
+                item_byte_range: None,
+            },
+        ];
+        let server = make_server(make_live_index_ready(vec![make_file(
+            "src/actors.rs",
+            content,
+            symbols,
+        )]));
+
+        let result = server
+            .get_symbol_context(Parameters(super::GetSymbolContextInput {
+                name: "ProjectOrchestratorActor".to_string(),
+                file: None,
+                path: Some("src/actors.rs".to_string()),
+                symbol_kind: Some("struct".to_string()),
+                symbol_line: None,
+                verbosity: None,
+                bundle: None,
+                sections: None,
+                max_tokens: None,
+                estimate: None,
+            }))
+            .await;
+
+        assert!(
+            result.contains("0 direct callers"),
+            "default symbol context should surface impl guidance for zero-caller structs: {result}"
+        );
+        assert!(
+            result.contains("impl ProjectOrchestratorActor (src/actors.rs:3)"),
+            "inherent impl suggestion should be surfaced: {result}"
+        );
+        assert!(
+            result.contains("impl Actor for ProjectOrchestratorActor (src/actors.rs:9)"),
+            "trait impl suggestion should be surfaced: {result}"
+        );
+    }
+
+    #[tokio::test]
     async fn test_get_symbol_context_exact_selector_excludes_unrelated_same_name_hits() {
         let target = make_file(
             "src/db.rs",
@@ -7266,6 +7657,38 @@ mod tests {
         assert!(
             result.contains("not found on disk"),
             "deleted file should report 'not found on disk'; got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_analyze_file_impact_auto_indexes_new_file_when_missing_from_index() {
+        let repo = TempDir::new().expect("temp repo");
+        fs::create_dir_all(repo.path().join("src")).expect("src dir");
+        let source_path = repo.path().join("src").join("fresh.rs");
+        fs::write(&source_path, "pub fn fresh_symbol() {}\n").expect("write new source");
+
+        let server = make_server_with_root(
+            make_live_index_ready(vec![]),
+            Some(repo.path().to_path_buf()),
+        );
+
+        let result = server
+            .analyze_file_impact(Parameters(super::AnalyzeFileImpactInput {
+                path: "src/fresh.rs".to_string(),
+                new_file: None,
+                include_co_changes: None,
+                co_changes_limit: None,
+                estimate: None,
+            }))
+            .await;
+
+        assert!(
+            result.contains("[Indexed, 0 callers yet]"),
+            "new on-disk file should auto-index even without new_file=true; got: {result}"
+        );
+        assert!(
+            result.contains("fresh_symbol") || result.contains("1 fn"),
+            "auto-indexed new file should report symbol summary; got: {result}"
         );
     }
 
@@ -8432,6 +8855,69 @@ mod tests {
             result.contains("temporal") || result.contains("git"),
             "should mention temporal data status, got: {result}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_search_files_changed_with_surfaces_weak_candidates() {
+        let (key_a, file_a) = make_file("src/auth.rs", b"fn auth() {}", vec![]);
+        let (key_b, file_b) = make_file("src/routes.rs", b"fn routes() {}", vec![]);
+        let server = make_server(make_live_index_ready(vec![
+            (key_a, file_a),
+            (key_b, file_b),
+        ]));
+
+        server
+            .index
+            .update_git_temporal(crate::live_index::git_temporal::GitTemporalIndex {
+                files: HashMap::from([(
+                    "src/auth.rs".to_string(),
+                    crate::live_index::git_temporal::GitFileHistory {
+                        commit_count: 4,
+                        churn_score: 0.7,
+                        last_commit: crate::live_index::git_temporal::CommitSummary {
+                            hash: "abc1234".to_string(),
+                            timestamp: "2026-04-02T12:00:00Z".to_string(),
+                            author: "Tester".to_string(),
+                            message_head: "touch auth".to_string(),
+                            days_ago: 1.0,
+                        },
+                        contributors: vec![],
+                        co_changes: vec![],
+                        weak_co_changes: vec![crate::live_index::git_temporal::CoChangeEntry {
+                            path: "src/routes.rs".to_string(),
+                            coupling_score: 0.12,
+                            shared_commits: 1,
+                        }],
+                    },
+                )]),
+                stats: crate::live_index::git_temporal::GitTemporalStats {
+                    total_commits_analyzed: 12,
+                    analysis_window_days: 90,
+                    hotspots: vec![],
+                    most_coupled: vec![],
+                    computed_at: std::time::SystemTime::now(),
+                    compute_duration: Duration::ZERO,
+                },
+                state: crate::live_index::git_temporal::GitTemporalState::Ready,
+            });
+
+        let result = server
+            .search_files(Parameters(super::SearchFilesInput {
+                query: String::new(),
+                limit: None,
+                current_file: None,
+                changed_with: Some("src/auth.rs".to_string()),
+                resolve: None,
+                estimate: None,
+            }))
+            .await;
+
+        assert!(
+            result.contains("weak heuristic (git-temporal coupling)"),
+            "{result}"
+        );
+        assert!(result.contains("Low confidence"), "{result}");
+        assert!(result.contains("src/routes.rs"), "{result}");
     }
 
     #[tokio::test]
@@ -10205,6 +10691,143 @@ mod tests {
         assert!(
             result.contains("src/bus/fanout.rs"),
             "derived cluster should surface the seed file it learned from: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_explore_hides_test_scaffolding_for_broad_fallback_query() {
+        let code_content =
+            b"pub struct AuthenticationMiddleware;\npub fn enforce_authentication_middleware() {}\n";
+        let code_symbols = vec![
+            SymbolRecord {
+                name: "AuthenticationMiddleware".to_string(),
+                kind: SymbolKind::Struct,
+                depth: 0,
+                sort_order: 0,
+                byte_range: (0, 36),
+                line_range: (0, 0),
+                doc_byte_range: None,
+                item_byte_range: None,
+            },
+            SymbolRecord {
+                name: "enforce_authentication_middleware".to_string(),
+                kind: SymbolKind::Function,
+                depth: 0,
+                sort_order: 1,
+                byte_range: (37, code_content.len() as u32),
+                line_range: (1, 1),
+                doc_byte_range: None,
+                item_byte_range: None,
+            },
+        ];
+        let test_content = b"pub fn test_authentication_middleware_format() {}\n";
+        let test_symbol = SymbolRecord {
+            name: "test_authentication_middleware_format".to_string(),
+            kind: SymbolKind::Function,
+            depth: 0,
+            sort_order: 0,
+            byte_range: (0, test_content.len() as u32),
+            line_range: (0, 0),
+            doc_byte_range: None,
+            item_byte_range: None,
+        };
+        let reason_content = b"pub enum ReasonCode { Authentication, RateLimit }\n";
+        let reason_symbol = SymbolRecord {
+            name: "ReasonCode".to_string(),
+            kind: SymbolKind::Enum,
+            depth: 0,
+            sort_order: 0,
+            byte_range: (0, reason_content.len() as u32),
+            line_range: (0, 0),
+            doc_byte_range: None,
+            item_byte_range: None,
+        };
+        let server = make_server(make_live_index_ready(vec![
+            make_file("src/auth/middleware.rs", code_content, code_symbols),
+            make_file(
+                "src/protocol/format/tests.rs",
+                test_content,
+                vec![test_symbol],
+            ),
+            make_file(
+                "src/frontend/scanner.rs",
+                reason_content,
+                vec![reason_symbol],
+            ),
+        ]));
+
+        let result = server
+            .explore(Parameters(super::ExploreInput {
+                query: "authentication middleware".to_string(),
+                limit: Some(10),
+                depth: None,
+                include_noise: None,
+                language: None,
+                path_prefix: None,
+                estimate: None,
+            }))
+            .await;
+
+        assert!(
+            result.contains("AuthenticationMiddleware"),
+            "real auth middleware symbol should appear in results: {result}"
+        );
+        assert!(
+            !result.contains("test_authentication_middleware_format"),
+            "test scaffolding should be hidden by default for broad fallback explore: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_explore_multi_term_fallback_demotes_single_term_code_noise() {
+        let auth_content = b"pub fn attach_authentication_middleware() { enforce_guard(); }\n";
+        let auth_symbol = SymbolRecord {
+            name: "attach_authentication_middleware".to_string(),
+            kind: SymbolKind::Function,
+            depth: 0,
+            sort_order: 0,
+            byte_range: (0, auth_content.len() as u32),
+            line_range: (0, 0),
+            doc_byte_range: None,
+            item_byte_range: None,
+        };
+        let noise_content = b"pub struct RateLimitKey;\n";
+        let noise_symbol = SymbolRecord {
+            name: "RateLimitKey".to_string(),
+            kind: SymbolKind::Struct,
+            depth: 0,
+            sort_order: 0,
+            byte_range: (0, noise_content.len() as u32),
+            line_range: (0, 0),
+            doc_byte_range: None,
+            item_byte_range: None,
+        };
+        let server = make_server(make_live_index_ready(vec![
+            make_file("src/auth/middleware.rs", auth_content, vec![auth_symbol]),
+            make_file("src/rate_limit/key.rs", noise_content, vec![noise_symbol]),
+        ]));
+
+        let result = server
+            .explore(Parameters(super::ExploreInput {
+                query: "authentication middleware guard".to_string(),
+                limit: Some(10),
+                depth: None,
+                include_noise: None,
+                language: None,
+                path_prefix: None,
+                estimate: None,
+            }))
+            .await;
+
+        let auth_pos = result.find("attach_authentication_middleware");
+        let noise_pos = result.find("RateLimitKey");
+        assert!(
+            auth_pos.is_some(),
+            "multi-term auth middleware symbol should appear in results: {result}"
+        );
+        assert!(
+            noise_pos.is_none() || auth_pos < noise_pos,
+            "multi-term domain hit should outrank single-term code noise: {result}"
         );
     }
 
@@ -12880,6 +13503,76 @@ mod tests {
         assert!(
             !result.contains("Chosen tool: get_symbol_context"),
             "generic symbol names should not hijack broad explain queries: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ask_upgrades_broad_type_query_to_find_implementations() {
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+
+        let content = b"trait Actor {}\nstruct BusActor;\nimpl Actor for BusActor {}\nstruct WorkerActor;\nimpl Actor for WorkerActor {}\n";
+        std::fs::write(src_dir.join("actors.rs"), content).unwrap();
+
+        let result = crate::parsing::process_file("src/actors.rs", content, LanguageId::Rust);
+        let indexed =
+            crate::live_index::store::IndexedFile::from_parse_result(result, content.to_vec());
+        let server = make_server_with_root(
+            make_live_index_ready(vec![("src/actors.rs".to_string(), indexed)]),
+            Some(dir.path().to_path_buf()),
+        );
+
+        let input = super::SmartQueryInput {
+            query: "what are the main actor types?".to_string(),
+        };
+        let result = server.ask(Parameters(input)).await;
+
+        assert!(
+            result.contains("Route confidence: inferred"),
+            "result: {result}"
+        );
+        assert!(
+            result.contains("Chosen tool: find_references"),
+            "result: {result}"
+        );
+        assert!(
+            result
+                .contains("Invocation: find_references(name=\"Actor\", mode=\"implementations\")"),
+            "result: {result}"
+        );
+        assert!(
+            result.contains("trait-like symbol inside a broad explanation query"),
+            "result: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ask_keeps_broad_explore_for_generic_type_query_without_trait_candidate() {
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+
+        let content = b"trait Actor {}\nstruct BusActor;\nimpl Actor for BusActor {}\n";
+        std::fs::write(src_dir.join("actors.rs"), content).unwrap();
+
+        let result = crate::parsing::process_file("src/actors.rs", content, LanguageId::Rust);
+        let indexed =
+            crate::live_index::store::IndexedFile::from_parse_result(result, content.to_vec());
+        let server = make_server_with_root(
+            make_live_index_ready(vec![("src/actors.rs".to_string(), indexed)]),
+            Some(dir.path().to_path_buf()),
+        );
+
+        let input = super::SmartQueryInput {
+            query: "what are the main types?".to_string(),
+        };
+        let result = server.ask(Parameters(input)).await;
+
+        assert!(result.contains("Chosen tool: explore"), "result: {result}");
+        assert!(
+            !result.contains("Chosen tool: find_references"),
+            "generic type phrasing should stay broad without a distinctive trait candidate: {result}"
         );
     }
 

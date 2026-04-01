@@ -16,6 +16,8 @@ pub enum QueryIntent {
     Understand { concept: String },
     /// Broad explanation query upgraded to a direct symbol walkthrough.
     UnderstandSymbol { symbol: String },
+    /// Broad explanation query upgraded to implementation discovery.
+    UnderstandImplementations { name: String },
     /// "search for X in code", "grep X", code pattern
     SearchCode { pattern: String },
     /// "what depends on X", "dependents of X"
@@ -435,6 +437,13 @@ pub fn assess_route(query: &str, intent: &QueryIntent) -> RouteAssessment {
                 "If this route is too narrow, ask about the wider concept explicitly or call `explore` directly.",
             ),
         },
+        QueryIntent::UnderstandImplementations { .. } => RouteAssessment {
+            confidence: RouteConfidence::Inferred,
+            rationale: "detected a distinctive trait-like symbol inside a broad explanation query about implementations or types",
+            suggested_next_step: Some(
+                "If this route is too narrow, ask about the wider concept explicitly or call `explore` directly.",
+            ),
+        },
         QueryIntent::SearchCode { .. } => {
             if strip_prefix_phrase(
                 &lower,
@@ -505,6 +514,9 @@ pub fn route_invocation(intent: &QueryIntent) -> String {
         QueryIntent::UnderstandSymbol { symbol } => {
             format!("get_symbol_context(name=\"{symbol}\")")
         }
+        QueryIntent::UnderstandImplementations { name } => {
+            format!("find_references(name=\"{name}\", mode=\"implementations\")")
+        }
         QueryIntent::SearchCode { pattern } => {
             format!("search_text(query=\"{pattern}\")")
         }
@@ -528,6 +540,7 @@ pub fn route_tool_name(intent: &QueryIntent) -> &'static str {
         QueryIntent::FindChanges => "what_changed",
         QueryIntent::Understand { .. } => "explore",
         QueryIntent::UnderstandSymbol { .. } => "get_symbol_context",
+        QueryIntent::UnderstandImplementations { .. } => "find_references",
         QueryIntent::SearchCode { .. } => "search_text",
         QueryIntent::FindDependents { .. } => "find_dependents",
         QueryIntent::FindImplementations { .. } => "find_references",
@@ -796,5 +809,29 @@ mod tests {
         let invocation = route_invocation(&intent);
         assert!(invocation.contains("search_files"));
         assert!(invocation.contains("src/protocol/mod.rs"));
+    }
+
+    #[test]
+    fn test_assess_route_understand_implementations() {
+        let intent = QueryIntent::UnderstandImplementations {
+            name: "Actor".to_string(),
+        };
+        let assessment = assess_route("what are the main actor types", &intent);
+        assert_eq!(assessment.confidence, RouteConfidence::Inferred);
+        assert!(assessment.rationale.contains("trait-like symbol"));
+        assert!(assessment.suggested_next_step.is_some());
+    }
+
+    #[test]
+    fn test_route_invocation_understand_implementations() {
+        let intent = QueryIntent::UnderstandImplementations {
+            name: "Actor".to_string(),
+        };
+        let invocation = route_invocation(&intent);
+        assert_eq!(
+            invocation,
+            "find_references(name=\"Actor\", mode=\"implementations\")"
+        );
+        assert_eq!(route_tool_name(&intent), "find_references");
     }
 }

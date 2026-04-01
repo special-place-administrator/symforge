@@ -640,6 +640,27 @@ async fn impact_text(
         return handle_new_file_impact(state, &params.path, options).await;
     }
 
+    let should_auto_index_new_file = {
+        let extension = std::path::Path::new(&params.path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        let is_supported = crate::domain::LanguageId::from_extension(extension).is_some();
+        let indexed = {
+            let guard = state.index.read();
+            guard.get_file(&params.path).is_some()
+        };
+        is_supported
+            && !indexed
+            && resolve_repo_root(&state)
+                .map(|root| root.join(&params.path).is_file())
+                .unwrap_or(false)
+    };
+
+    if should_auto_index_new_file {
+        return handle_new_file_impact(state, &params.path, options).await;
+    }
+
     // HOOK-05: Re-index existing file and compute symbol diff.
     handle_edit_impact(state, &params.path, options).await
 }

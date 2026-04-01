@@ -89,6 +89,12 @@ const COUPLED_PAIRS_CAP: usize = 10;
 const MIN_SHARED_COMMITS: u32 = 2;
 /// Minimum Jaccard coefficient to keep a co-change entry.
 const MIN_JACCARD: f32 = 0.15;
+/// Weak co-change candidates are surfaced only when strong matches are absent.
+/// This keeps the main signal high-trust while still avoiding a blank wall for
+/// files with some history but no qualifying strong pair.
+const WEAK_MIN_JACCARD: f32 = 0.05;
+/// Maximum low-confidence co-changed files shown per file.
+const WEAK_CO_CHANGE_CAP_PER_FILE: usize = 3;
 /// Maximum contributors shown per file.
 const CONTRIBUTOR_CAP: usize = 5;
 /// Commits touching more files than this are excluded from co-change
@@ -115,6 +121,9 @@ pub struct GitFileHistory {
     /// Files that co-change with this one, ranked by Jaccard coupling
     /// strength. Capped at top 5.
     pub co_changes: Vec<CoChangeEntry>,
+    /// Lower-confidence co-change candidates that missed the strong threshold
+    /// but still have some evidence. Only shown when strong matches are absent.
+    pub weak_co_changes: Vec<CoChangeEntry>,
 }
 
 /// Summary of a single git commit (cheap to clone, display-ready).
@@ -150,6 +159,45 @@ pub struct CoChangeEntry {
     pub coupling_score: f32,
     /// Raw number of commits where both files changed together.
     pub shared_commits: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CoChangeStrength {
+    Strong,
+    Weak,
+}
+
+fn classify_co_change_pair(
+    shared: u32,
+    count_a: u32,
+    count_b: u32,
+) -> Option<(f32, CoChangeStrength)> {
+    if shared == 0 {
+        return None;
+    }
+    let union = count_a + count_b - shared;
+    if union == 0 {
+        return None;
+    }
+    let jaccard = shared as f32 / union as f32;
+    if shared >= MIN_SHARED_COMMITS && jaccard >= MIN_JACCARD {
+        Some((jaccard, CoChangeStrength::Strong))
+    } else if jaccard >= WEAK_MIN_JACCARD {
+        Some((jaccard, CoChangeStrength::Weak))
+    } else {
+        None
+    }
+}
+
+fn sort_and_cap_co_changes(entries: &mut Vec<CoChangeEntry>, cap: usize) {
+    entries.sort_by(|a, b| {
+        b.coupling_score
+            .partial_cmp(&a.coupling_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.shared_commits.cmp(&a.shared_commits))
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    entries.truncate(cap);
 }
 
 /// Repo-wide temporal summary for health reports.
@@ -392,11 +440,9 @@ impl GitTemporalIndex {
 
         // Compute Jaccard for each qualifying pair.
         let mut file_co_changes: HashMap<String, Vec<CoChangeEntry>> = HashMap::new();
+        let mut weak_file_co_changes: HashMap<String, Vec<CoChangeEntry>> = HashMap::new();
 
         for ((file_a, file_b), shared) in &pair_counts {
-            if *shared < MIN_SHARED_COMMITS {
-                continue;
-            }
             let count_a = file_commit_indices
                 .get(file_a)
                 .map(|v| v.len() as u32)
@@ -405,17 +451,18 @@ impl GitTemporalIndex {
                 .get(file_b)
                 .map(|v| v.len() as u32)
                 .unwrap_or(0);
-            let union = count_a + count_b - shared;
-            if union == 0 {
+            let Some((jaccard, strength)) = classify_co_change_pair(*shared, count_a, count_b)
+            else {
                 continue;
-            }
-            let jaccard = *shared as f32 / union as f32;
-            if jaccard < MIN_JACCARD {
-                continue;
-            }
+            };
+
+            let target = match strength {
+                CoChangeStrength::Strong => &mut file_co_changes,
+                CoChangeStrength::Weak => &mut weak_file_co_changes,
+            };
 
             // Bidirectional: A sees B, B sees A.
-            file_co_changes
+            target
                 .entry(file_a.clone())
                 .or_default()
                 .push(CoChangeEntry {
@@ -423,7 +470,7 @@ impl GitTemporalIndex {
                     coupling_score: jaccard,
                     shared_commits: *shared,
                 });
-            file_co_changes
+            target
                 .entry(file_b.clone())
                 .or_default()
                 .push(CoChangeEntry {
@@ -435,12 +482,10 @@ impl GitTemporalIndex {
 
         // Sort by coupling strength descending and cap per file.
         for entries in file_co_changes.values_mut() {
-            entries.sort_by(|a, b| {
-                b.coupling_score
-                    .partial_cmp(&a.coupling_score)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-            entries.truncate(CO_CHANGE_CAP_PER_FILE);
+            sort_and_cap_co_changes(entries, CO_CHANGE_CAP_PER_FILE);
+        }
+        for entries in weak_file_co_changes.values_mut() {
+            sort_and_cap_co_changes(entries, WEAK_CO_CHANGE_CAP_PER_FILE);
         }
 
         // ── Phase 4: Assemble GitFileHistory per file ───────────────────
@@ -486,6 +531,7 @@ impl GitTemporalIndex {
                 .unwrap_or_default();
 
             let co_changes = file_co_changes.remove(path).unwrap_or_default();
+            let weak_co_changes = weak_file_co_changes.remove(path).unwrap_or_default();
 
             files.insert(
                 path.clone(),
@@ -495,6 +541,7 @@ impl GitTemporalIndex {
                     last_commit,
                     contributors,
                     co_changes,
+                    weak_co_changes,
                 },
             );
         }
@@ -511,9 +558,6 @@ impl GitTemporalIndex {
         let mut most_coupled: Vec<(String, String, f32)> = pair_counts
             .iter()
             .filter_map(|((a, b), shared)| {
-                if *shared < MIN_SHARED_COMMITS {
-                    return None;
-                }
                 let count_a = file_commit_indices
                     .get(a)
                     .map(|v| v.len() as u32)
@@ -522,15 +566,12 @@ impl GitTemporalIndex {
                     .get(b)
                     .map(|v| v.len() as u32)
                     .unwrap_or(0);
-                let union = count_a + count_b - shared;
-                if union == 0 {
-                    return None;
+                match classify_co_change_pair(*shared, count_a, count_b) {
+                    Some((jaccard, CoChangeStrength::Strong)) => {
+                        Some((a.clone(), b.clone(), jaccard))
+                    }
+                    _ => None,
                 }
-                let jaccard = *shared as f32 / union as f32;
-                if jaccard < MIN_JACCARD {
-                    return None;
-                }
-                Some((a.clone(), b.clone(), jaccard))
             })
             .collect();
         most_coupled.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
@@ -802,10 +843,8 @@ impl GitTemporalIndex {
         }
 
         let mut file_co_changes: HashMap<String, Vec<CoChangeEntry>> = HashMap::new();
+        let mut weak_file_co_changes: HashMap<String, Vec<CoChangeEntry>> = HashMap::new();
         for ((file_a, file_b), shared) in &pair_counts {
-            if *shared < MIN_SHARED_COMMITS {
-                continue;
-            }
             let count_a = file_commit_indices
                 .get(file_a)
                 .map(|v| v.len() as u32)
@@ -814,15 +853,15 @@ impl GitTemporalIndex {
                 .get(file_b)
                 .map(|v| v.len() as u32)
                 .unwrap_or(0);
-            let union = count_a + count_b - shared;
-            if union == 0 {
+            let Some((jaccard, strength)) = classify_co_change_pair(*shared, count_a, count_b)
+            else {
                 continue;
-            }
-            let jaccard = *shared as f32 / union as f32;
-            if jaccard < MIN_JACCARD {
-                continue;
-            }
-            file_co_changes
+            };
+            let target = match strength {
+                CoChangeStrength::Strong => &mut file_co_changes,
+                CoChangeStrength::Weak => &mut weak_file_co_changes,
+            };
+            target
                 .entry(file_a.clone())
                 .or_default()
                 .push(CoChangeEntry {
@@ -830,7 +869,7 @@ impl GitTemporalIndex {
                     coupling_score: jaccard,
                     shared_commits: *shared,
                 });
-            file_co_changes
+            target
                 .entry(file_b.clone())
                 .or_default()
                 .push(CoChangeEntry {
@@ -840,12 +879,10 @@ impl GitTemporalIndex {
                 });
         }
         for entries in file_co_changes.values_mut() {
-            entries.sort_by(|a, b| {
-                b.coupling_score
-                    .partial_cmp(&a.coupling_score)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-            entries.truncate(CO_CHANGE_CAP_PER_FILE);
+            sort_and_cap_co_changes(entries, CO_CHANGE_CAP_PER_FILE);
+        }
+        for entries in weak_file_co_changes.values_mut() {
+            sort_and_cap_co_changes(entries, WEAK_CO_CHANGE_CAP_PER_FILE);
         }
 
         let mut files: HashMap<String, GitFileHistory> = HashMap::with_capacity(file_count);
@@ -883,6 +920,7 @@ impl GitTemporalIndex {
                 })
                 .unwrap_or_default();
             let co_changes = file_co_changes.remove(path).unwrap_or_default();
+            let weak_co_changes = weak_file_co_changes.remove(path).unwrap_or_default();
             files.insert(
                 path.clone(),
                 GitFileHistory {
@@ -891,6 +929,7 @@ impl GitTemporalIndex {
                     last_commit,
                     contributors,
                     co_changes,
+                    weak_co_changes,
                 },
             );
         }
@@ -905,9 +944,6 @@ impl GitTemporalIndex {
         let mut most_coupled: Vec<(String, String, f32)> = pair_counts
             .iter()
             .filter_map(|((a, b), shared)| {
-                if *shared < MIN_SHARED_COMMITS {
-                    return None;
-                }
                 let ca = file_commit_indices
                     .get(a)
                     .map(|v| v.len() as u32)
@@ -916,15 +952,10 @@ impl GitTemporalIndex {
                     .get(b)
                     .map(|v| v.len() as u32)
                     .unwrap_or(0);
-                let union = ca + cb - shared;
-                if union == 0 {
-                    return None;
+                match classify_co_change_pair(*shared, ca, cb) {
+                    Some((j, CoChangeStrength::Strong)) => Some((a.clone(), b.clone(), j)),
+                    _ => None,
                 }
-                let j = *shared as f32 / union as f32;
-                if j < MIN_JACCARD {
-                    return None;
-                }
-                Some((a.clone(), b.clone(), j))
             })
             .collect();
         most_coupled.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));

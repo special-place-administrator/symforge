@@ -1086,6 +1086,16 @@ pub fn health_report_from_stats(status: &str, stats: &HealthStats) -> String {
         admission_section
     );
 
+    if stats.partial_parse_count > 0 && stats.failed_count == 0 {
+        output.push_str(
+            "\nParse resilience: partial files kept best-effort symbols; inspect the partial list below only if answers from those files look incomplete.",
+        );
+    } else if stats.failed_count > 0 {
+        output.push_str(
+            "\nParse resilience: failed files are excluded from symbol-level answers until they re-index cleanly.",
+        );
+    }
+
     if !stats.partial_parse_files.is_empty() {
         output.push_str(&format!(
             "\nPartial parse files ({}):\n",
@@ -2304,6 +2314,13 @@ pub fn context_bundle_result_view(view: &ContextBundleView, verbosity: &str) -> 
     context_bundle_result_view_with_max_tokens(view, verbosity, None)
 }
 
+pub fn context_bundle_impl_suggestion_tip(view: &ContextBundleView) -> String {
+    match view {
+        ContextBundleView::Found(view) => format_impl_block_suggestions(view.as_ref()),
+        _ => String::new(),
+    }
+}
+
 pub fn context_bundle_result_view_with_max_tokens(
     view: &ContextBundleView,
     verbosity: &str,
@@ -3301,8 +3318,26 @@ pub(crate) fn format_hook_adoption(snap: &HookAdoptionSnapshot) -> String {
     let mut lines = vec![
         "── Hook Adoption (current session) ──".to_string(),
         format!("Owned workflows routed: {routed}/{total} ({percent}%)"),
-        format!("Fail-open outcomes: {}", snap.total_fail_open()),
     ];
+
+    let total_no_sidecar = snap.source_read.no_sidecar
+        + snap.source_search.no_sidecar
+        + snap.repo_start.no_sidecar
+        + snap.prompt_context.no_sidecar
+        + snap.post_edit_impact.no_sidecar;
+    let total_sidecar_error = snap.source_read.sidecar_error
+        + snap.source_search.sidecar_error
+        + snap.repo_start.sidecar_error
+        + snap.prompt_context.sidecar_error
+        + snap.post_edit_impact.sidecar_error;
+    let fail_open_total = snap.total_fail_open();
+    if fail_open_total > 0 {
+        lines.push(format!(
+            "Fail-open outcomes: {fail_open_total} (no sidecar {total_no_sidecar}, sidecar errors {total_sidecar_error})"
+        ));
+    } else {
+        lines.push("Fail-open outcomes: 0".to_string());
+    }
 
     // Show daemon fallback total if any occurred.
     let total_daemon = snap.source_read.daemon_fallback
@@ -3312,6 +3347,10 @@ pub(crate) fn format_hook_adoption(snap: &HookAdoptionSnapshot) -> String {
         + snap.post_edit_impact.daemon_fallback;
     if total_daemon > 0 {
         lines.push(format!("Daemon fallback routed: {total_daemon}"));
+        lines.push(
+            "Daemon fallback counts as routed work: the hook reached the daemon even though the sidecar was unavailable."
+                .to_string(),
+        );
     }
 
     let mut push_workflow_line =
@@ -3347,6 +3386,18 @@ pub(crate) fn format_hook_adoption(snap: &HookAdoptionSnapshot) -> String {
         lines.push(String::new());
         lines.push("⚠ All hook attempts failed open (no sidecar found).".to_string());
         lines.push("  Start SymForge as an MCP server or run 'symforge daemon start'.".to_string());
+    } else if fail_open_total > 0 && total_sidecar_error == 0 {
+        lines.push(String::new());
+        lines.push(
+            "Fail-open here is mostly benign: hooks fired before a sidecar was reachable or on workflows intentionally left pass-through."
+                .to_string(),
+        );
+    } else if total_sidecar_error > 0 {
+        lines.push(String::new());
+        lines.push(
+            "Actionable note: sidecar errors are real routing failures and worth investigating separately from no-sidecar outcomes."
+                .to_string(),
+        );
     }
 
     lines.join("\n")
@@ -3584,7 +3635,26 @@ pub fn co_changes_result_view(
 
     // Co-changes
     if history.co_changes.is_empty() {
-        lines.push("No co-changing files detected.".to_string());
+        lines.push(
+            "No high-confidence co-changing files detected (needs at least 2 shared commits and Jaccard >= 0.15)."
+                .to_string(),
+        );
+        if !history.weak_co_changes.is_empty() {
+            lines.push(String::new());
+            lines.push(format!(
+                "Low-confidence candidates (top {}):",
+                limit.min(history.weak_co_changes.len())
+            ));
+            for entry in history.weak_co_changes.iter().take(limit) {
+                lines.push(format!(
+                    "  {:<50} coupling: {:.3}  ({} shared commits)",
+                    entry.path, entry.coupling_score, entry.shared_commits
+                ));
+            }
+            lines.push(
+                "These missed the strong co-change threshold and are advisory only.".to_string(),
+            );
+        }
     } else {
         lines.push(format!(
             "Co-changing files (top {}):",
