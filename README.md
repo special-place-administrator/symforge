@@ -180,21 +180,22 @@ The README is intentionally action-first. For deeper reference material, use the
 > [!NOTE]
 > **Run This In Your Terminal**
 >
-> Most users do not need to set any environment variables. Use these commands only when you want to override SymForge defaults.
+> These commands establish a recommended baseline for normal SymForge behavior.
+> They are useful if you want your shell or user profile to hold explicit SymForge defaults instead of relying on implicit defaults.
 
 > [!TIP]
-> **Most common changes**
+> **Recommended baseline**
 >
-> - move SymForge state with `SYMFORGE_HOME`
-> - disable startup indexing with `SYMFORGE_AUTO_INDEX=false`
-> - enable hook diagnostics with `SYMFORGE_HOOK_VERBOSE=1`
-> - tune watcher reconciliation with `SYMFORGE_RECONCILE_INTERVAL`
-> - change bind hosts with `SYMFORGE_SIDECAR_BIND` or `SYMFORGE_DAEMON_BIND`
+> - keep startup indexing enabled with `SYMFORGE_AUTO_INDEX=true`
+> - keep hook diagnostics off by default by leaving `SYMFORGE_HOOK_VERBOSE` unset
+> - keep the standard watcher reconciliation interval with `SYMFORGE_RECONCILE_INTERVAL=30`
+> - keep loopback bind hosts for `SYMFORGE_SIDECAR_BIND` and `SYMFORGE_DAEMON_BIND`
+> - keep the standard circuit-breaker threshold with `SYMFORGE_CB_THRESHOLD=0.20`
 
 > [!WARNING]
 > **Copy carefully**
 >
-> The examples below set all supported user-facing variables at once. If you only need one variable, run just that line.
+> The examples below set a recommended baseline, not a debug profile.
 > The persistent examples are written to be idempotent: re-running them updates the same variables instead of appending duplicate config blocks.
 
 ### PowerShell
@@ -203,8 +204,8 @@ Current terminal session only:
 
 ```powershell
 $env:SYMFORGE_HOME = "$HOME\\.symforge"
-$env:SYMFORGE_AUTO_INDEX = "false"
-$env:SYMFORGE_HOOK_VERBOSE = "1"
+$env:SYMFORGE_AUTO_INDEX = "true"
+Remove-Item Env:SYMFORGE_HOOK_VERBOSE -ErrorAction SilentlyContinue
 $env:SYMFORGE_CB_THRESHOLD = "0.20"
 $env:SYMFORGE_RECONCILE_INTERVAL = "30"
 $env:SYMFORGE_SIDECAR_BIND = "127.0.0.1"
@@ -215,8 +216,8 @@ Persist for the current Windows user:
 
 ```powershell
 [Environment]::SetEnvironmentVariable("SYMFORGE_HOME", "$HOME\\.symforge", "User")
-[Environment]::SetEnvironmentVariable("SYMFORGE_AUTO_INDEX", "false", "User")
-[Environment]::SetEnvironmentVariable("SYMFORGE_HOOK_VERBOSE", "1", "User")
+[Environment]::SetEnvironmentVariable("SYMFORGE_AUTO_INDEX", "true", "User")
+[Environment]::SetEnvironmentVariable("SYMFORGE_HOOK_VERBOSE", $null, "User")
 [Environment]::SetEnvironmentVariable("SYMFORGE_CB_THRESHOLD", "0.20", "User")
 [Environment]::SetEnvironmentVariable("SYMFORGE_RECONCILE_INTERVAL", "30", "User")
 [Environment]::SetEnvironmentVariable("SYMFORGE_SIDECAR_BIND", "127.0.0.1", "User")
@@ -231,8 +232,8 @@ Current terminal session only:
 
 ```bat
 set SYMFORGE_HOME=%USERPROFILE%\.symforge
-set SYMFORGE_AUTO_INDEX=false
-set SYMFORGE_HOOK_VERBOSE=1
+set SYMFORGE_AUTO_INDEX=true
+set SYMFORGE_HOOK_VERBOSE=
 set SYMFORGE_CB_THRESHOLD=0.20
 set SYMFORGE_RECONCILE_INTERVAL=30
 set SYMFORGE_SIDECAR_BIND=127.0.0.1
@@ -243,8 +244,8 @@ Persist for the current Windows user:
 
 ```bat
 setx SYMFORGE_HOME "%USERPROFILE%\.symforge"
-setx SYMFORGE_AUTO_INDEX "false"
-setx SYMFORGE_HOOK_VERBOSE "1"
+setx SYMFORGE_AUTO_INDEX "true"
+setx SYMFORGE_HOOK_VERBOSE ""
 setx SYMFORGE_CB_THRESHOLD "0.20"
 setx SYMFORGE_RECONCILE_INTERVAL "30"
 setx SYMFORGE_SIDECAR_BIND "127.0.0.1"
@@ -259,8 +260,8 @@ Current shell session only:
 
 ```bash
 export SYMFORGE_HOME="$HOME/.symforge"
-export SYMFORGE_AUTO_INDEX=false
-export SYMFORGE_HOOK_VERBOSE=1
+export SYMFORGE_AUTO_INDEX=true
+unset SYMFORGE_HOOK_VERBOSE
 export SYMFORGE_CB_THRESHOLD=0.20
 export SYMFORGE_RECONCILE_INTERVAL=30
 export SYMFORGE_SIDECAR_BIND=127.0.0.1
@@ -280,8 +281,7 @@ start = "# >>> SymForge env >>>"
 end = "# <<< SymForge env <<<"
 block = """# >>> SymForge env >>>
 export SYMFORGE_HOME="$HOME/.symforge"
-export SYMFORGE_AUTO_INDEX=false
-export SYMFORGE_HOOK_VERBOSE=1
+export SYMFORGE_AUTO_INDEX=true
 export SYMFORGE_CB_THRESHOLD=0.20
 export SYMFORGE_RECONCILE_INTERVAL=30
 export SYMFORGE_SIDECAR_BIND=127.0.0.1
@@ -311,8 +311,8 @@ Current shell session only:
 
 ```bash
 export SYMFORGE_HOME="$HOME/.symforge"
-export SYMFORGE_AUTO_INDEX=false
-export SYMFORGE_HOOK_VERBOSE=1
+export SYMFORGE_AUTO_INDEX=true
+unset SYMFORGE_HOOK_VERBOSE
 export SYMFORGE_CB_THRESHOLD=0.20
 export SYMFORGE_RECONCILE_INTERVAL=30
 export SYMFORGE_SIDECAR_BIND=127.0.0.1
@@ -332,8 +332,7 @@ start = "# >>> SymForge env >>>"
 end = "# <<< SymForge env <<<"
 block = """# >>> SymForge env >>>
 export SYMFORGE_HOME="$HOME/.symforge"
-export SYMFORGE_AUTO_INDEX=false
-export SYMFORGE_HOOK_VERBOSE=1
+export SYMFORGE_AUTO_INDEX=true
 export SYMFORGE_CB_THRESHOLD=0.20
 export SYMFORGE_RECONCILE_INTERVAL=30
 export SYMFORGE_SIDECAR_BIND=127.0.0.1
