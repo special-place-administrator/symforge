@@ -135,21 +135,17 @@ where
             let result: Result<Vec<T>, _> = values
                 .into_iter()
                 .enumerate()
-                .map(|(i, v)| {
-                    match serde_json::from_value::<T>(v.clone()) {
-                        Ok(item) => Ok(item),
-                        Err(direct_err) => {
-                            if let serde_json::Value::String(ref s) = v {
-                                serde_json::from_str::<T>(s).map_err(|_| {
-                                    serde::de::Error::custom(format!(
-                                        "element {i}: {direct_err}"
-                                    ))
-                                })
-                            } else {
-                                Err(serde::de::Error::custom(format!(
-                                    "element {i}: {direct_err}"
-                                )))
-                            }
+                .map(|(i, v)| match serde_json::from_value::<T>(v.clone()) {
+                    Ok(item) => Ok(item),
+                    Err(direct_err) => {
+                        if let serde_json::Value::String(ref s) = v {
+                            serde_json::from_str::<T>(s).map_err(|_| {
+                                serde::de::Error::custom(format!("element {i}: {direct_err}"))
+                            })
+                        } else {
+                            Err(serde::de::Error::custom(format!(
+                                "element {i}: {direct_err}"
+                            )))
                         }
                     }
                 })
@@ -195,9 +191,7 @@ where
                             // If the value is a string, try parsing it as JSON
                             if let serde_json::Value::String(ref s) = v {
                                 serde_json::from_str::<T>(s).map_err(|_| {
-                                    serde::de::Error::custom(format!(
-                                        "element {i}: {direct_err}"
-                                    ))
+                                    serde::de::Error::custom(format!("element {i}: {direct_err}"))
                                 })
                             } else {
                                 Err(serde::de::Error::custom(format!(
@@ -215,12 +209,13 @@ where
 
 use crate::domain::LanguageId;
 use crate::live_index::{
-    IndexedFile, SearchFilesHit, SearchFilesTier, SearchFilesView, search,
+    IndexedFile, SearchFilesHit, SearchFilesResolveView, SearchFilesTier, SearchFilesView, search,
     store::{IndexState, LiveIndex},
 };
 use crate::protocol::edit;
 use crate::protocol::edit_format;
 use crate::protocol::format;
+use crate::protocol::search_format;
 use crate::sidecar::handlers::{
     ImpactParams, OutlineParams, SymbolContextParams, impact_tool_text, outline_tool_text,
     repo_map_text, symbol_context_tool_text,
@@ -1512,17 +1507,600 @@ fn validate_match_mode(input: &GetFileContentInput) -> Result<search::FileConten
 fn freshen_exact_path_for_targeted_retrieval(
     server: &SymForgeServer,
     path_scope: &search::PathScope,
-) {
+) -> bool {
     let search::PathScope::Exact(relative_path) = path_scope else {
-        return;
+        return false;
     };
     let Some(repo_root) = server.capture_repo_root() else {
-        return;
+        return false;
     };
     let Ok(abs_path) = edit::safe_repo_path(&repo_root, relative_path) else {
-        return;
+        return false;
     };
-    watcher::freshen_file_if_stale(relative_path, &abs_path, &server.index);
+    watcher::freshen_file_if_stale(relative_path, &abs_path, &server.index)
+}
+
+fn edit_capability_label(
+    capability: crate::parsing::config_extractors::EditCapability,
+) -> &'static str {
+    use crate::parsing::config_extractors::EditCapability;
+
+    match capability {
+        EditCapability::IndexOnly => "index-only",
+        EditCapability::TextEditSafe => "text-edit-safe",
+        EditCapability::StructuralEditSafe => "structural-edit-safe",
+    }
+}
+
+fn prepare_exact_path_for_edit(
+    server: &SymForgeServer,
+    relative_path: &str,
+) -> Result<(PathBuf, edit_format::EditSourceAuthority), String> {
+    let repo_root = server
+        .capture_repo_root()
+        .ok_or_else(|| "Error: no repository root configured.".to_string())?;
+    let abs_path =
+        edit::safe_repo_path(&repo_root, relative_path).map_err(|e| format!("Error: {e}"))?;
+    let source_authority =
+        if watcher::freshen_file_if_stale(relative_path, &abs_path, &server.index) {
+            edit_format::EditSourceAuthority::DiskRefreshed
+        } else {
+            edit_format::EditSourceAuthority::CurrentIndex
+        };
+    Ok((abs_path, source_authority))
+}
+
+fn prepare_batch_paths_for_edit(
+    server: &SymForgeServer,
+    repo_root: &std::path::Path,
+    relative_paths: &[String],
+) -> Result<edit_format::EditSourceAuthority, String> {
+    let mut unique_paths = relative_paths.to_vec();
+    unique_paths.sort();
+    unique_paths.dedup();
+
+    let mut refreshed = false;
+    for relative_path in unique_paths {
+        let abs_path =
+            edit::safe_repo_path(repo_root, &relative_path).map_err(|e| format!("Error: {e}"))?;
+        if watcher::freshen_file_if_stale(&relative_path, &abs_path, &server.index) {
+            refreshed = true;
+        }
+    }
+
+    Ok(if refreshed {
+        edit_format::EditSourceAuthority::DiskRefreshed
+    } else {
+        edit_format::EditSourceAuthority::CurrentIndex
+    })
+}
+
+fn prepare_project_wide_rename(
+    server: &SymForgeServer,
+    repo_root: &std::path::Path,
+) -> edit_format::EditSourceAuthority {
+    if watcher::reconcile_stale_files(repo_root, &server.index) > 0 {
+        edit_format::EditSourceAuthority::DiskRefreshed
+    } else {
+        edit_format::EditSourceAuthority::CurrentIndex
+    }
+}
+
+fn symbol_anchor(path: &str, symbol: &crate::domain::SymbolRecord) -> String {
+    format!("{path}:{}", symbol.line_range.0.saturating_add(1))
+}
+
+fn search_scope_summary(
+    path_scope: &search::PathScope,
+    language_filter: Option<&LanguageId>,
+    noise_policy: &search::NoisePolicy,
+    glob: Option<&str>,
+    exclude_glob: Option<&str>,
+    ranked: bool,
+) -> String {
+    let mut parts = Vec::new();
+    match path_scope {
+        search::PathScope::Any => parts.push("repo-wide".to_string()),
+        search::PathScope::Exact(path) => parts.push(format!("path `{path}`")),
+        search::PathScope::Prefix(prefix) => parts.push(format!("path prefix `{prefix}`")),
+    }
+    if let Some(language) = language_filter {
+        parts.push(format!("language `{language}`"));
+    }
+    parts.push(if noise_policy.include_tests {
+        "tests included".to_string()
+    } else {
+        "tests filtered".to_string()
+    });
+    parts.push(if noise_policy.include_generated {
+        "generated included".to_string()
+    } else {
+        "generated filtered".to_string()
+    });
+    if let Some(glob) = glob {
+        parts.push(format!("glob `{glob}`"));
+    }
+    if let Some(exclude_glob) = exclude_glob {
+        parts.push(format!("exclude `{exclude_glob}`"));
+    }
+    if ranked {
+        parts.push("ranked ordering enabled".to_string());
+    }
+    parts.join("; ")
+}
+
+fn search_parse_state_for_paths<'a, I>(index: &LiveIndex, paths: I) -> &'static str
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    if paths
+        .into_iter()
+        .filter_map(|path| index.get_file(path))
+        .any(|file| file.parse_diagnostic.is_some())
+    {
+        "partial"
+    } else {
+        "parsed"
+    }
+}
+
+fn parse_state_for_file(file: &IndexedFile) -> &'static str {
+    match &file.parse_status {
+        crate::live_index::store::ParseStatus::Parsed => "parsed",
+        crate::live_index::store::ParseStatus::PartialParse { .. } => "partial",
+        crate::live_index::store::ParseStatus::Failed { .. } => "degraded",
+    }
+}
+
+fn context_source_authority_label(refreshed: bool) -> &'static str {
+    if refreshed {
+        "disk-refreshed"
+    } else {
+        "current index"
+    }
+}
+
+fn context_bundle_completeness_label(
+    view: &crate::live_index::ContextBundleFoundView,
+    rendered: &str,
+) -> String {
+    let section_overflow =
+        view.callers.overflow_count + view.callees.overflow_count + view.type_usages.overflow_count;
+    let mut parts = Vec::new();
+    if rendered.contains("Truncated at ~") {
+        parts.push("budget-limited".to_string());
+    }
+    if section_overflow > 0 {
+        parts.push(format!(
+            "section-capped ({} additional reference entries not shown)",
+            section_overflow
+        ));
+    }
+    if parts.is_empty() {
+        "full".to_string()
+    } else {
+        parts.join("; ")
+    }
+}
+
+fn search_completeness_label(overflow_count: usize, suppressed_by_noise: usize) -> String {
+    let mut parts = vec![if overflow_count > 0 {
+        format!("truncated by result cap ({overflow_count} more omitted)")
+    } else {
+        "full for current scope".to_string()
+    }];
+    if suppressed_by_noise > 0 {
+        parts.push(format!(
+            "{suppressed_by_noise} noise-filtered match(es) suppressed"
+        ));
+    }
+    parts.join("; ")
+}
+
+fn search_text_match_type_label(
+    is_regex: bool,
+    terms: Option<&[String]>,
+    auto_detected_regex: bool,
+    auto_corrected_regex: bool,
+    ranked: bool,
+) -> String {
+    if auto_corrected_regex {
+        "heuristic (auto-corrected regex)".to_string()
+    } else if is_regex && auto_detected_regex {
+        "heuristic (auto-detected regex)".to_string()
+    } else if is_regex {
+        "heuristic (regex)".to_string()
+    } else if ranked {
+        match terms {
+            Some(terms) if !terms.is_empty() => "heuristic (ranked OR-literal terms)".to_string(),
+            _ => "heuristic (ranked literal)".to_string(),
+        }
+    } else if matches!(terms, Some(terms) if !terms.is_empty()) {
+        "constrained (OR-literal terms)".to_string()
+    } else {
+        "constrained (literal)".to_string()
+    }
+}
+
+fn search_symbols_match_type_label(
+    result: &search::SymbolSearchResult,
+    is_browse: bool,
+) -> &'static str {
+    if is_browse {
+        "constrained (scoped browse)"
+    } else {
+        match result.hits.first().map(|hit| hit.tier) {
+            Some(search::SymbolMatchTier::Exact) => "exact",
+            Some(search::SymbolMatchTier::Prefix) => "constrained (prefix tier)",
+            Some(search::SymbolMatchTier::Substring) => "heuristic (substring tier)",
+            None => "constrained",
+        }
+    }
+}
+
+fn search_files_match_type_label(view: &SearchFilesView) -> &'static str {
+    match view {
+        SearchFilesView::Found { hits, .. } => match hits.first().map(|hit| hit.tier) {
+            Some(SearchFilesTier::CoChange) => "heuristic (git-temporal coupling)",
+            Some(SearchFilesTier::StrongPath) | Some(SearchFilesTier::Basename) => {
+                "constrained (tiered path relevance)"
+            }
+            Some(SearchFilesTier::LoosePath) => "heuristic (loose path relevance)",
+            None => "constrained",
+        },
+        _ => "constrained",
+    }
+}
+
+fn search_files_resolve_match_type_label(view: &SearchFilesResolveView) -> &'static str {
+    match view {
+        SearchFilesResolveView::Resolved { .. } => "exact (resolve)",
+        SearchFilesResolveView::Ambiguous { .. } => "constrained (resolve candidates)",
+        _ => "constrained",
+    }
+}
+
+fn anchored_search_evidence(anchors: Vec<String>, noun: &str) -> String {
+    if anchors.is_empty() {
+        format!("no {noun} available")
+    } else {
+        let rendered = anchors
+            .into_iter()
+            .map(|anchor| format!("`{anchor}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("{noun} {rendered}")
+    }
+}
+
+fn search_text_evidence(result: &search::TextSearchResult) -> String {
+    let anchors = result
+        .files
+        .iter()
+        .flat_map(|file| {
+            file.matches
+                .iter()
+                .take(2)
+                .map(move |line_match| format!("{}:{}", file.path, line_match.line_number))
+        })
+        .take(3)
+        .collect();
+    anchored_search_evidence(anchors, "line anchors")
+}
+
+fn search_symbols_evidence(result: &search::SymbolSearchResult) -> String {
+    let anchors = result
+        .hits
+        .iter()
+        .take(3)
+        .map(|hit| format!("{}:{}", hit.path, hit.line))
+        .collect();
+    anchored_search_evidence(anchors, "symbol anchors")
+}
+
+fn search_paths_evidence<'a, I>(paths: I) -> String
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let anchors = paths
+        .into_iter()
+        .take(3)
+        .map(std::borrow::ToOwned::to_owned)
+        .collect();
+    anchored_search_evidence(anchors, "paths")
+}
+
+fn find_references_match_type_label(input: &FindReferencesInput, mode: &str) -> &'static str {
+    if mode == "implementations" {
+        return "constrained (implementations mode)";
+    }
+    if input.path.is_some() && input.symbol_line.is_some() {
+        "exact"
+    } else if input.path.is_some() {
+        "constrained (path-scoped symbol)"
+    } else if input.symbol_kind.is_some() || input.kind.as_deref().is_some_and(|kind| kind != "all")
+    {
+        "constrained (repo-wide filtered symbol)"
+    } else {
+        "constrained (repo-wide name match)"
+    }
+}
+
+fn find_references_scope_summary(input: &FindReferencesInput, mode: &str) -> String {
+    let mut parts = Vec::new();
+    if mode == "implementations" {
+        parts.push(format!(
+            "repo-wide implementations for symbol token `{}`",
+            input.name
+        ));
+        parts.push(format!(
+            "direction `{}`",
+            input.direction.as_deref().unwrap_or("auto")
+        ));
+        return parts.join("; ");
+    }
+
+    match input.path.as_deref() {
+        Some(path) => parts.push(format!("path `{path}`")),
+        None => parts.push(format!("repo-wide symbol token `{}`", input.name)),
+    }
+    if let Some(line) = input.symbol_line {
+        parts.push(format!("exact selector line {line}"));
+    }
+    if let Some(symbol_kind) = input.symbol_kind.as_deref() {
+        parts.push(format!("symbol kind `{symbol_kind}`"));
+    }
+    if let Some(reference_kind) = input.kind.as_deref().filter(|kind| *kind != "all") {
+        parts.push(format!("reference kind `{reference_kind}`"));
+    }
+    parts.join("; ")
+}
+
+fn find_references_completeness_label(
+    view: &crate::live_index::FindReferencesView,
+    limits: &format::OutputLimits,
+) -> String {
+    let shown_files = view.files.len().min(limits.max_files);
+    let mut shown_refs = 0usize;
+    for file in view.files.iter().take(limits.max_files) {
+        if shown_refs >= limits.total_hits {
+            break;
+        }
+        let remaining_budget = limits.total_hits.saturating_sub(shown_refs);
+        shown_refs += file
+            .hits
+            .len()
+            .min(limits.max_per_file)
+            .min(remaining_budget);
+    }
+    let omitted_refs = view.total_refs.saturating_sub(shown_refs);
+    let omitted_files = view.total_files.saturating_sub(shown_files);
+    if omitted_refs == 0 && omitted_files == 0 {
+        return "full for current scope".to_string();
+    }
+    let mut parts = vec!["truncated by result cap".to_string()];
+    if omitted_refs > 0 {
+        parts.push(format!("{omitted_refs} reference(s) omitted"));
+    }
+    if omitted_files > 0 {
+        parts.push(format!("{omitted_files} file(s) omitted"));
+    }
+    parts.join("; ")
+}
+
+fn find_references_evidence(view: &crate::live_index::FindReferencesView) -> String {
+    let anchors = view
+        .files
+        .iter()
+        .flat_map(|file| {
+            let file_path = file.file_path.clone();
+            file.hits.iter().flat_map(move |hit| {
+                hit.context_lines
+                    .iter()
+                    .filter(|line| line.is_reference_line)
+                    .map({
+                        let file_path = file_path.clone();
+                        move |line| format!("{file_path}:{}", line.line_number)
+                    })
+            })
+        })
+        .take(3)
+        .collect();
+    anchored_search_evidence(anchors, "reference anchors")
+}
+
+fn implementations_parse_state_for_paths(
+    index: &LiveIndex,
+    view: &crate::live_index::ImplementationsView,
+) -> &'static str {
+    search_parse_state_for_paths(
+        index,
+        view.entries.iter().map(|entry| entry.file_path.as_str()),
+    )
+}
+
+fn implementations_completeness_label(
+    view: &crate::live_index::ImplementationsView,
+    limits: &format::OutputLimits,
+) -> String {
+    let shown = view
+        .entries
+        .len()
+        .min(limits.max_files * limits.max_per_file);
+    let omitted = view.entries.len().saturating_sub(shown);
+    if omitted == 0 {
+        "full for current scope".to_string()
+    } else {
+        format!("truncated by result cap ({omitted} implementation entry(s) omitted)")
+    }
+}
+
+fn implementations_evidence(view: &crate::live_index::ImplementationsView) -> String {
+    let anchors = view
+        .entries
+        .iter()
+        .take(3)
+        .map(|entry| format!("{}:{}", entry.file_path, entry.line + 1))
+        .collect();
+    anchored_search_evidence(anchors, "implementation anchors")
+}
+
+fn changed_paths_completeness_label(before_filter: usize, after_filter: usize) -> String {
+    if before_filter == after_filter {
+        "full for current scope".to_string()
+    } else {
+        format!("full for filtered scope ({after_filter} of {before_filter} path(s) shown)")
+    }
+}
+
+fn what_changed_scope_summary(input: &WhatChangedInput, mode: &WhatChangedMode) -> String {
+    let mut parts = Vec::new();
+    match mode {
+        WhatChangedMode::Timestamp(since_ts) => parts.push(format!("timestamp since `{since_ts}`")),
+        WhatChangedMode::Uncommitted => parts.push("uncommitted working tree".to_string()),
+        WhatChangedMode::GitRef(git_ref) => {
+            parts.push(format!("git diff from `{git_ref}` to `HEAD`"))
+        }
+    }
+    if let Some(path_prefix) = input
+        .path_prefix
+        .as_deref()
+        .filter(|prefix| !prefix.trim().is_empty())
+    {
+        parts.push(format!(
+            "path prefix `{}`",
+            normalize_exact_path(path_prefix)
+        ));
+    }
+    if let Some(language) = input.language.as_deref() {
+        parts.push(format!("language `{language}`"));
+    }
+    if input.code_only.unwrap_or(false) {
+        parts.push("code-only filter".to_string());
+    }
+    if input.include_symbol_diff.unwrap_or(false) {
+        parts.push("symbol diff appended".to_string());
+    }
+    parts.join("; ")
+}
+
+fn what_changed_source_authority_label(mode: &WhatChangedMode) -> &'static str {
+    match mode {
+        WhatChangedMode::Timestamp(_) => "current index",
+        WhatChangedMode::Uncommitted => "git working tree",
+        WhatChangedMode::GitRef(_) => "git ref diff",
+    }
+}
+
+fn what_changed_parse_state_label(
+    mode: &WhatChangedMode,
+    include_symbol_diff: bool,
+) -> &'static str {
+    match mode {
+        WhatChangedMode::Timestamp(_) => "parsed",
+        _ if include_symbol_diff => "degraded (git path diff + lexical symbol diff)",
+        _ => "not-applicable (git path diff)",
+    }
+}
+
+fn render_diff_symbols_output(
+    base: &str,
+    target: &str,
+    all_changed_files: usize,
+    changed_files: &[&str],
+    repo: &crate::git::GitRepo,
+    compact: bool,
+    summary_only: bool,
+    path_prefix: Option<&str>,
+    language: Option<&str>,
+    code_only: bool,
+) -> String {
+    let mut scope_parts = vec![format!("git diff `{base}`...`{target}`")];
+    if let Some(path_prefix) = path_prefix.filter(|prefix| !prefix.trim().is_empty()) {
+        scope_parts.push(format!(
+            "path prefix `{}`",
+            normalize_exact_path(path_prefix)
+        ));
+    }
+    if let Some(language) = language {
+        scope_parts.push(format!("language `{language}`"));
+    }
+    if code_only {
+        scope_parts.push("code-only filter".to_string());
+    }
+    if compact {
+        scope_parts.push("compact output".to_string());
+    }
+    if summary_only {
+        scope_parts.push("summary-only output".to_string());
+    }
+    let completeness = if changed_files.len() == all_changed_files {
+        "full for filtered git delta".to_string()
+    } else {
+        format!(
+            "full for filtered git delta ({} of {} changed file(s) shown)",
+            changed_files.len(),
+            all_changed_files
+        )
+    };
+    let envelope = search_format::format_search_envelope(
+        "exact (git ref diff)",
+        "git ref diff",
+        "degraded (lexical signature extraction)",
+        &completeness,
+        &scope_parts.join("; "),
+        &search_paths_evidence(changed_files.iter().copied()),
+    );
+    let output =
+        format::diff_symbols_result_view(base, target, changed_files, repo, compact, summary_only);
+    format!("{envelope}\n\n{output}")
+}
+
+fn render_search_text_output(
+    server: &SymForgeServer,
+    result: Result<search::TextSearchResult, search::TextSearchError>,
+    group_by: Option<&str>,
+    terms: Option<&[String]>,
+    options: &search::TextSearchOptions,
+    is_regex: bool,
+    auto_detected_regex: bool,
+    auto_corrected_regex: bool,
+) -> String {
+    let envelope = match &result {
+        Ok(result) if !result.files.is_empty() => {
+            let guard = server.index.read();
+            Some(search_format::format_search_envelope(
+                &search_text_match_type_label(
+                    is_regex,
+                    terms,
+                    auto_detected_regex,
+                    auto_corrected_regex,
+                    options.ranked,
+                ),
+                "current index",
+                search_parse_state_for_paths(
+                    &guard,
+                    result.files.iter().map(|file| file.path.as_str()),
+                ),
+                &search_completeness_label(result.overflow_count, result.suppressed_by_noise),
+                &search_scope_summary(
+                    &options.path_scope,
+                    options.language_filter.as_ref(),
+                    &options.noise_policy,
+                    options.glob.as_deref(),
+                    options.exclude_glob.as_deref(),
+                    options.ranked,
+                ),
+                &search_text_evidence(result),
+            ))
+        }
+        _ => None,
+    };
+    let output = format::search_text_result_view(result, group_by, terms);
+    match envelope {
+        Some(envelope) => format!("{envelope}\n\n{output}"),
+        None => output,
+    }
 }
 
 fn validate_chunk_mode(input: &GetFileContentInput) -> Result<search::FileContentOptions, String> {
@@ -1677,8 +2255,8 @@ fn is_sensitive_path(canonical: &std::path::Path) -> bool {
     #[cfg(unix)]
     {
         const BLOCKED: &[&str] = &[
-            "/", "/bin", "/boot", "/dev", "/etc", "/lib", "/lib64", "/proc", "/run",
-            "/sbin", "/sys", "/usr", "/var",
+            "/", "/bin", "/boot", "/dev", "/etc", "/lib", "/lib64", "/proc", "/run", "/sbin",
+            "/sys", "/usr", "/var",
         ];
         if BLOCKED.iter().any(|b| s == *b) {
             return true;
@@ -1802,7 +2380,11 @@ impl SymForgeServer {
                 })
                 .collect::<Vec<_>>()
                 .join("\n---\n");
-            self.record_tool_savings_named("get_symbol", (output.len() * 5 / 4) as u64, (output.len() / 4) as u64);
+            self.record_tool_savings_named(
+                "get_symbol",
+                (output.len() * 5 / 4) as u64,
+                (output.len() / 4) as u64,
+            );
             return output;
         }
 
@@ -1817,7 +2399,9 @@ impl SymForgeServer {
         if params.0.estimate == Some(true) {
             if let Some(ref file) = file {
                 let file_tokens = file.content.len() / 4;
-                let sym_tokens = file.symbols.iter()
+                let sym_tokens = file
+                    .symbols
+                    .iter()
                     .find(|s| s.name == params.0.name)
                     .map(|s| (s.byte_range.1 - s.byte_range.0) as usize / 4)
                     .unwrap_or(0);
@@ -1846,8 +2430,16 @@ impl SymForgeServer {
                         "edit_within_symbol / replace_symbol_body (edits)",
                     ])
                 );
-                self.record_tool_savings_named("get_symbol", (output.len() * 5 / 4) as u64, (output.len() / 4) as u64);
-                self.session_context.record_symbol(&params.0.path, &params.0.name, (output.len() / 4) as u32);
+                self.record_tool_savings_named(
+                    "get_symbol",
+                    (output.len() * 5 / 4) as u64,
+                    (output.len() / 4) as u64,
+                );
+                self.session_context.record_symbol(
+                    &params.0.path,
+                    &params.0.name,
+                    (output.len() / 4) as u32,
+                );
                 output
             }
             None => {
@@ -2020,8 +2612,14 @@ impl SymForgeServer {
                 let outline_tokens = file.content.len() / 50; // ~5-10% of raw
                 return format!(
                     "Estimate for get_file_context(path=\"{}\"):\n  Outline: ~{} tokens\n  Raw file: ~{} tokens\n  Savings: ~{}%",
-                    params.0.path, outline_tokens, file_tokens,
-                    if file_tokens > 0 { 100 - (outline_tokens * 100 / file_tokens) } else { 0 }
+                    params.0.path,
+                    outline_tokens,
+                    file_tokens,
+                    if file_tokens > 0 {
+                        100 - (outline_tokens * 100 / file_tokens)
+                    } else {
+                        0
+                    }
                 );
             } else {
                 return format::not_found_file(&params.0.path);
@@ -2057,7 +2655,8 @@ impl SymForgeServer {
                 let footer = format::compact_savings_footer(body.len(), raw_chars);
                 self.record_read_savings((saved / 4) as u64);
                 let output = format!("{body}{footer}");
-                self.session_context.record_file(&params.0.path, (output.len() / 4) as u32);
+                self.session_context
+                    .record_file(&params.0.path, (output.len() / 4) as u32);
                 output
             }
             Err(StatusCode::NOT_FOUND) => format::not_found_file(&params.0.path),
@@ -2089,15 +2688,24 @@ impl SymForgeServer {
             let guard = self.index.read();
             loading_guard!(guard);
             if let Some(file) = guard.capture_shared_file(path) {
-                let sym_tokens = file.symbols.iter()
+                let sym_tokens = file
+                    .symbols
+                    .iter()
                     .find(|s| s.name == params.0.name)
                     .map(|s| (s.byte_range.1 - s.byte_range.0) as usize / 4)
                     .unwrap_or(0);
-                let ref_count = file.references.iter().filter(|r| r.name == params.0.name).count();
+                let ref_count = file
+                    .references
+                    .iter()
+                    .filter(|r| r.name == params.0.name)
+                    .count();
                 let bundle_est = sym_tokens * 3; // rough: body + deps
                 return format!(
                     "Estimate for get_symbol_context(name=\"{}\"):\n  Symbol body: ~{} tokens\n  Callers: ~{} tokens\n  Bundle: ~{} tokens",
-                    params.0.name, sym_tokens, ref_count * 15 + 50, bundle_est
+                    params.0.name,
+                    sym_tokens,
+                    ref_count * 15 + 50,
+                    bundle_est
                 );
             } else {
                 return format!("Symbol '{}' not found in '{}'", params.0.name, path);
@@ -2108,20 +2716,26 @@ impl SymForgeServer {
                 Some(p) => p.to_string(),
                 None => return "Error: bundle=true requires the 'path' parameter.".to_string(),
             };
-            let (view, raw_chars) = {
+            let refreshed =
+                freshen_exact_path_for_targeted_retrieval(self, &search::PathScope::exact(&path));
+            let (view, raw_chars, parse_state) = {
                 let guard = self.index.read();
                 loading_guard!(guard);
                 let raw = guard
                     .capture_shared_file(&path)
                     .map(|f| f.content.len())
                     .unwrap_or(0);
+                let parse_state = guard
+                    .capture_shared_file(&path)
+                    .map(|f| parse_state_for_file(f.as_ref()))
+                    .unwrap_or("parsed");
                 let v = guard.capture_context_bundle_view(
                     &path,
                     &params.0.name,
                     params.0.symbol_kind.as_deref(),
                     params.0.symbol_line,
                 );
-                (v, raw)
+                (v, raw, parse_state)
             };
             let verbosity = params.0.verbosity.as_deref().unwrap_or("full");
             let result = format::context_bundle_result_view_with_max_tokens(
@@ -2129,11 +2743,40 @@ impl SymForgeServer {
                 verbosity,
                 params.0.max_tokens,
             );
+            let result = if let crate::live_index::ContextBundleView::Found(found) = &view {
+                let scope = match params.0.max_tokens {
+                    Some(max_tokens) => format!(
+                        "path `{}`; bundle mode; max_tokens={max_tokens}",
+                        found.file_path
+                    ),
+                    None => format!("path `{}`; bundle mode", found.file_path),
+                };
+                let envelope = search_format::format_search_envelope(
+                    if params.0.symbol_line.is_some() {
+                        "exact"
+                    } else {
+                        "constrained"
+                    },
+                    context_source_authority_label(refreshed),
+                    parse_state,
+                    &context_bundle_completeness_label(found.as_ref(), &result),
+                    &scope,
+                    &format!(
+                        "symbol anchor `{}:{}`",
+                        found.file_path,
+                        found.line_range.0.saturating_add(1)
+                    ),
+                );
+                format!("{envelope}\n\n{result}")
+            } else {
+                result
+            };
             let saved = raw_chars.saturating_sub(result.len());
             let footer = format::compact_savings_footer(result.len(), raw_chars);
             self.record_read_savings((saved / 4) as u64);
             let output = format!("{result}{footer}");
-            self.session_context.record_symbol(&path, &params.0.name, (output.len() / 4) as u32);
+            self.session_context
+                .record_symbol(&path, &params.0.name, (output.len() / 4) as u32);
             return output;
         }
 
@@ -2161,7 +2804,11 @@ impl SymForgeServer {
                 estimate: None,
             };
             let trace_result = self.trace_symbol(Parameters(trace_input)).await;
-            self.session_context.record_symbol(&path, &params.0.name, (trace_result.len() / 4) as u32);
+            self.session_context.record_symbol(
+                &path,
+                &params.0.name,
+                (trace_result.len() / 4) as u32,
+            );
             return format::enforce_token_budget(trace_result, params.0.max_tokens);
         }
 
@@ -2271,9 +2918,17 @@ impl SymForgeServer {
                     self.record_read_savings((saved / 4) as u64);
                     let output = format!("{body}{footer}");
                     if let Some(ref p) = resolved_path {
-                        self.session_context.record_symbol(p, &params.0.name, (output.len() / 4) as u32);
+                        self.session_context.record_symbol(
+                            p,
+                            &params.0.name,
+                            (output.len() / 4) as u32,
+                        );
                     } else if let Some(ref p) = params.0.path {
-                        self.session_context.record_symbol(p, &params.0.name, (output.len() / 4) as u32);
+                        self.session_context.record_symbol(
+                            p,
+                            &params.0.name,
+                            (output.len() / 4) as u32,
+                        );
                     }
                     format::enforce_token_budget(output, max_tokens)
                 } else {
@@ -2428,14 +3083,44 @@ impl SymForgeServer {
                 .map(|i| result.hits[i].clone())
                 .collect();
         }
+        let envelope = if result.hits.is_empty() {
+            None
+        } else {
+            let guard = self.index.read();
+            Some(search_format::format_search_envelope(
+                search_symbols_match_type_label(&result, is_browse),
+                "current index",
+                search_parse_state_for_paths(
+                    &guard,
+                    result.hits.iter().map(|hit| hit.path.as_str()),
+                ),
+                &search_completeness_label(result.overflow_count, 0),
+                &search_scope_summary(
+                    &options.path_scope,
+                    options.language_filter.as_ref(),
+                    &options.noise_policy,
+                    None,
+                    None,
+                    false,
+                ),
+                &search_symbols_evidence(&result),
+            ))
+        };
         let output = format::search_symbols_result_view(&result, query_str);
         let hint = format::compact_next_step_hint(&[
             "get_symbol (body)",
             "get_symbol_context (callers/callees)",
             "get_file_context (file overview)",
         ]);
-        let output = format!("{output}{hint}");
-        self.record_tool_savings_named("search_symbols", (output.len() * 10 / 4) as u64, (output.len() / 4) as u64);
+        let output = match envelope {
+            Some(envelope) => format!("{envelope}\n\n{output}{hint}"),
+            None => format!("{output}{hint}"),
+        };
+        self.record_tool_savings_named(
+            "search_symbols",
+            (output.len() * 10 / 4) as u64,
+            (output.len() / 4) as u64,
+        );
         // Session tracking: record each symbol hit
         for hit in &result.hits {
             self.session_context.record_symbol(&hit.path, &hit.name, 0);
@@ -2468,6 +3153,7 @@ impl SymForgeServer {
             Err(message) => return message,
         };
         let mut is_regex = params.0.regex.unwrap_or(false);
+        let mut auto_detected_regex = false;
         let original_query = params.0.query.clone();
 
         // Auto-detect regex patterns: if regex is not explicitly set and the
@@ -2484,6 +3170,7 @@ impl SymForgeServer {
                 || q.contains("\\S");
             if has_regex_escape {
                 is_regex = true;
+                auto_detected_regex = true;
                 // Relax noise policy for auto-detected regex — the user
                 // is doing a targeted pattern search and expects grep-like
                 // completeness, so include test files by default.
@@ -2567,10 +3254,15 @@ impl SymForgeServer {
                 if let Ok(ref retry_ok) = retry_result
                     && !retry_ok.files.is_empty()
                 {
-                    let mut output = format::search_text_result_view(
+                    let mut output = render_search_text_output(
+                        self,
                         retry_result,
                         params.0.group_by.as_deref(),
                         params.0.terms.as_deref(),
+                        &options,
+                        true,
+                        auto_detected_regex,
+                        true,
                     );
                     output.push_str(&format!(
                         "\n(auto-corrected double-escaped regex: `{}` → `{}`)",
@@ -2586,10 +3278,15 @@ impl SymForgeServer {
             }
         }
 
-        let output = format::search_text_result_view(
+        let output = render_search_text_output(
+            self,
             result,
             params.0.group_by.as_deref(),
             params.0.terms.as_deref(),
+            &options,
+            is_regex,
+            auto_detected_regex,
+            false,
         );
         let hint = format::compact_next_step_hint(&[
             "inspect_match (deep-dive one hit)",
@@ -2606,7 +3303,12 @@ impl SymForgeServer {
             return result;
         }
         if params.0.estimate == Some(true) {
-            let section_count = params.0.sections.as_ref().map(|s| if s.is_empty() { 4 } else { s.len() }).unwrap_or(4);
+            let section_count = params
+                .0
+                .sections
+                .as_ref()
+                .map(|s| if s.is_empty() { 4 } else { s.len() })
+                .unwrap_or(4);
             let est = 200 + section_count * 200;
             return format!(
                 "Estimate for trace_symbol: ~{} tokens ({} sections)",
@@ -2669,7 +3371,11 @@ impl SymForgeServer {
 
         let verbosity = params.0.verbosity.as_deref().unwrap_or("full");
         let output = format::trace_symbol_result_view(&trace_view, &params.0.name, verbosity);
-        self.session_context.record_symbol(&params.0.path, &params.0.name, (output.len() / 4) as u32);
+        self.session_context.record_symbol(
+            &params.0.path,
+            &params.0.name,
+            (output.len() / 4) as u32,
+        );
         output
     }
 
@@ -2735,7 +3441,43 @@ impl SymForgeServer {
                 loading_guard!(guard);
                 guard.capture_search_files_resolve_view(&params.0.query)
             };
-            return format::search_files_resolve_result_view(&view);
+            let envelope = match &view {
+                SearchFilesResolveView::Resolved { path } => {
+                    let guard = self.index.read();
+                    Some(search_format::format_search_envelope(
+                        search_files_resolve_match_type_label(&view),
+                        "current index",
+                        search_parse_state_for_paths(&guard, std::iter::once(path.as_str())),
+                        "full for current scope",
+                        "resolve=true against indexed file paths",
+                        &search_paths_evidence(std::iter::once(path.as_str())),
+                    ))
+                }
+                SearchFilesResolveView::Ambiguous {
+                    matches,
+                    overflow_count,
+                    ..
+                } => {
+                    let guard = self.index.read();
+                    Some(search_format::format_search_envelope(
+                        search_files_resolve_match_type_label(&view),
+                        "current index",
+                        search_parse_state_for_paths(
+                            &guard,
+                            matches.iter().map(std::string::String::as_str),
+                        ),
+                        &search_completeness_label(*overflow_count, 0),
+                        "resolve=true against indexed file paths",
+                        &search_paths_evidence(matches.iter().map(std::string::String::as_str)),
+                    ))
+                }
+                _ => None,
+            };
+            let output = format::search_files_resolve_result_view(&view);
+            return match envelope {
+                Some(envelope) => format!("{envelope}\n\n{output}"),
+                None => output,
+            };
         }
 
         // Handle changed_with (git temporal coupling)
@@ -2781,6 +3523,23 @@ impl SymForgeServer {
                     overflow_count: 0,
                     hits,
                 });
+                let envelope = {
+                    let guard = self.index.read();
+                    search_format::format_search_envelope(
+                        "heuristic (git-temporal coupling)",
+                        "current index + git temporal",
+                        search_parse_state_for_paths(
+                            &guard,
+                            history.co_changes.iter().map(|entry| entry.path.as_str()),
+                        ),
+                        "full for current scope",
+                        &format!("git-temporal co-changes for `{target_path}`"),
+                        &search_paths_evidence(
+                            history.co_changes.iter().map(|entry| entry.path.as_str()),
+                        ),
+                    )
+                };
+                result = format!("{envelope}\n\n{result}");
                 if commit_count < 50 {
                     result.push_str(&format!(
                         "\n\n⚠ Low confidence: only {commit_count} commit(s) analyzed. Coupling scores may shift as history grows."
@@ -2811,7 +3570,35 @@ impl SymForgeServer {
                 params.0.current_file.as_deref(),
             )
         };
-        format::search_files_result_view(&view)
+        let envelope = match &view {
+            SearchFilesView::Found {
+                hits,
+                overflow_count,
+                ..
+            } => {
+                let guard = self.index.read();
+                let scope = match params.0.current_file.as_deref() {
+                    Some(current_file) => {
+                        format!("ranked indexed file paths; current file boost `{current_file}`")
+                    }
+                    None => "ranked indexed file paths".to_string(),
+                };
+                Some(search_format::format_search_envelope(
+                    search_files_match_type_label(&view),
+                    "current index",
+                    search_parse_state_for_paths(&guard, hits.iter().map(|hit| hit.path.as_str())),
+                    &search_completeness_label(*overflow_count, 0),
+                    &scope,
+                    &search_paths_evidence(hits.iter().map(|hit| hit.path.as_str())),
+                ))
+            }
+            _ => None,
+        };
+        let output = format::search_files_result_view(&view);
+        match envelope {
+            Some(envelope) => format!("{envelope}\n\n{output}"),
+            None => output,
+        }
     }
 
     /// Diagnostic: index status, file/symbol counts, load time, watcher state, token savings,
@@ -2959,14 +3746,58 @@ impl SymForgeServer {
             Err(message) => return message,
         };
 
-        match mode {
+        match &mode {
             WhatChangedMode::Timestamp(since_ts) => {
                 let view = {
                     let guard = self.index.read();
                     loading_guard!(guard);
                     guard.capture_what_changed_timestamp_view()
                 };
-                format::what_changed_timestamp_view(&view, since_ts)
+                if *since_ts < view.loaded_secs {
+                    match filter_paths_by_prefix_and_language(
+                        view.paths.clone(),
+                        params.0.path_prefix.as_deref(),
+                        params.0.language.as_deref(),
+                        params.0.code_only.unwrap_or(false),
+                    ) {
+                        Ok(filtered) => {
+                            if filtered.is_empty() {
+                                return if view.paths.is_empty() {
+                                    "Index is empty — no files tracked.".to_string()
+                                } else {
+                                    "No indexed files matched the requested filters since the last index load.".to_string()
+                                };
+                            }
+                            let envelope = {
+                                let guard = self.index.read();
+                                search_format::format_search_envelope(
+                                    "exact (timestamp compare)",
+                                    what_changed_source_authority_label(&mode),
+                                    search_parse_state_for_paths(
+                                        &guard,
+                                        filtered.iter().map(|path| path.as_str()),
+                                    ),
+                                    &changed_paths_completeness_label(
+                                        view.paths.len(),
+                                        filtered.len(),
+                                    ),
+                                    &what_changed_scope_summary(&params.0, &mode),
+                                    &search_paths_evidence(
+                                        filtered.iter().map(|path| path.as_str()),
+                                    ),
+                                )
+                            };
+                            let output = format::what_changed_paths_result(
+                                &filtered,
+                                "No indexed files matched the requested filters since the last index load.",
+                            );
+                            format!("{envelope}\n\n{output}")
+                        }
+                        Err(error) => error,
+                    }
+                } else {
+                    format::what_changed_timestamp_view(&view, *since_ts)
+                }
             }
             WhatChangedMode::Uncommitted => {
                 let guard = self.index.read();
@@ -2983,6 +3814,7 @@ impl SymForgeServer {
                 };
                 match repo.uncommitted_paths() {
                     Ok(paths) => {
+                        let total_paths = paths.len();
                         match filter_paths_by_prefix_and_language(
                             paths,
                             params.0.path_prefix.as_deref(),
@@ -2990,13 +3822,31 @@ impl SymForgeServer {
                             params.0.code_only.unwrap_or(false),
                         ) {
                             Ok(filtered) => {
+                                if filtered.is_empty() {
+                                    return if total_paths == 0 {
+                                        "No uncommitted changes detected.".to_string()
+                                    } else {
+                                        "No uncommitted changes matched the requested filters."
+                                            .to_string()
+                                    };
+                                }
+                                let include_symbol_diff =
+                                    params.0.include_symbol_diff.unwrap_or(false);
+                                let envelope = search_format::format_search_envelope(
+                                    "exact (uncommitted working tree)",
+                                    what_changed_source_authority_label(&mode),
+                                    what_changed_parse_state_label(&mode, include_symbol_diff),
+                                    &changed_paths_completeness_label(total_paths, filtered.len()),
+                                    &what_changed_scope_summary(&params.0, &mode),
+                                    &search_paths_evidence(
+                                        filtered.iter().map(|path| path.as_str()),
+                                    ),
+                                );
                                 let mut output = format::what_changed_paths_result(
                                     &filtered,
                                     "No uncommitted changes detected.",
                                 );
-                                if params.0.include_symbol_diff.unwrap_or(false)
-                                    && !filtered.is_empty()
-                                {
+                                if include_symbol_diff {
                                     let changed_refs: Vec<&str> =
                                         filtered.iter().map(|s| s.as_str()).collect();
                                     let sym_diff = format::diff_symbols_result_view(
@@ -3010,7 +3860,7 @@ impl SymForgeServer {
                                     output.push_str("\n\n");
                                     output.push_str(&sym_diff);
                                 }
-                                output
+                                format!("{envelope}\n\n{output}")
                             }
                             Err(e) => e,
                         }
@@ -3031,8 +3881,9 @@ impl SymForgeServer {
                     Ok(r) => r,
                     Err(e) => return format!("Git change detection failed: {e}"),
                 };
-                match repo.changed_paths_from_ref(&git_ref) {
+                match repo.changed_paths_from_ref(git_ref) {
                     Ok(paths) => {
+                        let total_paths = paths.len();
                         match filter_paths_by_prefix_and_language(
                             paths,
                             params.0.path_prefix.as_deref(),
@@ -3040,15 +3891,36 @@ impl SymForgeServer {
                             params.0.code_only.unwrap_or(false),
                         ) {
                             Ok(filtered) => {
+                                if filtered.is_empty() {
+                                    return if total_paths == 0 {
+                                        format!(
+                                            "No changes detected relative to git ref '{git_ref}'."
+                                        )
+                                    } else {
+                                        format!(
+                                            "No changes relative to git ref '{git_ref}' matched the requested filters."
+                                        )
+                                    };
+                                }
+                                let include_symbol_diff =
+                                    params.0.include_symbol_diff.unwrap_or(false);
+                                let envelope = search_format::format_search_envelope(
+                                    "exact (git ref diff)",
+                                    what_changed_source_authority_label(&mode),
+                                    what_changed_parse_state_label(&mode, include_symbol_diff),
+                                    &changed_paths_completeness_label(total_paths, filtered.len()),
+                                    &what_changed_scope_summary(&params.0, &mode),
+                                    &search_paths_evidence(
+                                        filtered.iter().map(|path| path.as_str()),
+                                    ),
+                                );
                                 let mut output = format::what_changed_paths_result(
                                     &filtered,
                                     &format!(
                                         "No changes detected relative to git ref '{git_ref}'."
                                     ),
                                 );
-                                if params.0.include_symbol_diff.unwrap_or(false)
-                                    && !filtered.is_empty()
-                                {
+                                if include_symbol_diff {
                                     let base =
                                         git_ref.strip_prefix("branch:").unwrap_or(git_ref.as_str());
                                     let changed_refs: Vec<&str> =
@@ -3064,7 +3936,7 @@ impl SymForgeServer {
                                     output.push_str("\n\n");
                                     output.push_str(&sym_diff);
                                 }
-                                output
+                                format!("{envelope}\n\n{output}")
                             }
                             Err(e) => e,
                         }
@@ -3130,8 +4002,13 @@ impl SymForgeServer {
                     file.as_ref(),
                     options.content_context,
                 );
-                self.record_tool_savings_named("get_file_content", (raw_chars / 4) as u64, (output.len() / 4) as u64);
-                self.session_context.record_file(&input.path, (output.len() / 4) as u32);
+                self.record_tool_savings_named(
+                    "get_file_content",
+                    (raw_chars / 4) as u64,
+                    (output.len() / 4) as u64,
+                );
+                self.session_context
+                    .record_file(&input.path, (output.len() / 4) as u32);
                 format!("{}{}", mode_annotation, output)
             }
             None => {
@@ -3259,6 +4136,19 @@ impl SymForgeServer {
             };
             let cap = input.limit.unwrap_or(200).min(500);
             let limits = format::OutputLimits::new(cap, cap);
+            let envelope = if !view.entries.is_empty() {
+                let guard = self.index.read();
+                Some(search_format::format_search_envelope(
+                    find_references_match_type_label(input, mode),
+                    "current index",
+                    implementations_parse_state_for_paths(&guard, &view),
+                    &implementations_completeness_label(&view, &limits),
+                    &find_references_scope_summary(input, mode),
+                    &implementations_evidence(&view),
+                ))
+            } else {
+                None
+            };
             let result = format::implementations_result_view(&view, &input.name, &limits);
             if view.entries.is_empty() {
                 let guard = self.index.read();
@@ -3296,7 +4186,10 @@ impl SymForgeServer {
                     );
                 }
             }
-            return result;
+            return match envelope {
+                Some(envelope) => format!("{envelope}\n\n{result}"),
+                None => result,
+            };
         }
 
         let limits =
@@ -3323,6 +4216,22 @@ impl SymForgeServer {
         };
         match result {
             Ok(view) => {
+                let envelope = if !view.files.is_empty() {
+                    let guard = self.index.read();
+                    Some(search_format::format_search_envelope(
+                        find_references_match_type_label(input, mode),
+                        "current index",
+                        search_parse_state_for_paths(
+                            &guard,
+                            view.files.iter().map(|file| file.file_path.as_str()),
+                        ),
+                        &find_references_completeness_label(&view, &limits),
+                        &find_references_scope_summary(input, mode),
+                        &find_references_evidence(&view),
+                    ))
+                } else {
+                    None
+                };
                 let mut output = if input.compact.unwrap_or(false) {
                     format::find_references_compact_view(&view, &input.name, &limits)
                 } else {
@@ -3356,9 +4265,17 @@ impl SymForgeServer {
                     }
                 }
 
-                self.record_tool_savings_named("find_references", (output.len() * 8 / 4) as u64, (output.len() / 4) as u64);
-                self.session_context.record_symbol("", &input.name, (output.len() / 4) as u32);
-                output
+                self.record_tool_savings_named(
+                    "find_references",
+                    (output.len() * 8 / 4) as u64,
+                    (output.len() / 4) as u64,
+                );
+                self.session_context
+                    .record_symbol("", &input.name, (output.len() / 4) as u32);
+                match envelope {
+                    Some(envelope) => format!("{envelope}\n\n{output}"),
+                    None => output,
+                }
             }
             Err(error) => error,
         }
@@ -3428,11 +4345,12 @@ impl SymForgeServer {
         }
         if params.0.estimate == Some(true) {
             let depth = params.0.depth.unwrap_or(1);
-            let est = match depth { 1 => 500, 2 => 1500, _ => 3000 };
-            return format!(
-                "Estimate for explore: ~{} tokens (depth={})",
-                est, depth
-            );
+            let est = match depth {
+                1 => 500,
+                2 => 1500,
+                _ => 3000,
+            };
+            return format!("Estimate for explore: ~{} tokens (depth={})", est, depth);
         }
         let lang_filter = match parse_language_filter(params.0.language.as_deref()) {
             Ok(f) => f,
@@ -3779,8 +4697,13 @@ impl SymForgeServer {
             ));
         }
 
-        self.record_tool_savings_named("explore", (output.len() * 10 / 4) as u64, (output.len() / 4) as u64);
-        self.session_context.record_file("(explore)", (output.len() / 4) as u32);
+        self.record_tool_savings_named(
+            "explore",
+            (output.len() * 10 / 4) as u64,
+            (output.len() / 4) as u64,
+        );
+        self.session_context
+            .record_file("(explore)", (output.len() / 4) as u32);
         output
     }
 
@@ -3814,8 +4737,14 @@ impl SymForgeServer {
     #[tool(
         description = "Suggest what to investigate next based on what you've already loaded. Analyzes session context to find referenced-but-not-loaded symbols. Use during deep investigations to find gaps."
     )]
-    pub(crate) async fn investigation_suggest(&self, params: Parameters<InvestigationInput>) -> String {
-        if let Some(result) = self.proxy_tool_call("investigation_suggest", &params.0).await {
+    pub(crate) async fn investigation_suggest(
+        &self,
+        params: Parameters<InvestigationInput>,
+    ) -> String {
+        if let Some(result) = self
+            .proxy_tool_call("investigation_suggest", &params.0)
+            .await
+        {
             return result;
         }
         let guard = self.index.read();
@@ -3831,12 +4760,15 @@ impl SymForgeServer {
         description = "Show what symbols and files have been fetched this session. Returns a context inventory with token counts. Use to track your context budget and avoid re-fetching content you already have."
     )]
     pub(crate) async fn context_inventory(&self) -> String {
-            if let Some(result) = self.proxy_tool_call_without_params("context_inventory").await {
-                return result;
-            }
-            let snap = self.session_context.snapshot();
-            crate::protocol::session::format_context_inventory(&snap)
+        if let Some(result) = self
+            .proxy_tool_call_without_params("context_inventory")
+            .await
+        {
+            return result;
         }
+        let snap = self.session_context.snapshot();
+        crate::protocol::session::format_context_inventory(&snap)
+    }
 
     #[tool(
         description = "Natural language entry point — ask any question about the codebase and SymForge routes to the right tool internally. Use when unsure which specific tool to call. Examples: 'who calls X', 'where is X defined', 'how does X work', 'what changed', 'find file X'. Returns the result plus which tool was used, so you can call it directly next time."
@@ -3850,12 +4782,13 @@ impl SymForgeServer {
         }
 
         let intent = smart_query::classify_intent(q);
+        let assessment = smart_query::assess_route(q, &intent);
         let route_desc = smart_query::route_description(&intent);
 
-        let result = match intent {
+        let result = match &intent {
             smart_query::QueryIntent::FindCallers { symbol } => {
                 let input = FindReferencesInput {
-                    name: symbol,
+                    name: symbol.clone(),
                     kind: None,
                     path: None,
                     symbol_kind: None,
@@ -3871,8 +4804,8 @@ impl SymForgeServer {
             }
             smart_query::QueryIntent::FindSymbol { name, kind } => {
                 let input = SearchSymbolsInput {
-                    query: Some(name),
-                    kind,
+                    query: Some(name.clone()),
+                    kind: kind.clone(),
                     path_prefix: None,
                     language: None,
                     limit: None,
@@ -3884,7 +4817,7 @@ impl SymForgeServer {
             }
             smart_query::QueryIntent::FindFile { hint } => {
                 let input = SearchFilesInput {
-                    query: hint,
+                    query: hint.clone(),
                     limit: None,
                     current_file: None,
                     changed_with: None,
@@ -3908,7 +4841,7 @@ impl SymForgeServer {
             }
             smart_query::QueryIntent::Understand { concept } => {
                 let input = ExploreInput {
-                    query: concept,
+                    query: concept.clone(),
                     limit: None,
                     depth: Some(2),
                     include_noise: None,
@@ -3920,7 +4853,7 @@ impl SymForgeServer {
             }
             smart_query::QueryIntent::SearchCode { pattern } => {
                 let input = SearchTextInput {
-                    query: Some(pattern),
+                    query: Some(pattern.clone()),
                     terms: None,
                     regex: None,
                     path_prefix: None,
@@ -3944,7 +4877,7 @@ impl SymForgeServer {
             }
             smart_query::QueryIntent::FindDependents { target } => {
                 let input = FindDependentsInput {
-                    path: target,
+                    path: target.clone(),
                     limit: None,
                     max_per_file: None,
                     format: None,
@@ -3955,7 +4888,7 @@ impl SymForgeServer {
             }
             smart_query::QueryIntent::FindImplementations { name } => {
                 let input = FindReferencesInput {
-                    name,
+                    name: name.clone(),
                     kind: None,
                     path: None,
                     symbol_kind: None,
@@ -3971,7 +4904,7 @@ impl SymForgeServer {
             }
             smart_query::QueryIntent::Explore { query } => {
                 let input = ExploreInput {
-                    query,
+                    query: query.clone(),
                     limit: None,
                     depth: Some(2),
                     include_noise: None,
@@ -3983,7 +4916,18 @@ impl SymForgeServer {
             }
         };
 
-        format!("{route_desc}\n\n{result}")
+        let mut envelope = format!(
+            "Route confidence: {}\nChosen tool: {}\nInvocation: {}\nRationale: {}",
+            smart_query::route_confidence_label(assessment.confidence),
+            smart_query::route_tool_name(&intent),
+            smart_query::route_invocation(&intent),
+            assessment.rationale,
+        );
+        if let Some(next_step) = assessment.suggested_next_step {
+            envelope.push_str(&format!("\nSuggested next step: {next_step}"));
+        }
+
+        format!("{envelope}\n{route_desc}\n\n{result}")
     }
 
     /// Symbol-level diff between two git refs. Shows +added, -removed, ~modified symbols per changed
@@ -4000,7 +4944,13 @@ impl SymForgeServer {
         if params.0.estimate == Some(true) {
             let compact = params.0.compact.unwrap_or(false);
             let summary = params.0.summary_only.unwrap_or(false);
-            let est = if summary { 50 } else if compact { 200 } else { 500 };
+            let est = if summary {
+                50
+            } else if compact {
+                200
+            } else {
+                500
+            };
             return format!(
                 "Estimate for diff_symbols: ~{} tokens (compact={}, summary_only={})",
                 est, compact, summary
@@ -4072,13 +5022,17 @@ impl SymForgeServer {
             return format!("No file changes found between {base} and {target}.");
         }
 
-        let output = format::diff_symbols_result_view(
+        let output = render_diff_symbols_output(
             base,
             target,
+            changed_files_owned.len(),
             &changed_files,
             &repo,
             params.0.compact.unwrap_or(false),
             params.0.summary_only.unwrap_or(false),
+            params.0.path_prefix.as_deref(),
+            params.0.language.as_deref(),
+            code_only,
         );
         self.record_tool_savings((output.len() * 5 / 4) as u64, (output.len() / 4) as u64);
         output
@@ -4106,8 +5060,23 @@ impl SymForgeServer {
                 }
             };
             if !allowed {
-                return Some(format!(
-                    "{tool_name}: This file type ({language}) does not support structural edits via SymForge. Use edit_within_symbol for scoped text replacements, or the built-in Edit tool for raw text edits."
+                let suggestion = match required {
+                    EditCapability::StructuralEditSafe => {
+                        "use edit_within_symbol for scoped text replacements, or the built-in Edit tool for raw text edits."
+                    }
+                    EditCapability::TextEditSafe => {
+                        "use the built-in Edit tool for raw text edits in this file type."
+                    }
+                    EditCapability::IndexOnly => {
+                        "inspect the file with read-only tools or use the built-in Edit tool for raw text edits."
+                    }
+                };
+                return Some(edit_format::format_capability_warning(
+                    tool_name,
+                    &language.to_string(),
+                    edit_capability_label(required),
+                    edit_capability_label(cap),
+                    suggestion,
                 ));
             }
         }
@@ -4129,9 +5098,16 @@ impl SymForgeServer {
         if let Some(result) = self.proxy_tool_call("replace_symbol_body", &params.0).await {
             return result;
         }
-        let repo_root = match self.capture_repo_root() {
-            Some(root) => root,
-            None => return "Error: no repository root configured.".to_string(),
+        {
+            let guard = self.index.read();
+            loading_guard!(guard);
+            if guard.capture_shared_file(&params.0.path).is_none() {
+                return format::not_found_file(&params.0.path);
+            }
+        }
+        let (abs_path, source_authority) = match prepare_exact_path_for_edit(self, &params.0.path) {
+            Ok(prepared) => prepared,
+            Err(e) => return e,
         };
         let file = {
             let guard = self.index.read();
@@ -4158,14 +5134,25 @@ impl SymForgeServer {
             Ok(s) => s,
             Err(e) => return e,
         };
+        let evidence_anchor = symbol_anchor(&params.0.path, &sym);
         if params.0.dry_run == Some(true) {
             let old_bytes = (sym.byte_range.1 - sym.byte_range.0) as usize;
-            return format!(
+            let summary = format!(
                 "[DRY RUN] Would replace `{}` in {} (old: {} bytes -> new: {} bytes)",
                 params.0.name,
                 params.0.path,
                 old_bytes,
                 params.0.new_body.len()
+            );
+            return format!(
+                "{}\n{}",
+                edit_format::format_edit_envelope(
+                    edit_format::EditSafetyMode::StructuralEditSafe,
+                    source_authority,
+                    edit_format::EditWriteSemantics::DryRunNoWrites,
+                    &evidence_anchor,
+                ),
+                summary
             );
         }
         let old_bytes = (sym.byte_range.1 - sym.byte_range.0) as usize;
@@ -4187,10 +5174,6 @@ impl SymForgeServer {
         let indented = edit::apply_indentation(normalized_str, &indent, line_ending);
         let new_content =
             edit::apply_splice(&file.content, (line_start, sym.byte_range.1), &indented);
-        let abs_path = match edit::safe_repo_path(&repo_root, &params.0.path) {
-            Ok(p) => p,
-            Err(e) => return format!("Error: {e}"),
-        };
         if let Err(e) = edit::atomic_write_file(&abs_path, &new_content) {
             return format!("Error writing {}: {e}", params.0.path);
         }
@@ -4215,12 +5198,21 @@ impl SymForgeServer {
             parent_type.as_deref(),
             Some(&file.language),
         );
-        let mut result = edit_format::format_replace(
-            &params.0.path,
-            &params.0.name,
-            &sym.kind.to_string(),
-            old_bytes,
-            indented.len(),
+        let mut result = format!(
+            "{}\n{}",
+            edit_format::format_edit_envelope(
+                edit_format::EditSafetyMode::StructuralEditSafe,
+                source_authority,
+                edit_format::EditWriteSemantics::AtomicWriteAndReindex,
+                &evidence_anchor,
+            ),
+            edit_format::format_replace(
+                &params.0.path,
+                &params.0.name,
+                &sym.kind.to_string(),
+                old_bytes,
+                indented.len(),
+            )
         );
         result.push_str(&edit_format::format_stale_warnings(
             &params.0.path,
@@ -4247,9 +5239,16 @@ impl SymForgeServer {
         if position != "before" && position != "after" {
             return format!("Error: position must be 'before' or 'after', got '{position}'");
         }
-        let repo_root = match self.capture_repo_root() {
-            Some(root) => root,
-            None => return "Error: no repository root configured.".to_string(),
+        {
+            let guard = self.index.read();
+            loading_guard!(guard);
+            if guard.capture_shared_file(&params.0.path).is_none() {
+                return format::not_found_file(&params.0.path);
+            }
+        }
+        let (abs_path, source_authority) = match prepare_exact_path_for_edit(self, &params.0.path) {
+            Ok(prepared) => prepared,
+            Err(e) => return e,
         };
         let file = {
             let guard = self.index.read();
@@ -4276,13 +5275,24 @@ impl SymForgeServer {
             Ok(s) => s,
             Err(e) => return e,
         };
+        let evidence_anchor = symbol_anchor(&params.0.path, &sym);
         if params.0.dry_run == Some(true) {
-            return format!(
+            let summary = format!(
                 "[DRY RUN] Would insert {} `{}` in {} ({} bytes of content)",
                 position,
                 params.0.name,
                 params.0.path,
                 params.0.content.len()
+            );
+            return format!(
+                "{}\n{}",
+                edit_format::format_edit_envelope(
+                    edit_format::EditSafetyMode::StructuralEditSafe,
+                    source_authority,
+                    edit_format::EditWriteSemantics::DryRunNoWrites,
+                    &evidence_anchor,
+                ),
+                summary
             );
         }
         let line_ending = edit::detect_line_ending(&file.content);
@@ -4290,10 +5300,6 @@ impl SymForgeServer {
             edit::build_insert_before(&file.content, &sym, &params.0.content, line_ending)
         } else {
             edit::build_insert_after(&file.content, &sym, &params.0.content, line_ending)
-        };
-        let abs_path = match edit::safe_repo_path(&repo_root, &params.0.path) {
-            Ok(p) => p,
-            Err(e) => return format!("Error: {e}"),
         };
         if let Err(e) = edit::atomic_write_file(&abs_path, &new_content) {
             return format!("Error writing {}: {e}", params.0.path);
@@ -4305,11 +5311,20 @@ impl SymForgeServer {
             &new_content,
             file.language.clone(),
         );
-        edit_format::format_insert(
-            &params.0.path,
-            &params.0.name,
-            position,
-            params.0.content.len(),
+        format!(
+            "{}\n{}",
+            edit_format::format_edit_envelope(
+                edit_format::EditSafetyMode::StructuralEditSafe,
+                source_authority,
+                edit_format::EditWriteSemantics::AtomicWriteAndReindex,
+                &evidence_anchor,
+            ),
+            edit_format::format_insert(
+                &params.0.path,
+                &params.0.name,
+                position,
+                params.0.content.len(),
+            )
         )
     }
 
@@ -4325,9 +5340,16 @@ impl SymForgeServer {
         if let Some(result) = self.proxy_tool_call("delete_symbol", &params.0).await {
             return result;
         }
-        let repo_root = match self.capture_repo_root() {
-            Some(root) => root,
-            None => return "Error: no repository root configured.".to_string(),
+        {
+            let guard = self.index.read();
+            loading_guard!(guard);
+            if guard.capture_shared_file(&params.0.path).is_none() {
+                return format::not_found_file(&params.0.path);
+            }
+        }
+        let (abs_path, source_authority) = match prepare_exact_path_for_edit(self, &params.0.path) {
+            Ok(prepared) => prepared,
+            Err(e) => return e,
         };
         let file = {
             let guard = self.index.read();
@@ -4354,20 +5376,27 @@ impl SymForgeServer {
             Ok(s) => s,
             Err(e) => return e,
         };
+        let evidence_anchor = symbol_anchor(&params.0.path, &sym);
         if params.0.dry_run == Some(true) {
             let deleted_bytes = (sym.byte_range.1 - sym.byte_range.0) as usize;
-            return format!(
+            let summary = format!(
                 "[DRY RUN] Would delete `{}` in {} ({} bytes)",
                 params.0.name, params.0.path, deleted_bytes
+            );
+            return format!(
+                "{}\n{}",
+                edit_format::format_edit_envelope(
+                    edit_format::EditSafetyMode::StructuralEditSafe,
+                    source_authority,
+                    edit_format::EditWriteSemantics::DryRunNoWrites,
+                    &evidence_anchor,
+                ),
+                summary
             );
         }
         let deleted_bytes = (sym.byte_range.1 - sym.byte_range.0) as usize;
         let line_ending = edit::detect_line_ending(&file.content);
         let new_content = edit::build_delete(&file.content, &sym, line_ending);
-        let abs_path = match edit::safe_repo_path(&repo_root, &params.0.path) {
-            Ok(p) => p,
-            Err(e) => return format!("Error: {e}"),
-        };
         if let Err(e) = edit::atomic_write_file(&abs_path, &new_content) {
             return format!("Error writing {}: {e}", params.0.path);
         }
@@ -4378,11 +5407,20 @@ impl SymForgeServer {
             &new_content,
             file.language.clone(),
         );
-        edit_format::format_delete(
-            &params.0.path,
-            &params.0.name,
-            &sym.kind.to_string(),
-            deleted_bytes,
+        format!(
+            "{}\n{}",
+            edit_format::format_edit_envelope(
+                edit_format::EditSafetyMode::StructuralEditSafe,
+                source_authority,
+                edit_format::EditWriteSemantics::AtomicWriteAndReindex,
+                &evidence_anchor,
+            ),
+            edit_format::format_delete(
+                &params.0.path,
+                &params.0.name,
+                &sym.kind.to_string(),
+                deleted_bytes,
+            )
         )
     }
 
@@ -4400,9 +5438,16 @@ impl SymForgeServer {
         if let Some(result) = self.proxy_tool_call("edit_within_symbol", &params.0).await {
             return result;
         }
-        let repo_root = match self.capture_repo_root() {
-            Some(root) => root,
-            None => return "Error: no repository root configured.".to_string(),
+        {
+            let guard = self.index.read();
+            loading_guard!(guard);
+            if guard.capture_shared_file(&params.0.path).is_none() {
+                return format::not_found_file(&params.0.path);
+            }
+        }
+        let (abs_path, source_authority) = match prepare_exact_path_for_edit(self, &params.0.path) {
+            Ok(prepared) => prepared,
+            Err(e) => return e,
         };
         let file = {
             let guard = self.index.read();
@@ -4429,6 +5474,7 @@ impl SymForgeServer {
             Ok(s) => s,
             Err(e) => return e,
         };
+        let evidence_anchor = symbol_anchor(&params.0.path, &sym);
         let sym_start = sym.effective_start() as usize;
         let sym_end = sym.byte_range.1 as usize;
         let body = &file.content[sym_start..sym_end];
@@ -4468,7 +5514,11 @@ impl SymForgeServer {
                     return format!(
                         "Error: `{}` not found within symbol `{}`. \
                          The symbol body is ({} bytes):\n```\n{}{}\n```",
-                        params.0.old_text, params.0.name, body_str.len(), preview, truncated
+                        params.0.old_text,
+                        params.0.name,
+                        body_str.len(),
+                        preview,
+                        truncated
                     );
                 }
             }
@@ -4485,12 +5535,24 @@ impl SymForgeServer {
                 return format!(
                     "Error: `{}` not found within symbol `{}`. \
                      The symbol body is ({} bytes):\n```\n{}{}\n```",
-                    params.0.old_text, params.0.name, body_str.len(), preview, truncated
+                    params.0.old_text,
+                    params.0.name,
+                    body_str.len(),
+                    preview,
+                    truncated
                 );
             }
             return format!(
-                "[DRY RUN] Would edit within `{}` in {} ({} replacement(s))",
-                params.0.name, params.0.path, count
+                "{}\n[DRY RUN] Would edit within `{}` in {} ({} replacement(s))",
+                edit_format::format_edit_envelope(
+                    edit_format::EditSafetyMode::TextEditSafe,
+                    source_authority,
+                    edit_format::EditWriteSemantics::DryRunNoWrites,
+                    &evidence_anchor,
+                ),
+                params.0.name,
+                params.0.path,
+                count
             );
         }
         if count == 0 {
@@ -4504,16 +5566,16 @@ impl SymForgeServer {
             return format!(
                 "Error: `{}` not found within symbol `{}`. \
                  The symbol body is ({} bytes):\n```\n{}{}\n```",
-                params.0.old_text, params.0.name, body_str.len(), preview, truncated
+                params.0.old_text,
+                params.0.name,
+                body_str.len(),
+                preview,
+                truncated
             );
         }
         let old_sym_bytes = sym_end - sym_start;
         let effective_range = (sym.effective_start(), sym.byte_range.1);
         let new_content = edit::apply_splice(&file.content, effective_range, new_body.as_bytes());
-        let abs_path = match edit::safe_repo_path(&repo_root, &params.0.path) {
-            Ok(p) => p,
-            Err(e) => return format!("Error: {e}"),
-        };
         if let Err(e) = edit::atomic_write_file(&abs_path, &new_content) {
             return format!("Error writing {}: {e}", params.0.path);
         }
@@ -4524,12 +5586,21 @@ impl SymForgeServer {
             &new_content,
             file.language.clone(),
         );
-        edit_format::format_edit_within(
-            &params.0.path,
-            &params.0.name,
-            count,
-            old_sym_bytes,
-            new_body.len(),
+        format!(
+            "{}\n{}",
+            edit_format::format_edit_envelope(
+                edit_format::EditSafetyMode::TextEditSafe,
+                source_authority,
+                edit_format::EditWriteSemantics::AtomicWriteAndReindex,
+                &evidence_anchor,
+            ),
+            edit_format::format_edit_within(
+                &params.0.path,
+                &params.0.name,
+                count,
+                old_sym_bytes,
+                new_body.len(),
+            )
         )
     }
 
@@ -4552,7 +5623,17 @@ impl SymForgeServer {
             let guard = self.index.read();
             loading_guard!(guard);
         }
-        match edit::execute_batch_edit(&self.index, &repo_root, &params.0.edits, params.0.dry_run.unwrap_or(false)) {
+        let batch_paths: Vec<String> = params.0.edits.iter().map(|e| e.path.clone()).collect();
+        let source_authority = match prepare_batch_paths_for_edit(self, &repo_root, &batch_paths) {
+            Ok(authority) => authority,
+            Err(e) => return e,
+        };
+        match edit::execute_batch_edit(
+            &self.index,
+            &repo_root,
+            &params.0.edits,
+            params.0.dry_run.unwrap_or(false),
+        ) {
             Ok(summaries) => {
                 let file_count = params
                     .0
@@ -4561,7 +5642,27 @@ impl SymForgeServer {
                     .map(|e| e.path.as_str())
                     .collect::<std::collections::HashSet<_>>()
                     .len();
-                edit_format::format_batch_summary(&summaries, file_count)
+                let write_semantics = if params.0.dry_run.unwrap_or(false) {
+                    edit_format::EditWriteSemantics::DryRunNoWrites
+                } else {
+                    edit_format::EditWriteSemantics::TransactionalWriteRollbackAndReindex
+                };
+                let evidence = format!(
+                    "{} edit target(s) across {} file(s)",
+                    params.0.edits.len(),
+                    file_count
+                );
+                format!(
+                    "{}\n{}",
+                    edit_format::format_batch_envelope(
+                        edit_format::EditSafetyMode::StructuralEditSafe,
+                        edit_format::MatchType::Exact,
+                        source_authority,
+                        write_semantics,
+                        &evidence,
+                    ),
+                    edit_format::format_batch_summary(&summaries, file_count),
+                )
             }
             Err(e) => e,
         }
@@ -4570,7 +5671,7 @@ impl SymForgeServer {
     /// Rename a symbol and update all references project-wide.
     /// Set dry_run=true for a read-only preview that makes no file changes.
     #[tool(
-        description = "Rename a symbol and update all references across the project. Finds the definition and all usage sites via the index's reverse reference map. Set dry_run=true for a READ-ONLY preview that lists affected files without writing any changes (safe, no confirmation needed). Best-effort: common names (e.g. `new`, `get`) may produce false positives — verify with what_changed afterward. NOT for replacing a symbol's body (use replace_symbol_body)."
+        description = "Rename a symbol and update all references across the project. Finds the definition and all usage sites via the index's reverse reference map. Set dry_run=true for a READ-ONLY preview that lists affected files without writing any changes (safe, no confirmation needed). Applies confident matches transactionally across files; uncertain matches are surfaced for manual review instead of being modified. Common names (e.g. `new`, `get`) can still produce false positives — verify with what_changed afterward. NOT for replacing a symbol's body (use replace_symbol_body)."
     )]
     pub(crate) async fn batch_rename(&self, params: Parameters<edit::BatchRenameInput>) -> String {
         if let Some(result) = self.proxy_tool_call("batch_rename", &params.0).await {
@@ -4584,15 +5685,37 @@ impl SymForgeServer {
             let guard = self.index.read();
             loading_guard!(guard);
         }
+        let source_authority = prepare_project_wide_rename(self, &repo_root);
         match edit::execute_batch_rename(&self.index, &repo_root, &params.0) {
-            Ok(summary) => summary,
+            Ok(summary) => {
+                let write_semantics = if params.0.dry_run.unwrap_or(false) {
+                    edit_format::EditWriteSemantics::DryRunNoWrites
+                } else {
+                    edit_format::EditWriteSemantics::TransactionalWriteRollbackAndReindex
+                };
+                let evidence = format!(
+                    "definition `{}` + project-wide constrained references",
+                    params.0.path
+                );
+                format!(
+                    "{}\n{}",
+                    edit_format::format_batch_envelope(
+                        edit_format::EditSafetyMode::StructuralEditSafe,
+                        edit_format::MatchType::Constrained,
+                        source_authority,
+                        write_semantics,
+                        &evidence,
+                    ),
+                    summary,
+                )
+            }
             Err(e) => e,
         }
     }
 
     /// Insert the same code at multiple symbol locations across files.
     #[tool(
-        description = "Insert the same code before or after multiple symbols across the project. Useful for adding logging, instrumentation, or boilerplate to many locations at once. Code is auto-indented to match each target symbol. NOT for inserting at a single location (use insert_symbol)."
+        description = "Insert the same code before or after multiple symbols across the project. Useful for adding logging, instrumentation, or boilerplate to many locations at once. Code is auto-indented to match each target symbol. All targets are validated before any writes, and live execution applies transactionally across files with rollback on failure. Set dry_run=true for a READ-ONLY preview. NOT for inserting at a single location (use insert_symbol)."
     )]
     pub(crate) async fn batch_insert(&self, params: Parameters<edit::BatchInsertInput>) -> String {
         if let Some(result) = self.proxy_tool_call("batch_insert", &params.0).await {
@@ -4606,6 +5729,11 @@ impl SymForgeServer {
             let guard = self.index.read();
             loading_guard!(guard);
         }
+        let batch_paths: Vec<String> = params.0.targets.iter().map(|t| t.path.clone()).collect();
+        let source_authority = match prepare_batch_paths_for_edit(self, &repo_root, &batch_paths) {
+            Ok(authority) => authority,
+            Err(e) => return e,
+        };
         match edit::execute_batch_insert(&self.index, &repo_root, &params.0) {
             Ok(summaries) => {
                 let file_count = params
@@ -4615,7 +5743,27 @@ impl SymForgeServer {
                     .map(|t| t.path.as_str())
                     .collect::<std::collections::HashSet<_>>()
                     .len();
-                edit_format::format_batch_summary(&summaries, file_count)
+                let write_semantics = if params.0.dry_run.unwrap_or(false) {
+                    edit_format::EditWriteSemantics::DryRunNoWrites
+                } else {
+                    edit_format::EditWriteSemantics::TransactionalWriteRollbackAndReindex
+                };
+                let evidence = format!(
+                    "{} target(s) across {} file(s)",
+                    params.0.targets.len(),
+                    file_count
+                );
+                format!(
+                    "{}\n{}",
+                    edit_format::format_batch_envelope(
+                        edit_format::EditSafetyMode::StructuralEditSafe,
+                        edit_format::MatchType::Exact,
+                        source_authority,
+                        write_semantics,
+                        &evidence,
+                    ),
+                    edit_format::format_batch_summary(&summaries, file_count),
+                )
             }
             Err(e) => e,
         }
@@ -4904,7 +6052,7 @@ mod tests {
                 kind: None,
                 symbol_line: None,
                 targets: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert_eq!(
@@ -4924,7 +6072,7 @@ mod tests {
                 kind: None,
                 symbol_line: None,
                 targets: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
@@ -4960,7 +6108,7 @@ mod tests {
                 path: "src/main.rs".to_string(),
                 max_tokens: None,
                 sections: Some(vec!["outline".to_string()]),
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(result.contains("src/main.rs"), "should contain path");
@@ -4980,7 +6128,7 @@ mod tests {
                 kind: None,
                 symbol_line: None,
                 targets: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         // Should return source body or not-found message — not a guard message
@@ -5004,7 +6152,7 @@ mod tests {
                 path: None,
                 depth: None,
                 max_files: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
@@ -5022,7 +6170,7 @@ mod tests {
                 path: None,
                 depth: None,
                 max_files: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert_eq!(result, crate::protocol::format::empty_guard_message());
@@ -5071,7 +6219,7 @@ mod tests {
                 path: None,
                 depth: None,
                 max_files: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
@@ -5094,7 +6242,7 @@ mod tests {
                 path: None,
                 depth: None,
                 max_files: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -5147,7 +6295,7 @@ mod tests {
                 path: "src/target.rs".to_string(),
                 max_tokens: None,
                 sections: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -5158,6 +6306,10 @@ mod tests {
         assert!(
             result.contains("Key references"),
             "file context should include reference section; got: {result}"
+        );
+        assert!(
+            result.contains("Scope: path `src/target.rs`; all sections"),
+            "file context should surface scope; got: {result}"
         );
         assert!(
             result.contains("src/caller.rs"),
@@ -5192,7 +6344,7 @@ mod tests {
                 path: "Cargo.toml".to_string(),
                 max_tokens: None,
                 sections: Some(vec!["outline".to_string()]),
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -5224,7 +6376,7 @@ mod tests {
         let result = server
             .validate_file_syntax(Parameters(super::ValidateFileSyntaxInput {
                 path: "Cargo.toml".to_string(),
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -5283,7 +6435,7 @@ mod tests {
                 path: "src/caller.rs".to_string(),
                 max_tokens: Some(2000),
                 sections: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
@@ -5301,7 +6453,7 @@ mod tests {
                 path: "src/target.rs".to_string(),
                 max_tokens: Some(2000),
                 sections: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
@@ -5340,7 +6492,7 @@ mod tests {
                 path: "src/target.py".to_string(),
                 max_tokens: None,
                 sections: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -5379,7 +6531,7 @@ mod tests {
                 bundle: None,
                 sections: None,
                 max_tokens: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -5390,6 +6542,10 @@ mod tests {
         assert!(
             result.contains("in fn caller"),
             "symbol context should include enclosing symbol names; got: {result}"
+        );
+        assert!(
+            result.contains("Scope: repo-wide symbol token `target`"),
+            "default symbol context should surface repo-wide scope; got: {result}"
         );
     }
 
@@ -5434,13 +6590,17 @@ mod tests {
                 bundle: None,
                 sections: None,
                 max_tokens: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
         assert!(
             result.contains("src/service.rs"),
             "expected dependent hit: {result}"
+        );
+        assert!(
+            result.contains("Scope: path `src/db.rs`; exact selector line 2"),
+            "exact selector scope should be explicit; got: {result}"
         );
         assert!(
             !result.contains("src/other.rs"),
@@ -5471,7 +6631,7 @@ mod tests {
                 bundle: None,
                 sections: None,
                 max_tokens: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -5578,7 +6738,7 @@ mod tests {
                 bundle: None,
                 sections: None,
                 max_tokens: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -5606,7 +6766,7 @@ mod tests {
                 new_file: None,
                 include_co_changes: None,
                 co_changes_limit: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -5630,7 +6790,7 @@ mod tests {
                 new_file: None,
                 include_co_changes: None,
                 co_changes_limit: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -5663,7 +6823,7 @@ mod tests {
                 new_file: None,
                 include_co_changes: None,
                 co_changes_limit: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -5702,7 +6862,7 @@ mod tests {
                 new_file: None,
                 include_co_changes: None,
                 co_changes_limit: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -5716,7 +6876,7 @@ mod tests {
                 path: "scratch/impact_case.rs".to_string(),
                 max_tokens: None,
                 sections: Some(vec!["outline".to_string()]),
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -5762,7 +6922,7 @@ mod tests {
                 language: None,
                 code_only: None,
                 include_symbol_diff: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -5786,12 +6946,20 @@ mod tests {
                 limit: None,
                 include_generated: None,
                 include_tests: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
             result.contains("find_user"),
             "should find matching symbol, got: {result}"
+        );
+        assert!(
+            result.contains("Match type: constrained (prefix tier)"),
+            "search_symbols should expose trust envelope, got: {result}"
+        );
+        assert!(
+            result.contains("Source authority: current index"),
+            "search_symbols should expose source authority, got: {result}"
         );
         assert!(
             result.contains("Tip:"),
@@ -5818,7 +6986,7 @@ mod tests {
                 limit: None,
                 include_generated: None,
                 include_tests: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
@@ -5860,7 +7028,7 @@ mod tests {
                 limit: None,
                 include_generated: None,
                 include_tests: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -5931,7 +7099,7 @@ mod tests {
                 limit: None,
                 include_generated: None,
                 include_tests: None, // default: false
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -5974,7 +7142,7 @@ mod tests {
                 limit: None,
                 include_generated: Some(true),
                 include_tests: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -6021,7 +7189,7 @@ mod tests {
                 limit: None,
                 include_generated: None,
                 include_tests: Some(true),
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -6069,7 +7237,7 @@ mod tests {
                 limit: Some(1),
                 include_generated: None,
                 include_tests: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -6114,7 +7282,7 @@ mod tests {
                 limit: None,
                 include_generated: None,
                 include_tests: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
@@ -6141,7 +7309,7 @@ mod tests {
                 limit: None,
                 include_generated: None,
                 include_tests: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
@@ -6168,7 +7336,7 @@ mod tests {
                 limit: None,
                 include_generated: None,
                 include_tests: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
@@ -6195,7 +7363,7 @@ mod tests {
                 limit: None,
                 include_generated: None,
                 include_tests: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
@@ -6228,7 +7396,7 @@ mod tests {
                 follow_refs: None,
                 follow_refs_limit: None,
                 ranked: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
@@ -6236,8 +7404,73 @@ mod tests {
             "should find matching text, got: {result}"
         );
         assert!(
+            result.contains("Match type: constrained (literal)"),
+            "search_text should expose trust envelope, got: {result}"
+        );
+        assert!(
+            result.contains("Scope: repo-wide; tests filtered; generated filtered"),
+            "search_text should expose applied scope, got: {result}"
+        );
+        assert!(
             result.contains("Tip:"),
             "search_text should include next-step hint"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_text_trust_envelope_reports_partial_parse_and_truncation() {
+        let (key, mut file) = make_file(
+            "Cargo.toml",
+            b"needle one\nneedle two\nneedle three\n",
+            vec![make_symbol("package", SymbolKind::Key, 1, 1)],
+        );
+        let diagnostic = crate::domain::ParseDiagnostic {
+            parser: "toml_edit".to_string(),
+            message: "missing closing quote".to_string(),
+            line: Some(3),
+            column: Some(11),
+            byte_span: Some((28, 41)),
+            fallback_used: true,
+        };
+        file.language = LanguageId::Toml;
+        file.parse_status = ParseStatus::PartialParse {
+            warning: diagnostic.summary(),
+        };
+        file.parse_diagnostic = Some(diagnostic);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+
+        let result = server
+            .search_text(Parameters(super::SearchTextInput {
+                query: Some("needle".to_string()),
+                terms: None,
+                regex: None,
+                path_prefix: None,
+                language: None,
+                limit: Some(2),
+                max_per_file: Some(2),
+                include_generated: None,
+                include_tests: None,
+                glob: None,
+                exclude_glob: None,
+                context: None,
+                case_sensitive: None,
+                whole_word: None,
+                group_by: None,
+                follow_refs: None,
+                follow_refs_limit: None,
+                ranked: None,
+                estimate: None,
+            }))
+            .await;
+
+        assert!(result.contains("Parse state: partial"), "got: {result}");
+        assert!(
+            result.contains("Completeness: truncated by result cap (1 more omitted)"),
+            "got: {result}"
+        );
+        assert!(
+            result.contains("Evidence: line anchors `Cargo.toml:1`"),
+            "got: {result}"
         );
     }
 
@@ -6269,7 +7502,7 @@ mod tests {
                 follow_refs: None,
                 follow_refs_limit: None,
                 ranked: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
@@ -6317,7 +7550,7 @@ mod tests {
                 follow_refs: None,
                 follow_refs_limit: None,
                 ranked: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -6357,7 +7590,7 @@ mod tests {
                 follow_refs: None,
                 follow_refs_limit: None,
                 ranked: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -6409,7 +7642,7 @@ mod tests {
                 follow_refs: None,
                 follow_refs_limit: None,
                 ranked: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -6461,7 +7694,7 @@ mod tests {
                 follow_refs: None,
                 follow_refs_limit: None,
                 ranked: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -6505,7 +7738,7 @@ mod tests {
                 follow_refs: None,
                 follow_refs_limit: None,
                 ranked: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -6552,7 +7785,7 @@ mod tests {
                 follow_refs: None,
                 follow_refs_limit: None,
                 ranked: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -6590,7 +7823,7 @@ mod tests {
                 follow_refs: None,
                 follow_refs_limit: None,
                 ranked: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -6640,7 +7873,7 @@ mod tests {
                 follow_refs: None,
                 follow_refs_limit: None,
                 ranked: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -6676,7 +7909,7 @@ mod tests {
                 follow_refs: None,
                 follow_refs_limit: None,
                 ranked: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -6704,13 +7937,21 @@ mod tests {
                 current_file: None,
                 changed_with: None,
                 resolve: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(result.contains("2 matching files"), "got: {result}");
         assert!(
             result.contains("── Strong path matches ──"),
             "got: {result}"
+        );
+        assert!(
+            result.contains("Match type: constrained (tiered path relevance)"),
+            "search_files should expose trust envelope, got: {result}"
+        );
+        assert!(
+            result.contains("Scope: ranked indexed file paths"),
+            "search_files should expose search scope, got: {result}"
         );
         assert!(result.contains("── Basename matches ──"), "got: {result}");
         assert!(result.contains("src/protocol/tools.rs"), "got: {result}");
@@ -6728,7 +7969,7 @@ mod tests {
                 current_file: None,
                 changed_with: None,
                 resolve: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert_eq!(result, "No indexed source files matching 'src/service.rs'");
@@ -6746,7 +7987,7 @@ mod tests {
                 current_file: None,
                 changed_with: Some("src/daemon.rs".to_string()),
                 resolve: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         // Without git temporal data, should return informative message (not an error/panic)
@@ -6768,10 +8009,18 @@ mod tests {
                 current_file: None,
                 changed_with: None,
                 resolve: Some(true),
-            estimate: None,
+                estimate: None,
             }))
             .await;
-        assert_eq!(result, "src/protocol/tools.rs");
+        assert!(
+            result.contains("Match type: exact (resolve)"),
+            "got: {result}"
+        );
+        assert!(
+            result.contains("Source authority: current index"),
+            "got: {result}"
+        );
+        assert!(result.contains("src/protocol/tools.rs"), "got: {result}");
     }
 
     #[tokio::test]
@@ -6787,11 +8036,15 @@ mod tests {
                 current_file: None,
                 changed_with: None,
                 resolve: Some(true),
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
             result.contains("Ambiguous path hint 'lib.rs'"),
+            "got: {result}"
+        );
+        assert!(
+            result.contains("Match type: constrained (resolve candidates)"),
             "got: {result}"
         );
         assert!(result.contains("src/lib.rs"), "got: {result}");
@@ -6827,7 +8080,7 @@ mod tests {
                     start_byte: None,
                     end_byte: None,
                 }]),
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
@@ -6859,7 +8112,7 @@ mod tests {
                     start_byte: Some(0),
                     end_byte: Some(8),
                 }]),
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
@@ -6886,12 +8139,54 @@ mod tests {
                 language: None,
                 code_only: None,
                 include_symbol_diff: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
             result.contains("src/lib.rs"),
             "what_changed since epoch should list all files, got: {result}"
+        );
+        assert!(
+            result.contains("Match type: exact (timestamp compare)"),
+            "timestamp mode should report authority envelope: {result}"
+        );
+        assert!(
+            result.contains("Source authority: current index"),
+            "timestamp mode should report index authority: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_what_changed_timestamp_respects_filters() {
+        let (rust_key, rust_file) = make_file("src/lib.rs", b"fn foo() {}", vec![]);
+        let (doc_key, doc_file) = make_file("docs/readme.md", b"# hi", vec![]);
+        let server = make_server(make_live_index_ready(vec![
+            (rust_key, rust_file),
+            (doc_key, doc_file),
+        ]));
+        let result = server
+            .what_changed(Parameters(super::WhatChangedInput {
+                since: Some(0),
+                git_ref: None,
+                uncommitted: None,
+                path_prefix: Some("src".to_string()),
+                language: Some("rust".to_string()),
+                code_only: None,
+                include_symbol_diff: None,
+                estimate: None,
+            }))
+            .await;
+        assert!(
+            result.contains("src/lib.rs"),
+            "filtered timestamp mode should keep Rust path: {result}"
+        );
+        assert!(
+            !result.contains("docs/readme.md"),
+            "filtered timestamp mode should exclude non-matching path: {result}"
+        );
+        assert!(
+            result.contains("Scope: timestamp since `0`; path prefix `src`; language `rust`"),
+            "filtered timestamp mode should expose scope: {result}"
         );
     }
 
@@ -6926,12 +8221,16 @@ mod tests {
                 language: None,
                 code_only: None,
                 include_symbol_diff: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
             result.contains("src/lib.rs"),
             "default mode should surface uncommitted git changes: {result}"
+        );
+        assert!(
+            result.contains("Source authority: git working tree"),
+            "uncommitted mode should expose git authority: {result}"
         );
     }
 
@@ -6966,12 +8265,16 @@ mod tests {
                 language: None,
                 code_only: None,
                 include_symbol_diff: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
             result.contains("src/lib.rs"),
             "git_ref mode should show changed files: {result}"
+        );
+        assert!(
+            result.contains("Source authority: git ref diff"),
+            "git_ref mode should expose git diff authority: {result}"
         );
     }
 
@@ -6996,7 +8299,7 @@ mod tests {
                 context_lines: None,
                 show_line_numbers: None,
                 header: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
@@ -7024,10 +8327,13 @@ mod tests {
                 context_lines: None,
                 show_line_numbers: None,
                 header: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
-        assert_eq!(result, "File not found: nonexistent.rs. Use search_files to find the correct path.");
+        assert_eq!(
+            result,
+            "File not found: nonexistent.rs. Use search_files to find the correct path."
+        );
     }
 
     #[tokio::test]
@@ -7051,7 +8357,7 @@ mod tests {
                 context_lines: None,
                 show_line_numbers: None,
                 header: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert_eq!(result, "line 2\nline 3");
@@ -7078,7 +8384,7 @@ mod tests {
                 context_lines: None,
                 show_line_numbers: Some(true),
                 header: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert_eq!(result, "1: line 1\n2: line 2\n3: line 3");
@@ -7105,7 +8411,7 @@ mod tests {
                 context_lines: None,
                 show_line_numbers: Some(true),
                 header: Some(true),
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert_eq!(result, "src/lib.rs [lines 2-3]\n2: line 2\n3: line 3");
@@ -7132,7 +8438,7 @@ mod tests {
                 context_lines: Some(1),
                 show_line_numbers: None,
                 header: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert_eq!(result, "2: line 2\n3: line 3\n4: line 4");
@@ -7159,7 +8465,7 @@ mod tests {
                 context_lines: Some(1),
                 show_line_numbers: None,
                 header: Some(true),
-            estimate: None,
+                estimate: None,
             }))
             .await;
         // Should succeed (not reject) — header is now allowed with around_line.
@@ -7194,7 +8500,7 @@ mod tests {
                 context_lines: Some(1),
                 show_line_numbers: None,
                 header: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert_eq!(
@@ -7224,7 +8530,7 @@ mod tests {
                 context_lines: Some(1),
                 show_line_numbers: None,
                 header: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert_eq!(result, "1: line 1\n2: TODO first\n3: line 3");
@@ -7251,7 +8557,7 @@ mod tests {
                 context_lines: None,
                 show_line_numbers: None,
                 header: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert_eq!(
@@ -7281,7 +8587,7 @@ mod tests {
                 context_lines: None,
                 show_line_numbers: None,
                 header: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert_eq!(result, "Chunk 3 out of range for src/lib.rs (2 chunks)");
@@ -7308,7 +8614,7 @@ mod tests {
                 context_lines: Some(1),
                 show_line_numbers: None,
                 header: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert_eq!(result, "No matches for 'needle' in src/lib.rs");
@@ -7335,7 +8641,7 @@ mod tests {
                 context_lines: Some(1),
                 show_line_numbers: None,
                 header: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert_eq!(result, "3: line 3\n4: TODO second\n5: line 5");
@@ -7362,7 +8668,7 @@ mod tests {
                 context_lines: Some(1),
                 show_line_numbers: None,
                 header: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert_eq!(
@@ -7401,7 +8707,7 @@ mod tests {
                 context_lines: None,
                 show_line_numbers: None,
                 header: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -7445,7 +8751,7 @@ mod tests {
                 context_lines: None,
                 show_line_numbers: None,
                 header: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -7484,7 +8790,7 @@ mod tests {
                 context_lines: Some(1),
                 show_line_numbers: None,
                 header: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert_eq!(result, "1: line 1\n2: fn connect() {}\n3: line 3");
@@ -7518,7 +8824,7 @@ mod tests {
                 context_lines: Some(1),
                 show_line_numbers: None,
                 header: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert_eq!(
@@ -7555,7 +8861,7 @@ mod tests {
                 context_lines: Some(0),
                 show_line_numbers: None,
                 header: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert_eq!(result, "3: fn connect() {}");
@@ -7586,7 +8892,7 @@ mod tests {
                 context_lines: Some(1),
                 show_line_numbers: None,
                 header: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert_eq!(
@@ -7616,7 +8922,7 @@ mod tests {
                 context_lines: None,
                 show_line_numbers: None,
                 header: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert_eq!(
@@ -7646,7 +8952,7 @@ mod tests {
                 context_lines: None,
                 show_line_numbers: None,
                 header: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert_eq!(
@@ -7676,7 +8982,7 @@ mod tests {
                 context_lines: Some(1),
                 show_line_numbers: None,
                 header: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert_eq!(
@@ -7706,7 +9012,7 @@ mod tests {
                 context_lines: Some(1),
                 show_line_numbers: None,
                 header: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert_eq!(
@@ -7736,7 +9042,7 @@ mod tests {
                 context_lines: Some(1),
                 show_line_numbers: None,
                 header: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert_eq!(
@@ -7772,7 +9078,7 @@ mod tests {
                 context_lines: Some(1),
                 show_line_numbers: None,
                 header: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
@@ -7802,7 +9108,7 @@ mod tests {
                 context_lines: None,
                 show_line_numbers: None,
                 header: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert_eq!(result, "mode=symbol requires around_symbol");
@@ -7829,7 +9135,7 @@ mod tests {
                 context_lines: None,
                 show_line_numbers: None,
                 header: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
@@ -7863,7 +9169,7 @@ mod tests {
                 context_lines: None,
                 show_line_numbers: None,
                 header: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
@@ -7897,7 +9203,7 @@ mod tests {
                 context_lines: None,
                 show_line_numbers: None,
                 header: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
@@ -7927,7 +9233,7 @@ mod tests {
                 context_lines: None,
                 show_line_numbers: None,
                 header: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert_eq!(result, "mode 'search' is not yet implemented");
@@ -7958,7 +9264,7 @@ mod tests {
                 context_lines: Some(10),
                 show_line_numbers: None,
                 header: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
@@ -7992,7 +9298,7 @@ mod tests {
                 context_lines: None,
                 show_line_numbers: None,
                 header: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
@@ -8022,7 +9328,7 @@ mod tests {
                 context_lines: None,
                 show_line_numbers: None,
                 header: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert_eq!(
@@ -8052,7 +9358,7 @@ mod tests {
                 context_lines: None,
                 show_line_numbers: None,
                 header: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert_eq!(result, "mode=match requires around_match");
@@ -8079,7 +9385,7 @@ mod tests {
                 context_lines: None,
                 show_line_numbers: None,
                 header: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert_eq!(
@@ -8109,7 +9415,7 @@ mod tests {
                 context_lines: None,
                 show_line_numbers: None,
                 header: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert_eq!(
@@ -8139,7 +9445,7 @@ mod tests {
                 context_lines: None,
                 show_line_numbers: None,
                 header: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert_eq!(result, "mode=chunk requires chunk_index");
@@ -8166,7 +9472,7 @@ mod tests {
                 context_lines: None,
                 show_line_numbers: None,
                 header: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
@@ -8196,7 +9502,7 @@ mod tests {
                 context_lines: None,
                 show_line_numbers: None,
                 header: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
@@ -8225,7 +9531,7 @@ mod tests {
                 include_noise: None,
                 language: None,
                 path_prefix: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
@@ -8252,7 +9558,7 @@ mod tests {
                 include_noise: None,
                 language: None,
                 path_prefix: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
@@ -8272,7 +9578,7 @@ mod tests {
                 include_noise: None,
                 language: None,
                 path_prefix: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
@@ -8304,7 +9610,7 @@ mod tests {
                 include_noise: None,
                 language: None,
                 path_prefix: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
@@ -8340,7 +9646,7 @@ mod tests {
                 include_noise: None,
                 language: None,
                 path_prefix: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
@@ -8372,7 +9678,7 @@ mod tests {
                 include_noise: None,
                 language: None,
                 path_prefix: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
@@ -8404,7 +9710,7 @@ mod tests {
                 include_noise: None,
                 language: None,
                 path_prefix: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
@@ -8436,7 +9742,7 @@ mod tests {
                 include_noise: None,
                 language: None,
                 path_prefix: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
@@ -8481,7 +9787,7 @@ mod tests {
                 include_noise: None,
                 language: None,
                 path_prefix: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
@@ -8517,7 +9823,7 @@ mod tests {
                 include_noise: Some(true),
                 language: None,
                 path_prefix: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
@@ -8549,7 +9855,7 @@ mod tests {
                 include_noise: None,
                 language: None,
                 path_prefix: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
@@ -8618,7 +9924,7 @@ mod tests {
                 symbol_line: None,
                 sections: None,
                 verbosity: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -8646,7 +9952,7 @@ mod tests {
                 bundle: None,
                 sections: Some(vec!["dependents".to_string()]),
                 max_tokens: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -8676,7 +9982,7 @@ mod tests {
                 bundle: None,
                 sections: Some(vec![]),
                 max_tokens: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -8701,7 +10007,7 @@ mod tests {
                 line: 2,
                 context: None,
                 sibling_limit: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -8735,7 +10041,7 @@ mod tests {
                 line: 1,
                 context: Some(0),
                 sibling_limit: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -8773,7 +10079,7 @@ mod tests {
                 line: 1,
                 context: Some(0),
                 sibling_limit: Some(5),
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -8810,7 +10116,7 @@ mod tests {
                 line: 1,
                 context: Some(0),
                 sibling_limit: Some(0),
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -8831,7 +10137,7 @@ mod tests {
                 path: None,
                 depth: None,
                 max_files: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
@@ -8853,7 +10159,7 @@ mod tests {
                 path: None,
                 depth: None,
                 max_files: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert_eq!(result, crate::protocol::format::empty_guard_message());
@@ -8874,7 +10180,7 @@ mod tests {
                 compact: None,
                 mode: None,
                 direction: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert_eq!(result, crate::protocol::format::empty_guard_message());
@@ -8890,7 +10196,7 @@ mod tests {
                 max_per_file: None,
                 format: None,
                 compact: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert_eq!(result, crate::protocol::format::empty_guard_message());
@@ -8910,7 +10216,7 @@ mod tests {
                 bundle: Some(true),
                 sections: None,
                 max_tokens: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert_eq!(result, crate::protocol::format::empty_guard_message());
@@ -8930,7 +10236,7 @@ mod tests {
                 bundle: Some(true),
                 sections: None,
                 max_tokens: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(result.contains("File not found"), "got: {result}");
@@ -8980,13 +10286,29 @@ mod tests {
                 bundle: Some(true),
                 sections: None,
                 max_tokens: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
         assert!(
             result.contains("src/service.rs"),
             "expected dependent hit: {result}"
+        );
+        assert!(
+            result.contains("Match type: exact"),
+            "bundle mode should surface match type; got: {result}"
+        );
+        assert!(
+            result.contains("Source authority: current index"),
+            "bundle mode should surface source authority; got: {result}"
+        );
+        assert!(
+            result.contains("Scope: path `src/db.rs`; bundle mode"),
+            "bundle mode should surface scope; got: {result}"
+        );
+        assert!(
+            result.contains("Evidence: symbol anchor `src/db.rs:"),
+            "bundle mode should surface evidence anchor; got: {result}"
         );
         assert!(
             !result.contains("src/other.rs"),
@@ -9017,7 +10339,7 @@ mod tests {
                 bundle: Some(true),
                 sections: None,
                 max_tokens: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -9044,7 +10366,7 @@ mod tests {
                 compact: None,
                 mode: None,
                 direction: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         // Should get "No references found" not a guard message
@@ -9093,7 +10415,7 @@ mod tests {
                 compact: None,
                 mode: None,
                 direction: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -9104,6 +10426,15 @@ mod tests {
         assert!(
             !result.contains("src/other.rs"),
             "unrelated same-name file should be excluded: {result}"
+        );
+        assert!(result.contains("Match type: exact"), "got: {result}");
+        assert!(
+            result.contains("Scope: path `src/db.rs`; exact selector line 2; symbol kind `fn`; reference kind `call`"),
+            "exact selector scope should be explicit: {result}"
+        );
+        assert!(
+            result.contains("Evidence: reference anchors `src/service.rs:2`"),
+            "reference output should include evidence anchors: {result}"
         );
     }
 
@@ -9131,7 +10462,7 @@ mod tests {
                 compact: None,
                 mode: None,
                 direction: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -9153,7 +10484,7 @@ mod tests {
                 max_per_file: None,
                 format: None,
                 compact: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(result.contains("No dependents found"), "got: {result}");
@@ -9188,7 +10519,7 @@ mod tests {
                 format: Some("mermaid".to_string()),
                 limit: None,
                 max_per_file: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -9238,7 +10569,7 @@ mod tests {
                 format: None,
                 limit: None,
                 max_per_file: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -9289,7 +10620,7 @@ mod tests {
                 format: None,
                 limit: None,
                 max_per_file: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
 
@@ -9316,7 +10647,7 @@ mod tests {
                     limit: None,
                     include_generated: None,
                     include_tests: None,
-                estimate: None,
+                    estimate: None,
                 }))
                 .await;
             assert!(
@@ -9338,7 +10669,7 @@ mod tests {
                 line: 999999,
                 context: None,
                 sibling_limit: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
@@ -9373,7 +10704,7 @@ mod tests {
                 follow_refs: None,
                 follow_refs_limit: None,
                 ranked: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
@@ -9412,7 +10743,7 @@ mod tests {
                 follow_refs: None,
                 follow_refs_limit: None,
                 ranked: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         // With group_by: "symbol", should show symbol name and match count
@@ -9452,7 +10783,7 @@ mod tests {
                 follow_refs: None,
                 follow_refs_limit: None,
                 ranked: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         // Should exclude the "use" import line
@@ -9478,7 +10809,7 @@ mod tests {
                 line: 0,
                 context: None,
                 sibling_limit: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         assert!(
@@ -9527,7 +10858,7 @@ mod tests {
                 follow_refs: Some(true),
                 follow_refs_limit: None,
                 ranked: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         // Should show that connect() is called by handler() in src/api.rs
@@ -9569,7 +10900,7 @@ mod tests {
                 follow_refs: Some(true),
                 follow_refs_limit: None,
                 ranked: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         // follow_refs ran but found no cross-references — should signal this explicitly
@@ -9666,7 +10997,7 @@ mod tests {
                 new_file: None,
                 include_co_changes: Some(true),
                 co_changes_limit: None,
-            estimate: None,
+                estimate: None,
             }))
             .await;
         // Git temporal starts as Pending in tests (no tokio runtime spawns it) — but the main
@@ -9713,6 +11044,11 @@ mod tests {
         let result = server.replace_symbol_body(Parameters(input)).await;
         assert!(result.contains("replaced"), "result was: {result}");
         assert!(result.contains("hello"), "result was: {result}");
+        assert!(result.contains("Edit safety: structural-edit-safe"));
+        assert!(result.contains("Path authority: repository-bound"));
+        assert!(result.contains("Source authority: disk-refreshed"));
+        assert!(result.contains("Write semantics: atomic write + reindex"));
+        assert!(result.contains("Evidence: symbol anchor `src/lib.rs:1`"));
 
         let on_disk = std::fs::read_to_string(&file_path).unwrap();
         assert!(on_disk.contains("HELLO"), "disk: {on_disk}");
@@ -9787,6 +11123,9 @@ mod tests {
         let result = server.insert_symbol(Parameters(input)).await;
         assert!(result.contains("inserted"), "result: {result}");
         assert!(result.contains("after"), "result: {result}");
+        assert!(result.contains("Edit safety: structural-edit-safe"));
+        assert!(result.contains("Write semantics: atomic write + reindex"));
+        assert!(result.contains("Evidence: symbol anchor `src/lib.rs:1`"));
 
         let on_disk = std::fs::read_to_string(&file_path).unwrap();
         assert!(on_disk.contains("hello"), "original intact: {on_disk}");
@@ -9835,6 +11174,9 @@ mod tests {
         };
         let result = server.delete_symbol(Parameters(input)).await;
         assert!(result.contains("deleted"), "result: {result}");
+        assert!(result.contains("Edit safety: structural-edit-safe"));
+        assert!(result.contains("Write semantics: atomic write + reindex"));
+        assert!(result.contains("Evidence: symbol anchor `src/lib.rs:1`"));
 
         let on_disk = std::fs::read_to_string(&file_path).unwrap();
         assert!(!on_disk.contains("hello"), "hello removed: {on_disk}");
@@ -9858,11 +11200,18 @@ mod tests {
             warning.is_some(),
             "replace_symbol_body should be blocked for HTML"
         );
+        assert!(warning.as_ref().unwrap().contains("edit safety blocked"));
         assert!(
             warning
                 .as_ref()
                 .unwrap()
-                .contains("does not support structural edits")
+                .contains("Required safety: structural-edit-safe")
+        );
+        assert!(
+            warning
+                .as_ref()
+                .unwrap()
+                .contains("Available safety: text-edit-safe")
         );
     }
 
@@ -9898,10 +11247,50 @@ mod tests {
         let result = server.edit_within_symbol(Parameters(input)).await;
         assert!(result.contains("edited within"), "result: {result}");
         assert!(result.contains("1 replacement"), "result: {result}");
+        assert!(result.contains("Edit safety: text-edit-safe"));
+        assert!(result.contains("Write semantics: atomic write + reindex"));
+        assert!(result.contains("Evidence: symbol anchor `src/lib.rs:1`"));
 
         let on_disk = std::fs::read_to_string(&file_path).unwrap();
         assert!(on_disk.contains("HELLO"), "edited: {on_disk}");
         assert!(!on_disk.contains("\"hello\""), "old text gone: {on_disk}");
+    }
+
+    #[tokio::test]
+    async fn test_replace_symbol_body_reports_disk_refreshed_authority_for_stale_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+
+        let stale_indexed = b"fn hello() {\n    println!(\"stale\");\n}\n";
+        let fresh_on_disk = b"fn hello() {\n    println!(\"fresh\");\n}\n";
+        let file_path = src_dir.join("lib.rs");
+        std::fs::write(&file_path, fresh_on_disk).unwrap();
+
+        let result = crate::parsing::process_file("src/lib.rs", stale_indexed, LanguageId::Rust);
+        let indexed = IndexedFile::from_parse_result(result, stale_indexed.to_vec());
+        let server = make_server_with_root(
+            make_live_index_ready(vec![("src/lib.rs".to_string(), indexed)]),
+            Some(dir.path().to_path_buf()),
+        );
+
+        let input = crate::protocol::edit::ReplaceSymbolBodyInput {
+            path: "src/lib.rs".to_string(),
+            name: "hello".to_string(),
+            kind: None,
+            symbol_line: None,
+            new_body: "fn hello() {\n    println!(\"new body\");\n}".to_string(),
+            dry_run: Some(true),
+        };
+        let result = server.replace_symbol_body(Parameters(input)).await;
+        assert!(result.contains("Source authority: disk-refreshed"));
+        assert!(result.contains("Write semantics: dry run (no writes)"));
+
+        let on_disk = std::fs::read_to_string(&file_path).unwrap();
+        assert!(
+            on_disk.contains("fresh"),
+            "dry run should leave disk untouched: {on_disk}"
+        );
     }
 
     #[tokio::test]
@@ -9943,6 +11332,8 @@ mod tests {
             result.contains("[DRY RUN]"),
             "should show dry run: {result}"
         );
+        assert!(result.contains("Path authority: repository-bound"));
+        assert!(result.contains("Write semantics: dry run (no writes)"));
         let on_disk = std::fs::read_to_string(&file_path).unwrap();
         assert!(
             on_disk.contains("old"),
@@ -9971,6 +11362,8 @@ mod tests {
             result.contains("[DRY RUN]"),
             "should show dry run: {result}"
         );
+        assert!(result.contains("Path authority: repository-bound"));
+        assert!(result.contains("Write semantics: dry run (no writes)"));
         let on_disk = std::fs::read_to_string(&file_path).unwrap();
         assert!(
             !on_disk.contains("new_fn"),
@@ -9997,6 +11390,8 @@ mod tests {
             result.contains("[DRY RUN]"),
             "should show dry run: {result}"
         );
+        assert!(result.contains("Path authority: repository-bound"));
+        assert!(result.contains("Write semantics: dry run (no writes)"));
         let on_disk = std::fs::read_to_string(&file_path).unwrap();
         assert!(
             on_disk.contains("target"),
@@ -10026,6 +11421,8 @@ mod tests {
             result.contains("[DRY RUN]"),
             "should show dry run: {result}"
         );
+        assert!(result.contains("Path authority: repository-bound"));
+        assert!(result.contains("Write semantics: dry run (no writes)"));
         let on_disk = std::fs::read_to_string(&file_path).unwrap();
         assert!(
             on_disk.contains("old_text"),
@@ -10084,11 +11481,70 @@ mod tests {
         };
         let result = server.batch_edit(Parameters(input)).await;
         assert!(result.contains("2 edit(s)"), "result: {result}");
+        assert!(
+            result.contains("Edit safety: structural-edit-safe"),
+            "result: {result}"
+        );
+        assert!(result.contains("Match type: exact"), "result: {result}");
+        assert!(
+            result.contains("Write semantics: transactional write + rollback + reindex"),
+            "result: {result}"
+        );
 
         let a = std::fs::read_to_string(src_dir.join("a.rs")).unwrap();
         assert!(a.contains("new"), "a.rs: {a}");
         let b = std::fs::read_to_string(src_dir.join("b.rs")).unwrap();
         assert!(!b.contains("beta"), "b.rs: {b}");
+    }
+
+    #[tokio::test]
+    async fn test_batch_edit_reports_disk_refreshed_authority_for_stale_file() {
+        use crate::protocol::edit::{BatchEditInput, EditOperation, SingleEdit};
+
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+
+        let stale_indexed = b"fn alpha() { stale }\n";
+        let fresh_on_disk = b"fn alpha() { fresh }\n";
+        let file_path = src_dir.join("a.rs");
+        std::fs::write(&file_path, fresh_on_disk).unwrap();
+
+        let result = crate::parsing::process_file("src/a.rs", stale_indexed, LanguageId::Rust);
+        let indexed = crate::live_index::store::IndexedFile::from_parse_result(
+            result,
+            stale_indexed.to_vec(),
+        );
+        let index = make_live_index_ready(vec![("src/a.rs".to_string(), indexed)]);
+        let server = make_server_with_root(index, Some(dir.path().to_path_buf()));
+
+        let input = BatchEditInput {
+            edits: vec![SingleEdit {
+                path: "src/a.rs".to_string(),
+                name: "alpha".to_string(),
+                kind: None,
+                symbol_line: None,
+                operation: EditOperation::Replace {
+                    new_body: "fn alpha() { next }".to_string(),
+                },
+            }],
+            dry_run: Some(true),
+        };
+        let result = server.batch_edit(Parameters(input)).await;
+        assert!(
+            result.contains("Source authority: disk-refreshed"),
+            "result: {result}"
+        );
+        assert!(
+            result.contains("Write semantics: dry run (no writes)"),
+            "result: {result}"
+        );
+
+        let on_disk = std::fs::read_to_string(&file_path).unwrap();
+        assert!(
+            on_disk.contains("fresh"),
+            "dry run should leave disk untouched: {on_disk}"
+        );
     }
 
     #[tokio::test]
@@ -10129,10 +11585,72 @@ mod tests {
         let result = server.batch_rename(Parameters(input)).await;
         assert!(result.contains("Renamed"), "result: {result}");
         assert!(result.contains("new_name"), "result: {result}");
+        assert!(
+            result.contains("Match type: constrained"),
+            "result: {result}"
+        );
+        assert!(
+            result.contains("Write semantics: transactional write + rollback + reindex"),
+            "result: {result}"
+        );
 
         let lib = std::fs::read_to_string(src_dir.join("lib.rs")).unwrap();
         assert!(lib.contains("new_name"), "lib.rs: {lib}");
         assert!(!lib.contains("old_name"), "lib.rs: {lib}");
+    }
+
+    #[tokio::test]
+    async fn test_batch_rename_reports_disk_refreshed_authority_after_reconcile() {
+        use crate::protocol::edit::BatchRenameInput;
+
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+
+        let stale_lib = b"fn old_name() { stale(); }\n";
+        let stale_main = b"fn caller() { old_name(); stale(); }\n";
+        let fresh_lib = b"fn old_name() { fresh(); }\n";
+        let fresh_main = b"fn caller() { old_name(); fresh(); }\n";
+        std::fs::write(src_dir.join("lib.rs"), fresh_lib).unwrap();
+        std::fs::write(src_dir.join("main.rs"), fresh_main).unwrap();
+
+        let mut files = vec![];
+        for (path, content) in [
+            ("src/lib.rs", stale_lib as &[u8]),
+            ("src/main.rs", stale_main as &[u8]),
+        ] {
+            let result = crate::parsing::process_file(path, content, LanguageId::Rust);
+            let indexed =
+                crate::live_index::store::IndexedFile::from_parse_result(result, content.to_vec());
+            files.push((path.to_string(), indexed));
+        }
+        let index = make_live_index_ready(files);
+        let server = make_server_with_root(index, Some(dir.path().to_path_buf()));
+
+        let input = BatchRenameInput {
+            path: "src/lib.rs".to_string(),
+            name: "old_name".to_string(),
+            kind: None,
+            symbol_line: None,
+            new_name: "new_name".to_string(),
+            dry_run: Some(true),
+            code_only: None,
+        };
+        let result = server.batch_rename(Parameters(input)).await;
+        assert!(
+            result.contains("Source authority: disk-refreshed"),
+            "result: {result}"
+        );
+        assert!(
+            result.contains("Write semantics: dry run (no writes)"),
+            "result: {result}"
+        );
+
+        let lib = std::fs::read_to_string(src_dir.join("lib.rs")).unwrap();
+        assert!(
+            lib.contains("fresh"),
+            "dry run should leave disk untouched: {lib}"
+        );
     }
 
     #[tokio::test]
@@ -10260,7 +11778,7 @@ mod tests {
                 max_per_file: None,
                 include_tests: None,
                 include_generated: None,
-            estimate: None,
+                estimate: None,
             };
             let search_result = server.search_text(Parameters(search_input)).await;
             assert!(
@@ -10532,11 +12050,69 @@ mod tests {
         };
         let result = server.batch_insert(Parameters(input)).await;
         assert!(result.contains("2 edit(s)"), "result: {result}");
+        assert!(
+            result.contains("Edit safety: structural-edit-safe"),
+            "result: {result}"
+        );
+        assert!(result.contains("Match type: exact"), "result: {result}");
+        assert!(
+            result.contains("Write semantics: transactional write + rollback + reindex"),
+            "result: {result}"
+        );
 
         let a = std::fs::read_to_string(src_dir.join("a.rs")).unwrap();
         assert!(a.contains("logging"), "a.rs: {a}");
         let b = std::fs::read_to_string(src_dir.join("b.rs")).unwrap();
         assert!(b.contains("logging"), "b.rs: {b}");
+    }
+
+    #[tokio::test]
+    async fn test_batch_insert_reports_disk_refreshed_authority_for_stale_file() {
+        use crate::protocol::edit::{BatchInsertInput, InsertPosition, InsertTarget};
+
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+
+        let stale_indexed = b"fn handler_a() { stale(); }\n";
+        let fresh_on_disk = b"fn handler_a() { fresh(); }\n";
+        let file_path = src_dir.join("a.rs");
+        std::fs::write(&file_path, fresh_on_disk).unwrap();
+
+        let result = crate::parsing::process_file("src/a.rs", stale_indexed, LanguageId::Rust);
+        let indexed = crate::live_index::store::IndexedFile::from_parse_result(
+            result,
+            stale_indexed.to_vec(),
+        );
+        let index = make_live_index_ready(vec![("src/a.rs".to_string(), indexed)]);
+        let server = make_server_with_root(index, Some(dir.path().to_path_buf()));
+
+        let input = BatchInsertInput {
+            content: "fn logging() {}".to_string(),
+            position: InsertPosition::After,
+            targets: vec![InsertTarget {
+                path: "src/a.rs".to_string(),
+                name: "handler_a".to_string(),
+                kind: None,
+                symbol_line: None,
+            }],
+            dry_run: Some(true),
+        };
+        let result = server.batch_insert(Parameters(input)).await;
+        assert!(
+            result.contains("Source authority: disk-refreshed"),
+            "result: {result}"
+        );
+        assert!(
+            result.contains("Write semantics: dry run (no writes)"),
+            "result: {result}"
+        );
+
+        let on_disk = std::fs::read_to_string(&file_path).unwrap();
+        assert!(
+            on_disk.contains("fresh"),
+            "dry run should leave disk untouched: {on_disk}"
+        );
     }
 
     #[tokio::test]
@@ -10586,12 +12162,103 @@ mod tests {
         };
         let result = server.batch_insert(Parameters(input)).await;
         assert!(result.contains("[DRY RUN]"), "result: {result}");
+        assert!(result.contains("Match type: exact"), "result: {result}");
+        assert!(
+            result.contains("Write semantics: dry run (no writes)"),
+            "result: {result}"
+        );
 
         // Files must be unchanged.
         let a = std::fs::read_to_string(src_dir.join("a.rs")).unwrap();
         assert!(!a.contains("logging"), "dry_run must not write: {a}");
         let b = std::fs::read_to_string(src_dir.join("b.rs")).unwrap();
         assert!(!b.contains("logging"), "dry_run must not write: {b}");
+    }
+
+    #[tokio::test]
+    async fn test_ask_reports_exact_route_confidence() {
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+
+        let content = b"fn helper() {}\nfn caller() { helper(); }\n";
+        std::fs::write(src_dir.join("lib.rs"), content).unwrap();
+
+        let result = crate::parsing::process_file("src/lib.rs", content, LanguageId::Rust);
+        let indexed =
+            crate::live_index::store::IndexedFile::from_parse_result(result, content.to_vec());
+        let server = make_server_with_root(
+            make_live_index_ready(vec![("src/lib.rs".to_string(), indexed)]),
+            Some(dir.path().to_path_buf()),
+        );
+
+        let input = super::SmartQueryInput {
+            query: "who calls helper".to_string(),
+        };
+        let result = server.ask(Parameters(input)).await;
+        assert!(
+            result.contains("Route confidence: exact"),
+            "result: {result}"
+        );
+        assert!(
+            result.contains("Chosen tool: find_references"),
+            "result: {result}"
+        );
+        assert!(
+            result.contains("Invocation: find_references"),
+            "result: {result}"
+        );
+        assert!(
+            result.contains("matched explicit caller/reference phrasing"),
+            "result: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ask_reports_inferred_route_confidence() {
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+
+        let content = b"struct LiveIndex;\n";
+        std::fs::write(src_dir.join("lib.rs"), content).unwrap();
+
+        let result = crate::parsing::process_file("src/lib.rs", content, LanguageId::Rust);
+        let indexed =
+            crate::live_index::store::IndexedFile::from_parse_result(result, content.to_vec());
+        let server = make_server_with_root(
+            make_live_index_ready(vec![("src/lib.rs".to_string(), indexed)]),
+            Some(dir.path().to_path_buf()),
+        );
+
+        let input = super::SmartQueryInput {
+            query: "LiveIndex".to_string(),
+        };
+        let result = server.ask(Parameters(input)).await;
+        assert!(
+            result.contains("Route confidence: inferred"),
+            "result: {result}"
+        );
+        assert!(
+            result.contains("Chosen tool: search_symbols"),
+            "result: {result}"
+        );
+        assert!(result.contains("Suggested next step:"), "result: {result}");
+    }
+
+    #[tokio::test]
+    async fn test_ask_reports_fallback_route_confidence() {
+        let server = make_server(make_live_index_ready(vec![]));
+        let input = super::SmartQueryInput {
+            query: "error handling patterns".to_string(),
+        };
+        let result = server.ask(Parameters(input)).await;
+        assert!(
+            result.contains("Route confidence: fallback"),
+            "result: {result}"
+        );
+        assert!(result.contains("Chosen tool: explore"), "result: {result}");
+        assert!(result.contains("Suggested next step:"), "result: {result}");
     }
 
     #[test]
@@ -10838,6 +12505,53 @@ mod tests {
         assert!(
             result.contains("1 file(s) with only non-symbol changes omitted"),
             "compact mode should note omitted files: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_diff_symbols_reports_trust_envelope() {
+        let repo = init_git_repo();
+        let file_path = repo.path().join("src/lib.rs");
+        std::fs::create_dir_all(repo.path().join("src")).unwrap();
+        std::fs::write(&file_path, "fn old_func() {}\n").unwrap();
+        run_git(repo.path(), &["add", "."]);
+        run_git(repo.path(), &["commit", "-m", "base"]);
+        std::fs::write(&file_path, "fn old_func() {}\nfn new_func() {}\n").unwrap();
+        run_git(repo.path(), &["add", "."]);
+        run_git(repo.path(), &["commit", "-m", "changes"]);
+
+        let server = make_server_with_root(
+            make_live_index_ready(vec![]),
+            Some(repo.path().to_path_buf()),
+        );
+        let result = server
+            .diff_symbols(Parameters(super::DiffSymbolsInput {
+                base: Some("HEAD~1".to_string()),
+                target: Some("HEAD".to_string()),
+                path_prefix: None,
+                language: None,
+                code_only: None,
+                compact: Some(true),
+                summary_only: None,
+                estimate: None,
+            }))
+            .await;
+
+        assert!(
+            result.contains("Match type: exact (git ref diff)"),
+            "diff_symbols should report match type: {result}"
+        );
+        assert!(
+            result.contains("Source authority: git ref diff"),
+            "diff_symbols should report git authority: {result}"
+        );
+        assert!(
+            result.contains("Parse state: degraded (lexical signature extraction)"),
+            "diff_symbols should report lexical parse state: {result}"
+        );
+        assert!(
+            result.contains("Scope: git diff `HEAD~1`...`HEAD`; compact output"),
+            "diff_symbols should report scope: {result}"
         );
     }
 }

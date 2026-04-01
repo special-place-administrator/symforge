@@ -1,3 +1,103 @@
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum EditSafetyMode {
+    StructuralEditSafe,
+    TextEditSafe,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum EditSourceAuthority {
+    DiskRefreshed,
+    CurrentIndex,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum EditWriteSemantics {
+    DryRunNoWrites,
+    AtomicWriteAndReindex,
+    TransactionalWriteRollbackAndReindex,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MatchType {
+    Exact,
+    Constrained,
+}
+
+fn safety_mode_label(mode: EditSafetyMode) -> &'static str {
+    match mode {
+        EditSafetyMode::StructuralEditSafe => "structural-edit-safe",
+        EditSafetyMode::TextEditSafe => "text-edit-safe",
+    }
+}
+
+fn source_authority_label(authority: EditSourceAuthority) -> &'static str {
+    match authority {
+        EditSourceAuthority::DiskRefreshed => "disk-refreshed",
+        EditSourceAuthority::CurrentIndex => "current index",
+    }
+}
+
+fn write_semantics_label(semantics: EditWriteSemantics) -> &'static str {
+    match semantics {
+        EditWriteSemantics::DryRunNoWrites => "dry run (no writes)",
+        EditWriteSemantics::AtomicWriteAndReindex => "atomic write + reindex",
+        EditWriteSemantics::TransactionalWriteRollbackAndReindex => {
+            "transactional write + rollback + reindex"
+        }
+    }
+}
+
+fn match_type_label(match_type: MatchType) -> &'static str {
+    match match_type {
+        MatchType::Exact => "exact",
+        MatchType::Constrained => "constrained",
+    }
+}
+
+pub(crate) fn format_edit_envelope(
+    safety_mode: EditSafetyMode,
+    source_authority: EditSourceAuthority,
+    write_semantics: EditWriteSemantics,
+    evidence_anchor: &str,
+) -> String {
+    format!(
+        "Edit safety: {}\nPath authority: repository-bound\nSource authority: {}\nWrite semantics: {}\nEvidence: symbol anchor `{}`",
+        safety_mode_label(safety_mode),
+        source_authority_label(source_authority),
+        write_semantics_label(write_semantics),
+        evidence_anchor
+    )
+}
+
+pub(crate) fn format_batch_envelope(
+    safety_mode: EditSafetyMode,
+    match_type: MatchType,
+    source_authority: EditSourceAuthority,
+    write_semantics: EditWriteSemantics,
+    evidence: &str,
+) -> String {
+    format!(
+        "Edit safety: {}\nMatch type: {}\nPath authority: repository-bound\nSource authority: {}\nWrite semantics: {}\nEvidence: {}",
+        safety_mode_label(safety_mode),
+        match_type_label(match_type),
+        source_authority_label(source_authority),
+        write_semantics_label(write_semantics),
+        evidence
+    )
+}
+
+pub(crate) fn format_capability_warning(
+    tool_name: &str,
+    language: &str,
+    required_safety: &str,
+    available_safety: &str,
+    suggestion: &str,
+) -> String {
+    format!(
+        "{tool_name}: edit safety blocked\nRequired safety: {required_safety}\nAvailable safety: {available_safety}\nLanguage: {language}\nSuggested next step: {suggestion}"
+    )
+}
+
 /// Format the result of a replace_symbol_body operation.
 pub(crate) fn format_replace(
     path: &str,
@@ -74,6 +174,52 @@ pub(crate) fn format_batch_summary(results: &[String], file_count: usize) -> Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_format_edit_envelope() {
+        let result = format_edit_envelope(
+            EditSafetyMode::StructuralEditSafe,
+            EditSourceAuthority::DiskRefreshed,
+            EditWriteSemantics::AtomicWriteAndReindex,
+            "src/lib.rs:12",
+        );
+        assert!(result.contains("Edit safety: structural-edit-safe"));
+        assert!(result.contains("Path authority: repository-bound"));
+        assert!(result.contains("Source authority: disk-refreshed"));
+        assert!(result.contains("Write semantics: atomic write + reindex"));
+        assert!(result.contains("src/lib.rs:12"));
+    }
+
+    #[test]
+    fn test_format_capability_warning() {
+        let result = format_capability_warning(
+            "replace_symbol_body",
+            "html",
+            "structural-edit-safe",
+            "text-edit-safe",
+            "use edit_within_symbol",
+        );
+        assert!(result.contains("edit safety blocked"));
+        assert!(result.contains("Required safety: structural-edit-safe"));
+        assert!(result.contains("Available safety: text-edit-safe"));
+        assert!(result.contains("Language: html"));
+    }
+
+    #[test]
+    fn test_format_batch_envelope() {
+        let result = format_batch_envelope(
+            EditSafetyMode::StructuralEditSafe,
+            MatchType::Constrained,
+            EditSourceAuthority::CurrentIndex,
+            EditWriteSemantics::TransactionalWriteRollbackAndReindex,
+            "definition `src/lib.rs` + 2 target file(s)",
+        );
+        assert!(result.contains("Edit safety: structural-edit-safe"));
+        assert!(result.contains("Match type: constrained"));
+        assert!(result.contains("Source authority: current index"));
+        assert!(result.contains("Write semantics: transactional write + rollback + reindex"));
+        assert!(result.contains("definition `src/lib.rs` + 2 target file(s)"));
+    }
 
     #[test]
     fn test_format_replace() {

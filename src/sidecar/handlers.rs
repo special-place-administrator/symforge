@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::{LanguageId, ReferenceKind};
 use crate::sidecar::{SidecarState, SymbolSnapshot, build_with_budget};
+use crate::{protocol::edit, watcher};
 
 // ---------------------------------------------------------------------------
 // Request parameter structs
@@ -59,11 +60,28 @@ pub struct PromptContextParams {
 struct PromptFileHint {
     path: String,
     line_hint_alias: Option<String>,
+    match_kind: PromptHintMatchKind,
 }
 
 struct PromptQualifiedSymbolHint {
     file_hint: PromptFileHint,
     symbol_name: String,
+}
+
+#[derive(Clone, Copy)]
+enum PromptHintMatchKind {
+    ExactPath,
+    ModuleAlias,
+    QualifiedPathAlias,
+    Basename,
+    StemLineAlias,
+    QualifiedSymbolAlias,
+}
+
+#[derive(Clone, Copy)]
+enum ContextSourceAuthority {
+    DiskRefreshed,
+    CurrentIndex,
 }
 
 #[derive(Serialize)]
@@ -89,6 +107,141 @@ const TOOL_RENDER_OPTIONS: RenderOptions = RenderOptions {
     include_savings_footer: false,
     record_stats: true,
 };
+
+fn format_prompt_context_signal(level: &str, evidence: impl Into<String>, body: String) -> String {
+    format!(
+        "Prompt-context signal: {level}\nEvidence: {}\n\n{body}",
+        evidence.into()
+    )
+}
+
+fn no_high_confidence_prompt_context_message() -> String {
+    "Prompt-context signal: no high-confidence hint\n\
+Evidence: no exact file, symbol, or repo-map cue matched the prompt\n\n\
+Suggested next step: use `search_symbols(...)` for likely names or `search_text(...)` for code/content search."
+        .to_string()
+}
+
+fn context_source_authority_label(authority: ContextSourceAuthority) -> &'static str {
+    match authority {
+        ContextSourceAuthority::DiskRefreshed => "disk-refreshed",
+        ContextSourceAuthority::CurrentIndex => "current index",
+    }
+}
+
+fn parse_state_label(status: &crate::live_index::store::ParseStatus) -> &'static str {
+    match status {
+        crate::live_index::store::ParseStatus::Parsed => "parsed",
+        crate::live_index::store::ParseStatus::PartialParse { .. } => "partial",
+        crate::live_index::store::ParseStatus::Failed { .. } => "degraded",
+    }
+}
+
+fn aggregate_parse_state_label<'a>(
+    statuses: impl IntoIterator<Item = &'a crate::live_index::store::ParseStatus>,
+    published: &crate::live_index::store::PublishedIndexState,
+) -> &'static str {
+    let mut saw_partial = false;
+    for status in statuses {
+        match status {
+            crate::live_index::store::ParseStatus::Parsed => {}
+            crate::live_index::store::ParseStatus::PartialParse { .. } => saw_partial = true,
+            crate::live_index::store::ParseStatus::Failed { .. } => return "degraded",
+        }
+    }
+    if saw_partial {
+        "partial"
+    } else if matches!(
+        published.status,
+        crate::live_index::store::PublishedIndexStatus::Degraded
+    ) {
+        "degraded"
+    } else {
+        "parsed"
+    }
+}
+
+fn format_context_envelope(
+    match_type: &str,
+    source_authority: ContextSourceAuthority,
+    parse_state: &str,
+    completeness: &str,
+    scope: impl Into<String>,
+    evidence: impl Into<String>,
+) -> String {
+    format!(
+        "Match type: {match_type}\nSource authority: {}\nParse state: {parse_state}\nCompleteness: {completeness}\nScope: {}\nEvidence: {}",
+        context_source_authority_label(source_authority),
+        scope.into(),
+        evidence.into()
+    )
+}
+
+fn freshen_sidecar_path_if_stale(
+    state: &SidecarState,
+    relative_path: &str,
+) -> ContextSourceAuthority {
+    let Some(repo_root) = &state.repo_root else {
+        return ContextSourceAuthority::CurrentIndex;
+    };
+    let Ok(abs_path) = edit::safe_repo_path(repo_root, relative_path) else {
+        return ContextSourceAuthority::CurrentIndex;
+    };
+    if watcher::freshen_file_if_stale(relative_path, &abs_path, &state.index) {
+        ContextSourceAuthority::DiskRefreshed
+    } else {
+        ContextSourceAuthority::CurrentIndex
+    }
+}
+
+fn describe_file_hint(file_hint: &PromptFileHint) -> (&'static str, String) {
+    match file_hint.match_kind {
+        PromptHintMatchKind::ExactPath => (
+            "high-confidence",
+            format!("exact path `{}` matched in the prompt", file_hint.path),
+        ),
+        PromptHintMatchKind::ModuleAlias => (
+            "medium-confidence",
+            format!(
+                "module alias `{}` resolved to `{}`",
+                file_hint.line_hint_alias.as_deref().unwrap_or("<unknown>"),
+                file_hint.path
+            ),
+        ),
+        PromptHintMatchKind::QualifiedPathAlias => (
+            "medium-confidence",
+            format!(
+                "path alias `{}` resolved to `{}`",
+                file_hint.line_hint_alias.as_deref().unwrap_or("<unknown>"),
+                file_hint.path
+            ),
+        ),
+        PromptHintMatchKind::Basename => (
+            "heuristic",
+            format!(
+                "basename `{}` matched `{}`",
+                file_hint.line_hint_alias.as_deref().unwrap_or("<unknown>"),
+                file_hint.path
+            ),
+        ),
+        PromptHintMatchKind::StemLineAlias => (
+            "heuristic",
+            format!(
+                "stem+line alias `{}` matched `{}`",
+                file_hint.line_hint_alias.as_deref().unwrap_or("<unknown>"),
+                file_hint.path
+            ),
+        ),
+        PromptHintMatchKind::QualifiedSymbolAlias => (
+            "high-confidence",
+            format!(
+                "qualified symbol alias `{}` resolved within `{}`",
+                file_hint.line_hint_alias.as_deref().unwrap_or("<unknown>"),
+                file_hint.path
+            ),
+        ),
+    }
+}
 
 fn resolve_repo_root(state: &SidecarState) -> Result<std::path::PathBuf, StatusCode> {
     match &state.repo_root {
@@ -194,6 +347,7 @@ fn outline_text(
     params: &OutlineParams,
     options: RenderOptions,
 ) -> Result<String, StatusCode> {
+    let source_authority = freshen_sidecar_path_if_stale(state, &params.path);
     let guard = state.index.read();
 
     // Return 404 for non-indexed files.
@@ -201,6 +355,7 @@ fn outline_text(
 
     let file_bytes = file.byte_len;
     let language = format!("{:?}", file.language);
+    let parse_state = parse_state_label(&file.parse_status);
 
     let include_section = |name: &str| -> bool {
         match &params.sections {
@@ -210,14 +365,14 @@ fn outline_text(
     };
 
     // Build symbol outline lines.
-    let mut lines: Vec<String> = Vec::new();
-    lines.push(format!(
+    let mut body_lines: Vec<String> = Vec::new();
+    body_lines.push(format!(
         "── {} ({} symbols, {}) ──",
         params.path,
         file.symbols.len(),
         language
     ));
-    append_parse_status_lines(&mut lines, file);
+    append_parse_status_lines(&mut body_lines, file);
 
     // Surface section validation warnings in the output.
     if let Some(ref section_list) = params.sections {
@@ -228,7 +383,7 @@ fn outline_text(
             .map(|s| s.as_str())
             .collect();
         if !unknown.is_empty() {
-            lines.push(format!(
+            body_lines.push(format!(
                 "Warning: unknown section(s): {}. Valid: {}.",
                 unknown.join(", "),
                 valid.join(", ")
@@ -246,7 +401,7 @@ fn outline_text(
             } else {
                 &sym.name[..]
             };
-            lines.push(format!(
+            body_lines.push(format!(
                 "{}  {:<10} {}  L{}-{}",
                 indent,
                 kind_str,
@@ -274,13 +429,13 @@ fn outline_text(
         if !import_sources.is_empty() {
             let mut sorted: Vec<_> = import_sources.into_iter().collect();
             sorted.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
-            lines.push(String::new());
-            lines.push(format!("Imports from ({} sources):", sorted.len()));
+            body_lines.push(String::new());
+            body_lines.push(format!("Imports from ({} sources):", sorted.len()));
             for (source, count) in sorted.iter().take(10) {
-                lines.push(format!("  {} ({} symbols)", source, count));
+                body_lines.push(format!("  {} ({} symbols)", source, count));
             }
             if sorted.len() > 10 {
-                lines.push(format!("  ...and {} more", sorted.len() - 10));
+                body_lines.push(format!("  ...and {} more", sorted.len() - 10));
             }
         }
     }
@@ -297,13 +452,13 @@ fn outline_text(
         if !consumers.is_empty() {
             let mut sorted: Vec<_> = consumers.into_iter().collect();
             sorted.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
-            lines.push(String::new());
-            lines.push(format!("Used by ({} files):", sorted.len()));
+            body_lines.push(String::new());
+            body_lines.push(format!("Used by ({} files):", sorted.len()));
             for (consumer, count) in sorted.iter().take(10) {
-                lines.push(format!("  {} ({} refs)", consumer, count));
+                body_lines.push(format!("  {} ({} refs)", consumer, count));
             }
             if sorted.len() > 10 {
-                lines.push(format!("  ...and {} more", sorted.len() - 10));
+                body_lines.push(format!("  ...and {} more", sorted.len() - 10));
             }
         }
     }
@@ -333,12 +488,12 @@ fn outline_text(
         symbol_callers.truncate(5);
 
         if !symbol_callers.is_empty() {
-            lines.push(String::new());
-            lines.push("Key references:".to_string());
+            body_lines.push(String::new());
+            body_lines.push("Key references:".to_string());
             for (sym_name, callers) in &symbol_callers {
-                lines.push(format!("  {}()", sym_name));
+                body_lines.push(format!("  {}()", sym_name));
                 for (caller_file, caller_line) in callers {
-                    lines.push(format!("    {}  line {}", caller_file, caller_line));
+                    body_lines.push(format!("    {}  line {}", caller_file, caller_line));
                 }
             }
         }
@@ -355,8 +510,8 @@ fn outline_text(
         if temporal.state == GitTemporalState::Ready
             && let Some(history) = temporal.files.get(&params.path)
         {
-            lines.push(String::new());
-            lines.push(format!(
+            body_lines.push(String::new());
+            body_lines.push(format!(
                 "Git activity:  {} {:.2} ({})    {} commits, last {}",
                 churn_bar(history.churn_score),
                 history.churn_score,
@@ -364,7 +519,7 @@ fn outline_text(
                 history.commit_count,
                 relative_time(history.last_commit.days_ago),
             ));
-            lines.push(format!(
+            body_lines.push(format!(
                 "  Last:  {} \"{}\" ({}, {})",
                 history.last_commit.hash,
                 history.last_commit.message_head,
@@ -377,12 +532,12 @@ fn outline_text(
                     .iter()
                     .map(|c| format!("{} {:.0}%", c.author, c.percentage))
                     .collect();
-                lines.push(format!("  Owners: {}", owners.join(", ")));
+                body_lines.push(format!("  Owners: {}", owners.join(", ")));
             }
             if !history.co_changes.is_empty() {
-                lines.push("  Co-changes:".to_string());
+                body_lines.push("  Co-changes:".to_string());
                 for entry in &history.co_changes {
-                    lines.push(format!(
+                    body_lines.push(format!(
                         "    {}  ({:.2} coupling, {} shared commits)",
                         entry.path, entry.coupling_score, entry.shared_commits,
                     ));
@@ -400,7 +555,27 @@ fn outline_text(
         None if options.include_savings_footer => 200 * 4, // hook path: compact
         None => 0,                                         // tool path: unlimited (0 = no cap)
     };
-    let (mut text, _remaining) = build_with_budget(&lines, max_bytes);
+    let (body_text, remaining) = build_with_budget(&body_lines, max_bytes);
+    let completeness = if remaining > 0 {
+        "budget-limited"
+    } else {
+        "full"
+    };
+    let scope = match &params.sections {
+        Some(sections) if !sections.is_empty() => {
+            format!("path `{}`; sections {}", params.path, sections.join(", "))
+        }
+        _ => format!("path `{}`; all sections", params.path),
+    };
+    let envelope = format_context_envelope(
+        "exact",
+        source_authority,
+        parse_state,
+        completeness,
+        scope,
+        format!("file anchor `{}`", params.path),
+    );
+    let mut text = format!("{envelope}\n\n{body_text}");
 
     let output_bytes = text.len() as u64;
     if options.include_savings_footer {
@@ -847,7 +1022,15 @@ fn symbol_context_text(
     params: &SymbolContextParams,
     options: RenderOptions,
 ) -> Result<String, StatusCode> {
+    let source_authority = if let Some(path) = params.path.as_deref() {
+        freshen_sidecar_path_if_stale(state, path)
+    } else if let Some(file) = params.file.as_deref() {
+        freshen_sidecar_path_if_stale(state, file)
+    } else {
+        ContextSourceAuthority::CurrentIndex
+    };
     let guard = state.index.read();
+    let published = state.index.published_state();
 
     let raw = if let Some(path) = params.path.as_deref() {
         match guard.find_exact_references_for_symbol(
@@ -904,43 +1087,78 @@ fn symbol_context_text(
         .map(|f| f.byte_len)
         .sum();
 
+    let parse_state = if let Some(path) = params.path.as_deref() {
+        guard
+            .get_file(path)
+            .map(|file| parse_state_label(&file.parse_status))
+            .unwrap_or_else(|| aggregate_parse_state_label(std::iter::empty(), &published))
+    } else if let Some(file) = params.file.as_deref() {
+        guard
+            .get_file(file)
+            .map(|indexed| parse_state_label(&indexed.parse_status))
+            .unwrap_or_else(|| aggregate_parse_state_label(std::iter::empty(), &published))
+    } else {
+        aggregate_parse_state_label(
+            map.keys()
+                .filter_map(|file_path| guard.get_file(file_path))
+                .map(|file| &file.parse_status),
+            &published,
+        )
+    };
+
     drop(guard);
 
     // Sort files for deterministic output.
     let mut files: Vec<String> = map.keys().cloned().collect();
     files.sort();
 
-    let mut lines: Vec<String> = Vec::new();
+    let mut evidence_anchors: Vec<String> = Vec::new();
+    for file in &files {
+        let refs = map.get(file).unwrap();
+        let mut sorted_refs = refs.clone();
+        sorted_refs.sort_by_key(|(line, _, _)| *line);
+        for (line, _, _) in &sorted_refs {
+            if evidence_anchors.len() >= 3 {
+                break;
+            }
+            evidence_anchors.push(format!("{file}:{line}"));
+        }
+        if evidence_anchors.len() >= 3 {
+            break;
+        }
+    }
+
+    let mut body_lines: Vec<String> = Vec::new();
 
     for file in &files {
-        lines.push(format!("── {} ──", file));
+        body_lines.push(format!("── {} ──", file));
         let refs = map.get(file).unwrap();
         let mut sorted_refs = refs.clone();
         sorted_refs.sort_by_key(|(line, _, _)| *line);
         for (line, _kind, enclosing) in &sorted_refs {
             if let Some(sym_name) = enclosing {
-                lines.push(format!("  line {}  in fn {}", line, sym_name));
+                body_lines.push(format!("  line {}  in fn {}", line, sym_name));
             } else {
-                lines.push(format!("  line {}  (module level)", line));
+                body_lines.push(format!("  line {}  (module level)", line));
             }
         }
     }
 
-    if lines.is_empty() {
-        lines.push("No references found in the index.".to_string());
-        lines.push(
+    if body_lines.is_empty() {
+        body_lines.push("No references found in the index.".to_string());
+        body_lines.push(
             "Tip: this symbol may only be used via dynamic dispatch, reflection, or external entry points.".to_string(),
         );
     }
 
     if total < grand_total {
         if params.file.is_some() {
-            lines.push(format!(
+            body_lines.push(format!(
                 "... (showing {} of {} matches — use `path` to narrow further)",
                 total, grand_total
             ));
         } else {
-            lines.push(format!(
+            body_lines.push(format!(
                 "... (showing {} of {} matches — use `path` or `file` to narrow)",
                 total, grand_total
             ));
@@ -948,7 +1166,62 @@ fn symbol_context_text(
     }
 
     // Apply budget (100 tokens = 400 bytes).
-    let (mut text, _) = build_with_budget(&lines, 400);
+    let (body_text, remaining) = build_with_budget(&body_lines, 400);
+    let completeness = if total < grand_total {
+        "truncated"
+    } else if remaining > 0 {
+        "budget-limited"
+    } else {
+        "full"
+    };
+    let match_type = if params.path.is_some() && params.symbol_line.is_some() {
+        "exact"
+    } else if params.path.is_some() || params.file.is_some() {
+        "constrained"
+    } else {
+        "heuristic"
+    };
+    let evidence = if let Some(path) = params.path.as_deref() {
+        match params.symbol_line {
+            Some(line) => format!(
+                "exact selector `{path}:{line}` for symbol `{}`",
+                params.name
+            ),
+            None => format!("path-constrained symbol `{}` in `{path}`", params.name),
+        }
+    } else if let Some(file) = params.file.as_deref() {
+        format!("file filter `{file}` for symbol `{}`", params.name)
+    } else if evidence_anchors.is_empty() {
+        format!(
+            "symbol token `{}` with no indexed reference anchors",
+            params.name
+        )
+    } else {
+        format!(
+            "symbol token `{}` anchored at {}",
+            params.name,
+            evidence_anchors.join(", ")
+        )
+    };
+    let scope = if let Some(path) = params.path.as_deref() {
+        match params.symbol_line {
+            Some(line) => format!("path `{path}`; exact selector line {line}"),
+            None => format!("path `{path}`; symbol-scoped references"),
+        }
+    } else if let Some(file) = params.file.as_deref() {
+        format!("file filter `{file}`; symbol token `{}`", params.name)
+    } else {
+        format!("repo-wide symbol token `{}`", params.name)
+    };
+    let envelope = format_context_envelope(
+        match_type,
+        source_authority,
+        parse_state,
+        completeness,
+        scope,
+        evidence,
+    );
+    let mut text = format!("{envelope}\n\n{body_text}");
 
     let output_bytes = text.len() as u64;
     if options.include_savings_footer {
@@ -1102,7 +1375,7 @@ pub(crate) fn repo_map_text(state: &SidecarState) -> Result<String, StatusCode> 
 /// - explicit file hint in the prompt => outline for that file
 /// - explicit symbol hint in the prompt => symbol context for that symbol
 /// - repo-map intent keywords => repo map
-/// - otherwise => empty context
+/// - otherwise => explicit low-confidence guidance with next-step suggestions
 pub async fn prompt_context_handler(
     State(state): State<SidecarState>,
     Query(params): Query<PromptContextParams>,
@@ -1137,17 +1410,19 @@ async fn prompt_context_text(
 
     if let Some(symbol_hint) = find_prompt_qualified_symbol_hint(state, prompt)? {
         let line_hint = find_prompt_line_hint(prompt, Some(&symbol_hint.file_hint));
-        return symbol_context_text(
+        let body = symbol_context_text(
             state,
             &SymbolContextParams {
                 name: symbol_hint.symbol_name,
                 file: None,
-                path: Some(symbol_hint.file_hint.path),
+                path: Some(symbol_hint.file_hint.path.clone()),
                 symbol_kind: None,
                 symbol_line: line_hint,
             },
             options,
-        );
+        )?;
+        let (level, evidence) = describe_file_hint(&symbol_hint.file_hint);
+        return Ok(format_prompt_context_signal(level, evidence, body));
     }
 
     let file_hint = find_prompt_file_hint(state, prompt)?;
@@ -1156,50 +1431,68 @@ async fn prompt_context_text(
 
     match (file_hint, symbol_hint) {
         (Some(file_hint), Some(name)) => {
-            return symbol_context_text(
+            let body = symbol_context_text(
                 state,
                 &SymbolContextParams {
-                    name,
+                    name: name.clone(),
                     file: None,
-                    path: Some(file_hint.path),
+                    path: Some(file_hint.path.clone()),
                     symbol_kind: None,
                     symbol_line: line_hint,
                 },
                 options,
-            );
+            )?;
+            let (level, file_evidence) = describe_file_hint(&file_hint);
+            return Ok(format_prompt_context_signal(
+                level,
+                format!("{file_evidence}; symbol token `{name}` found in the index"),
+                body,
+            ));
         }
         (Some(file_hint), None) => {
-            return outline_text(
+            let body = outline_text(
                 state,
                 &OutlineParams {
-                    path: file_hint.path,
+                    path: file_hint.path.clone(),
                     max_tokens: Some(160),
                     sections: None,
                 },
                 options,
-            );
+            )?;
+            let (level, evidence) = describe_file_hint(&file_hint);
+            return Ok(format_prompt_context_signal(level, evidence, body));
         }
         (None, Some(name)) => {
-            return symbol_context_text(
+            let body = symbol_context_text(
                 state,
                 &SymbolContextParams {
-                    name,
+                    name: name.clone(),
                     file: None,
                     path: None,
                     symbol_kind: None,
                     symbol_line: None,
                 },
                 options,
-            );
+            )?;
+            return Ok(format_prompt_context_signal(
+                "heuristic",
+                format!("symbol token `{name}` matched somewhere in the index"),
+                body,
+            ));
         }
         (None, None) => {}
     }
 
     if prompt_requests_repo_map(prompt) {
-        return repo_map_text(state);
+        let body = repo_map_text(state)?;
+        return Ok(format_prompt_context_signal(
+            "high-confidence",
+            "repo-map request phrase matched in the prompt",
+            body,
+        ));
     }
 
-    Ok(String::new())
+    Ok(no_high_confidence_prompt_context_message())
 }
 
 /// `GET /stats` — return token savings snapshot as JSON.
@@ -1251,6 +1544,7 @@ fn find_prompt_file_hint(
             return Ok(Some(PromptFileHint {
                 path: path.to_string(),
                 line_hint_alias: None,
+                match_kind: PromptHintMatchKind::ExactPath,
             }));
         }
 
@@ -1265,6 +1559,7 @@ fn find_prompt_file_hint(
                 module_match = Some(PromptFileHint {
                     path: path.to_string(),
                     line_hint_alias: Some(module_alias),
+                    match_kind: PromptHintMatchKind::ModuleAlias,
                 });
             }
         }
@@ -1280,6 +1575,7 @@ fn find_prompt_file_hint(
                 qualified_path_match = Some(PromptFileHint {
                     path: path.to_string(),
                     line_hint_alias: Some(path_without_extension),
+                    match_kind: PromptHintMatchKind::QualifiedPathAlias,
                 });
             }
         }
@@ -1299,6 +1595,7 @@ fn find_prompt_file_hint(
                 basename_match = Some(PromptFileHint {
                     path: path.to_string(),
                     line_hint_alias: Some(file_name.to_string()),
+                    match_kind: PromptHintMatchKind::Basename,
                 });
             }
         }
@@ -1322,6 +1619,7 @@ fn find_prompt_file_hint(
             stem_match = Some(PromptFileHint {
                 path: path.to_string(),
                 line_hint_alias: Some(file_stem.to_string()),
+                match_kind: PromptHintMatchKind::StemLineAlias,
             });
         }
     }
@@ -1375,6 +1673,7 @@ fn find_prompt_qualified_symbol_hint(
                     file_hint: PromptFileHint {
                         path: path.to_string(),
                         line_hint_alias: Some(alias),
+                        match_kind: PromptHintMatchKind::QualifiedSymbolAlias,
                     },
                     symbol_name: symbol.name.clone(),
                 });
@@ -1765,6 +2064,18 @@ mod tests {
         }
     }
 
+    fn make_state_with_root(
+        files: Vec<(&str, IndexedFile)>,
+        repo_root: std::path::PathBuf,
+    ) -> SidecarState {
+        SidecarState {
+            index: build_shared_index(files),
+            token_stats: TokenStats::new(),
+            repo_root: Some(repo_root),
+            symbol_cache: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
     // -----------------------------------------------------------------------
     // health_handler
     // -----------------------------------------------------------------------
@@ -1846,6 +2157,21 @@ mod tests {
             result.contains("tokens saved"),
             "outline should have token savings footer"
         );
+        assert!(result.contains("Match type: exact"), "got: {result}");
+        assert!(
+            result.contains("Source authority: current index"),
+            "got: {result}"
+        );
+        assert!(result.contains("Parse state: parsed"), "got: {result}");
+        assert!(result.contains("Completeness: full"), "got: {result}");
+        assert!(
+            result.contains("Scope: path `src/foo.rs`; all sections"),
+            "got: {result}"
+        );
+        assert!(
+            result.contains("Evidence: file anchor `src/foo.rs`"),
+            "got: {result}"
+        );
     }
 
     #[tokio::test]
@@ -1890,6 +2216,41 @@ mod tests {
             "result should be truncated or short: {}",
             result.len()
         );
+        assert!(
+            result.contains("Completeness: budget-limited"),
+            "got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_outline_handler_reports_disk_refreshed_authority_for_stale_exact_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let src_dir = tmp.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        let file_path = src_dir.join("main.rs");
+        std::fs::write(&file_path, "fn refreshed() {}\n").unwrap();
+
+        let stale_file = make_indexed_file(
+            "src/main.rs",
+            vec![make_symbol("stale", SymbolKind::Function, 1, 1)],
+            vec![],
+            ParseStatus::Parsed,
+        );
+        let state =
+            make_state_with_root(vec![("src/main.rs", stale_file)], tmp.path().to_path_buf());
+
+        let params = OutlineParams {
+            path: "src/main.rs".to_string(),
+            max_tokens: None,
+            sections: None,
+        };
+        let result = outline_handler(State(state), Query(params)).await.unwrap();
+
+        assert!(
+            result.contains("Source authority: disk-refreshed"),
+            "got: {result}"
+        );
+        assert!(result.contains("refreshed"), "got: {result}");
     }
 
     #[tokio::test]
@@ -2055,6 +2416,21 @@ mod tests {
         assert!(result.contains("src/main.rs"), "should contain the file");
         assert!(result.contains("line 5"), "should show line number");
         assert!(result.contains("tokens saved"), "should have footer");
+        assert!(result.contains("Match type: heuristic"), "got: {result}");
+        assert!(
+            result.contains("Source authority: current index"),
+            "got: {result}"
+        );
+        assert!(result.contains("Parse state: parsed"), "got: {result}");
+        assert!(result.contains("Completeness: full"), "got: {result}");
+        assert!(
+            result.contains("Scope: repo-wide symbol token `process`"),
+            "got: {result}"
+        );
+        assert!(
+            result.contains("Evidence: symbol token `process` anchored at src/main.rs:5"),
+            "got: {result}"
+        );
     }
 
     #[tokio::test]
@@ -2099,6 +2475,7 @@ mod tests {
             "should indicate truncation: {}",
             result
         );
+        assert!(result.contains("Completeness: truncated"), "got: {result}");
     }
 
     #[tokio::test]
@@ -2264,6 +2641,14 @@ mod tests {
             result.contains("serve"),
             "prompt context should surface the file outline"
         );
+        assert!(
+            result.contains("Prompt-context signal: high-confidence"),
+            "exact file hints should surface calibrated confidence: {result}"
+        );
+        assert!(
+            result.contains("exact path `src/main.rs` matched in the prompt"),
+            "exact file hints should expose the evidence source: {result}"
+        );
     }
 
     #[tokio::test]
@@ -2333,6 +2718,43 @@ mod tests {
         assert!(
             result.contains("src/other.rs"),
             "name-only symbol context should keep global same-name hits: {result}"
+        );
+        assert!(
+            result.contains("Prompt-context signal: heuristic"),
+            "symbol-only hints should be labeled heuristic: {result}"
+        );
+        assert!(
+            result.contains("symbol token `connect` matched somewhere in the index"),
+            "symbol-only hints should expose their evidence source: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_prompt_context_handler_without_hint_reports_no_high_confidence_signal() {
+        let target = make_indexed_file(
+            "src/db.rs",
+            vec![make_symbol("connect", SymbolKind::Function, 1, 1)],
+            vec![],
+            ParseStatus::Parsed,
+        );
+        let state = make_state(vec![("src/db.rs", target)]);
+
+        let result = prompt_context_handler(
+            State(state),
+            Query(PromptContextParams {
+                text: "please help with the database thing".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            result.contains("Prompt-context signal: no high-confidence hint"),
+            "unmatched prompts should explicitly report low confidence: {result}"
+        );
+        assert!(
+            result.contains("search_symbols(...)"),
+            "unmatched prompts should suggest the next narrowing step: {result}"
         );
     }
 

@@ -1,12 +1,13 @@
+pub mod conventions;
 pub(crate) mod edit;
 pub(crate) mod edit_format;
+pub mod edit_plan;
 pub mod explore;
 pub mod format;
+pub mod investigation;
 pub mod prompts;
 pub mod resources;
-pub mod conventions;
-pub mod edit_plan;
-pub mod investigation;
+pub(crate) mod search_format;
 pub mod session;
 pub mod smart_query;
 pub mod tools;
@@ -158,7 +159,12 @@ impl SymForgeServer {
     }
 
     /// Record token savings from a named MCP tool, tracking per-tool breakdown.
-    pub(crate) fn record_tool_savings_named(&self, tool_name: &str, estimated_raw_tokens: u64, output_tokens: u64) {
+    pub(crate) fn record_tool_savings_named(
+        &self,
+        tool_name: &str,
+        estimated_raw_tokens: u64,
+        output_tokens: u64,
+    ) {
         if let Some(ref stats) = self.token_stats {
             let saved = estimated_raw_tokens.saturating_sub(output_tokens);
             stats

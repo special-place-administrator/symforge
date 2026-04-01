@@ -37,6 +37,23 @@
 
 ---
 
+## Claude Code Reliability Overrides
+- Do not claim success before running the relevant verification commands below and fixing resulting errors.
+- Clean obvious dead imports, exports, and debug code before structural refactors when practical.
+- Split wide refactors into phases of 5 touched files or fewer.
+- Re-read files before editing after long conversations or when returning to older files.
+- Treat large files as chunked reads, not single-read truth.
+- Distrust suspiciously small grep or search results; re-run with narrower scope and assume truncation is possible.
+- For renames or signature changes, search separately for direct calls, type references, string literals, dynamic imports or `require`, re-exports or barrels, and tests or mocks.
+- Prefer parallel sub-agents or bounded workstreams for changes spanning more than 5 independent files.
+
+### Verification Profiles (symforge)
+- Frontend changes: no frontend build or lint command is configured in this repo. If the change is only under `npm/`, run `cd npm && npm test`.
+- Backend changes: run `cargo check`, `cargo test --all-targets -- --test-threads=1`, and `cargo build --release`. Add tests when Rust shared logic or `tests/` changes.
+- Mixed changes: run the backend commands plus `cd npm && npm test` before reporting success when both Rust and `npm/` paths change.
+
+---
+
 ### 5. Demand Elegance (Balanced)
 - For non-trivial changes: pause and ask "is there a more elegant way?"
 - If a fix feels hacky: "Knowing everything I know now, implement the elegant solution"

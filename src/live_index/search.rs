@@ -25,6 +25,7 @@ pub struct SymbolSearchHit {
 pub struct SymbolSearchResult {
     pub file_count: usize,
     pub hits: Vec<SymbolSearchHit>,
+    pub overflow_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -677,6 +678,7 @@ pub struct TextSearchResult {
     pub files: Vec<TextFileMatches>,
     /// Matches that were found but suppressed by noise policy (e.g., inside test modules).
     pub suppressed_by_noise: usize,
+    pub overflow_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -841,6 +843,8 @@ pub fn search_symbols_with_options(
             .then(a.name.cmp(&b.name))
     });
 
+    let total_matches = matches.len();
+    let overflow_count = total_matches.saturating_sub(options.result_limit.get());
     let hits: Vec<SymbolSearchHit> = matches
         .into_iter()
         .take(options.result_limit.get())
@@ -859,7 +863,11 @@ pub fn search_symbols_with_options(
         .collect::<std::collections::HashSet<_>>()
         .len();
 
-    SymbolSearchResult { file_count, hits }
+    SymbolSearchResult {
+        file_count,
+        hits,
+        overflow_count,
+    }
 }
 
 pub fn search_text(
@@ -1159,6 +1167,7 @@ where
     // First pass: count matches per file for relevance ranking.
     let mut path_counts: Vec<(String, usize)> = Vec::new();
     let mut suppressed_by_noise: usize = 0;
+    let mut all_visible_matches: usize = 0;
     for path in &candidate_paths {
         let file = match index.get_file(path) {
             Some(file) => file,
@@ -1195,6 +1204,7 @@ where
             count += 1;
         }
         suppressed_by_noise += suppressed;
+        all_visible_matches += count;
         if count > 0 {
             path_counts.push((path.clone(), count));
         }
@@ -1333,6 +1343,7 @@ where
         total_matches,
         files,
         suppressed_by_noise,
+        overflow_count: all_visible_matches.saturating_sub(total_matches),
     }
 }
 
@@ -1502,6 +1513,7 @@ mod tests {
         assert_eq!(result.hits[1].name, "jobber");
         assert_eq!(result.hits[2].tier, SymbolMatchTier::Prefix);
         assert_eq!(result.hits[2].name, "jobQueue");
+        assert_eq!(result.overflow_count, 1);
     }
 
     #[test]
@@ -1591,6 +1603,27 @@ mod tests {
         assert_eq!(result.files[0].path, "src/a.rs");
         assert_eq!(result.files[0].matches[0].line_number, 1);
         assert_eq!(result.files[1].path, "src/b.rs");
+        assert_eq!(result.overflow_count, 0);
+    }
+
+    #[test]
+    fn test_search_module_text_search_reports_overflow_when_limit_truncates() {
+        let index = make_index(vec![make_file(
+            "src/a.rs",
+            "needle one\nneedle two\nneedle three\n",
+            Vec::new(),
+        )]);
+        let options = TextSearchOptions {
+            total_limit: 2,
+            max_per_file: 2,
+            ..TextSearchOptions::default()
+        };
+
+        let result = search_text_with_options(&index, Some("needle"), None, false, &options)
+            .expect("search");
+
+        assert_eq!(result.total_matches, 2);
+        assert_eq!(result.overflow_count, 1);
     }
 
     #[test]

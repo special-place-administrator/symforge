@@ -789,19 +789,41 @@ impl<'de> serde::Deserialize<'de> for SingleEdit {
                     if edit.is_object() {
                         // Re-deserialize with the struct variant logic
                         // We need manual extraction since we can't recurse
-                        let path = edit.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let name = edit.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let path = edit
+                            .get("path")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let name = edit
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
                         let kind = edit.get("kind").and_then(|v| v.as_str()).map(String::from);
-                        let symbol_line = edit.get("symbol_line").and_then(|v| v.as_u64()).map(|n| n as u32);
-                        let operation: EditOperation = edit.get("operation")
-                            .ok_or_else(|| D::Error::custom("missing 'operation' in stringified SingleEdit"))
-                            .and_then(|op| serde_json::from_value(op.clone()).map_err(D::Error::custom))?;
+                        let symbol_line = edit
+                            .get("symbol_line")
+                            .and_then(|v| v.as_u64())
+                            .map(|n| n as u32);
+                        let operation: EditOperation = edit
+                            .get("operation")
+                            .ok_or_else(|| {
+                                D::Error::custom("missing 'operation' in stringified SingleEdit")
+                            })
+                            .and_then(|op| {
+                                serde_json::from_value(op.clone()).map_err(D::Error::custom)
+                            })?;
                         if path.is_empty() || name.is_empty() {
                             return Err(D::Error::custom(format!(
                                 "SingleEdit stringified object must have non-empty path and name, got '{s}'"
                             )));
                         }
-                        return Ok(SingleEdit { path, name, kind, symbol_line, operation });
+                        return Ok(SingleEdit {
+                            path,
+                            name,
+                            kind,
+                            symbol_line,
+                            operation,
+                        });
                     }
                 }
 
@@ -935,11 +957,17 @@ pub(crate) fn execute_batch_edit(
         });
     }
 
-    // Phase 3: Apply edits per file, write, reindex.
-    // Best-effort: each file is written+reindexed independently.
-    // If one file's write fails, continue with the rest and report the failure.
-    let mut summaries = Vec::new();
-    let mut write_failures: Vec<String> = Vec::new();
+    // Phase 3: Stage all edits per file in memory first.
+    struct StagedFile {
+        path: String,
+        abs_path: PathBuf,
+        original: Vec<u8>,
+        new_content: Vec<u8>,
+        language: LanguageId,
+        summaries: Vec<String>,
+    }
+
+    let mut staged: Vec<StagedFile> = Vec::with_capacity(by_file.len());
 
     for (path, indices) in &by_file {
         let file = {
@@ -1051,51 +1079,98 @@ pub(crate) fn execute_batch_edit(
             }
         }
 
-        if dry_run {
-            // Prefix summaries for this file's edits with [DRY RUN] and skip all writes.
-            for s in &mut file_summaries {
-                *s = format!("[DRY RUN] Would {s}");
+        let abs_path = match safe_repo_path(repo_root, path) {
+            Ok(p) => p,
+            Err(e) => return Err(format!("Path containment error for '{path}': {e}")),
+        };
+        staged.push(StagedFile {
+            path: path.clone(),
+            abs_path,
+            original: file.content.clone(),
+            new_content: content,
+            language,
+            summaries: file_summaries,
+        });
+    }
+
+    if dry_run {
+        let mut summaries = Vec::new();
+        for staged_file in &staged {
+            for summary in &staged_file.summaries {
+                summaries.push(format!("[DRY RUN] Would {summary}"));
             }
-            summaries.extend(file_summaries);
-        } else {
-            let abs_path = match safe_repo_path(repo_root, path) {
-                Ok(p) => p,
-                Err(e) => {
-                    write_failures.push(format!("FAILED {path}: {e}"));
-                    continue;
+        }
+        return Ok(summaries);
+    }
+
+    // Phase 4: Apply all writes, rolling back any already-written files on failure.
+    let mut written: Vec<usize> = Vec::new();
+    let mut write_error: Option<String> = None;
+    for (i, staged_file) in staged.iter().enumerate() {
+        if let Err(e) = atomic_write_file(&staged_file.abs_path, &staged_file.new_content) {
+            write_error = Some(format!("Write failed for {}: {e}", staged_file.path));
+            break;
+        }
+        written.push(i);
+    }
+
+    if let Some(err_msg) = write_error {
+        let mut rollback_failures: Vec<String> = Vec::new();
+        for &written_index in &written {
+            let staged_file = &staged[written_index];
+            if let Err(rb_err) = atomic_write_file(&staged_file.abs_path, &staged_file.original) {
+                rollback_failures.push(format!("  {}: {rb_err}", staged_file.path));
+                continue;
+            }
+            match std::fs::read(&staged_file.abs_path) {
+                Ok(on_disk) => {
+                    reindex_after_write(
+                        index,
+                        &staged_file.abs_path,
+                        &staged_file.path,
+                        &on_disk,
+                        staged_file.language.clone(),
+                    );
                 }
-            };
-            match atomic_write_file(&abs_path, &content) {
-                Ok(()) => {
-                    reindex_after_write(index, &abs_path, path, &content, language);
-                    summaries.extend(file_summaries);
-                }
-                Err(e) => {
-                    // Best-effort: record the failure and continue with remaining files.
-                    // The index is NOT updated for this file — it retains the pre-edit state.
-                    write_failures.push(format!("FAILED {path}: {e}"));
+                Err(rb_err) => {
+                    rollback_failures.push(format!(
+                        "  {} (reindex after rollback): {rb_err}",
+                        staged_file.path
+                    ));
                 }
             }
         }
+
+        if rollback_failures.is_empty() {
+            return Err(format!(
+                "{err_msg}\n\nROLLED BACK — {} file(s) restored to original content. No batch edit was applied.",
+                written.len(),
+            ));
+        } else {
+            return Err(format!(
+                "{err_msg}\n\nROLLBACK INCOMPLETE — {} file(s) could not be restored:\n{}\nWARNING: codebase may be in a partially-edited state. Manually verify the following files:\n{}",
+                rollback_failures.len(),
+                rollback_failures.join("\n"),
+                written
+                    .iter()
+                    .map(|&written_index| format!("  {}", staged[written_index].path))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ));
+        }
     }
 
-    if !write_failures.is_empty() {
-        let failure_block = write_failures.join("\n");
-        let success_block = if summaries.is_empty() {
-            "No files were written.".to_string()
-        } else {
-            format!(
-                "{} file(s) written successfully:\n{}",
-                summaries.len(),
-                summaries.join("\n")
-            )
-        };
-        return Err(format!(
-            "batch_edit partial failure — {} file(s) could not be written:\n{}\n\n{}",
-            write_failures.len(),
-            failure_block,
-            success_block,
-        ));
+    // Phase 5: All writes succeeded — reindex every file and return summaries.
+    let mut summaries = Vec::new();
+    for staged_file in &staged {
+        reindex_after_write(
+            index,
+            &staged_file.abs_path,
+            &staged_file.path,
+            &staged_file.new_content,
+            staged_file.language.clone(),
+        );
+        summaries.extend(staged_file.summaries.iter().cloned());
     }
 
     Ok(summaries)
@@ -1489,7 +1564,7 @@ pub struct BatchInsertInput {
     pub dry_run: Option<bool>,
 }
 
-#[derive(Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum InsertPosition {
     Before,
@@ -1531,9 +1606,17 @@ impl<'de> serde::Deserialize<'de> for InsertTarget {
         }
 
         match TargetOrStr::deserialize(deserializer)? {
-            TargetOrStr::Struct { path, name, kind, symbol_line } => {
-                Ok(InsertTarget { path, name, kind, symbol_line })
-            }
+            TargetOrStr::Struct {
+                path,
+                name,
+                kind,
+                symbol_line,
+            } => Ok(InsertTarget {
+                path,
+                name,
+                kind,
+                symbol_line,
+            }),
             TargetOrStr::Str(s) => {
                 // Accept "path::name" or "path:name" shorthand
                 let (path, name) = if let Some(pos) = s.find("::") {
@@ -1550,100 +1633,236 @@ impl<'de> serde::Deserialize<'de> for InsertTarget {
                         "InsertTarget string must have non-empty path and name, got '{s}'"
                     )));
                 }
-                Ok(InsertTarget { path, name, kind: None, symbol_line: None })
+                Ok(InsertTarget {
+                    path,
+                    name,
+                    kind: None,
+                    symbol_line: None,
+                })
             }
         }
     }
 }
 
 /// Insert the same code before or after multiple symbols across the project.
-/// Best-effort: each target is written+reindexed independently. If one write
-/// fails, the remaining targets are still attempted. Partial failures are
-/// reported in the return value.
+/// Validates all targets first, stages file updates in memory, then writes the
+/// full set transactionally. When `dry_run` is true, validation and staging run
+/// identically but disk writes and index mutation are skipped.
 pub(crate) fn execute_batch_insert(
     index: &SharedIndex,
     repo_root: &Path,
     input: &BatchInsertInput,
 ) -> Result<Vec<String>, String> {
-    let mut summaries = Vec::new();
-    let mut write_failures: Vec<String> = Vec::new();
+    struct ResolvedTarget {
+        path: String,
+        sym: SymbolRecord,
+        operation: usize,
+        language: LanguageId,
+    }
+
     let position_label = match input.position {
         InsertPosition::Before => "before",
         InsertPosition::After => "after",
     };
 
-    for target in &input.targets {
-        let file = {
-            let guard = index.read();
-            guard
-                .capture_shared_file(&target.path)
-                .ok_or_else(|| format!("File not indexed: {}", target.path))?
-        };
-
-        let (_, sym) = resolve_or_error(
-            &file,
-            &target.name,
-            target.kind.as_deref(),
-            target.symbol_line,
-        )
-        .map_err(|e| format!("Target {}: {e}", target.path))?;
-
-        let le = detect_line_ending(&file.content);
-        let new_content = match input.position {
-            InsertPosition::Before => build_insert_before(&file.content, &sym, &input.content, le),
-            InsertPosition::After => build_insert_after(&file.content, &sym, &input.content, le),
-        };
-
-        if input.dry_run.unwrap_or(false) {
-            summaries.push(format!(
-                "[DRY RUN] Would insert {} `{}` in {} ({} bytes)",
-                position_label,
-                target.name,
-                target.path,
-                input.content.len()
-            ));
-            continue;
-        }
-
-        let abs_path = match safe_repo_path(repo_root, &target.path) {
-            Ok(p) => p,
-            Err(e) => return Err(format!("Target {}: {e}", target.path)),
-        };
-        match atomic_write_file(&abs_path, &new_content) {
-            Ok(()) => {
-                let lang = file.language.clone();
-                reindex_after_write(index, &abs_path, &target.path, &new_content, lang);
-                summaries.push(super::edit_format::format_insert(
-                    &target.path,
-                    &target.name,
-                    position_label,
-                    input.content.len(),
-                ));
-            }
-            Err(e) => {
-                // Best-effort: record the failure, index unchanged for this file.
-                write_failures.push(format!("FAILED {}: {e}", target.path));
-            }
+    // Phase 1: resolve all targets from the current index snapshot.
+    let mut resolved = Vec::with_capacity(input.targets.len());
+    {
+        let guard = index.read();
+        for (i, target) in input.targets.iter().enumerate() {
+            let file = guard
+                .get_file(&target.path)
+                .ok_or_else(|| format!("File not indexed: {}", target.path))?;
+            let (_, sym) = resolve_or_error(
+                file,
+                &target.name,
+                target.kind.as_deref(),
+                target.symbol_line,
+            )
+            .map_err(|e| format!("Target {}: {e}", target.path))?;
+            resolved.push(ResolvedTarget {
+                path: target.path.clone(),
+                sym,
+                operation: i,
+                language: file.language.clone(),
+            });
         }
     }
 
-    if !write_failures.is_empty() {
-        let failure_block = write_failures.join("\n");
-        let success_block = if summaries.is_empty() {
-            "No files were written.".to_string()
-        } else {
-            format!(
-                "{} file(s) written successfully:\n{}",
-                summaries.len(),
-                summaries.join("\n")
-            )
+    let mut by_file: std::collections::HashMap<String, Vec<usize>> =
+        std::collections::HashMap::new();
+    for (i, resolved_target) in resolved.iter().enumerate() {
+        by_file
+            .entry(resolved_target.path.clone())
+            .or_default()
+            .push(i);
+    }
+
+    fn insertion_anchor(position: InsertPosition, sym: &SymbolRecord) -> u32 {
+        match position {
+            InsertPosition::Before => sym.effective_start(),
+            InsertPosition::After => sym.byte_range.1,
+        }
+    }
+
+    for indices in by_file.values_mut() {
+        indices.sort_by(|&a, &b| {
+            insertion_anchor(input.position, &resolved[b].sym)
+                .cmp(&insertion_anchor(input.position, &resolved[a].sym))
+                .then_with(|| resolved[b].operation.cmp(&resolved[a].operation))
+        });
+    }
+
+    struct StagedFile {
+        path: String,
+        abs_path: PathBuf,
+        original: Vec<u8>,
+        new_content: Vec<u8>,
+        language: LanguageId,
+        summaries: Vec<String>,
+    }
+
+    let mut staged: Vec<StagedFile> = Vec::with_capacity(by_file.len());
+    let mut staged_paths: Vec<String> = by_file.keys().cloned().collect();
+    staged_paths.sort();
+
+    for path in staged_paths {
+        let indices = by_file
+            .get(&path)
+            .ok_or_else(|| format!("Batch insert staging bug: missing path bucket for {path}"))?;
+
+        let file = {
+            let guard = index.read();
+            guard
+                .capture_shared_file(&path)
+                .ok_or_else(|| format!("File disappeared: {path}"))?
         };
+
+        let mut content = file.content.clone();
+        for &ri in indices {
+            let target = &resolved[ri];
+            if target.sym.byte_range.1 as usize > content.len() {
+                return Err(format!(
+                    "Symbol `{}` byte range ({},{}) is out of bounds for file `{}` (content length {}). The file may have been modified concurrently — please retry.",
+                    target.sym.name,
+                    target.sym.byte_range.0,
+                    target.sym.byte_range.1,
+                    path,
+                    content.len(),
+                ));
+            }
+        }
+
+        let line_ending = detect_line_ending(&content);
+        let mut file_summaries = Vec::with_capacity(indices.len());
+        for &ri in indices {
+            let target = &resolved[ri];
+            content = match input.position {
+                InsertPosition::Before => {
+                    build_insert_before(&content, &target.sym, &input.content, line_ending)
+                }
+                InsertPosition::After => {
+                    build_insert_after(&content, &target.sym, &input.content, line_ending)
+                }
+            };
+            file_summaries.push(super::edit_format::format_insert(
+                &path,
+                &target.sym.name,
+                position_label,
+                input.content.len(),
+            ));
+        }
+
+        let abs_path = match safe_repo_path(repo_root, &path) {
+            Ok(p) => p,
+            Err(e) => return Err(format!("Target {path}: {e}")),
+        };
+        staged.push(StagedFile {
+            path: path.clone(),
+            abs_path,
+            original: file.content.clone(),
+            new_content: content,
+            language: resolved[indices[0]].language.clone(),
+            summaries: file_summaries,
+        });
+    }
+
+    if input.dry_run.unwrap_or(false) {
+        let mut summaries = Vec::new();
+        for staged_file in &staged {
+            for summary in &staged_file.summaries {
+                summaries.push(format!("[DRY RUN] Would {summary}"));
+            }
+        }
+        return Ok(summaries);
+    }
+
+    let mut written: Vec<usize> = Vec::new();
+    let mut write_error: Option<String> = None;
+    for (i, staged_file) in staged.iter().enumerate() {
+        if let Err(e) = atomic_write_file(&staged_file.abs_path, &staged_file.new_content) {
+            write_error = Some(format!("Write failed for {}: {e}", staged_file.path));
+            break;
+        }
+        written.push(i);
+    }
+
+    if let Some(err_msg) = write_error {
+        let mut rollback_failures: Vec<String> = Vec::new();
+        for &written_index in &written {
+            let staged_file = &staged[written_index];
+            if let Err(rb_err) = atomic_write_file(&staged_file.abs_path, &staged_file.original) {
+                rollback_failures.push(format!("  {}: {rb_err}", staged_file.path));
+                continue;
+            }
+            match std::fs::read(&staged_file.abs_path) {
+                Ok(on_disk) => {
+                    reindex_after_write(
+                        index,
+                        &staged_file.abs_path,
+                        &staged_file.path,
+                        &on_disk,
+                        staged_file.language.clone(),
+                    );
+                }
+                Err(rb_err) => {
+                    rollback_failures.push(format!(
+                        "  {} (reindex after rollback): {rb_err}",
+                        staged_file.path
+                    ));
+                }
+            }
+        }
+
+        if rollback_failures.is_empty() {
+            return Err(format!(
+                "{err_msg}\n\nROLLED BACK — {} file(s) restored to original content. No batch insert was applied.",
+                written.len(),
+            ));
+        }
+
         return Err(format!(
-            "batch_insert partial failure — {} file(s) could not be written:\n{}\n\n{}",
-            write_failures.len(),
-            failure_block,
-            success_block,
+            "{err_msg}\n\nROLLBACK INCOMPLETE — {} file(s) could not be restored:\n{}\nWARNING: codebase may be in a partially-inserted state. Manually verify the following files:\n{}",
+            rollback_failures.len(),
+            rollback_failures.join("\n"),
+            written
+                .iter()
+                .map(|&written_index| format!("  {}", staged[written_index].path))
+                .collect::<Vec<_>>()
+                .join("\n"),
         ));
+    }
+
+    let mut summaries = Vec::new();
+    for staged_file in &staged {
+        reindex_after_write(
+            index,
+            &staged_file.abs_path,
+            &staged_file.path,
+            &staged_file.new_content,
+            staged_file.language.clone(),
+        );
+        summaries.extend(staged_file.summaries.iter().cloned());
     }
 
     Ok(summaries)
@@ -2869,26 +3088,127 @@ mod tests {
         );
     }
 
-    // -- partial failure / atomicity --
-
     #[test]
-    #[cfg(unix)]
-    fn test_batch_edit_partial_success_reindexes_completed() {
+    fn test_execute_batch_insert_rolls_back_on_write_failure() {
         let dir = tempfile::tempdir().unwrap();
         let src = dir.path().join("src");
         std::fs::create_dir_all(&src).unwrap();
+        let sub = src.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
 
-        // File 1: writable, has symbol "alpha"
+        std::fs::write(src.join("a.rs"), b"fn handler_a() {}\n").unwrap();
+        std::fs::write(sub.join("b.rs"), b"fn handler_b() {}\n").unwrap();
+        std::fs::write(src.join("c.rs"), b"fn handler_c() {}\n").unwrap();
+
+        let handle = crate::live_index::LiveIndex::empty();
+        for (path, content) in [
+            ("src/a.rs", b"fn handler_a() {}\n" as &[u8]),
+            ("src/sub/b.rs", b"fn handler_b() {}\n"),
+            ("src/c.rs", b"fn handler_c() {}\n"),
+        ] {
+            let result = crate::parsing::process_file(path, content, LanguageId::Rust);
+            let indexed = IndexedFile::from_parse_result(result, content.to_vec());
+            handle.update_file(path.to_string(), indexed);
+        }
+
+        // Replace the target file with a directory after indexing so path
+        // containment still resolves, but atomic_write_file fails when it tries
+        // to persist a temp file over a directory. This is deterministic across
+        // Windows, Linux, WSL, and macOS.
+        let b_path = sub.join("b.rs");
+        std::fs::remove_file(&b_path).unwrap();
+        std::fs::create_dir(&b_path).unwrap();
+
+        let input = BatchInsertInput {
+            content: "fn logging() {}".to_string(),
+            position: InsertPosition::After,
+            targets: vec![
+                InsertTarget {
+                    path: "src/a.rs".to_string(),
+                    name: "handler_a".to_string(),
+                    kind: None,
+                    symbol_line: None,
+                },
+                InsertTarget {
+                    path: "src/sub/b.rs".to_string(),
+                    name: "handler_b".to_string(),
+                    kind: None,
+                    symbol_line: None,
+                },
+                InsertTarget {
+                    path: "src/c.rs".to_string(),
+                    name: "handler_c".to_string(),
+                    kind: None,
+                    symbol_line: None,
+                },
+            ],
+            dry_run: Some(false),
+        };
+
+        let result = execute_batch_insert(&handle, dir.path(), &input);
+
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("ROLLED BACK") || err.contains("Write failed"),
+            "expected rollback message in: {err}"
+        );
+        assert!(
+            err.contains("No batch insert was applied"),
+            "expected atomic rollback message in: {err}"
+        );
+
+        for path in ["src/a.rs", "src/c.rs"] {
+            let disk = std::fs::read_to_string(dir.path().join(path)).unwrap();
+            assert!(
+                !disk.contains("logging"),
+                "{path} should be restored after rollback: {disk}"
+            );
+            let guard = handle.read();
+            let indexed = guard.get_file(path).unwrap();
+            assert!(
+                !std::str::from_utf8(&indexed.content)
+                    .unwrap()
+                    .contains("logging"),
+                "index should match rolled-back disk state for {path}"
+            );
+        }
+
+        assert!(
+            b_path.is_dir(),
+            "failed target should remain a directory to prove the write failed at the filesystem boundary"
+        );
+        let missing_target = handle
+            .read()
+            .get_file("src/sub/b.rs")
+            .unwrap()
+            .content
+            .clone();
+        assert!(
+            !std::str::from_utf8(&missing_target)
+                .unwrap()
+                .contains("logging"),
+            "index entry for failed target should remain unchanged"
+        );
+    }
+
+    // -- atomic rollback on write failure --
+
+    #[test]
+    fn test_batch_edit_rolls_back_on_write_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let sub = src.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+
         std::fs::write(src.join("a.rs"), b"fn alpha() { old }\n").unwrap();
-        // File 2: will be made read-only after indexing
-        std::fs::write(src.join("b.rs"), b"fn beta() { old }\n").unwrap();
-        // File 3: writable, has symbol "gamma"
+        std::fs::write(sub.join("b.rs"), b"fn beta() { old }\n").unwrap();
         std::fs::write(src.join("c.rs"), b"fn gamma() { old }\n").unwrap();
 
         let handle = crate::live_index::LiveIndex::empty();
         for (path, content) in [
             ("src/a.rs", b"fn alpha() { old }\n" as &[u8]),
-            ("src/b.rs", b"fn beta() { old }\n"),
+            ("src/sub/b.rs", b"fn beta() { old }\n"),
             ("src/c.rs", b"fn gamma() { old }\n"),
         ] {
             let result = crate::parsing::process_file(path, content, LanguageId::Rust);
@@ -2896,21 +3216,9 @@ mod tests {
             handle.update_file(path.to_string(), indexed);
         }
 
-        // Make file 2 read-only so the write will fail.
-        // To trigger a write failure, index b.rs under a nonexistent directory
-        // path so atomic_write_file fails (NamedTempFile::new_in cannot create
-        // temp in a missing parent). File-level read-only is not enough because
-        // tempfile::persist uses rename which bypasses file permissions on Unix.
-        let b_path = src.join("b.rs");
-        {
-            let content = b"fn beta() { old }\n";
-            let result = crate::parsing::process_file("gone/b.rs", content, LanguageId::Rust);
-            let indexed =
-                crate::live_index::store::IndexedFile::from_parse_result(result, content.to_vec());
-            handle.update_file("gone/b.rs".to_string(), indexed);
-            // Remove the original src/b.rs from the index
-            handle.remove_file("src/b.rs");
-        }
+        let b_path = sub.join("b.rs");
+        std::fs::remove_file(&b_path).unwrap();
+        std::fs::create_dir(&b_path).unwrap();
 
         let edits = vec![
             SingleEdit {
@@ -2923,7 +3231,7 @@ mod tests {
                 },
             },
             SingleEdit {
-                path: "gone/b.rs".to_string(),
+                path: "src/sub/b.rs".to_string(),
                 name: "beta".to_string(),
                 kind: None,
                 symbol_line: None,
@@ -2944,48 +3252,63 @@ mod tests {
 
         let result = execute_batch_edit(&handle, dir.path(), &edits, false);
 
-        // Result must be an error reporting the partial failure.
         let err = result.unwrap_err();
         assert!(
-            err.contains("FAILED gone/b.rs"),
-            "expected FAILED gone/b.rs in: {err}"
+            err.contains("ROLLED BACK") || err.contains("Write failed"),
+            "expected rollback message in: {err}"
         );
         assert!(
-            err.contains("partial failure"),
-            "expected 'partial failure' in: {err}"
+            err.contains("No batch edit was applied"),
+            "expected atomic rollback message in: {err}"
         );
 
-        // File 1 (a.rs): was written successfully — disk and index reflect edit.
         let a_content = std::fs::read_to_string(src.join("a.rs")).unwrap();
         assert!(
-            a_content.contains("new"),
-            "a.rs should be updated: {a_content}"
+            a_content.contains("old"),
+            "a.rs should be restored after rollback: {a_content}"
         );
-
-        // File 2 (b.rs): write failed — disk unchanged, index unchanged.
-        let b_content = std::fs::read_to_string(&b_path).unwrap();
         assert!(
-            b_content.contains("old"),
-            "b.rs should be unchanged: {b_content}"
+            !a_content.contains("new"),
+            "a.rs must not keep staged edits after rollback: {a_content}"
         );
 
-        // File 3 (c.rs): also attempted — best-effort continues past file 2.
-        // (Whether c.rs succeeded depends on iteration order, but the error must mention b.rs.)
+        assert!(
+            b_path.is_dir(),
+            "failed target should remain a directory to prove the write failed at the filesystem boundary"
+        );
+
+        let c_content = std::fs::read_to_string(src.join("c.rs")).unwrap();
+        assert!(
+            c_content.contains("old"),
+            "c.rs should not be written after a rollback-triggering failure: {c_content}"
+        );
+
+        let guard = handle.read();
+        let a_indexed = guard.get_file("src/a.rs").unwrap();
+        let c_indexed = guard.get_file("src/c.rs").unwrap();
+        assert!(
+            std::str::from_utf8(&a_indexed.content)
+                .unwrap()
+                .contains("old"),
+            "index should match rolled-back disk state for a.rs"
+        );
+        assert!(
+            std::str::from_utf8(&c_indexed.content)
+                .unwrap()
+                .contains("old"),
+            "index should remain original for c.rs"
+        );
     }
 
     #[test]
-    #[cfg(unix)]
     fn test_batch_rename_rolls_back_on_failure() {
-        use std::os::unix::fs::PermissionsExt;
-
         let dir = tempfile::tempdir().unwrap();
         let src = dir.path().join("src");
         std::fs::create_dir_all(&src).unwrap();
 
-        // Three files all containing "OldName". Put b.rs in a subdirectory
-        // so we can make that directory read-only (blocking temp file creation).
-        // File-level read-only is not enough — tempfile::persist uses rename
-        // which bypasses file permissions on Unix.
+        // Three files all containing "OldName". Put b.rs in a subdirectory so we
+        // can replace that file with a directory after indexing. That keeps path
+        // containment intact while making atomic_write_file fail cross-platform.
         let sub = dir.path().join("src").join("sub");
         std::fs::create_dir_all(&sub).unwrap();
         std::fs::write(src.join("a.rs"), b"struct OldName;\n").unwrap();
@@ -3003,9 +3326,9 @@ mod tests {
             handle.update_file(path.to_string(), indexed);
         }
 
-        // Make the sub directory read-only so NamedTempFile::new_in() fails.
         let b_path = sub.join("b.rs");
-        std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o555)).unwrap();
+        std::fs::remove_file(&b_path).unwrap();
+        std::fs::create_dir(&b_path).unwrap();
 
         let input = crate::protocol::edit::BatchRenameInput {
             path: "src/a.rs".to_string(),
@@ -3014,13 +3337,10 @@ mod tests {
             kind: None,
             symbol_line: None,
             dry_run: Some(false),
-        code_only: None,
+            code_only: None,
         };
 
         let result = execute_batch_rename(&handle, dir.path(), &input);
-
-        // Restore directory permissions before assertions.
-        std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         // Must be an error.
         let err = result.unwrap_err();
@@ -3040,10 +3360,9 @@ mod tests {
             "a.rs must not contain NewName after rollback: {a_content}"
         );
 
-        let b_content = std::fs::read_to_string(&b_path).unwrap();
         assert!(
-            b_content.contains("OldName"),
-            "b.rs (read-only, never written) should still have OldName: {b_content}"
+            b_path.is_dir(),
+            "failed target should remain a directory to prove the write failed at the filesystem boundary"
         );
     }
 
@@ -3893,10 +4212,10 @@ mod tests {
         }
     }
 
-
     #[test]
     fn test_single_edit_shorthand_replace() {
-        let json = serde_json::json!("src/lib.rs::beta => replace fn beta(x: i32) -> i32 { x * 4 }");
+        let json =
+            serde_json::json!("src/lib.rs::beta => replace fn beta(x: i32) -> i32 { x * 4 }");
         let edit: SingleEdit = serde_json::from_value(json).unwrap();
         assert_eq!(edit.path, "src/lib.rs");
         assert_eq!(edit.name, "beta");
