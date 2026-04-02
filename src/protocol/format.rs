@@ -341,11 +341,16 @@ pub fn is_noise_line(line: &str) -> bool {
     }
     trimmed.starts_with("use ")
         || trimmed.starts_with("import ")
-        || trimmed.starts_with("from ")
+        || (trimmed.starts_with("from ") && trimmed.contains(" import "))
         || trimmed.starts_with("require(")
         || trimmed.starts_with("#include")
         || trimmed.starts_with("//")
-        || trimmed.starts_with("# ")
+        || (trimmed.starts_with("# ")
+            && !trimmed.starts_with("# TODO")
+            && !trimmed.starts_with("# FIXME")
+            && !trimmed.starts_with("# NOTE")
+            && !trimmed.starts_with("# HACK")
+            && !trimmed.starts_with("# type:"))
         || trimmed == "#"
         || trimmed.starts_with("#!")
         || trimmed.starts_with("/*")

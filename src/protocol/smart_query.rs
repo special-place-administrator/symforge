@@ -650,7 +650,10 @@ fn looks_like_path(q: &str) -> bool {
 }
 
 fn looks_like_symbol(q: &str) -> bool {
-    if q.contains(' ') || q.is_empty() {
+    if q.len() < 3 || q.contains(' ') {
+        return false;
+    }
+    if q.chars().all(|c| c == '_') {
         return false;
     }
     // CamelCase: has uppercase not at start, or has underscore (snake_case)
