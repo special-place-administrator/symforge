@@ -129,6 +129,11 @@ impl SymForgeServer {
         self.repo_root.read().clone()
     }
 
+    pub(crate) fn effective_repo_root_for_git_tools(&self) -> Option<PathBuf> {
+        self.capture_repo_root()
+            .or_else(crate::discovery::find_project_root)
+    }
+
     pub(crate) fn set_repo_root(&self, repo_root: Option<PathBuf>) {
         *self.repo_root.write() = repo_root;
     }

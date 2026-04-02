@@ -7,6 +7,13 @@ use symforge::live_index::persist;
 use symforge::{cli, daemon, discovery, live_index, observability, protocol, sidecar, watcher};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+enum StartupPlan {
+    Daemon { root: std::path::PathBuf },
+    LocalAutoIndex { root: std::path::PathBuf },
+    LocalEmpty { reason: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum StartupIndexLogView {
     Ready {
         file_count: usize,
@@ -40,6 +47,28 @@ fn startup_index_log_view(
                 .unwrap_or_else(|| "circuit breaker tripped".to_string()),
         }),
         live_index::PublishedIndexStatus::Empty | live_index::PublishedIndexStatus::Loading => None,
+    }
+}
+
+fn local_empty_reason(should_auto_index: bool) -> &'static str {
+    if !should_auto_index {
+        "SYMFORGE_AUTO_INDEX=false — starting with empty index"
+    } else {
+        "no safe project root found — starting with empty index"
+    }
+}
+
+fn startup_plan(
+    should_auto_index: bool,
+    resolved_root: Option<std::path::PathBuf>,
+    daemon_available: bool,
+) -> StartupPlan {
+    match (resolved_root, daemon_available) {
+        (Some(root), true) => StartupPlan::Daemon { root },
+        (Some(root), false) => StartupPlan::LocalAutoIndex { root },
+        (None, _) => StartupPlan::LocalEmpty {
+            reason: local_empty_reason(should_auto_index).to_string(),
+        },
     }
 }
 
@@ -88,19 +117,31 @@ async fn run_mcp_server_async() -> anyhow::Result<()> {
         None
     };
 
-    if let Some(ref root) = resolved_root {
-        match daemon::connect_or_spawn_session(root, "mcp-stdio", Some(std::process::id())).await {
-            Ok(session) => return run_remote_mcp_server_async(session).await,
-            Err(error) => {
-                tracing::warn!(
-                    root = %root.display(),
-                    "daemon-backed startup failed, falling back to local mode: {error}"
-                );
+    let use_daemon = std::env::var("SYMFORGE_NO_DAEMON")
+        .map(|v| v == "0" || v.is_empty())
+        .unwrap_or(true);
+
+    if use_daemon {
+        if let Some(root) = resolved_root.clone() {
+            match daemon::connect_or_spawn_session(&root, "mcp-stdio", Some(std::process::id())).await {
+                Ok(session) => return run_remote_mcp_server_async(session).await,
+                Err(error) => {
+                    tracing::warn!(
+                        root = %root.display(),
+                        "daemon-backed startup failed, falling back to local mode: {error}"
+                    );
+                }
             }
         }
     }
 
-    run_local_mcp_server_async(should_auto_index, resolved_root).await
+    match startup_plan(should_auto_index, resolved_root, false) {
+        StartupPlan::Daemon { .. } => unreachable!("daemon sessions return before local startup"),
+        StartupPlan::LocalAutoIndex { root } => {
+            run_local_mcp_server_async(should_auto_index, Some(root)).await
+        }
+        StartupPlan::LocalEmpty { .. } => run_local_mcp_server_async(should_auto_index, None).await,
+    }
 }
 
 async fn run_remote_mcp_server_async(session: daemon::DaemonSessionClient) -> anyhow::Result<()> {
@@ -225,11 +266,7 @@ async fn run_local_mcp_server_async(
 
         (index, name, Some(root))
     } else {
-        if !should_auto_index {
-            tracing::info!("SYMFORGE_AUTO_INDEX=false — starting with empty index");
-        } else {
-            tracing::info!("no safe project root found — starting with empty index");
-        }
+        tracing::info!("{}", local_empty_reason(should_auto_index));
         (live_index::LiveIndex::empty(), "project".to_string(), None)
     };
 
@@ -302,7 +339,10 @@ async fn run_local_mcp_server_async(
 
 #[cfg(test)]
 mod tests {
-    use super::{StartupIndexLogView, startup_index_log_view};
+    use super::{
+        StartupIndexLogView, StartupPlan, local_empty_reason, startup_index_log_view, startup_plan,
+    };
+    use std::path::PathBuf;
     use std::time::{Duration, SystemTime};
     use symforge::live_index::{
         IndexLoadSource, PublishedIndexState, PublishedIndexStatus, SnapshotVerifyState,
@@ -317,6 +357,8 @@ mod tests {
             parsed_count: 10,
             partial_parse_count: 1,
             failed_count: 1,
+            partial_parse_files: vec!["src/partial.rs".to_string()],
+            failed_files: vec![("src/failed.rs".to_string(), "syntax error".to_string())],
             symbol_count: 34,
             loaded_at_system: SystemTime::now(),
             load_duration: Duration::from_millis(42),
@@ -354,6 +396,44 @@ mod tests {
             Some(StartupIndexLogView::Degraded {
                 summary: "circuit breaker tripped: 3/10 files failed".to_string(),
             })
+        );
+    }
+
+    #[test]
+    fn test_startup_plan_prefers_daemon_when_root_exists() {
+        let root = PathBuf::from("repo");
+        assert_eq!(
+            startup_plan(true, Some(root.clone()), true),
+            StartupPlan::Daemon { root }
+        );
+    }
+
+    #[test]
+    fn test_startup_plan_falls_back_to_local_auto_index_when_daemon_unavailable() {
+        let root = PathBuf::from("repo");
+        assert_eq!(
+            startup_plan(true, Some(root.clone()), false),
+            StartupPlan::LocalAutoIndex { root }
+        );
+    }
+
+    #[test]
+    fn test_startup_plan_reports_disabled_auto_index_reason() {
+        assert_eq!(
+            startup_plan(false, None, false),
+            StartupPlan::LocalEmpty {
+                reason: local_empty_reason(false).to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_startup_plan_reports_missing_root_reason() {
+        assert_eq!(
+            startup_plan(true, None, false),
+            StartupPlan::LocalEmpty {
+                reason: local_empty_reason(true).to_string(),
+            }
         );
     }
 }

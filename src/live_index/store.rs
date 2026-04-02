@@ -284,6 +284,8 @@ pub struct PublishedIndexState {
     pub parsed_count: usize,
     pub partial_parse_count: usize,
     pub failed_count: usize,
+    pub partial_parse_files: Vec<String>,
+    pub failed_files: Vec<(String, String)>,
     pub symbol_count: usize,
     pub loaded_at_system: SystemTime,
     pub load_duration: Duration,
@@ -628,6 +630,8 @@ impl PublishedIndexState {
             parsed_count: stats.parsed_count,
             partial_parse_count: stats.partial_parse_count,
             failed_count: stats.failed_count,
+            partial_parse_files: stats.partial_parse_files.into_iter().take(10).collect(),
+            failed_files: stats.failed_files.into_iter().take(10).collect(),
             symbol_count: stats.symbol_count,
             loaded_at_system: index.loaded_at_system,
             load_duration: stats.load_duration,
@@ -1748,12 +1752,20 @@ mod tests {
         live.snapshot_verify_state = SnapshotVerifyState::Pending;
         let shared = SharedIndexHandle::shared(live);
 
+        let initial = shared.published_state();
+        assert_eq!(initial.file_count, 0);
+        assert_eq!(initial.partial_parse_count, 0);
+        assert_eq!(initial.failed_count, 0);
+
         shared.mark_snapshot_verify_running();
         let running = shared.published_state();
         assert_eq!(running.generation, 1);
         assert_eq!(running.status, PublishedIndexStatus::Ready);
         assert_eq!(running.degraded_summary, None);
         assert_eq!(running.snapshot_verify_state, SnapshotVerifyState::Running);
+        assert_eq!(running.file_count, initial.file_count);
+        assert_eq!(running.partial_parse_count, initial.partial_parse_count);
+        assert_eq!(running.failed_count, initial.failed_count);
 
         shared.mark_snapshot_verify_completed();
         let completed = shared.published_state();
@@ -1762,6 +1774,9 @@ mod tests {
             completed.snapshot_verify_state,
             SnapshotVerifyState::Completed
         );
+        assert_eq!(completed.file_count, initial.file_count);
+        assert_eq!(completed.partial_parse_count, initial.partial_parse_count);
+        assert_eq!(completed.failed_count, initial.failed_count);
     }
 
     #[test]

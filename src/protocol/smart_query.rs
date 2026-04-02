@@ -5,7 +5,7 @@
 #[derive(Debug)]
 pub enum QueryIntent {
     /// "who calls X", "callers of X", "references to X"
-    FindCallers { symbol: String },
+    FindCallers { symbol: String, path: Option<String> },
     /// "where is X defined", "find symbol X"
     FindSymbol { name: String, kind: Option<String> },
     /// "find file X", "where is file X", "path to X"
@@ -62,8 +62,10 @@ pub fn classify_intent(query: &str) -> QueryIntent {
             "who uses ",
         ],
     ) {
+        let (symbol, path) = clean_symbol_and_optional_path(sym, q);
         return QueryIntent::FindCallers {
-            symbol: clean_symbol_name(sym, q),
+            symbol,
+            path,
         };
     }
 
@@ -494,8 +496,12 @@ pub fn route_confidence_label(confidence: RouteConfidence) -> &'static str {
 
 pub fn route_invocation(intent: &QueryIntent) -> String {
     match intent {
-        QueryIntent::FindCallers { symbol } => {
-            format!("find_references(name=\"{symbol}\")")
+        QueryIntent::FindCallers { symbol, path } => {
+            if let Some(path) = path {
+                format!("find_references(name=\"{symbol}\", path=\"{path}\")")
+            } else {
+                format!("find_references(name=\"{symbol}\")")
+            }
         }
         QueryIntent::FindSymbol { name, kind } => {
             if let Some(k) = kind {
@@ -589,25 +595,29 @@ fn extract_kind_hint(name: &str) -> (Option<String>, &str) {
 
 /// Preserve original casing from the user's query for the matched portion.
 fn clean_symbol_name(lower_match: &str, original: &str) -> String {
+    clean_symbol_and_optional_path(lower_match, original).0
+}
+
+fn clean_symbol_and_optional_path(lower_match: &str, original: &str) -> (String, Option<String>) {
     // Try to find the original-cased version in the user's query
     let lower_original = original.to_ascii_lowercase();
     if let Some(pos) = lower_original.find(lower_match) {
-        return strip_trailing_scope_hint(original[pos..pos + lower_match.len()].trim());
+        return split_trailing_scope_hint(original[pos..pos + lower_match.len()].trim());
     }
-    strip_trailing_scope_hint(lower_match.trim())
+    split_trailing_scope_hint(lower_match.trim())
 }
 
-fn strip_trailing_scope_hint(value: &str) -> String {
+fn split_trailing_scope_hint(value: &str) -> (String, Option<String>) {
     for needle in [" within ", " inside ", " under ", " in "] {
         if let Some((head, tail)) = value.rsplit_once(needle) {
             let head = head.trim();
             let tail = tail.trim();
             if !head.is_empty() && looks_like_scope_hint(tail) {
-                return head.to_string();
+                return (head.to_string(), Some(tail.to_string()));
             }
         }
     }
-    value.trim().to_string()
+    (value.trim().to_string(), None)
 }
 
 fn looks_like_scope_hint(value: &str) -> bool {
@@ -683,7 +693,10 @@ mod tests {
     #[test]
     fn test_classify_callers() {
         match classify_intent("who calls optimize_deterministic") {
-            QueryIntent::FindCallers { symbol } => assert_eq!(symbol, "optimize_deterministic"),
+            QueryIntent::FindCallers { symbol, path } => {
+                assert_eq!(symbol, "optimize_deterministic");
+                assert_eq!(path, None);
+            }
             other => panic!("Expected FindCallers, got {:?}", other),
         }
     }
@@ -691,15 +704,32 @@ mod tests {
     #[test]
     fn test_classify_callers_references() {
         match classify_intent("references to LiveIndex") {
-            QueryIntent::FindCallers { symbol } => assert_eq!(symbol, "LiveIndex"),
+            QueryIntent::FindCallers { symbol, path } => {
+                assert_eq!(symbol, "LiveIndex");
+                assert_eq!(path, None);
+            }
             other => panic!("Expected FindCallers, got {:?}", other),
         }
     }
 
     #[test]
-    fn test_classify_callers_ignores_trailing_path_scope_hint() {
-        match classify_intent("who calls AddSwaggerConfigure in services/api-core") {
-            QueryIntent::FindCallers { symbol } => assert_eq!(symbol, "AddSwaggerConfigure"),
+    fn test_classify_callers_preserves_trailing_path_scope_hint() {
+        match classify_intent("who calls AddCoreServices in src/protocol/tools.rs") {
+            QueryIntent::FindCallers { symbol, path } => {
+                assert_eq!(symbol, "AddCoreServices");
+                assert_eq!(path.as_deref(), Some("src/protocol/tools.rs"));
+            }
+            other => panic!("Expected FindCallers, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_classify_callers_path_scope_does_not_capture_plain_language() {
+        match classify_intent("who calls actor in production") {
+            QueryIntent::FindCallers { symbol, path } => {
+                assert_eq!(symbol, "actor in production");
+                assert_eq!(path, None);
+            }
             other => panic!("Expected FindCallers, got {:?}", other),
         }
     }
