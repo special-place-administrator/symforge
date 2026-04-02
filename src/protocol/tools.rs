@@ -2754,7 +2754,7 @@ impl SymForgeServer {
                 self.record_read_savings((saved / 4) as u64);
                 let output = format!("{body}{footer}");
                 self.session_context
-                    .record_file(&params.0.path, (output.len() / 4) as u32);
+                    .record_listed_file(&params.0.path, (output.len() / 4) as u32);
                 output
             }
             Err(StatusCode::NOT_FOUND) => format::not_found_file(&params.0.path),
@@ -3238,9 +3238,12 @@ impl SymForgeServer {
             (output.len() * 10 / 4) as u64,
             (output.len() / 4) as u64,
         );
-        // Session tracking: record each symbol hit
+        self.session_context
+            .record_summary_output("search_symbols", (output.len() / 4) as u32);
+        // Session tracking: record each symbol hit as list-only until its body is fetched.
         for hit in &result.hits {
-            self.session_context.record_symbol(&hit.path, &hit.name, 0);
+            self.session_context
+                .record_listed_symbol(&hit.path, &hit.name);
         }
         output
     }
@@ -4442,7 +4445,9 @@ impl SymForgeServer {
                     (output.len() / 4) as u64,
                 );
                 self.session_context
-                    .record_symbol("", &input.name, (output.len() / 4) as u32);
+                    .record_summary_output("find_references", (output.len() / 4) as u32);
+                self.session_context
+                    .record_listed_symbol("", &input.name);
                 match envelope {
                     Some(envelope) => format!("{envelope}\n\n{output}"),
                     None => output,
@@ -5414,7 +5419,7 @@ impl SymForgeServer {
             (output.len() / 4) as u64,
         );
         self.session_context
-            .record_file("(explore)", (output.len() / 4) as u32);
+            .record_summary_output("explore", (output.len() / 4) as u32);
         output
     }
 
@@ -11663,7 +11668,11 @@ mod tests {
                 estimate: None,
             }))
             .await;
-        assert!(result.contains("No dependents found"), "got: {result}");
+        assert!(
+            result.contains("No file-level dependents found"),
+            "got: {result}"
+        );
+        assert!(result.contains("find_references"), "got: {result}");
     }
 
     #[tokio::test]

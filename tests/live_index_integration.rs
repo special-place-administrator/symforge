@@ -663,7 +663,7 @@ fn test_health_report_with_watcher_reconciliation_fields() {
     let result = format::health_report_with_watcher(&index, &watcher);
 
     assert!(result.contains("overflows: 2"), "got: {result}");
-    assert!(result.contains("stale reconciled: 4"), "got: {result}");
+    assert!(result.contains("reconcile repairs: 4"), "got: {result}");
     assert!(result.contains("last overflow:"), "got: {result}");
     assert!(result.contains("last reconcile:"), "got: {result}");
 }

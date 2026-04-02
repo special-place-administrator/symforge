@@ -699,22 +699,38 @@ fn test_health_report_shows_watcher_off() {
 #[test]
 fn test_health_report_shows_watcher_active() {
     use crate::watcher::{WatcherInfo, WatcherState};
-    // Verify health_stats_with_watcher populates Active state correctly;
-    // we test the stats fields here since health_report calls health_stats() not
-    // health_stats_with_watcher(). The format function is fully tested via the
-    // watcher_state field on HealthStats.
     let index = make_index(vec![]);
     let watcher = WatcherInfo {
         state: WatcherState::Active,
-        events_processed: 7,
+        events_processed: 0,
         last_event_at: None,
         debounce_window_ms: 200,
         ..WatcherInfo::default()
     };
-    let stats = index.health_stats_with_watcher(&watcher);
-    assert_eq!(stats.watcher_state, WatcherState::Active);
-    assert_eq!(stats.events_processed, 7);
-    assert_eq!(stats.overflow_count, 0);
+    let result = health_report_with_watcher(&index, &watcher);
+    assert!(
+        result.contains("Watcher: active (idle; event-driven, waiting for filesystem changes"),
+        "got: {result}"
+    );
+}
+
+#[test]
+fn test_health_report_active_watcher_shows_last_change_when_events_exist() {
+    use crate::watcher::{WatcherInfo, WatcherState};
+
+    let index = make_index(vec![]);
+    let watcher = WatcherInfo {
+        state: WatcherState::Active,
+        events_processed: 7,
+        last_event_at: Some(std::time::SystemTime::now()),
+        debounce_window_ms: 200,
+        ..WatcherInfo::default()
+    };
+    let result = health_report_with_watcher(&index, &watcher);
+    assert!(
+        result.contains("Watcher: active (event-driven; 7 events, last change:"),
+        "got: {result}"
+    );
 }
 
 #[test]
@@ -916,7 +932,7 @@ fn test_health_report_shows_reconciliation_and_overflow_stats() {
 
     let report = health_report_from_stats("Ready", &stats);
     assert!(report.contains("overflows: 2"), "got: {report}");
-    assert!(report.contains("stale reconciled: 5"), "got: {report}");
+    assert!(report.contains("reconcile repairs: 5"), "got: {report}");
     assert!(report.contains("last overflow:"), "got: {report}");
     assert!(report.contains("last reconcile:"), "got: {report}");
 }
@@ -1796,8 +1812,12 @@ fn test_find_dependents_result_shows_importers() {
     let index = make_index_with_reverse(vec![(key_a, file_a), (key_b, file_b)]);
     let result = find_dependents_result(&index, "src/db.rs");
     assert!(
-        result.contains("1 files depend on src/db.rs"),
+        result.contains("File-level dependency graph: 1 files depend on src/db.rs"),
         "header wrong, got: {result}"
+    );
+    assert!(
+        result.contains("Use find_references"),
+        "should point callers to symbol-level lookup, got: {result}"
     );
     assert!(
         result.contains("src/handler.rs"),
@@ -1814,7 +1834,14 @@ fn test_find_dependents_result_zero_dependents() {
     let (key, file) = make_file("src/db.rs", b"", vec![]);
     let index = make_index_with_reverse(vec![(key, file)]);
     let result = find_dependents_result(&index, "src/db.rs");
-    assert_eq!(result, "No dependents found for \"src/db.rs\"");
+    assert!(
+        result.contains("No file-level dependents found for \"src/db.rs\""),
+        "got: {result}"
+    );
+    assert!(
+        result.contains("find_references"),
+        "empty state should still point to symbol-level lookup, got: {result}"
+    );
 }
 
 #[test]

@@ -1045,8 +1045,19 @@ pub fn health_report_from_stats(status: &str, stats: &HealthStats) -> String {
     };
 
     let watcher_line = match &stats.watcher_state {
+        WatcherState::Active
+            if stats.events_processed == 0
+                && stats.last_event_at.is_none()
+                && stats.overflow_count == 0
+                && stats.stale_files_found == 0 =>
+        {
+            format!(
+                "Watcher: active (idle; event-driven, waiting for filesystem changes, debounce: {}ms)",
+                stats.debounce_window_ms
+            )
+        }
         WatcherState::Active => format!(
-            "Watcher: active ({} events, last: {}, debounce: {}ms, overflows: {}, stale reconciled: {}, last overflow: {}, last reconcile: {})",
+            "Watcher: active (event-driven; {} events, last change: {}, debounce: {}ms, overflows: {}, reconcile repairs: {}, last overflow: {}, last reconcile: {})",
             stats.events_processed,
             relative_age(stats.last_event_at),
             stats.debounce_window_ms,
@@ -1056,7 +1067,7 @@ pub fn health_report_from_stats(status: &str, stats: &HealthStats) -> String {
             relative_age(stats.last_reconcile_at)
         ),
         WatcherState::Degraded => format!(
-            "Watcher: degraded ({} events processed before failure, overflows: {}, stale reconciled: {}, last overflow: {}, last reconcile: {})",
+            "Watcher: degraded (event stream failed after {} processed events, overflows: {}, reconcile repairs: {}, last overflow: {}, last reconcile: {})",
             stats.events_processed,
             stats.overflow_count,
             stats.stale_files_found,
@@ -2090,12 +2101,18 @@ pub fn find_dependents_result_view(
     limits: &OutputLimits,
 ) -> String {
     if view.files.is_empty() {
-        return format!("No dependents found for \"{path}\"");
+        return format!(
+            "No file-level dependents found for \"{path}\"\nTip: use find_references(name=\"<symbol>\", path=\"{path}\") for symbol-level callers/usages."
+        );
     }
 
     let total_files = view.files.len();
     let shown_files = total_files.min(limits.max_files);
-    let mut lines = vec![format!("{total_files} files depend on {path}")];
+    let mut lines = vec![
+        format!("File-level dependency graph: {total_files} files depend on {path}"),
+        "Need symbol-level callers/usages instead? Use find_references(name=\"<symbol>\", path=\"<file>\")."
+            .to_string(),
+    ];
     lines.push(String::new()); // blank line
 
     for file in view.files.iter().take(limits.max_files) {
@@ -2135,12 +2152,18 @@ pub fn find_dependents_compact_view(
     limits: &OutputLimits,
 ) -> String {
     if view.files.is_empty() {
-        return format!("No dependents found for \"{path}\"");
+        return format!(
+            "No file-level dependents found for \"{path}\"\nTip: use find_references(name=\"<symbol>\", path=\"{path}\") for symbol-level callers/usages."
+        );
     }
 
     let total_files = view.files.len();
     let shown_files = total_files.min(limits.max_files);
-    let mut lines = vec![format!("{total_files} files depend on {path}")];
+    let mut lines = vec![
+        format!("File-level dependency graph: {total_files} files depend on {path}"),
+        "Need symbol-level callers/usages instead? Use find_references(name=\"<symbol>\", path=\"<file>\")."
+            .to_string(),
+    ];
 
     for file in view.files.iter().take(limits.max_files) {
         let total_refs = file.lines.len();
