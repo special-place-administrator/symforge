@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.1.2](https://github.com/special-place-administrator/symforge/compare/v5.1.1...v5.1.2) (2026-04-02)
+
+
+### Bug Fixes
+
+* **trust:** tighten discovery and context signals ([0c0fbe7](https://github.com/special-place-administrator/symforge/commit/0c0fbe72e4c2f2318654be1944abc500311e14df))
+
 ## [5.1.1](https://github.com/special-place-administrator/symforge/compare/v5.1.0...v5.1.1) (2026-04-01)
 
 
