@@ -592,9 +592,36 @@ fn clean_symbol_name(lower_match: &str, original: &str) -> String {
     // Try to find the original-cased version in the user's query
     let lower_original = original.to_ascii_lowercase();
     if let Some(pos) = lower_original.find(lower_match) {
-        return original[pos..pos + lower_match.len()].trim().to_string();
+        return strip_trailing_scope_hint(original[pos..pos + lower_match.len()].trim());
     }
-    lower_match.trim().to_string()
+    strip_trailing_scope_hint(lower_match.trim())
+}
+
+fn strip_trailing_scope_hint(value: &str) -> String {
+    for needle in [" within ", " inside ", " under ", " in "] {
+        if let Some((head, tail)) = value.rsplit_once(needle) {
+            let head = head.trim();
+            let tail = tail.trim();
+            if !head.is_empty() && looks_like_scope_hint(tail) {
+                return head.to_string();
+            }
+        }
+    }
+    value.trim().to_string()
+}
+
+fn looks_like_scope_hint(value: &str) -> bool {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    looks_like_path(trimmed)
+        || trimmed.contains("::")
+        || ((trimmed.contains('/') || trimmed.contains('\\'))
+            && trimmed
+                .chars()
+                .all(|c| c.is_alphanumeric() || matches!(c, '/' | '\\' | '_' | '-' | '.' | ':')))
 }
 
 fn looks_like_path(q: &str) -> bool {
@@ -665,6 +692,14 @@ mod tests {
     fn test_classify_callers_references() {
         match classify_intent("references to LiveIndex") {
             QueryIntent::FindCallers { symbol } => assert_eq!(symbol, "LiveIndex"),
+            other => panic!("Expected FindCallers, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_classify_callers_ignores_trailing_path_scope_hint() {
+        match classify_intent("who calls AddSwaggerConfigure in services/api-core") {
+            QueryIntent::FindCallers { symbol } => assert_eq!(symbol, "AddSwaggerConfigure"),
             other => panic!("Expected FindCallers, got {:?}", other),
         }
     }

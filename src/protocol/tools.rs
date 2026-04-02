@@ -4446,8 +4446,7 @@ impl SymForgeServer {
                 );
                 self.session_context
                     .record_summary_output("find_references", (output.len() / 4) as u32);
-                self.session_context
-                    .record_listed_symbol("", &input.name);
+                self.session_context.record_listed_symbol("", &input.name);
                 match envelope {
                     Some(envelope) => format!("{envelope}\n\n{output}"),
                     None => output,
@@ -5439,7 +5438,7 @@ impl SymForgeServer {
     }
 
     #[tool(
-        description = "Plan an edit: analyzes a target symbol or file, counts references, and suggests the right sequence of SymForge edit tools. Use before making changes to understand impact."
+        description = "Plan an edit: analyzes a target symbol or file, counts references, and suggests the right sequence of SymForge edit tools. Accepts a bare symbol name, a file path, or an exact selector like `src/lib.rs::helper`. Use before making changes to understand impact."
     )]
     pub(crate) async fn edit_plan(&self, params: Parameters<EditPlanInput>) -> String {
         if let Some(result) = self.proxy_tool_call("edit_plan", &params.0).await {
@@ -6371,7 +6370,7 @@ impl SymForgeServer {
     /// Apply multiple symbol-addressed edits atomically.
     /// Set dry_run=true for a read-only preview that makes no file changes.
     #[tool(
-        description = "Apply multiple symbol-addressed edits atomically across files. Each edit specifies a file, symbol, and operation (replace/insert_before/insert_after/delete/edit_within). All symbols are validated before any writes — if any resolution fails, no files are modified. Set dry_run=true for a READ-ONLY preview that shows what would change without writing (safe, no confirmation needed). Edits within the same file must target non-overlapping symbols. NOT for single-symbol edits (use replace_symbol_body, insert_symbol, etc.)."
+        description = "Apply multiple symbol-addressed edits atomically across files. Each edit specifies a file, symbol, and operation (replace/insert_before/insert_after/delete/edit_within). Accepts either structured edits or shorthand strings like `src/lib.rs::helper => edit_within old >>> new`. All symbols are validated before any writes — if any resolution fails, no files are modified. Set dry_run=true for a READ-ONLY preview that shows what would change without writing (safe, no confirmation needed). Edits within the same file must target non-overlapping symbols. NOT for single-symbol edits (use replace_symbol_body, insert_symbol, etc.)."
     )]
     pub(crate) async fn batch_edit(&self, params: Parameters<edit::BatchEditInput>) -> String {
         if let Some(result) = self.proxy_tool_call("batch_edit", &params.0).await {
@@ -6477,7 +6476,7 @@ impl SymForgeServer {
 
     /// Insert the same code at multiple symbol locations across files.
     #[tool(
-        description = "Insert the same code before or after multiple symbols across the project. Useful for adding logging, instrumentation, or boilerplate to many locations at once. Code is auto-indented to match each target symbol. All targets are validated before any writes, and live execution applies transactionally across files with rollback on failure. Set dry_run=true for a READ-ONLY preview. NOT for inserting at a single location (use insert_symbol)."
+        description = "Insert the same code before or after multiple symbols across the project. Useful for adding logging, instrumentation, or boilerplate to many locations at once. Accepts either structured targets or shorthand strings like `src/lib.rs::helper`. Code is auto-indented to match each target symbol. All targets are validated before any writes, and live execution applies transactionally across files with rollback on failure. Set dry_run=true for a READ-ONLY preview. NOT for inserting at a single location (use insert_symbol)."
     )]
     pub(crate) async fn batch_insert(&self, params: Parameters<edit::BatchInsertInput>) -> String {
         if let Some(result) = self.proxy_tool_call("batch_insert", &params.0).await {
@@ -13583,6 +13582,67 @@ mod tests {
             !result.contains("Chosen tool: find_references"),
             "generic type phrasing should stay broad without a distinctive trait candidate: {result}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_ask_strips_path_scope_hint_from_caller_query() {
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+
+        let content = b"fn helper() {}\nfn caller() { helper(); }\n";
+        std::fs::write(src_dir.join("lib.rs"), content).unwrap();
+
+        let result = crate::parsing::process_file("src/lib.rs", content, LanguageId::Rust);
+        let indexed =
+            crate::live_index::store::IndexedFile::from_parse_result(result, content.to_vec());
+        let server = make_server_with_root(
+            make_live_index_ready(vec![("src/lib.rs".to_string(), indexed)]),
+            Some(dir.path().to_path_buf()),
+        );
+
+        let input = super::SmartQueryInput {
+            query: "who calls helper in src/lib.rs".to_string(),
+        };
+        let result = server.ask(Parameters(input)).await;
+
+        assert!(
+            result.contains("Invocation: find_references(name=\"helper\")"),
+            "result: {result}"
+        );
+        assert!(result.contains("src/lib.rs"), "result: {result}");
+        assert!(result.contains("caller"), "result: {result}");
+    }
+
+    #[tokio::test]
+    async fn test_edit_plan_accepts_path_qualified_symbol_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+
+        let content = b"fn helper() {}\n";
+        std::fs::write(src_dir.join("lib.rs"), content).unwrap();
+
+        let result = crate::parsing::process_file("src/lib.rs", content, LanguageId::Rust);
+        let indexed =
+            crate::live_index::store::IndexedFile::from_parse_result(result, content.to_vec());
+        let server = make_server_with_root(
+            make_live_index_ready(vec![("src/lib.rs".to_string(), indexed)]),
+            Some(dir.path().to_path_buf()),
+        );
+
+        let input = super::EditPlanInput {
+            target: "src/lib.rs::helper".to_string(),
+        };
+        let result = server.edit_plan(Parameters(input)).await;
+
+        assert!(
+            result.contains("Found 1 symbol(s) matching"),
+            "result: {result}"
+        );
+        assert!(result.contains("src/lib.rs"), "result: {result}");
+        assert!(result.contains("helper"), "result: {result}");
+        assert!(!result.contains("not found"), "result: {result}");
     }
 
     #[test]

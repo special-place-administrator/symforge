@@ -832,7 +832,8 @@ impl<'de> serde::Deserialize<'de> for SingleEdit {
                     D::Error::custom(format!(
                         "SingleEdit string must be 'path::name => operation body' \
                          (operations: replace, insert_before, insert_after, delete, \
-                         edit_within old >>> new), got '{s}'"
+                         edit_within old >>> new) or a JSON object with \
+                         path/name/operation fields, got '{s}'"
                     ))
                 })
             }
@@ -1625,7 +1626,8 @@ impl<'de> serde::Deserialize<'de> for InsertTarget {
                     (s[..pos].to_string(), s[pos + 1..].to_string())
                 } else {
                     return Err(D::Error::custom(format!(
-                        "InsertTarget string must be 'path::name', got '{s}'"
+                        "InsertTarget string must be 'path::name' or a JSON object \
+                         with path/name fields, got '{s}'"
                     )));
                 };
                 if path.is_empty() || name.is_empty() {
@@ -4297,6 +4299,11 @@ mod tests {
         let json = serde_json::json!("src/lib.rs beta replace something");
         let result = serde_json::from_value::<SingleEdit>(json);
         assert!(result.is_err());
+        let error = result.err().unwrap().to_string();
+        assert!(
+            error.contains("JSON object with path/name/operation fields"),
+            "error: {error}"
+        );
     }
 
     #[test]
@@ -4332,5 +4339,27 @@ mod tests {
         assert_eq!(edit.path, "src/lib.rs");
         assert_eq!(edit.name, "gamma");
         assert!(matches!(edit.operation, EditOperation::Delete));
+    }
+
+    #[test]
+    fn test_insert_target_shorthand_string_still_works() {
+        let json = serde_json::json!("src/lib.rs::helper");
+        let target: InsertTarget = serde_json::from_value(json).unwrap();
+        assert_eq!(target.path, "src/lib.rs");
+        assert_eq!(target.name, "helper");
+        assert!(target.kind.is_none());
+        assert!(target.symbol_line.is_none());
+    }
+
+    #[test]
+    fn test_insert_target_invalid_message_mentions_structured_payload() {
+        let json = serde_json::json!("helper");
+        let result = serde_json::from_value::<InsertTarget>(json);
+        assert!(result.is_err());
+        let error = result.err().unwrap().to_string();
+        assert!(
+            error.contains("JSON object with path/name fields"),
+            "error: {error}"
+        );
     }
 }

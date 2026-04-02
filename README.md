@@ -84,6 +84,7 @@ Practical defaults:
 - use `search_text` or `search_symbols` before broad grep or raw file scans
 - use `get_file_content` when exact docs/config text matters
 - run `analyze_file_impact` after small edits and `index_folder` after larger multi-file work
+- `edit_plan` accepts a bare symbol, a file path, or `path::symbol`; `batch_edit` and `batch_insert` also accept shorthand strings like `src/lib.rs::helper => delete` and `src/lib.rs::helper`
 
 ## Need deeper reference?
 

@@ -1103,7 +1103,7 @@ pub fn health_report_from_stats(status: &str, stats: &HealthStats) -> String {
         );
     } else if stats.failed_count > 0 {
         output.push_str(
-            "\nParse resilience: failed files are excluded from symbol-level answers until they re-index cleanly.",
+            "\nParse resilience: failed files are excluded from symbol-level answers until they re-index cleanly. Inspect the failed-file list below, use raw reads or validate_file_syntax for those paths, then re-run index_folder after fixing the source file.",
         );
     }
 
