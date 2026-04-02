@@ -1,5 +1,13 @@
 # Changelog
 
+## [6.0.2](https://github.com/special-place-administrator/symforge/compare/v6.0.1...v6.0.2) (2026-04-02)
+
+
+### Bug Fixes
+
+* reliability improvements for what_changed, ask routing, health detail, and startup test ([ec8b0a6](https://github.com/special-place-administrator/symforge/commit/ec8b0a6cc02a6a2bcc925e14e1239c27bc32edd2))
+* reliability improvements for what_changed, ask, health, and startup ([181e6fa](https://github.com/special-place-administrator/symforge/commit/181e6fae3ef8cf48f2af62aff850fcef7aad2b53))
+
 ## [6.0.1](https://github.com/special-place-administrator/symforge/compare/v6.0.0...v6.0.1) (2026-04-02)
 
 
