@@ -1,5 +1,13 @@
 # Changelog
 
+## [6.0.4](https://github.com/special-place-administrator/symforge/compare/v6.0.3...v6.0.4) (2026-04-02)
+
+
+### Bug Fixes
+
+* scope query heuristics and route confidence ([df290bc](https://github.com/special-place-administrator/symforge/commit/df290bc0230746c17da1424acb215f8ed57cf360))
+* tighten query and format heuristics ([5806f1a](https://github.com/special-place-administrator/symforge/commit/5806f1a89370e84b24ced44157c81cde8b04684a))
+
 ## [6.0.3](https://github.com/special-place-administrator/symforge/compare/v6.0.2...v6.0.3) (2026-04-02)
 
 
