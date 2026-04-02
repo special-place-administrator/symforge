@@ -64,7 +64,8 @@ fn all_expected_tools_are_registered() {
     assert!(
         missing.is_empty(),
         "Tools in EXPECTED_TOOLS but not registered in tool_definitions():\n  {:?}\n\nRegistered tools:\n  {:?}",
-        missing, registered
+        missing,
+        registered
     );
 }
 

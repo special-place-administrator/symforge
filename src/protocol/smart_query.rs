@@ -557,8 +557,7 @@ pub fn route_tool_name(intent: &QueryIntent) -> &'static str {
 /// Try each prefix phrase; return the remainder if one matches.
 fn strip_prefix_phrase<'a>(lower: &'a str, prefixes: &[&str]) -> Option<&'a str> {
     for prefix in prefixes {
-        if lower.starts_with(prefix) {
-            let rest = &lower[prefix.len()..];
+        if let Some(rest) = lower.strip_prefix(prefix) {
             let rest = rest.trim();
             if !rest.is_empty() {
                 return Some(rest);
@@ -586,8 +585,8 @@ fn extract_kind_hint(name: &str) -> (Option<String>, &str) {
         ("var ", "variable"),
     ];
     for (prefix, kind) in &kind_prefixes {
-        if name.starts_with(prefix) {
-            return (Some(kind.to_string()), &name[prefix.len()..]);
+        if let Some(stripped) = name.strip_prefix(prefix) {
+            return (Some(kind.to_string()), stripped);
         }
     }
     (None, name)

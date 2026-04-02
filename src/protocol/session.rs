@@ -31,11 +31,17 @@ struct SessionInner {
 pub struct SessionSnapshot {
     pub fetched_symbols: Vec<(String, String, u32)>, // (path, name, tokens)
     pub listed_symbols: Vec<(String, String, u32)>,  // (path, name, tokens)
-    pub fetched_files: Vec<(String, u32)>,            // (path, tokens)
-    pub listed_files: Vec<(String, u32)>,             // (path, tokens)
-    pub summary_outputs: Vec<(String, u32)>,          // (label, tokens)
+    pub fetched_files: Vec<(String, u32)>,           // (path, tokens)
+    pub listed_files: Vec<(String, u32)>,            // (path, tokens)
+    pub summary_outputs: Vec<(String, u32)>,         // (label, tokens)
     pub total_tokens: u64,
     pub duration_secs: u64,
+}
+
+impl Default for SessionContext {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SessionContext {
@@ -178,7 +184,10 @@ pub fn format_context_inventory(snap: &SessionSnapshot) -> String {
 
     if !snap.fetched_symbols.is_empty() {
         lines.push(String::new());
-        lines.push(format!("Symbol bodies fetched ({}):", snap.fetched_symbols.len()));
+        lines.push(format!(
+            "Symbol bodies fetched ({}):",
+            snap.fetched_symbols.len()
+        ));
         for (path, name, tokens) in snap.fetched_symbols.iter().take(15) {
             lines.push(format!("  {name} ({path}) — ~{tokens} tokens"));
         }
@@ -192,7 +201,10 @@ pub fn format_context_inventory(snap: &SessionSnapshot) -> String {
 
     if !snap.fetched_files.is_empty() {
         lines.push(String::new());
-        lines.push(format!("File bodies fetched ({}):", snap.fetched_files.len()));
+        lines.push(format!(
+            "File bodies fetched ({}):",
+            snap.fetched_files.len()
+        ));
         for (path, tokens) in snap.fetched_files.iter().take(10) {
             lines.push(format!("  {path} — ~{tokens} tokens"));
         }
@@ -243,7 +255,10 @@ pub fn format_context_inventory(snap: &SessionSnapshot) -> String {
             lines.push(format!("  {label} — ~{tokens} tokens"));
         }
         if snap.summary_outputs.len() > 10 {
-            lines.push(format!("  ... and {} more", snap.summary_outputs.len() - 10));
+            lines.push(format!(
+                "  ... and {} more",
+                snap.summary_outputs.len() - 10
+            ));
         }
     }
 

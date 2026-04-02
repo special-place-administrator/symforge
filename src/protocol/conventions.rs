@@ -31,7 +31,8 @@ pub fn detect_conventions(index: &LiveIndex) -> ProjectConventions {
     let mut inline_test_mod_count = 0u32;
     let mut test_fn_count = 0u32;
 
-    let mut import_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    let mut import_counts: std::collections::HashMap<String, u32> =
+        std::collections::HashMap::new();
 
     let mut total_files = 0u32;
     let mut total_symbols = 0u32;
@@ -43,13 +44,13 @@ pub fn detect_conventions(index: &LiveIndex) -> ProjectConventions {
     for (_path, file) in index.all_files() {
         total_files += 1;
         total_symbols += file.symbols.len() as u32;
-        total_file_bytes += file.byte_len as u64;
+        total_file_bytes += file.byte_len;
 
         if file.symbols.len() as u32 > max_symbols_per_file {
             max_symbols_per_file = file.symbols.len() as u32;
         }
-        if file.byte_len as u64 > max_file_bytes {
-            max_file_bytes = file.byte_len as u64;
+        if file.byte_len > max_file_bytes {
+            max_file_bytes = file.byte_len;
         }
 
         let is_code = matches!(
@@ -87,7 +88,9 @@ pub fn detect_conventions(index: &LiveIndex) -> ProjectConventions {
             if sym.name == "tests" && matches!(sym.kind, crate::domain::index::SymbolKind::Module) {
                 inline_test_mod_count += 1;
             }
-            if sym.name.starts_with("test_") && matches!(sym.kind, crate::domain::index::SymbolKind::Function) {
+            if sym.name.starts_with("test_")
+                && matches!(sym.kind, crate::domain::index::SymbolKind::Function)
+            {
                 test_fn_count += 1;
             }
         }
@@ -95,7 +98,8 @@ pub fn detect_conventions(index: &LiveIndex) -> ProjectConventions {
         // Naming conventions
         for sym in &file.symbols {
             match sym.kind {
-                crate::domain::index::SymbolKind::Function | crate::domain::index::SymbolKind::Method => {
+                crate::domain::index::SymbolKind::Function
+                | crate::domain::index::SymbolKind::Method => {
                     total_fns += 1;
                     if sym.name.contains('_') && sym.name == sym.name.to_ascii_lowercase() {
                         snake_case_fns += 1;
@@ -108,7 +112,7 @@ pub fn detect_conventions(index: &LiveIndex) -> ProjectConventions {
                 | crate::domain::index::SymbolKind::Interface
                 | crate::domain::index::SymbolKind::Type => {
                     total_types += 1;
-                    if sym.name.chars().next().map_or(false, |c| c.is_uppercase()) {
+                    if sym.name.chars().next().is_some_and(|c| c.is_uppercase()) {
                         camel_case_types += 1;
                     }
                 }
@@ -119,7 +123,10 @@ pub fn detect_conventions(index: &LiveIndex) -> ProjectConventions {
         // Import tracking
         for reference in &file.references {
             if matches!(reference.kind, crate::domain::index::ReferenceKind::Import) {
-                let import_name = reference.qualified_name.as_deref().unwrap_or(&reference.name);
+                let import_name = reference
+                    .qualified_name
+                    .as_deref()
+                    .unwrap_or(&reference.name);
                 // Extract the crate/module root
                 let root = import_name.split("::").next().unwrap_or(import_name);
                 if !root.is_empty() && root.len() > 1 {
@@ -131,21 +138,39 @@ pub fn detect_conventions(index: &LiveIndex) -> ProjectConventions {
 
     // Error handling summary
     let error_handling = if error_anyhow_count > 2 && error_thiserror_count > 2 {
-        format!("Mixed: anyhow ({error_anyhow_count} files) + thiserror ({error_thiserror_count} files), Result<> in {error_result_count} files, {unwrap_count} unwrap()s, {expect_count} expect()s")
+        format!(
+            "Mixed: anyhow ({error_anyhow_count} files) + thiserror ({error_thiserror_count} files), Result<> in {error_result_count} files, {unwrap_count} unwrap()s, {expect_count} expect()s"
+        )
     } else if error_anyhow_count > 2 {
-        format!("anyhow-based: {error_anyhow_count} files use anyhow, Result<> in {error_result_count} files, {unwrap_count} unwrap()s, {expect_count} expect()s")
+        format!(
+            "anyhow-based: {error_anyhow_count} files use anyhow, Result<> in {error_result_count} files, {unwrap_count} unwrap()s, {expect_count} expect()s"
+        )
     } else if error_thiserror_count > 2 {
-        format!("thiserror-based: {error_thiserror_count} files use thiserror, Result<> in {error_result_count} files, {unwrap_count} unwrap()s, {expect_count} expect()s")
+        format!(
+            "thiserror-based: {error_thiserror_count} files use thiserror, Result<> in {error_result_count} files, {unwrap_count} unwrap()s, {expect_count} expect()s"
+        )
     } else if error_result_count > 0 {
-        format!("Result-based: {error_result_count} files return Result, {unwrap_count} unwrap()s, {expect_count} expect()s")
+        format!(
+            "Result-based: {error_result_count} files return Result, {unwrap_count} unwrap()s, {expect_count} expect()s"
+        )
     } else {
-        format!("Minimal error handling detected. {unwrap_count} unwrap()s, {expect_count} expect()s")
+        format!(
+            "Minimal error handling detected. {unwrap_count} unwrap()s, {expect_count} expect()s"
+        )
     };
 
     // Naming summary
     let naming = {
-        let fn_pct = if total_fns > 0 { snake_case_fns * 100 / total_fns } else { 0 };
-        let type_pct = if total_types > 0 { camel_case_types * 100 / total_types } else { 0 };
+        let fn_pct = if total_fns > 0 {
+            snake_case_fns * 100 / total_fns
+        } else {
+            0
+        };
+        let type_pct = if total_types > 0 {
+            camel_case_types * 100 / total_types
+        } else {
+            0
+        };
         format!(
             "Functions: {fn_pct}% snake_case ({snake_case_fns}/{total_fns}). Types: {type_pct}% CamelCase ({camel_case_types}/{total_types})."
         )
@@ -166,8 +191,16 @@ pub fn detect_conventions(index: &LiveIndex) -> ProjectConventions {
         .collect();
 
     // File organization
-    let avg_symbols = if code_file_count > 0 { total_symbols / code_file_count } else { 0 };
-    let avg_size = if code_file_count > 0 { total_file_bytes / code_file_count as u64 } else { 0 };
+    let avg_symbols = if code_file_count > 0 {
+        total_symbols / code_file_count
+    } else {
+        0
+    };
+    let avg_size = if code_file_count > 0 {
+        total_file_bytes / code_file_count as u64
+    } else {
+        0
+    };
     let file_organization = format!(
         "{total_files} files ({code_file_count} code), avg {avg_symbols} symbols/file, avg {avg_kb}KB/file, largest {max_kb}KB ({max_symbols_per_file} symbols)",
         avg_kb = avg_size / 1024,

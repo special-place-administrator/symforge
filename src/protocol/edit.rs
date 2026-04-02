@@ -785,46 +785,46 @@ impl<'de> serde::Deserialize<'de> for SingleEdit {
             }),
             EditOrStr::Str(s) => {
                 // Try JSON parse first (stringified object)
-                if let Ok(edit) = serde_json::from_str::<serde_json::Value>(&s) {
-                    if edit.is_object() {
-                        // Re-deserialize with the struct variant logic
-                        // We need manual extraction since we can't recurse
-                        let path = edit
-                            .get("path")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let name = edit
-                            .get("name")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let kind = edit.get("kind").and_then(|v| v.as_str()).map(String::from);
-                        let symbol_line = edit
-                            .get("symbol_line")
-                            .and_then(|v| v.as_u64())
-                            .map(|n| n as u32);
-                        let operation: EditOperation = edit
-                            .get("operation")
-                            .ok_or_else(|| {
-                                D::Error::custom("missing 'operation' in stringified SingleEdit")
-                            })
-                            .and_then(|op| {
-                                serde_json::from_value(op.clone()).map_err(D::Error::custom)
-                            })?;
-                        if path.is_empty() || name.is_empty() {
-                            return Err(D::Error::custom(format!(
-                                "SingleEdit stringified object must have non-empty path and name, got '{s}'"
-                            )));
-                        }
-                        return Ok(SingleEdit {
-                            path,
-                            name,
-                            kind,
-                            symbol_line,
-                            operation,
-                        });
+                if let Ok(edit) = serde_json::from_str::<serde_json::Value>(&s)
+                    && edit.is_object()
+                {
+                    // Re-deserialize with the struct variant logic
+                    // We need manual extraction since we can't recurse
+                    let path = edit
+                        .get("path")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let name = edit
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let kind = edit.get("kind").and_then(|v| v.as_str()).map(String::from);
+                    let symbol_line = edit
+                        .get("symbol_line")
+                        .and_then(|v| v.as_u64())
+                        .map(|n| n as u32);
+                    let operation: EditOperation = edit
+                        .get("operation")
+                        .ok_or_else(|| {
+                            D::Error::custom("missing 'operation' in stringified SingleEdit")
+                        })
+                        .and_then(|op| {
+                            serde_json::from_value(op.clone()).map_err(D::Error::custom)
+                        })?;
+                    if path.is_empty() || name.is_empty() {
+                        return Err(D::Error::custom(format!(
+                            "SingleEdit stringified object must have non-empty path and name, got '{s}'"
+                        )));
                     }
+                    return Ok(SingleEdit {
+                        path,
+                        name,
+                        kind,
+                        symbol_line,
+                        operation,
+                    });
                 }
 
                 // Try shorthand DSL: "path::name => operation body"

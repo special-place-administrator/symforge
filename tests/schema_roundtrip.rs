@@ -157,23 +157,55 @@ macro_rules! schema_roundtrip_test {
 }
 
 schema_roundtrip_test!(roundtrip_get_symbol, "get_symbol", GetSymbolInput);
-schema_roundtrip_test!(roundtrip_search_symbols, "search_symbols", SearchSymbolsInput);
+schema_roundtrip_test!(
+    roundtrip_search_symbols,
+    "search_symbols",
+    SearchSymbolsInput
+);
 schema_roundtrip_test!(roundtrip_search_text, "search_text", SearchTextInput);
 schema_roundtrip_test!(roundtrip_search_files, "search_files", SearchFilesInput);
 schema_roundtrip_test!(roundtrip_index_folder, "index_folder", IndexFolderInput);
 schema_roundtrip_test!(roundtrip_what_changed, "what_changed", WhatChangedInput);
-schema_roundtrip_test!(roundtrip_get_file_content, "get_file_content", GetFileContentInput);
-schema_roundtrip_test!(roundtrip_find_references, "find_references", FindReferencesInput);
-schema_roundtrip_test!(roundtrip_find_dependents, "find_dependents", FindDependentsInput);
+schema_roundtrip_test!(
+    roundtrip_get_file_content,
+    "get_file_content",
+    GetFileContentInput
+);
+schema_roundtrip_test!(
+    roundtrip_find_references,
+    "find_references",
+    FindReferencesInput
+);
+schema_roundtrip_test!(
+    roundtrip_find_dependents,
+    "find_dependents",
+    FindDependentsInput
+);
 schema_roundtrip_test!(roundtrip_get_repo_map, "get_repo_map", GetRepoMapInput);
-schema_roundtrip_test!(roundtrip_get_file_context, "get_file_context", GetFileContextInput);
-schema_roundtrip_test!(roundtrip_get_symbol_context, "get_symbol_context", GetSymbolContextInput);
-schema_roundtrip_test!(roundtrip_analyze_file_impact, "analyze_file_impact", AnalyzeFileImpactInput);
+schema_roundtrip_test!(
+    roundtrip_get_file_context,
+    "get_file_context",
+    GetFileContextInput
+);
+schema_roundtrip_test!(
+    roundtrip_get_symbol_context,
+    "get_symbol_context",
+    GetSymbolContextInput
+);
+schema_roundtrip_test!(
+    roundtrip_analyze_file_impact,
+    "analyze_file_impact",
+    AnalyzeFileImpactInput
+);
 schema_roundtrip_test!(roundtrip_inspect_match, "inspect_match", InspectMatchInput);
 schema_roundtrip_test!(roundtrip_explore, "explore", ExploreInput);
 schema_roundtrip_test!(roundtrip_ask, "ask", SmartQueryInput);
 schema_roundtrip_test!(roundtrip_edit_plan, "edit_plan", EditPlanInput);
-schema_roundtrip_test!(roundtrip_investigation_suggest, "investigation_suggest", InvestigationInput);
+schema_roundtrip_test!(
+    roundtrip_investigation_suggest,
+    "investigation_suggest",
+    InvestigationInput
+);
 schema_roundtrip_test!(roundtrip_diff_symbols, "diff_symbols", DiffSymbolsInput);
 
 // ─── Aggregate sanity checks ────────────────────────────────────────────────

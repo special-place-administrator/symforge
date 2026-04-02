@@ -1607,17 +1607,35 @@ impl LiveIndex {
     }
 
     fn collect_exact_symbol_references<'a>(
-            &'a self,
-            path: &'a str,
-            file: &'a IndexedFile,
-            target_name: &str,
-            kind_filter: Option<ReferenceKind>,
-        ) -> Vec<(&'a str, &'a ReferenceRecord)> {
-            let module_path = resolve_module_path(path, &file.language);
-            let mut refs: Vec<(&str, &ReferenceRecord)> = file
-                .references
-                .iter()
-                .filter(|reference| {
+        &'a self,
+        path: &'a str,
+        file: &'a IndexedFile,
+        target_name: &str,
+        kind_filter: Option<ReferenceKind>,
+    ) -> Vec<(&'a str, &'a ReferenceRecord)> {
+        let module_path = resolve_module_path(path, &file.language);
+        let mut refs: Vec<(&str, &ReferenceRecord)> = file
+            .references
+            .iter()
+            .filter(|reference| {
+                matches_exact_symbol_reference(
+                    reference,
+                    target_name,
+                    &file.language,
+                    module_path.as_deref(),
+                    kind_filter,
+                )
+            })
+            .map(|reference| (path, reference))
+            .collect();
+
+        let dependent_refs = self.find_dependents_for_file(path);
+        let dependent_paths: HashSet<&str> = dependent_refs.iter().map(|(fp, _)| *fp).collect();
+
+        refs.extend(
+            dependent_refs
+                .into_iter()
+                .filter(|(_file_path, reference)| {
                     matches_exact_symbol_reference(
                         reference,
                         target_name,
@@ -1625,70 +1643,52 @@ impl LiveIndex {
                         module_path.as_deref(),
                         kind_filter,
                     )
-                })
-                .map(|reference| (path, reference))
-                .collect();
+                }),
+        );
 
-            let dependent_refs = self.find_dependents_for_file(path);
-            let dependent_paths: HashSet<&str> = dependent_refs.iter().map(|(fp, _)| *fp).collect();
-
-            refs.extend(
-                dependent_refs
-                    .into_iter()
-                    .filter(|(_file_path, reference)| {
-                        matches_exact_symbol_reference(
-                            reference,
-                            target_name,
-                            &file.language,
-                            module_path.as_deref(),
-                            kind_filter,
-                        )
-                    }),
-            );
-
-            // Also check the reverse index for the target name.
-            for (ref_path, ref_record) in self.find_references_for_name(target_name, kind_filter, false)
+        // Also check the reverse index for the target name.
+        for (ref_path, ref_record) in self.find_references_for_name(target_name, kind_filter, false)
+        {
+            if ref_path == path {
+                continue;
+            }
+            // Already collected from the dependent scan?
+            if refs
+                .iter()
+                .any(|(p, r)| *p == ref_path && r.byte_range == ref_record.byte_range)
             {
-                if ref_path == path {
-                    continue;
-                }
-                // Already collected from the dependent scan?
-                if refs
-                    .iter()
-                    .any(|(p, r)| *p == ref_path && r.byte_range == ref_record.byte_range)
-                {
-                    continue;
-                }
-
-                if dependent_paths.contains(ref_path) {
-                    // Within known dependents: accept any matching reference (original behavior)
-                    refs.push((ref_path, ref_record));
-                } else if let Some(qn) = ref_record.qualified_name.as_deref() {
-                    // Outside dependents: only accept if the reference has a qualified name
-                    // that matches the target's module path.  This catches fully-qualified
-                    // calls (e.g. `engine::optimize_deterministic()`) where the caller has
-                    // no separate `use` import and therefore never enters dependent_paths.
-                    // Simple name-only matches are excluded to avoid false positives from
-                    // unrelated files that happen to use the same function name.
-                    if matches_exact_symbol_qualified_name(
-                        &file.language,
-                        qn,
-                        target_name,
-                        module_path.as_deref(),
-                    ) {
-                        refs.push((ref_path, ref_record));
-                    }
-                }
+                continue;
             }
 
-            refs.sort_by(|a, b| {
-                a.0.cmp(b.0)
-                    .then(a.1.line_range.0.cmp(&b.1.line_range.0))
-                    .then(a.1.byte_range.0.cmp(&b.1.byte_range.0))
-            });
-
-            refs
+            if dependent_paths.contains(ref_path) {
+                // Within known dependents: accept any matching reference (original behavior)
+                refs.push((ref_path, ref_record));
+            } else if let Some(qn) = ref_record.qualified_name.as_deref() {
+                // Outside dependents: only accept if the reference has a qualified name
+                // that matches the target's module path.  This catches fully-qualified
+                // calls (e.g. `engine::optimize_deterministic()`) where the caller has
+                // no separate `use` import and therefore never enters dependent_paths.
+                // Simple name-only matches are excluded to avoid false positives from
+                // unrelated files that happen to use the same function name.
+                if matches_exact_symbol_qualified_name(
+                    &file.language,
+                    qn,
+                    target_name,
+                    module_path.as_deref(),
+                ) {
+                    refs.push((ref_path, ref_record));
+                }
+            }
         }
+
+        refs.sort_by(|a, b| {
+            a.0.cmp(b.0)
+                .then(a.1.line_range.0.cmp(&b.1.line_range.0))
+                .then(a.1.byte_range.0.cmp(&b.1.byte_range.0))
+        });
+
+        refs
+    }
 
     fn build_find_references_view(
         &self,
@@ -2609,7 +2609,7 @@ impl LiveIndex {
                     .iter()
                     .filter(|reference| {
                         reference.kind == ReferenceKind::Call
-                            && reference.qualified_name.as_deref().map_or(false, |qn| {
+                            && reference.qualified_name.as_deref().is_some_and(|qn| {
                                 // The qualified_name must refer to a symbol in the target file.
                                 // Check: the ref's simple name is a public symbol in target,
                                 // AND the qualified_name suffix-matches the module path.
@@ -5294,12 +5294,12 @@ public class PacketsController {
         );
     }
 
-
     #[test]
     fn test_find_dependents_qualified_call_without_import() {
         // A file that calls engine::optimize_deterministic() without
         // `use engine;` should still be a dependent of src/engine.rs.
-        let target_sym = make_symbol_with_kind_and_line("optimize_deterministic", SymbolKind::Function, 10);
+        let target_sym =
+            make_symbol_with_kind_and_line("optimize_deterministic", SymbolKind::Function, 10);
         let target_file = make_file_with_refs_and_content(
             "src/engine.rs",
             LanguageId::Rust,
@@ -5315,11 +5315,8 @@ public class PacketsController {
             Some(0),
             100,
         );
-        let caller_file = make_file_with_refs(
-            "src/ui/optimization.rs",
-            vec![call_ref],
-            HashMap::new(),
-        );
+        let caller_file =
+            make_file_with_refs("src/ui/optimization.rs", vec![call_ref], HashMap::new());
 
         let index = make_index(
             vec![
@@ -5331,7 +5328,8 @@ public class PacketsController {
 
         let deps = index.find_dependents_for_file("src/engine.rs");
         assert!(
-            deps.iter().any(|(path, _)| *path == "src/ui/optimization.rs"),
+            deps.iter()
+                .any(|(path, _)| *path == "src/ui/optimization.rs"),
             "Should find qualified caller as dependent, got: {:?}",
             deps.iter().map(|(p, _)| p).collect::<Vec<_>>()
         );
@@ -5924,7 +5922,6 @@ public class PacketsController {
         }
     }
 
-
     #[test]
     fn test_qualified_name_suffix_match() {
         // "engine::optimize" should match module path "crate::engine" + target "optimize"
@@ -5970,16 +5967,17 @@ public class PacketsController {
 
     #[test]
     fn test_collect_exact_refs_finds_qualified_call_without_import() {
-    // Simulates: optimization.rs calls engine::optimize_deterministic()
-    // but has no `use engine;` import — only a fully-qualified call.
-    let target_sym = make_symbol_with_kind_and_line("optimize_deterministic", SymbolKind::Function, 10);
-    let target_file = make_file_with_refs_and_content(
-        "src/engine.rs",
-        LanguageId::Rust,
-        "pub fn optimize_deterministic() { todo!() }\n",
-        vec![],
-        vec![target_sym],
-    );
+        // Simulates: optimization.rs calls engine::optimize_deterministic()
+        // but has no `use engine;` import — only a fully-qualified call.
+        let target_sym =
+            make_symbol_with_kind_and_line("optimize_deterministic", SymbolKind::Function, 10);
+        let target_file = make_file_with_refs_and_content(
+            "src/engine.rs",
+            LanguageId::Rust,
+            "pub fn optimize_deterministic() { todo!() }\n",
+            vec![],
+            vec![target_sym],
+        );
 
         // Caller file: has a Call ref with qualified_name but NO import ref for "engine"
         let call_ref = make_ref(
@@ -5989,11 +5987,8 @@ public class PacketsController {
             Some(0),
             100,
         );
-        let caller_file = make_file_with_refs(
-            "src/ui/optimization.rs",
-            vec![call_ref],
-            HashMap::new(),
-        );
+        let caller_file =
+            make_file_with_refs("src/ui/optimization.rs", vec![call_ref], HashMap::new());
 
         let index = make_index(
             vec![
@@ -6013,7 +6008,8 @@ public class PacketsController {
 
         // Should find the caller even without a `use engine` import
         assert!(
-            refs.iter().any(|(path, _)| *path == "src/ui/optimization.rs"),
+            refs.iter()
+                .any(|(path, _)| *path == "src/ui/optimization.rs"),
             "Should find caller in optimization.rs, got refs from: {:?}",
             refs.iter().map(|(p, _)| p).collect::<Vec<_>>()
         );

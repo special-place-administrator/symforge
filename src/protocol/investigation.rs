@@ -128,7 +128,8 @@ fn project_defined_symbols(index: &LiveIndex) -> BTreeMap<String, Vec<String>> {
         }
 
         for symbol in &file.symbols {
-            if !is_actionable_symbol_kind(symbol.kind) || !is_actionable_suggestion_name(&symbol.name)
+            if !is_actionable_symbol_kind(symbol.kind)
+                || !is_actionable_suggestion_name(&symbol.name)
             {
                 continue;
             }
@@ -228,9 +229,7 @@ fn is_external_reference(qualified_name: Option<&str>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{
-        FileClassification, LanguageId, ReferenceRecord, SymbolRecord,
-    };
+    use crate::domain::{FileClassification, LanguageId, ReferenceRecord, SymbolRecord};
     use crate::live_index::store::{
         CircuitBreakerState, IndexLoadSource, IndexedFile, LiveIndex, ParseStatus,
         SnapshotVerifyState,
@@ -240,12 +239,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
-    fn make_symbol(
-        name: &str,
-        kind: SymbolKind,
-        line_start: u32,
-        line_end: u32,
-    ) -> SymbolRecord {
+    fn make_symbol(name: &str, kind: SymbolKind, line_start: u32, line_end: u32) -> SymbolRecord {
         let byte_range = (0, 10);
         SymbolRecord {
             name: name.to_string(),
@@ -339,8 +333,12 @@ mod tests {
         );
         let (helper_key, helper_file) =
             make_file("src/helper.rs", b"pub fn helper() {}", vec![helper], vec![]);
-        let (clone_key, clone_file) =
-            make_file("src/daemon.rs", b"fn clone() {}", vec![clone_method], vec![]);
+        let (clone_key, clone_file) = make_file(
+            "src/daemon.rs",
+            b"fn clone() {}",
+            vec![clone_method],
+            vec![],
+        );
         let index = make_index(vec![
             (caller_key, caller_file),
             (helper_key, helper_file),

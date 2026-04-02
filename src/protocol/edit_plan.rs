@@ -82,7 +82,7 @@ pub fn plan_edit(index: &LiveIndex, target: &str) -> String {
         if symbol_hits.len() == 1 {
             let (path, name, _, _) = &symbol_hits[0];
             lines.push(format!("  1. get_symbol_context(name=\"{name}\", path=\"{path}\", bundle=true) — understand full context"));
-            lines.push(format!("  2. Choose edit approach:"));
+            lines.push("  2. Choose edit approach:".to_string());
             lines.push(format!("     - Small change: edit_within_symbol(path=\"{path}\", name=\"{name}\", old_text=..., new_text=...)"));
             lines.push(format!("     - Full rewrite: replace_symbol_body(path=\"{path}\", name=\"{name}\", new_body=...)"));
             lines.push(format!("     - Rename: batch_rename(path=\"{path}\", name=\"{name}\", new_name=..., dry_run=true)"));
@@ -99,21 +99,23 @@ pub fn plan_edit(index: &LiveIndex, target: &str) -> String {
         }
     }
 
-    if let Some(path) = file_hit {
-        if symbol_hits.is_empty() {
-            lines.push(format!("Found file: {}", path));
-            lines.push(format!("\nSuggested approach:"));
-            lines.push(format!("  1. get_file_context(path=\"{path}\", sections=[\"outline\"]) — understand structure"));
-            lines.push(format!(
-                "  2. get_symbol(path=\"{path}\", name=\"<target>\") — read specific symbols"
-            ));
-            lines.push(format!(
-                "  3. Use edit_within_symbol or replace_symbol_body for changes"
-            ));
-            lines.push(format!(
-                "  4. analyze_file_impact(path=\"{path}\") — verify"
-            ));
-        }
+    if let Some(path) = file_hit
+        && symbol_hits.is_empty()
+    {
+        lines.push(format!("Found file: {}", path));
+        lines.push("\nSuggested approach:".to_string());
+        lines.push(format!(
+            "  1. get_file_context(path=\"{path}\", sections=[\"outline\"]) — understand structure"
+        ));
+        lines.push(format!(
+            "  2. get_symbol(path=\"{path}\", name=\"<target>\") — read specific symbols"
+        ));
+        lines.push(
+            "  3. Use edit_within_symbol or replace_symbol_body for changes".to_string(),
+        );
+        lines.push(format!(
+            "  4. analyze_file_impact(path=\"{path}\") — verify"
+        ));
     }
 
     lines.join("\n")

@@ -485,12 +485,12 @@ impl SharedIndexHandle {
     /// on every sweep, causing an infinite stale → hash-skip → stale loop.
     pub fn touch_mtime(&self, path: &str, new_mtime: u64) {
         let mut live = self.live.write();
-        if let Some(file) = live.files.get_mut(path) {
-            if file.mtime_secs != new_mtime {
-                let mut updated = (**file).clone();
-                updated.mtime_secs = new_mtime;
-                *file = std::sync::Arc::new(updated);
-            }
+        if let Some(file) = live.files.get_mut(path)
+            && file.mtime_secs != new_mtime
+        {
+            let mut updated = (**file).clone();
+            updated.mtime_secs = new_mtime;
+            *file = std::sync::Arc::new(updated);
         }
     }
 

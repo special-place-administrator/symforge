@@ -124,14 +124,19 @@ impl TokenStats {
         let entry = map.entry(tool_name.to_string()).or_insert((0, 0));
         entry.0 += tokens_served;
         entry.1 += tokens_saved;
-        self.total_tokens_served.fetch_add(tokens_served, Ordering::Relaxed);
-        self.total_tokens_naive.fetch_add(tokens_served + tokens_saved, Ordering::Relaxed);
+        self.total_tokens_served
+            .fetch_add(tokens_served, Ordering::Relaxed);
+        self.total_tokens_naive
+            .fetch_add(tokens_served + tokens_saved, Ordering::Relaxed);
     }
 
     /// Return per-tool token details sorted by tokens saved descending.
     pub fn tool_token_details(&self) -> Vec<(String, u64, u64)> {
         let map = self.tool_token_details.lock();
-        let mut details: Vec<(String, u64, u64)> = map.iter().map(|(k, (served, saved))| (k.clone(), *served, *saved)).collect();
+        let mut details: Vec<(String, u64, u64)> = map
+            .iter()
+            .map(|(k, (served, saved))| (k.clone(), *served, *saved))
+            .collect();
         details.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
         details
     }

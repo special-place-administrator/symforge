@@ -2101,6 +2101,7 @@ fn what_changed_parse_state_label(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_diff_symbols_output(
     base: &str,
     target: &str,
@@ -2154,6 +2155,7 @@ fn render_diff_symbols_output(
     format!("{envelope}\n\n{output}")
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_search_text_output(
     server: &SymForgeServer,
     result: Result<search::TextSearchResult, search::TextSearchError>,
@@ -4438,15 +4440,15 @@ impl SymForgeServer {
                             &text_options,
                         )
                     };
-                    if let Ok(tr) = text_result {
-                        if !tr.files.is_empty() {
-                            output.push_str(&format!(
-                                "\n\nNote: no indexed references found, but search_text found {} file(s) \
-                                 containing \"{}\". The index may miss qualified-path calls (e.g., \
-                                 module::{}()). Use search_text(query=\"{}\") for full coverage.",
-                                tr.files.len(), input.name, input.name, input.name
-                            ));
-                        }
+                    if let Ok(tr) = text_result
+                        && !tr.files.is_empty()
+                    {
+                        output.push_str(&format!(
+                            "\n\nNote: no indexed references found, but search_text found {} file(s) \
+                             containing \"{}\". The index may miss qualified-path calls (e.g., \
+                             module::{}()). Use search_text(query=\"{}\") for full coverage.",
+                            tr.files.len(), input.name, input.name, input.name
+                        ));
                     }
                 }
 
@@ -6745,6 +6747,7 @@ mod tests {
     impl EnvVarGuard {
         fn set_path(key: &'static str, value: &Path) -> Self {
             let previous = std::env::var_os(key);
+            // SAFETY: called only in single-threaded test context; no concurrent env readers.
             unsafe {
                 std::env::set_var(key, value);
             }
@@ -6755,9 +6758,11 @@ mod tests {
     impl Drop for EnvVarGuard {
         fn drop(&mut self) {
             match &self.previous {
+                // SAFETY: called only in single-threaded test context; no concurrent env readers.
                 Some(previous) => unsafe {
                     std::env::set_var(self.key, previous);
                 },
+                // SAFETY: called only in single-threaded test context; no concurrent env readers.
                 None => unsafe {
                     std::env::remove_var(self.key);
                 },

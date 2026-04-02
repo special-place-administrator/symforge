@@ -227,7 +227,8 @@ impl SymForgeServer {
 
 fn build_code_review_instructions(project_name: &str, input: &CodeReviewPromptInput) -> String {
     let target = input.path.as_deref().map_or(
-        "Start from what_changed(uncommitted=true, code_only=true) to find all modified files.".to_string(),
+        "Start from what_changed(uncommitted=true, code_only=true) to find all modified files."
+            .to_string(),
         |p| format!("Start with the target path '{p}'."),
     );
     let focus = input.focus.as_deref().map_or(String::new(), |f| {
@@ -379,9 +380,10 @@ fn build_onboard_instructions(project_name: &str, area: Option<&str>) -> String 
 }
 
 fn build_refactor_instructions(project_name: &str, input: &RefactorPromptInput) -> String {
-    let target_note = input.target.as_deref().map_or(String::new(), |t| {
-        format!("\n\nStarting point: '{t}'.")
-    });
+    let target_note = input
+        .target
+        .as_deref()
+        .map_or(String::new(), |t| format!("\n\nStarting point: '{t}'."));
 
     format!(
         "## Refactoring Workflow for '{project_name}'\n\
@@ -418,9 +420,10 @@ fn build_refactor_instructions(project_name: &str, input: &RefactorPromptInput) 
 }
 
 fn build_debug_instructions(project_name: &str, input: &DebugPromptInput) -> String {
-    let path_note = input.path.as_deref().map_or(String::new(), |p| {
-        format!("\n\nSuspected file: '{p}'.")
-    });
+    let path_note = input
+        .path
+        .as_deref()
+        .map_or(String::new(), |p| format!("\n\nSuspected file: '{p}'."));
 
     format!(
         "## Debugging Workflow for '{project_name}'\n\
