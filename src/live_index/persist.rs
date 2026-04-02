@@ -711,6 +711,11 @@ mod tests {
             assert_eq!(guard.snapshot_verify_state(), SnapshotVerifyState::Pending);
         }
 
+        let before = shared.published_state();
+        assert_eq!(before.file_count, 1);
+        assert_eq!(before.partial_parse_count, 0);
+        assert_eq!(before.failed_count, 0);
+
         background_verify(shared.clone(), tmp.path().to_path_buf(), snapshot_mtimes).await;
 
         let guard = shared.read();
@@ -730,6 +735,48 @@ mod tests {
             published.generation >= 2,
             "expected published generation to advance through verify transitions"
         );
+        assert_eq!(published.file_count, before.file_count);
+        assert_eq!(published.partial_parse_count, before.partial_parse_count);
+        assert_eq!(published.failed_count, before.failed_count);
+    }
+
+    #[tokio::test]
+    async fn test_background_verify_deleted_file_changes_published_counts() {
+        let tmp = TempDir::new().unwrap();
+        let file_path = tmp.path().join("src").join("main.rs");
+        std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        std::fs::write(&file_path, b"fn main() {}\n").unwrap();
+
+        let index = make_live_index_with_files(vec![("src/main.rs", b"fn main() {}\n")]);
+        serialize_index(&index, tmp.path()).expect("serialize should succeed");
+
+        let snapshot = load_snapshot(tmp.path()).expect("snapshot should load");
+        let snapshot_mtimes = snapshot
+            .files
+            .iter()
+            .map(|(path, file)| (path.clone(), file.mtime_secs))
+            .collect::<HashMap<_, _>>();
+        let loaded = snapshot_to_live_index(snapshot);
+        let shared = crate::live_index::SharedIndexHandle::shared(loaded);
+
+        let before = shared.published_state();
+        assert_eq!(before.file_count, 1);
+        assert_eq!(before.partial_parse_count, 0);
+        assert_eq!(before.failed_count, 0);
+
+        std::fs::remove_file(&file_path).expect("remove indexed file");
+        background_verify(shared.clone(), tmp.path().to_path_buf(), snapshot_mtimes).await;
+
+        let published = shared.published_state();
+        assert!(
+            published.generation >= 2,
+            "expected published generation to advance through verify transitions"
+        );
+        assert_eq!(published.snapshot_verify_state, SnapshotVerifyState::Completed);
+        assert_eq!(published.file_count, 0);
+        assert_eq!(published.parsed_count, 0);
+        assert_eq!(published.partial_parse_count, 0);
+        assert_eq!(published.failed_count, 0);
     }
 
     #[test]

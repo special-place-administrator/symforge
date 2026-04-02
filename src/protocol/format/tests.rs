@@ -778,6 +778,101 @@ fn test_health_report_from_published_state_matches_live_index_output() {
 }
 
 #[test]
+fn test_health_report_from_published_state_shows_failed_file_details() {
+    use crate::live_index::store::{
+        IndexLoadSource, PublishedIndexState, PublishedIndexStatus, SnapshotVerifyState,
+    };
+    use crate::watcher::{WatcherInfo, WatcherState};
+    use std::time::{Duration, SystemTime};
+
+    let published = PublishedIndexState {
+        generation: 7,
+        status: PublishedIndexStatus::Ready,
+        degraded_summary: None,
+        file_count: 4,
+        parsed_count: 2,
+        partial_parse_count: 0,
+        failed_count: 2,
+        symbol_count: 12,
+        loaded_at_system: SystemTime::now(),
+        load_duration: Duration::from_millis(12),
+        load_source: IndexLoadSource::FreshLoad,
+        snapshot_verify_state: SnapshotVerifyState::NotNeeded,
+        is_empty: false,
+        partial_parse_files: vec![],
+        failed_files: vec![
+            ("src/bad.rs".to_string(), "syntax error".to_string()),
+            ("src/worse.rs".to_string(), "lexer panic".to_string()),
+        ],
+        tier_counts: (4, 0, 0),
+    };
+    let watcher = WatcherInfo {
+        state: WatcherState::Off,
+        ..WatcherInfo::default()
+    };
+
+    let report = health_report_from_published_state(&published, &watcher);
+    assert!(
+        report.contains("Failed files (2):"),
+        "published-state health should preserve failed file detail: {report}"
+    );
+    assert!(
+        report.contains("src/bad.rs"),
+        "published-state health should list failed file paths: {report}"
+    );
+    assert!(
+        report.contains("syntax error"),
+        "published-state health should list failure reasons: {report}"
+    );
+}
+
+#[test]
+fn test_health_report_from_published_state_shows_partial_parse_files() {
+    use crate::live_index::store::{
+        IndexLoadSource, PublishedIndexState, PublishedIndexStatus, SnapshotVerifyState,
+    };
+    use crate::watcher::{WatcherInfo, WatcherState};
+    use std::time::{Duration, SystemTime};
+
+    let published = PublishedIndexState {
+        generation: 8,
+        status: PublishedIndexStatus::Ready,
+        degraded_summary: None,
+        file_count: 3,
+        parsed_count: 1,
+        partial_parse_count: 2,
+        failed_count: 0,
+        symbol_count: 9,
+        loaded_at_system: SystemTime::now(),
+        load_duration: Duration::from_millis(9),
+        load_source: IndexLoadSource::FreshLoad,
+        snapshot_verify_state: SnapshotVerifyState::NotNeeded,
+        is_empty: false,
+        partial_parse_files: vec!["src/partial_a.rs".to_string(), "src/partial_b.rs".to_string()],
+        failed_files: vec![],
+        tier_counts: (3, 0, 0),
+    };
+    let watcher = WatcherInfo {
+        state: WatcherState::Off,
+        ..WatcherInfo::default()
+    };
+
+    let report = health_report_from_published_state(&published, &watcher);
+    assert!(
+        report.contains("Partial parse files (2):"),
+        "published-state health should preserve partial file detail: {report}"
+    );
+    assert!(
+        report.contains("src/partial_a.rs"),
+        "published-state health should list partial file paths: {report}"
+    );
+    assert!(
+        report.contains("src/partial_b.rs"),
+        "published-state health should list all bounded partial file paths: {report}"
+    );
+}
+
+#[test]
 fn test_health_report_lists_partial_parse_files() {
     use crate::watcher::WatcherState;
     use std::time::Duration;

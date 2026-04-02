@@ -1019,8 +1019,8 @@ pub fn health_report_from_published_state(
         last_overflow_at: watcher.last_overflow_at,
         stale_files_found: watcher.stale_files_found,
         last_reconcile_at: watcher.last_reconcile_at,
-        partial_parse_files: vec![],
-        failed_files: vec![],
+        partial_parse_files: published.partial_parse_files.clone(),
+        failed_files: published.failed_files.clone(),
         tier_counts: published.tier_counts,
     };
     // Preserve the existing formatter shape by reusing HealthStats.

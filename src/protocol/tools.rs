@@ -3914,8 +3914,19 @@ impl SymForgeServer {
                 est, with_diff
             );
         }
-        let repo_root = self.capture_repo_root();
-        let mode = match determine_what_changed_mode(&params.0, repo_root.is_some()) {
+        let effective_repo_root = self.effective_repo_root_for_git_tools();
+        let requested_git_mode = params.0.uncommitted.unwrap_or(false)
+            || params
+                .0
+                .git_ref
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|git_ref| !git_ref.is_empty());
+        if params.0.since.is_none() && !requested_git_mode && effective_repo_root.is_none() {
+            return "No repo root attached; call index_folder(path=...) or pass since=..."
+                .to_string();
+        }
+        let mode = match determine_what_changed_mode(&params.0, effective_repo_root.is_some()) {
             Ok(mode) => mode,
             Err(message) => return message,
         };
@@ -3978,7 +3989,7 @@ impl SymForgeServer {
                 loading_guard!(guard);
                 drop(guard);
 
-                let Some(repo_root) = repo_root.as_deref() else {
+                let Some(repo_root) = effective_repo_root.as_deref() else {
                     return "Git change detection unavailable; pass `since` for timestamp mode."
                         .to_string();
                 };
@@ -4047,7 +4058,7 @@ impl SymForgeServer {
                 loading_guard!(guard);
                 drop(guard);
 
-                let Some(repo_root) = repo_root.as_deref() else {
+                let Some(repo_root) = effective_repo_root.as_deref() else {
                     return "Git change detection unavailable; pass `since` for timestamp mode."
                         .to_string();
                 };
@@ -5516,11 +5527,11 @@ impl SymForgeServer {
         let route_desc = smart_query::route_description(&intent);
 
         let result = match &intent {
-            smart_query::QueryIntent::FindCallers { symbol } => {
+            smart_query::QueryIntent::FindCallers { symbol, path } => {
                 let input = FindReferencesInput {
                     name: symbol.clone(),
                     kind: None,
-                    path: None,
+                    path: path.clone(),
                     symbol_kind: None,
                     symbol_line: None,
                     limit: None,
@@ -9157,6 +9168,73 @@ mod tests {
         assert!(
             result.contains("Source authority: git working tree"),
             "uncommitted mode should expose git authority: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_what_changed_recovers_repo_root_from_cwd_when_missing() {
+        let repo = init_git_repo();
+        fs::create_dir_all(repo.path().join("src")).expect("create src dir");
+        fs::write(repo.path().join("src/lib.rs"), "fn foo() {}\n").expect("write initial file");
+        run_git(repo.path(), &["add", "."]);
+        run_git(repo.path(), &["commit", "-m", "init", "-q"]);
+        fs::write(
+            repo.path().join("src/lib.rs"),
+            "fn foo() { println!(\"changed\"); }\n",
+        )
+        .expect("modify tracked file");
+
+        let (key, file) = make_file(
+            "src/lib.rs",
+            b"fn foo() { println!(\"changed\"); }\n",
+            vec![],
+        );
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let _cwd_guard = CwdGuard::set(repo.path());
+
+        let result = server
+            .what_changed(Parameters(super::WhatChangedInput {
+                since: None,
+                git_ref: None,
+                uncommitted: None,
+                path_prefix: None,
+                language: None,
+                code_only: None,
+                include_symbol_diff: None,
+                estimate: None,
+            }))
+            .await;
+        assert!(
+            result.contains("src/lib.rs"),
+            "what_changed should lazily recover the git root from cwd: {result}"
+        );
+        assert!(
+            result.contains("Source authority: git working tree"),
+            "recovered git mode should expose git authority: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_what_changed_reports_repo_root_guidance_when_missing() {
+        let home = dirs::home_dir().expect("home dir");
+        let _cwd_guard = CwdGuard::set(&home);
+        let server = make_server(make_live_index_empty());
+
+        let result = server
+            .what_changed(Parameters(super::WhatChangedInput {
+                since: None,
+                git_ref: None,
+                uncommitted: None,
+                path_prefix: None,
+                language: None,
+                code_only: None,
+                include_symbol_diff: None,
+                estimate: None,
+            }))
+            .await;
+        assert!(
+            result.contains("No repo root attached; call index_folder(path=...) or pass since=..."),
+            "missing repo root should return actionable guidance: {result}"
         );
     }
 
@@ -13585,7 +13663,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_ask_strips_path_scope_hint_from_caller_query() {
+    async fn test_ask_preserves_path_scope_hint_for_caller_query() {
         let dir = tempfile::tempdir().unwrap();
         let src_dir = dir.path().join("src");
         std::fs::create_dir_all(&src_dir).unwrap();
@@ -13607,7 +13685,7 @@ mod tests {
         let result = server.ask(Parameters(input)).await;
 
         assert!(
-            result.contains("Invocation: find_references(name=\"helper\")"),
+            result.contains("Invocation: find_references(name=\"helper\", path=\"src/lib.rs\")"),
             "result: {result}"
         );
         assert!(result.contains("src/lib.rs"), "result: {result}");

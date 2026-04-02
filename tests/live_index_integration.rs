@@ -6,7 +6,13 @@
 /// Phase 2 tests cover: LIDX-05 (performance), INFR-02 (auto-index behavior),
 /// INFR-05 (no v1 tools), tool format verification end-to-end, and RELY-04.
 use std::fs;
-use std::path::Path;
+use std::io::{Read, Write};
+use std::net::TcpStream;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
+use serde::Deserialize;
 use symforge::live_index::persist;
 use symforge::live_index::{IndexState, LiveIndex, ParseStatus};
 use tempfile::tempdir;
@@ -21,6 +27,109 @@ fn write_file(dir: &Path, name: &str, content: &str) {
         fs::create_dir_all(parent).unwrap();
     }
     fs::write(path, content).unwrap();
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct StartupHealthResponse {
+    file_count: usize,
+    symbol_count: usize,
+    index_state: String,
+}
+
+#[derive(Clone, Debug)]
+enum StartupSurface {
+    Local(StartupHealthResponse),
+    Daemon {
+        session_id: String,
+        health: StartupHealthResponse,
+    },
+}
+
+fn symforge_binary_path() -> Option<PathBuf> {
+    let exe_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    let binary = exe_dir.join("symforge.exe");
+    if binary.exists() {
+        return Some(binary);
+    }
+
+    let binary_unix = exe_dir.join("symforge");
+    binary_unix.exists().then_some(binary_unix)
+}
+
+fn read_trimmed(path: &Path) -> Option<String> {
+    fs::read_to_string(path)
+        .ok()
+        .map(|contents| contents.trim().to_string())
+        .filter(|contents| !contents.is_empty())
+}
+
+fn read_sidecar_port(dir: &Path) -> Option<u16> {
+    read_trimmed(&dir.join(".symforge").join("sidecar.port"))?
+        .parse()
+        .ok()
+}
+
+fn read_session_id(dir: &Path) -> Option<String> {
+    read_trimmed(&dir.join(".symforge").join("sidecar.session"))
+}
+
+/// Make a synchronous raw HTTP GET request to `127.0.0.1:{port}{path}`.
+fn raw_http_get(port: u16, path: &str) -> anyhow::Result<String> {
+    let addr: std::net::SocketAddr = format!("127.0.0.1:{port}").parse()?;
+    let timeout = Duration::from_millis(500);
+    let mut stream = TcpStream::connect_timeout(&addr, timeout)?;
+    stream.set_read_timeout(Some(timeout))?;
+    stream.set_write_timeout(Some(timeout))?;
+
+    let request =
+        format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+    stream.write_all(request.as_bytes())?;
+
+    let mut response = String::new();
+    stream.read_to_string(&mut response)?;
+    let body = response
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body)
+        .unwrap_or("")
+        .to_string();
+    Ok(body)
+}
+
+fn fetch_startup_surface(dir: &Path) -> Option<StartupSurface> {
+    let port = read_sidecar_port(dir)?;
+    let session_id = read_session_id(dir);
+    let path = session_id
+        .as_ref()
+        .map(|session_id| format!("/v1/sessions/{session_id}/sidecar/health"))
+        .unwrap_or_else(|| "/health".to_string());
+    let body = raw_http_get(port, &path).ok()?;
+    let health: StartupHealthResponse = serde_json::from_str(&body).ok()?;
+    Some(match session_id {
+        Some(session_id) => StartupSurface::Daemon { session_id, health },
+        None => StartupSurface::Local(health),
+    })
+}
+
+fn startup_health(surface: &StartupSurface) -> &StartupHealthResponse {
+    match surface {
+        StartupSurface::Local(health) => health,
+        StartupSurface::Daemon { health, .. } => health,
+    }
+}
+
+fn no_repo_root_reason(stderr: &str) -> Option<String> {
+    stderr
+        .lines()
+        .find(|line| line.contains("no safe project root found"))
+        .map(|line| line.trim().to_string())
+}
+
+fn terminate_child(mut child: Child) -> std::process::Output {
+    let _ = child.stdin.take();
+    let _ = child.kill();
+    child
+        .wait_with_output()
+        .expect("startup child process should collect output")
 }
 
 // --------------------------------------------------------------------------
@@ -86,6 +195,92 @@ fn test_startup_loads_all_files() {
     assert!(
         index.get_file("main.go").is_some(),
         "main.go should be queryable"
+    );
+}
+
+#[test]
+fn test_startup_binary_reports_branch_health() {
+    let dir = tempdir().unwrap();
+    fs::create_dir(dir.path().join(".git")).unwrap();
+    write_file(dir.path(), "src/main.rs", "fn main() {}\n");
+    write_file(dir.path(), "src/lib.rs", "pub fn helper() {}\n");
+
+    let Some(binary_path) = symforge_binary_path() else {
+        eprintln!("SKIP test_startup_binary_reports_branch_health: symforge binary not found");
+        return;
+    };
+
+    // Force local-only mode so the test doesn't spawn/contend with daemon processes.
+    let mut child = Command::new(&binary_path)
+        .current_dir(dir.path())
+        .env("RUST_LOG", "info")
+        .env("SYMFORGE_NO_DAEMON", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|error| panic!("failed to run binary at {:?}: {error}", binary_path));
+
+    let timeout = Duration::from_secs(10);
+    let deadline = Instant::now() + timeout;
+    let mut first_surface = None;
+    let mut latest_surface = None;
+
+    while Instant::now() < deadline {
+        if let Some(status) = child.try_wait().expect("startup process should be pollable") {
+            panic!("startup process exited before health probe completed: {status}");
+        }
+
+        if let Some(surface) = fetch_startup_surface(dir.path()) {
+            if first_surface.is_none() {
+                first_surface = Some(surface.clone());
+            }
+            let is_ready = startup_health(&surface).index_state == "Ready";
+            latest_surface = Some(surface);
+            if is_ready {
+                break;
+            }
+        }
+
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    let output = terminate_child(child);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if let Some(StartupSurface::Daemon { session_id, health }) = first_surface.as_ref() {
+        assert_eq!(
+            health.index_state, "Ready",
+            "daemon-backed startup should expose ready health immediately; session_id={session_id}, latest={latest_surface:?}, stderr={stderr}"
+        );
+        assert!(
+            health.file_count > 0 && health.symbol_count > 0,
+            "daemon-backed startup should report indexed content; session_id={session_id}, first={health:?}, stderr={stderr}"
+        );
+        return;
+    }
+
+    if let Some(surface) = latest_surface.as_ref() {
+        let health = startup_health(surface);
+        if matches!(surface, StartupSurface::Local(_)) && health.index_state == "Ready" {
+            assert!(
+                health.file_count > 0 && health.symbol_count > 0,
+                "local startup should become ready with indexed content, got {health:?}"
+            );
+            return;
+        }
+    }
+
+    if let Some(reason) = no_repo_root_reason(&stderr) {
+        assert!(
+            reason.contains("no safe project root found"),
+            "expected a precise missing-root reason, got: {reason}"
+        );
+        return;
+    }
+
+    panic!(
+        "startup probe found no acceptable branch outcome; first={first_surface:?}, latest={latest_surface:?}, stderr={stderr}"
     );
 }
 
