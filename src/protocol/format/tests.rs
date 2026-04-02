@@ -3236,3 +3236,22 @@ fn test_apply_verbosity_compact_includes_doc() {
         "body should not be in compact: {result:?}"
     );
 }
+
+#[test]
+fn test_heuristic_from_name_capitalizes_rest_fragment() {
+    let summary = super::heuristic_from_name(
+        "render_find_references_compact_view",
+        "fn render_find_references_compact_view() -> String",
+    );
+    assert_eq!(
+        summary.as_deref(),
+        Some("Renders Find references compact view")
+    );
+}
+
+#[test]
+fn test_auto_summarize_uses_capitalized_heuristic_phrase() {
+    let summary =
+        super::auto_summarize("fn capture_context_bundle_view() -> String {\n    String::new()\n}");
+    assert_eq!(summary, "Captures Context bundle view");
+}

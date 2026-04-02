@@ -2989,7 +2989,16 @@ fn heuristic_from_name(name: &str, sig: &str) -> Option<String> {
         if lower.starts_with(prefix) {
             let rest = &name[prefix.len()..];
             let readable = rest.replace('_', " ");
-            return Some(format!("{verb}{readable}"));
+            let mut chars = readable.chars();
+            let capitalized = match chars.next() {
+                Some(first) => {
+                    let mut text = first.to_uppercase().collect::<String>();
+                    text.push_str(chars.as_str());
+                    text
+                }
+                None => readable,
+            };
+            return Some(format!("{verb}{capitalized}"));
         }
     }
 

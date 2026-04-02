@@ -5509,7 +5509,7 @@ impl SymForgeServer {
             return "query requires a non-empty question.".to_string();
         }
 
-        let mut intent = smart_query::classify_intent(q);
+        let (mut intent, mut matched_prefix) = smart_query::classify_intent_with_match(q);
         if matches!(
             intent,
             smart_query::QueryIntent::Understand { .. } | smart_query::QueryIntent::Explore { .. }
@@ -5519,13 +5519,15 @@ impl SymForgeServer {
                 Self::extract_exact_implementation_understanding_candidate(&guard, q)
             {
                 intent = smart_query::QueryIntent::UnderstandImplementations { name };
+                matched_prefix = false;
             } else if let Some(symbol) =
                 Self::extract_exact_symbol_understanding_candidate(&guard, q)
             {
                 intent = smart_query::QueryIntent::UnderstandSymbol { symbol };
+                matched_prefix = false;
             }
         }
-        let assessment = smart_query::assess_route(q, &intent);
+        let assessment = smart_query::assess_route(&intent, matched_prefix);
         let route_desc = smart_query::route_description(&intent);
 
         let result = match &intent {

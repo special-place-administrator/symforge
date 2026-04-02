@@ -44,6 +44,11 @@ pub struct RouteAssessment {
 
 /// Classify a natural-language query into a routable intent.
 pub fn classify_intent(query: &str) -> QueryIntent {
+    classify_intent_with_match(query).0
+}
+
+/// Classify a query and report whether it matched an explicit routing phrase.
+pub(crate) fn classify_intent_with_match(query: &str) -> (QueryIntent, bool) {
     let q = query.trim();
     let lower = q.to_ascii_lowercase();
 
@@ -63,10 +68,7 @@ pub fn classify_intent(query: &str) -> QueryIntent {
         ],
     ) {
         let (symbol, path) = clean_symbol_and_optional_path(sym, q);
-        return QueryIntent::FindCallers {
-            symbol,
-            path,
-        };
+        return (QueryIntent::FindCallers { symbol, path }, true);
     }
 
     // --- Pattern: "what depends on X" or "dependents of X" ---
@@ -81,9 +83,12 @@ pub fn classify_intent(query: &str) -> QueryIntent {
             "what imports ",
         ],
     ) {
-        return QueryIntent::FindDependents {
-            target: clean_symbol_name(target, q),
-        };
+        return (
+            QueryIntent::FindDependents {
+                target: clean_symbol_name(target, q),
+            },
+            true,
+        );
     }
 
     // --- Pattern: "implementations of X" or "who implements X" ---
@@ -97,9 +102,12 @@ pub fn classify_intent(query: &str) -> QueryIntent {
             "implementations for ",
         ],
     ) {
-        return QueryIntent::FindImplementations {
-            name: clean_symbol_name(name, q),
-        };
+        return (
+            QueryIntent::FindImplementations {
+                name: clean_symbol_name(name, q),
+            },
+            true,
+        );
     }
 
     // --- Pattern: "where is X defined" or "find symbol X" or "definition of X" ---
@@ -128,10 +136,13 @@ pub fn classify_intent(query: &str) -> QueryIntent {
             .trim_end_matches(" defined")
             .trim_end_matches(" declaration");
         let (kind, clean_name) = extract_kind_hint(name);
-        return QueryIntent::FindSymbol {
-            name: clean_symbol_name(clean_name, q),
-            kind,
-        };
+        return (
+            QueryIntent::FindSymbol {
+                name: clean_symbol_name(clean_name, q),
+                kind,
+            },
+            true,
+        );
     }
 
     // --- Pattern: "find file X" or "path to X" ---
@@ -145,9 +156,12 @@ pub fn classify_intent(query: &str) -> QueryIntent {
             "which file ",
         ],
     ) {
-        return QueryIntent::FindFile {
-            hint: hint.to_string(),
-        };
+        return (
+            QueryIntent::FindFile {
+                hint: hint.to_string(),
+            },
+            true,
+        );
     }
 
     // --- Pattern: "what changed" or "recent changes" ---
@@ -160,7 +174,7 @@ pub fn classify_intent(query: &str) -> QueryIntent {
         || lower.starts_with("git status")
         || lower.starts_with("what did i change")
     {
-        return QueryIntent::FindChanges;
+        return (QueryIntent::FindChanges, true);
     }
 
     // --- Pattern: "how does X work" or "explain X" or "understand X" ---
@@ -183,9 +197,12 @@ pub fn classify_intent(query: &str) -> QueryIntent {
             .trim_end_matches(" work")
             .trim_end_matches(" works")
             .trim_end_matches("?");
-        return QueryIntent::Understand {
-            concept: concept.to_string(),
-        };
+        return (
+            QueryIntent::Understand {
+                concept: concept.to_string(),
+            },
+            true,
+        );
     }
 
     // --- Pattern: "search for X" or "grep X" or "find X in code" ---
@@ -201,60 +218,58 @@ pub fn classify_intent(query: &str) -> QueryIntent {
             "find string ",
         ],
     ) {
-        return QueryIntent::SearchCode {
-            pattern: pattern.trim_matches('"').trim_matches('\'').to_string(),
-        };
+        return (
+            QueryIntent::SearchCode {
+                pattern: pattern.trim_matches('"').trim_matches('\'').to_string(),
+            },
+            true,
+        );
     }
 
     // --- Heuristic: looks like a file path (contains / or common extensions) ---
     if looks_like_path(q) {
-        return QueryIntent::FindFile {
-            hint: q.to_string(),
-        };
+        return (
+            QueryIntent::FindFile {
+                hint: q.to_string(),
+            },
+            false,
+        );
     }
 
     // --- Heuristic: looks like a symbol name (CamelCase, snake_case, no spaces) ---
     if looks_like_symbol(q) {
-        return QueryIntent::FindSymbol {
-            name: q.to_string(),
-            kind: None,
-        };
+        return (
+            QueryIntent::FindSymbol {
+                name: q.to_string(),
+                kind: None,
+            },
+            false,
+        );
     }
 
     // --- Heuristic: looks like a code pattern (operators, keywords, brackets) ---
     if looks_like_code_pattern(q) {
-        return QueryIntent::SearchCode {
-            pattern: q.to_string(),
-        };
+        return (
+            QueryIntent::SearchCode {
+                pattern: q.to_string(),
+            },
+            false,
+        );
     }
 
     // --- Default: explore the concept ---
-    QueryIntent::Explore {
-        query: q.to_string(),
-    }
+    (
+        QueryIntent::Explore {
+            query: q.to_string(),
+        },
+        false,
+    )
 }
 
-pub fn assess_route(query: &str, intent: &QueryIntent) -> RouteAssessment {
-    let lower = query.trim().to_ascii_lowercase();
-
+pub fn assess_route(intent: &QueryIntent, matched_prefix: bool) -> RouteAssessment {
     match intent {
         QueryIntent::FindCallers { .. } => {
-            if strip_prefix_phrase(
-                &lower,
-                &[
-                    "who calls ",
-                    "what calls ",
-                    "callers of ",
-                    "callers for ",
-                    "references to ",
-                    "references for ",
-                    "find references ",
-                    "usages of ",
-                    "who uses ",
-                ],
-            )
-            .is_some()
-            {
+            if matched_prefix {
                 RouteAssessment {
                     confidence: RouteConfidence::Exact,
                     rationale: "matched explicit caller/reference phrasing",
@@ -271,19 +286,7 @@ pub fn assess_route(query: &str, intent: &QueryIntent) -> RouteAssessment {
             }
         }
         QueryIntent::FindDependents { .. } => {
-            if strip_prefix_phrase(
-                &lower,
-                &[
-                    "what depends on ",
-                    "depends on ",
-                    "dependents of ",
-                    "dependents for ",
-                    "who imports ",
-                    "what imports ",
-                ],
-            )
-            .is_some()
-            {
+            if matched_prefix {
                 RouteAssessment {
                     confidence: RouteConfidence::Exact,
                     rationale: "matched explicit dependent/import phrasing",
@@ -300,18 +303,7 @@ pub fn assess_route(query: &str, intent: &QueryIntent) -> RouteAssessment {
             }
         }
         QueryIntent::FindImplementations { .. } => {
-            if strip_prefix_phrase(
-                &lower,
-                &[
-                    "implementations of ",
-                    "implementors of ",
-                    "who implements ",
-                    "what implements ",
-                    "implementations for ",
-                ],
-            )
-            .is_some()
-            {
+            if matched_prefix {
                 RouteAssessment {
                     confidence: RouteConfidence::Exact,
                     rationale: "matched explicit implementation phrasing",
@@ -328,29 +320,7 @@ pub fn assess_route(query: &str, intent: &QueryIntent) -> RouteAssessment {
             }
         }
         QueryIntent::FindSymbol { .. } => {
-            if strip_prefix_phrase(
-                &lower,
-                &[
-                    "where is ",
-                    "find symbol ",
-                    "definition of ",
-                    "show me ",
-                    "go to ",
-                    "jump to ",
-                    "locate ",
-                    "find definition ",
-                    "find function ",
-                    "find struct ",
-                    "find class ",
-                    "find type ",
-                    "find method ",
-                    "find enum ",
-                    "find trait ",
-                    "find interface ",
-                ],
-            )
-            .is_some()
-            {
+            if matched_prefix {
                 RouteAssessment {
                     confidence: RouteConfidence::Exact,
                     rationale: "matched explicit definition/lookup phrasing",
@@ -367,18 +337,7 @@ pub fn assess_route(query: &str, intent: &QueryIntent) -> RouteAssessment {
             }
         }
         QueryIntent::FindFile { .. } => {
-            if strip_prefix_phrase(
-                &lower,
-                &[
-                    "find file ",
-                    "path to ",
-                    "where is file ",
-                    "locate file ",
-                    "which file ",
-                ],
-            )
-            .is_some()
-            {
+            if matched_prefix {
                 RouteAssessment {
                     confidence: RouteConfidence::Exact,
                     rationale: "matched explicit file/path phrasing",
@@ -400,23 +359,7 @@ pub fn assess_route(query: &str, intent: &QueryIntent) -> RouteAssessment {
             suggested_next_step: None,
         },
         QueryIntent::Understand { .. } => {
-            if strip_prefix_phrase(
-                &lower,
-                &[
-                    "how does ",
-                    "how do ",
-                    "explain ",
-                    "understand ",
-                    "what is ",
-                    "what are ",
-                    "describe ",
-                    "tell me about ",
-                    "help me understand ",
-                    "walk me through ",
-                ],
-            )
-            .is_some()
-            {
+            if matched_prefix {
                 RouteAssessment {
                     confidence: RouteConfidence::Exact,
                     rationale: "matched explicit explanation/understanding phrasing",
@@ -447,20 +390,7 @@ pub fn assess_route(query: &str, intent: &QueryIntent) -> RouteAssessment {
             ),
         },
         QueryIntent::SearchCode { .. } => {
-            if strip_prefix_phrase(
-                &lower,
-                &[
-                    "search for ",
-                    "search ",
-                    "grep ",
-                    "find in code ",
-                    "look for ",
-                    "find text ",
-                    "find string ",
-                ],
-            )
-            .is_some()
-            {
+            if matched_prefix {
                 RouteAssessment {
                     confidence: RouteConfidence::Exact,
                     rationale: "matched explicit code-search phrasing",
@@ -848,24 +778,24 @@ mod tests {
 
     #[test]
     fn test_assess_route_exact() {
-        let intent = classify_intent("who calls optimize_deterministic");
-        let assessment = assess_route("who calls optimize_deterministic", &intent);
+        let (intent, matched_prefix) = classify_intent_with_match("who calls optimize_deterministic");
+        let assessment = assess_route(&intent, matched_prefix);
         assert_eq!(assessment.confidence, RouteConfidence::Exact);
         assert_eq!(assessment.suggested_next_step, None);
     }
 
     #[test]
     fn test_assess_route_inferred() {
-        let intent = classify_intent("LiveIndex");
-        let assessment = assess_route("LiveIndex", &intent);
+        let (intent, matched_prefix) = classify_intent_with_match("LiveIndex");
+        let assessment = assess_route(&intent, matched_prefix);
         assert_eq!(assessment.confidence, RouteConfidence::Inferred);
         assert!(assessment.suggested_next_step.is_some());
     }
 
     #[test]
     fn test_assess_route_fallback() {
-        let intent = classify_intent("error handling patterns");
-        let assessment = assess_route("error handling patterns", &intent);
+        let (intent, matched_prefix) = classify_intent_with_match("error handling patterns");
+        let assessment = assess_route(&intent, matched_prefix);
         assert_eq!(assessment.confidence, RouteConfidence::Fallback);
         assert!(assessment.suggested_next_step.is_some());
     }
@@ -883,10 +813,24 @@ mod tests {
         let intent = QueryIntent::UnderstandImplementations {
             name: "Actor".to_string(),
         };
-        let assessment = assess_route("what are the main actor types", &intent);
+        let assessment = assess_route(&intent, false);
         assert_eq!(assessment.confidence, RouteConfidence::Inferred);
         assert!(assessment.rationale.contains("trait-like symbol"));
         assert!(assessment.suggested_next_step.is_some());
+    }
+
+    #[test]
+    fn test_classify_intent_with_match_reports_explicit_prefix() {
+        let (intent, matched_prefix) = classify_intent_with_match("who calls optimize_deterministic");
+        assert!(matched_prefix);
+        assert!(matches!(intent, QueryIntent::FindCallers { .. }));
+    }
+
+    #[test]
+    fn test_classify_intent_with_match_reports_inferred_symbol() {
+        let (intent, matched_prefix) = classify_intent_with_match("LiveIndex");
+        assert!(!matched_prefix);
+        assert!(matches!(intent, QueryIntent::FindSymbol { .. }));
     }
 
     #[test]

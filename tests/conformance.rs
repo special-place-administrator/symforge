@@ -77,7 +77,7 @@ fn no_unexpected_tools_registered() {
     let unexpected: Vec<&str> = registered
         .iter()
         .copied()
-        .filter(|name| !EXPECTED_TOOLS.contains(&name))
+        .filter(|name| !EXPECTED_TOOLS.contains(name))
         .collect();
 
     assert!(

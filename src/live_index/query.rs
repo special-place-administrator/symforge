@@ -603,19 +603,25 @@ const SINGLE_LETTER_GENERICS: &[&str] = &[
     "T", "K", "V", "E", "R", "S", "A", "B", "C", "D", "N", "M", "P", "U", "W", "X", "Y", "Z",
 ];
 
-/// Returns `true` when `name` is a known built-in primitive/stdlib type or a
-/// single-letter generic parameter that would generate false-positive matches.
-///
-/// This is a coarse, language-agnostic filter applied at query time. It checks
-/// all language lists so that cross-language repos are handled uniformly.
-fn is_filtered_name(name: &str) -> bool {
-    SINGLE_LETTER_GENERICS.contains(&name)
-        || RUST_BUILTINS.contains(&name)
-        || PYTHON_BUILTINS.contains(&name)
-        || JS_BUILTINS.contains(&name)
-        || TS_BUILTINS.contains(&name)
-        || GO_BUILTINS.contains(&name)
-        || JAVA_BUILTINS.contains(&name)
+/// Returns `true` when `name` is a known built-in primitive/stdlib type for
+/// the file's language, or a single-letter generic parameter that would
+/// generate false-positive matches across languages.
+fn is_filtered_name(name: &str, language: &LanguageId) -> bool {
+    if SINGLE_LETTER_GENERICS.contains(&name) {
+        return true;
+    }
+
+    let builtins = match language {
+        LanguageId::Rust => RUST_BUILTINS,
+        LanguageId::Python => PYTHON_BUILTINS,
+        LanguageId::JavaScript => JS_BUILTINS,
+        LanguageId::TypeScript => TS_BUILTINS,
+        LanguageId::Go => GO_BUILTINS,
+        LanguageId::Java => JAVA_BUILTINS,
+        _ => &[],
+    };
+
+    builtins.contains(&name)
 }
 
 fn normalize_path_query(raw: &str) -> String {
@@ -2370,11 +2376,6 @@ impl LiveIndex {
         kind_filter: Option<ReferenceKind>,
         include_filtered: bool,
     ) -> Vec<(&str, &ReferenceRecord)> {
-        // Apply built-in / generic filter first.
-        if !include_filtered && is_filtered_name(name) {
-            return vec![];
-        }
-
         let is_qualified = name.contains("::") || name.contains('.');
 
         let mut results: Vec<(&str, &ReferenceRecord)> = Vec::new();
@@ -2396,12 +2397,15 @@ impl LiveIndex {
                     {
                         continue;
                     }
+                    if !include_filtered && is_filtered_name(&reference.name, &file.language) {
+                        continue;
+                    }
                     results.push((file_path.as_str(), reference));
                 }
             }
         } else {
             // Simple lookup: use the reverse index for O(1) name lookup.
-            self.collect_refs_for_key(name, kind_filter, &mut results);
+            self.collect_refs_for_key(name, kind_filter, include_filtered, &mut results);
 
             // Alias resolution: find any alias that resolves to `name`.
             // e.g. alias_map["Map"] = "HashMap" means we also look up "Map".
@@ -2418,7 +2422,7 @@ impl LiveIndex {
                 .collect();
 
             for alias in &aliases {
-                self.collect_refs_for_key(alias, kind_filter, &mut results);
+                self.collect_refs_for_key(alias, kind_filter, include_filtered, &mut results);
             }
         }
 
@@ -2433,6 +2437,7 @@ impl LiveIndex {
         &'a self,
         lookup_key: &str,
         kind_filter: Option<ReferenceKind>,
+        include_filtered: bool,
         results: &mut Vec<(&'a str, &'a ReferenceRecord)>,
     ) {
         if let Some(locations) = self.reverse_index.get(lookup_key) {
@@ -2448,6 +2453,9 @@ impl LiveIndex {
                 if let Some(kf) = kind_filter
                     && reference.kind != kf
                 {
+                    continue;
+                }
+                if !include_filtered && is_filtered_name(&reference.name, &file.language) {
                     continue;
                 }
                 results.push((loc.file_path.as_str(), reference));
@@ -2780,7 +2788,7 @@ impl LiveIndex {
                         }
 
                         // Filter stdlib/iterator noise from callees (same filter as find_references).
-                        if is_filtered_name(&reference.name) {
+                        if is_filtered_name(&reference.name, &file.language) {
                             return false;
                         }
 
@@ -2851,7 +2859,6 @@ impl LiveIndex {
         let mut seen: HashSet<String> = HashSet::new();
         let mut queue: Vec<(String, u8)> = type_names
             .iter()
-            .filter(|n| !is_filtered_name(n))
             .map(|n| (n.to_string(), 0u8))
             .collect();
 
@@ -2880,7 +2887,7 @@ impl LiveIndex {
                                 if reference.kind == ReferenceKind::TypeUsage
                                     && reference.line_range.0 >= sym.line_range.0
                                     && reference.line_range.1 <= sym.line_range.1
-                                    && !is_filtered_name(&reference.name)
+                                    && !is_filtered_name(&reference.name, &file.language)
                                     && !seen.contains(&reference.name)
                                 {
                                     queue.push((reference.name.clone(), depth + 1));
@@ -4314,7 +4321,13 @@ impl Actor for MyActor {
     fn test_find_references_builtin_string_filtered() {
         // "string" is a JS/TS built-in — should be filtered.
         let refs = vec![make_ref("string", None, ReferenceKind::TypeUsage, None, 0)];
-        let f = make_file_with_refs("a.ts", refs, HashMap::new());
+        let f = make_file_with_refs_and_content(
+            "a.ts",
+            LanguageId::TypeScript,
+            "type Alias = string;",
+            refs,
+            vec![],
+        );
         let index = make_index(vec![("a.ts", f)], false);
 
         let results = index.find_references_for_name("string", None, false);
@@ -4332,6 +4345,36 @@ impl Actor for MyActor {
 
         let results = index.find_references_for_name("i32", None, false);
         assert!(results.is_empty(), "Rust built-in 'i32' should be filtered");
+    }
+
+    #[test]
+    fn test_find_references_cross_language_builtin_does_not_filter_rust_symbol() {
+        let rust_file = make_file_with_refs_and_content(
+            "src/model.rs",
+            LanguageId::Rust,
+            "struct Object;",
+            vec![make_ref("Object", None, ReferenceKind::TypeUsage, None, 0)],
+            vec![],
+        );
+        let python_file = make_file_with_refs_and_content(
+            "src/model.py",
+            LanguageId::Python,
+            "value: object",
+            vec![make_ref("object", None, ReferenceKind::TypeUsage, None, 0)],
+            vec![],
+        );
+        let index = make_index(
+            vec![("src/model.rs", rust_file), ("src/model.py", python_file)],
+            false,
+        );
+
+        let results = index.find_references_for_name("Object", None, false);
+        assert_eq!(
+            results.len(),
+            1,
+            "built-ins from other languages must not hide valid Rust symbols"
+        );
+        assert_eq!(results[0].0, "src/model.rs");
     }
 
     #[test]
@@ -5515,22 +5558,111 @@ public class PacketsController {
     #[test]
     fn test_is_filtered_name_rust_builtins() {
         use super::is_filtered_name;
-        assert!(is_filtered_name("i32"), "i32 is a Rust built-in");
-        assert!(is_filtered_name("bool"), "bool is a Rust built-in");
-        assert!(is_filtered_name("String"), "String is a Rust built-in");
-        assert!(!is_filtered_name("MyString"), "MyString is not a built-in");
+        assert!(is_filtered_name("i32", &LanguageId::Rust), "i32 is a Rust built-in");
+        assert!(
+            is_filtered_name("bool", &LanguageId::Rust),
+            "bool is a Rust built-in"
+        );
+        assert!(
+            is_filtered_name("String", &LanguageId::Rust),
+            "String is a Rust built-in"
+        );
+        assert!(
+            !is_filtered_name("MyString", &LanguageId::Rust),
+            "MyString is not a built-in"
+        );
     }
 
     #[test]
     fn test_is_filtered_name_single_letter_generics() {
         use super::is_filtered_name;
-        assert!(is_filtered_name("T"), "T is a single-letter generic");
-        assert!(is_filtered_name("K"), "K is a single-letter generic");
-        assert!(is_filtered_name("V"), "V is a single-letter generic");
         assert!(
-            !is_filtered_name("Key"),
+            is_filtered_name("T", &LanguageId::Rust),
+            "T is a single-letter generic"
+        );
+        assert!(
+            is_filtered_name("K", &LanguageId::TypeScript),
+            "K is a single-letter generic"
+        );
+        assert!(
+            is_filtered_name("V", &LanguageId::Python),
+            "V is a single-letter generic"
+        );
+        assert!(
+            !is_filtered_name("Key", &LanguageId::Rust),
             "Key is not a single-letter generic"
         );
+    }
+
+    #[test]
+    fn test_is_filtered_name_respects_language_scope() {
+        use super::is_filtered_name;
+        assert!(
+            is_filtered_name("object", &LanguageId::Python),
+            "Python built-ins should still be filtered in Python files"
+        );
+        assert!(
+            !is_filtered_name("object", &LanguageId::Rust),
+            "Python built-ins must not hide Rust identifiers"
+        );
+        assert!(
+            is_filtered_name("Object", &LanguageId::TypeScript),
+            "TypeScript built-ins should be filtered in TypeScript files"
+        );
+        assert!(
+            !is_filtered_name("Object", &LanguageId::Rust),
+            "TypeScript built-ins must not hide Rust type names"
+        );
+    }
+
+    #[test]
+    fn test_callees_for_symbol_keeps_cross_language_builtin_name_in_rust() {
+        let file = make_file_with_refs_and_content(
+            "src/lib.rs",
+            LanguageId::Rust,
+            "fn handler() { Object(); }",
+            vec![make_ref("Object", None, ReferenceKind::Call, Some(0), 0)],
+            vec![SymbolRecord {
+                name: "handler".to_string(),
+                kind: SymbolKind::Function,
+                depth: 0,
+                sort_order: 0,
+                byte_range: (0, 25),
+                line_range: (0, 0),
+                item_byte_range: Some((0, 25)),
+                doc_byte_range: None,
+            }],
+        );
+        let index = make_index(vec![("src/lib.rs", file)], false);
+
+        let callees = index.callees_for_symbol("src/lib.rs", 0);
+        assert_eq!(callees.len(), 1, "Rust callees should not use Python/TS filters");
+        assert_eq!(callees[0].name, "Object");
+    }
+
+    #[test]
+    fn test_resolve_type_dependencies_keeps_cross_language_builtin_name_in_rust() {
+        let object_file = make_file_with_refs_and_content(
+            "src/model.rs",
+            LanguageId::Rust,
+            "struct Object;",
+            vec![],
+            vec![SymbolRecord {
+                name: "Object".to_string(),
+                kind: SymbolKind::Struct,
+                depth: 0,
+                sort_order: 0,
+                byte_range: (0, 14),
+                line_range: (0, 0),
+                item_byte_range: Some((0, 14)),
+                doc_byte_range: None,
+            }],
+        );
+        let index = make_index(vec![("src/model.rs", object_file)], false);
+
+        let deps = index.resolve_type_dependencies(&["Object"], 0);
+        assert_eq!(deps.len(), 1, "Rust type names should survive non-Rust builtin filters");
+        assert_eq!(deps[0].name, "Object");
     }
 
     #[test]
