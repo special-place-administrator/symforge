@@ -1,5 +1,12 @@
 # Changelog
 
+## [6.0.1](https://github.com/special-place-administrator/symforge/compare/v6.0.0...v6.0.1) (2026-04-02)
+
+
+### Bug Fixes
+
+* improve ask and edit tool ergonomics ([6ad6a33](https://github.com/special-place-administrator/symforge/commit/6ad6a33cd7eb47c3236a330c9703ec1962565e2a))
+
 ## [6.0.0](https://github.com/special-place-administrator/symforge/compare/v5.1.2...v6.0.0) (2026-04-02)
 
 
