@@ -1,5 +1,12 @@
 # Changelog
 
+## [6.0.3](https://github.com/special-place-administrator/symforge/compare/v6.0.2...v6.0.3) (2026-04-02)
+
+
+### Bug Fixes
+
+* resolve all clippy warnings and add SAFETY comments ([b687aa4](https://github.com/special-place-administrator/symforge/commit/b687aa45d5e83d3562cad64dd90a29aae8a45f62))
+
 ## [6.0.2](https://github.com/special-place-administrator/symforge/compare/v6.0.1...v6.0.2) (2026-04-02)
 
 
