@@ -1,89 +1,9 @@
-# CLAUDE.md — Global Operating System
+# CLAUDE.md — SymForge
 
-> Follow precisely. This is the minimal always-loaded instruction set.
-> Reference content lives in `~/.claude/skills/` and loads on demand.
-
----
-
-### 1. Plan Node Default
-- Enter plan mode for ANY non-trivial task (3+ steps or architectural decisions)
-- If something goes sideways, STOP and re-plan immediately - don't keep pushing
-- Use plan mode for verification steps, not just building
-- Write detailed specs upfront to reduce ambiguity
-
----
-
-### 2. Subagent Strategy
-- Use subagents liberally to keep main context window clean
-- Offload research, exploration, and parallel analysis to subagents
-- For complex problems, throw more compute at it via subagents
-- One task per subagent for focused execution
-
----
-
-### 3. Self-Improvement Loop
-- After ANY correction from the user: update `tasks/lessons.md` with the pattern
-- Write rules for yourself that prevent the same mistake
-- Ruthlessly iterate on these lessons until mistake rate drops
-- Review lessons at session start for relevant project
-
----
-
-### 4. Verification Before Done
-- Never mark a task complete without proving it works
-- Diff behavior between main and your changes when relevant
-- Ask yourself: "Would a staff engineer approve this?"
-- Run tests, check logs, demonstrate correctness
-
----
-
-## Claude Code Reliability Overrides
-- Do not claim success before running the relevant verification commands below and fixing resulting errors.
-- Clean obvious dead imports, exports, and debug code before structural refactors when practical.
-- Split wide refactors into phases of 5 touched files or fewer.
-- Re-read files before editing after long conversations or when returning to older files.
-- Treat large files as chunked reads, not single-read truth.
-- Distrust suspiciously small grep or search results; re-run with narrower scope and assume truncation is possible.
-- For renames or signature changes, search separately for direct calls, type references, string literals, dynamic imports or `require`, re-exports or barrels, and tests or mocks.
-- Prefer parallel sub-agents or bounded workstreams for changes spanning more than 5 independent files.
-
-### Verification Profiles (symforge)
-- Frontend changes: no frontend build or lint command is configured in this repo. If the change is only under `npm/`, run `cd npm && npm test`.
-- Backend changes: run `cargo check`, `cargo test --all-targets -- --test-threads=1`, and `cargo build --release`. Add tests when Rust shared logic or `tests/` changes.
-- Mixed changes: run the backend commands plus `cd npm && npm test` before reporting success when both Rust and `npm/` paths change.
-
----
-
-### 5. Demand Elegance (Balanced)
-- For non-trivial changes: pause and ask "is there a more elegant way?"
-- If a fix feels hacky: "Knowing everything I know now, implement the elegant solution"
-- Skip this for simple, obvious fixes - don't over-engineer
-- Challenge your own work before presenting it
-
----
-
-### 6. Autonomous Bug Fixing
-- When given a bug report: just fix it. Don't ask for hand-holding
-- Point at logs, errors, failing tests - then resolve them
-- Zero context switching required from the user
-- Go fix failing CI tests without being told how
-
----
-
-## Task Management
-1. **Plan First**: Write plan to `tasks/todo.md` with checkable items
-2. **Verify Plan**: Check in before starting implementation
-3. **Track Progress**: Mark items complete as you go
-4. **Explain Changes**: High-level summary at each step
-5. **Document Results**: Add review section to `tasks/todo.md`
-6. **Capture Lessons**: Update `tasks/lessons.md` after corrections
-
----
-
-## Core Principles
-* **Simplicity First**: Make every change as simple as possible. Impact minimal code.
-* **No Laziness**: Find root causes. No temporary fixes. Senior developer standards.
-* **Minimal Impact**: Changes should only touch what's necessary. Avoid introducing bugs.
+## Verification (symforge)
+- Backend: `cargo check`, `cargo test --all-targets -- --test-threads=1`, `cargo build --release`
+- `npm/` only: `cd npm && npm test`
+- Mixed: run both before reporting success
 
 ## Architecture
 
@@ -110,4 +30,4 @@ When merging tools A into B:
 
 ## Codex Integration
 
-For Codex-specific integration guidance and limitations, see [docs/codex-integration-ceiling.md](docs/codex-integration-ceiling.md).
+See [docs/codex-integration-ceiling.md](docs/codex-integration-ceiling.md).

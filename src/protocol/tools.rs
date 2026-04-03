@@ -2692,8 +2692,10 @@ impl SymForgeServer {
                 }
             }
         };
-        self.session_context
-            .record_summary_output("get_repo_map", (output.len() / 4).min(u32::MAX as usize) as u32);
+        self.session_context.record_summary_output(
+            "get_repo_map",
+            (output.len() / 4).min(u32::MAX as usize) as u32,
+        );
         output
     }
 
@@ -3140,8 +3142,10 @@ impl SymForgeServer {
             }
         }
 
-        self.session_context
-            .record_summary_output("analyze_file_impact", (result.len() / 4).min(u32::MAX as usize) as u32);
+        self.session_context.record_summary_output(
+            "analyze_file_impact",
+            (result.len() / 4).min(u32::MAX as usize) as u32,
+        );
         result
     }
 
@@ -3556,8 +3560,10 @@ impl SymForgeServer {
         };
 
         let output = format::inspect_match_result_view(&view);
-        self.session_context
-            .record_summary_output("inspect_match", (output.len() / 4).min(u32::MAX as usize) as u32);
+        self.session_context.record_summary_output(
+            "inspect_match",
+            (output.len() / 4).min(u32::MAX as usize) as u32,
+        );
         output
     }
 
@@ -3627,8 +3633,10 @@ impl SymForgeServer {
                 Some(envelope) => format!("{envelope}\n\n{output}"),
                 None => output,
             };
-            self.session_context
-                .record_summary_output("search_files", (result.len() / 4).min(u32::MAX as usize) as u32);
+            self.session_context.record_summary_output(
+                "search_files",
+                (result.len() / 4).min(u32::MAX as usize) as u32,
+            );
             return result;
         }
 
@@ -3805,8 +3813,10 @@ impl SymForgeServer {
             Some(envelope) => format!("{envelope}\n\n{output}"),
             None => output,
         };
-        self.session_context
-            .record_summary_output("search_files", (result.len() / 4).min(u32::MAX as usize) as u32);
+        self.session_context.record_summary_output(
+            "search_files",
+            (result.len() / 4).min(u32::MAX as usize) as u32,
+        );
         result
     }
 
@@ -3927,8 +3937,10 @@ impl SymForgeServer {
                 );
 
                 let output = format!("Indexed {} files, {} symbols.", file_count, symbol_count);
-                self.session_context
-                    .record_summary_output("index_folder", (output.len() / 4).min(u32::MAX as usize) as u32);
+                self.session_context.record_summary_output(
+                    "index_folder",
+                    (output.len() / 4).min(u32::MAX as usize) as u32,
+                );
                 output
             }
             Err(e) => format!("Index failed: {e}"),
@@ -4324,8 +4336,10 @@ impl SymForgeServer {
         };
         if let Some(file) = indexed_file {
             let output = format::validate_file_syntax_result(&input.path, file.as_ref());
-            self.session_context
-                .record_summary_output("validate_file_syntax", (output.len() / 4).min(u32::MAX as usize) as u32);
+            self.session_context.record_summary_output(
+                "validate_file_syntax",
+                (output.len() / 4).min(u32::MAX as usize) as u32,
+            );
             return output;
         }
 
@@ -4364,8 +4378,10 @@ impl SymForgeServer {
         );
         let file = IndexedFile::from_parse_result(result, bytes);
         let output = format::validate_file_syntax_result(&input.path, &file);
-        self.session_context
-            .record_summary_output("validate_file_syntax", (output.len() / 4).min(u32::MAX as usize) as u32);
+        self.session_context.record_summary_output(
+            "validate_file_syntax",
+            (output.len() / 4).min(u32::MAX as usize) as u32,
+        );
         output
     }
 
@@ -4569,8 +4585,10 @@ impl SymForgeServer {
             }
             _ => format::find_dependents_result_view(&view, &input.path, &limits),
         };
-        self.session_context
-            .record_summary_output("find_dependents", (output.len() / 4).min(u32::MAX as usize) as u32);
+        self.session_context.record_summary_output(
+            "find_dependents",
+            (output.len() / 4).min(u32::MAX as usize) as u32,
+        );
         output
     }
 
@@ -5052,17 +5070,13 @@ impl SymForgeServer {
         let (label, symbol_queries, text_queries, remainder_terms) = if let Some((key, c)) = concept
         {
             let remainder = Self::compute_remainder_terms(&params.0.query, key);
-            let mut sym_q: Vec<String> = c.symbol_queries
-                .iter()
-                .map(|s| s.to_string())
-                .collect();
+            let mut sym_q: Vec<String> = c.symbol_queries.iter().map(|s| s.to_string()).collect();
             // Convention-aware enrichment: add project-specific imports related to the concept.
             let project_imports =
                 crate::protocol::conventions::extract_top_import_roots(&guard, 100);
-            let enrichment =
-                super::explore::enrich_concept_with_imports(c, &project_imports);
-            sym_q.extend(enrichment.clone());
+            let enrichment = super::explore::enrich_concept_with_imports(c, &project_imports);
             enriched_imports = enrichment;
+            sym_q.extend(enriched_imports.iter().cloned());
             (
                 c.label.to_string(),
                 sym_q,
@@ -5587,8 +5601,10 @@ impl SymForgeServer {
             crate::protocol::conventions::detect_conventions(&guard)
         };
         let output = crate::protocol::conventions::format_conventions(&conv);
-        self.session_context
-            .record_summary_output("conventions", (output.len() / 4).min(u32::MAX as usize) as u32);
+        self.session_context.record_summary_output(
+            "conventions",
+            (output.len() / 4).min(u32::MAX as usize) as u32,
+        );
         output
     }
 
@@ -5602,8 +5618,10 @@ impl SymForgeServer {
         let guard = self.index.read();
         loading_guard!(guard);
         let output = crate::protocol::edit_plan::plan_edit(&guard, &params.0.target);
-        self.session_context
-            .record_summary_output("edit_plan", (output.len() / 4).min(u32::MAX as usize) as u32);
+        self.session_context.record_summary_output(
+            "edit_plan",
+            (output.len() / 4).min(u32::MAX as usize) as u32,
+        );
         output
     }
 
@@ -5627,8 +5645,10 @@ impl SymForgeServer {
             &self.session_context,
             params.0.focus.as_deref(),
         );
-        self.session_context
-            .record_summary_output("investigation_suggest", (output.len() / 4).min(u32::MAX as usize) as u32);
+        self.session_context.record_summary_output(
+            "investigation_suggest",
+            (output.len() / 4).min(u32::MAX as usize) as u32,
+        );
         output
     }
 
@@ -5966,8 +5986,10 @@ impl SymForgeServer {
             code_only,
         );
         self.record_tool_savings((output.len() * 5 / 4) as u64, (output.len() / 4) as u64);
-        self.session_context
-            .record_summary_output("diff_symbols", (output.len() / 4).min(u32::MAX as usize) as u32);
+        self.session_context.record_summary_output(
+            "diff_symbols",
+            (output.len() / 4).min(u32::MAX as usize) as u32,
+        );
         output
     }
 
@@ -10716,14 +10738,17 @@ mod tests {
         );
     }
 
-
     #[tokio::test]
     async fn test_explore_concept_enrichment_shows_annotation() {
         let sym = make_symbol("Error", SymbolKind::Enum, 0, 5);
         let content = b"use thiserror::Error;\npub enum Error {}\n";
-        let refs = vec![
-            make_ref("thiserror", Some("thiserror::Error"), ReferenceKind::Import, 0, None),
-        ];
+        let refs = vec![make_ref(
+            "thiserror",
+            Some("thiserror::Error"),
+            ReferenceKind::Import,
+            0,
+            None,
+        )];
         let (key, file) = make_file_with_refs("src/error.rs", content, vec![sym], refs);
         let server = make_server(make_live_index_ready(vec![(key, file)]));
         let result = server
