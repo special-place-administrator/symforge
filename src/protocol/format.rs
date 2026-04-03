@@ -3765,9 +3765,12 @@ pub fn diff_symbols_result_view(
                 .unwrap_or_default()
         };
 
-        // Extract symbol names from both versions
-        let base_symbols = extract_symbol_signatures(&base_content);
-        let target_symbols = extract_symbol_signatures(&target_content);
+        // Extract symbol names from both versions — prefer tree-sitter AST,
+        // fall back to regex for unsupported languages.
+        let base_symbols = crate::parsing::extract_symbols_for_diff(&base_content, file_path)
+            .unwrap_or_else(|| extract_symbol_signatures(&base_content));
+        let target_symbols = crate::parsing::extract_symbols_for_diff(&target_content, file_path)
+            .unwrap_or_else(|| extract_symbol_signatures(&target_content));
 
         let base_names: HashMap<&str, &str> = base_symbols
             .iter()

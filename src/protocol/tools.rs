@@ -2147,7 +2147,7 @@ fn render_diff_symbols_output(
     let envelope = search_format::format_search_envelope(
         "exact (git ref diff)",
         "git ref diff",
-        "degraded (lexical signature extraction — regex-based, may miss nested symbols or misattribute changes in complex expressions; lower confidence than AST-based diff)",
+        "high (tree-sitter AST extraction for supported languages, regex fallback for others)",
         &completeness,
         &scope_parts.join("; "),
         &search_paths_evidence(changed_files.iter().copied()),
@@ -14224,8 +14224,8 @@ mod tests {
             "diff_symbols should report git authority: {result}"
         );
         assert!(
-            result.contains("Parse state: degraded (lexical signature extraction — regex-based, may miss nested symbols or misattribute changes in complex expressions; lower confidence than AST-based diff)"),
-            "diff_symbols should report lexical parse state: {result}"
+            result.contains("Parse state: high (tree-sitter AST extraction for supported languages, regex fallback for others)"),
+            "diff_symbols should report AST parse state: {result}"
         );
         assert!(
             result.contains("Scope: git diff `HEAD~1`...`HEAD`; compact output"),

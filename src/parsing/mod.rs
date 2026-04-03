@@ -7,15 +7,18 @@ use std::panic;
 
 use tree_sitter::Parser;
 
+use tree_sitter::Node;
+
 use crate::domain::{
-    FileClassification, FileOutcome, FileProcessingResult, LanguageId, ReferenceRecord,
-    SymbolRecord,
+    FileClassification, FileOutcome, FileProcessingResult, LanguageId, ParseDiagnostic,
+    ReferenceRecord, SymbolRecord,
 };
 use crate::hash::digest_hex;
 
 type ParseSourceOutput = (
     Vec<SymbolRecord>,
     bool,
+    Option<ParseDiagnostic>,
     Vec<ReferenceRecord>,
     HashMap<String, String>,
 );
@@ -85,11 +88,15 @@ pub fn process_file_with_classification(
     let parse_result = panic::catch_unwind(|| parse_source(&source, &language));
 
     match parse_result {
-        Ok(Ok((symbols, has_error, references, alias_map))) => {
+        Ok(Ok((symbols, has_error, diagnostic, references, alias_map))) => {
             let outcome = if has_error {
-                FileOutcome::PartialParse {
-                    warning: "tree-sitter reported syntax errors in the parse tree".to_string(),
-                }
+                let warning = diagnostic
+                    .as_ref()
+                    .map(|d| d.summary())
+                    .unwrap_or_else(|| {
+                        "tree-sitter reported syntax errors in the parse tree".to_string()
+                    });
+                FileOutcome::PartialParse { warning }
             } else {
                 FileOutcome::Processed
             };
@@ -98,7 +105,7 @@ pub fn process_file_with_classification(
                 language,
                 classification,
                 outcome,
-                parse_diagnostic: None,
+                parse_diagnostic: diagnostic,
                 symbols,
                 byte_len,
                 content_hash,
@@ -135,6 +142,42 @@ pub fn process_file_with_classification(
             alias_map: HashMap::new(),
         },
     }
+}
+
+/// Walk the tree-sitter tree and collect info about the first ERROR or MISSING node.
+/// Returns (message, line, column, byte_span) for building a `ParseDiagnostic`.
+fn collect_first_error_node(root: &Node, source: &str) -> Option<(String, u32, u32, (u32, u32))> {
+    let mut cursor = root.walk();
+    let mut stack = vec![*root];
+    while let Some(node) = stack.pop() {
+        if node.is_error() || node.is_missing() {
+            let start = node.start_position();
+            let snippet_start = node.start_byte();
+            let snippet_end = node.end_byte().min(snippet_start + 40);
+            let snippet = &source[snippet_start..snippet_end];
+            let kind = if node.is_missing() { "missing" } else { "error" };
+            let message = format!(
+                "syntax {kind} near `{}`",
+                snippet.replace('\n', "\\n")
+            );
+            return Some((
+                message,
+                start.row as u32 + 1,   // 1-based line
+                start.column as u32 + 1, // 1-based column
+                (node.start_byte() as u32, node.end_byte() as u32),
+            ));
+        }
+        // Push children in reverse so we visit left-to-right via the stack.
+        cursor.reset(node);
+        if cursor.goto_first_child() {
+            let mut children = vec![cursor.node()];
+            while cursor.goto_next_sibling() {
+                children.push(cursor.node());
+            }
+            stack.extend(children.into_iter().rev());
+        }
+    }
+    None
 }
 
 fn parse_source(source: &str, language: &LanguageId) -> Result<ParseSourceOutput, String> {
@@ -180,7 +223,49 @@ fn parse_source(source: &str, language: &LanguageId) -> Result<ParseSourceOutput
     let symbols = languages::extract_symbols(&root, source, language);
     let (references, alias_map) = xref::extract_references(&root, source, language);
 
-    Ok((symbols, has_error, references, alias_map))
+    let diagnostic = if has_error {
+        collect_first_error_node(&root, source).map(|(message, line, column, span)| {
+            ParseDiagnostic {
+                parser: "tree-sitter".to_string(),
+                message,
+                line: Some(line),
+                column: Some(column),
+                byte_span: Some(span),
+                fallback_used: false,
+            }
+        })
+    } else {
+        None
+    };
+
+    Ok((symbols, has_error, diagnostic, references, alias_map))
+}
+
+/// Extract symbol name → body-hash pairs from source code using tree-sitter.
+///
+/// Used by `diff_symbols` to compare symbol-level changes between git refs.
+/// Falls back to `None` for unsupported or config languages so callers can
+/// use the legacy regex extractor.
+pub fn extract_symbols_for_diff(source: &str, path: &str) -> Option<Vec<(String, String)>> {
+    let ext = path.rsplit('.').next().unwrap_or("");
+    let language = LanguageId::from_extension(ext)?;
+    if config_extractors::is_config_language(&language) {
+        return None; // Config files don't go through tree-sitter.
+    }
+    let result = panic::catch_unwind(|| parse_source(source, &language));
+    let (symbols, ..) = match result {
+        Ok(Ok(output)) => output,
+        _ => return None,
+    };
+    let pairs: Vec<(String, String)> = symbols
+        .iter()
+        .map(|sym| {
+            let (start, end) = sym.byte_range;
+            let body = &source[start as usize..end as usize];
+            (sym.name.clone(), crate::hash::digest_hex(body.as_bytes()))
+        })
+        .collect();
+    Some(pairs)
 }
 
 #[cfg(test)]
@@ -246,6 +331,19 @@ mod tests {
         let source = b"fn broken( { }";
         let result = process_file("bad.rs", source, LanguageId::Rust);
         assert!(matches!(result.outcome, FileOutcome::PartialParse { .. }));
+    }
+
+    #[test]
+    fn test_process_file_partial_parse_has_diagnostic() {
+        let source = b"fn broken( { }";
+        let result = process_file("bad.rs", source, LanguageId::Rust);
+        assert!(matches!(result.outcome, FileOutcome::PartialParse { .. }));
+        let diag = result.parse_diagnostic.expect("should have a diagnostic for partial parse");
+        assert_eq!(diag.parser, "tree-sitter");
+        assert!(diag.line.is_some(), "diagnostic should have a line number");
+        assert!(diag.column.is_some(), "diagnostic should have a column number");
+        assert!(diag.byte_span.is_some(), "diagnostic should have a byte span");
+        assert!(diag.message.contains("syntax"), "message should describe the error");
     }
 
     #[test]
