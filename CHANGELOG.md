@@ -1,5 +1,12 @@
 # Changelog
 
+## [6.0.6](https://github.com/special-place-administrator/symforge/compare/v6.0.5...v6.0.6) (2026-04-03)
+
+
+### Bug Fixes
+
+* capture qualified calls inside Rust macro bodies, surface callees in default get_symbol_context ([048b578](https://github.com/special-place-administrator/symforge/commit/048b57840b6fd820241f011f2f8533871acb7bed))
+
 ## [6.0.5](https://github.com/special-place-administrator/symforge/compare/v6.0.4...v6.0.5) (2026-04-03)
 
 
