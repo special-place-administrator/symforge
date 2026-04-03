@@ -324,6 +324,52 @@ pub fn match_concept(query: &str) -> Option<(&'static str, &'static ConceptPatte
         .map(|(key, pattern)| (*key, pattern))
 }
 
+/// Return additional search terms for a concept based on the project's detected import roots.
+/// Maps concept labels to known relevant crate/module names and returns any that are present
+/// in the project but not already in the concept's symbol_queries.
+pub fn enrich_concept_with_imports(
+    concept: &ConceptPattern,
+    project_imports: &[String],
+) -> Vec<String> {
+    let relevant: &[&str] = match concept.label {
+        "Error Handling" => &["anyhow", "thiserror", "eyre", "miette", "color_eyre"],
+        "Serialization" => &["serde", "postcard", "bincode", "rmp", "ciborium", "ron"],
+        "Concurrency" => &["tokio", "rayon", "crossbeam", "parking_lot", "async_std"],
+        "Logging / Observability" => &["tracing", "log", "slog", "env_logger", "opentelemetry"],
+        "Caching" => &["moka", "cached", "lru", "dashmap"],
+        "API / HTTP" => &["axum", "actix", "rocket", "warp", "tonic", "tower"],
+        "Database" => &["sqlx", "diesel", "sea_orm", "rusqlite", "mongodb"],
+        "CLI / Command Line" => &["clap", "structopt", "argh", "dialoguer"],
+        "Parsing" => &["tree_sitter", "nom", "pest", "lalrpop", "winnow"],
+        "Networking" => &["hyper", "reqwest", "tonic", "tower", "quinn"],
+        "Testing" => &["proptest", "quickcheck", "rstest", "criterion", "insta"],
+        "Authentication" => &["jsonwebtoken", "oauth2", "argon2", "bcrypt"],
+        "Configuration" => &["config", "dotenvy", "figment", "toml", "serde_yaml"],
+        "Deployment / Release" => &["release_please", "cargo_release", "semver"],
+        "Permissions / Authorization" => &["casbin", "oso", "cedar"],
+        "File Watching" => &["notify", "watchexec", "hotwatch"],
+        "Indexing" => &["tantivy", "meilisearch", "sonic"],
+        _ => &[],
+    };
+
+    let existing: std::collections::HashSet<&str> = concept
+        .symbol_queries
+        .iter()
+        .map(|s| *s)
+        .collect();
+
+    relevant
+        .iter()
+        .filter(|root| {
+            project_imports
+                .iter()
+                .any(|imp| imp.eq_ignore_ascii_case(root))
+                && !existing.iter().any(|e| e.eq_ignore_ascii_case(root))
+        })
+        .map(|s| s.to_string())
+        .collect()
+}
+
 /// For queries that don't match a concept, split into search terms.
 pub fn fallback_terms(query: &str) -> Vec<String> {
     query

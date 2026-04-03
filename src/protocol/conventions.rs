@@ -226,6 +226,29 @@ pub fn detect_conventions(index: &LiveIndex) -> ProjectConventions {
     }
 }
 
+/// Extract the top N import root names from the index (cheap — single pass, no formatting).
+/// Returns lowercase crate/module roots like `["serde", "tokio", "anyhow"]`.
+pub fn extract_top_import_roots(index: &LiveIndex, limit: usize) -> Vec<String> {
+    let mut counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    for (_path, file) in index.all_files() {
+        for reference in &file.references {
+            if matches!(reference.kind, crate::domain::index::ReferenceKind::Import) {
+                let import_name = reference
+                    .qualified_name
+                    .as_deref()
+                    .unwrap_or(&reference.name);
+                let root = import_name.split("::").next().unwrap_or(import_name);
+                if root.len() > 1 {
+                    *counts.entry(root.to_ascii_lowercase()).or_insert(0) += 1;
+                }
+            }
+        }
+    }
+    let mut vec: Vec<(String, u32)> = counts.into_iter().collect();
+    vec.sort_by(|a, b| b.1.cmp(&a.1));
+    vec.into_iter().take(limit).map(|(name, _)| name).collect()
+}
+
 /// Format conventions for display.
 pub fn format_conventions(conv: &ProjectConventions) -> String {
     let mut lines = vec![

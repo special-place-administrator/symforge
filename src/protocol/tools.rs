@@ -5051,12 +5051,19 @@ impl SymForgeServer {
         let (label, symbol_queries, text_queries, remainder_terms) = if let Some((key, c)) = concept
         {
             let remainder = Self::compute_remainder_terms(&params.0.query, key);
+            let mut sym_q: Vec<String> = c.symbol_queries
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+            // Convention-aware enrichment: add project-specific imports related to the concept.
+            let project_imports =
+                crate::protocol::conventions::extract_top_import_roots(&guard, 30);
+            let enrichment =
+                super::explore::enrich_concept_with_imports(c, &project_imports);
+            sym_q.extend(enrichment);
             (
                 c.label.to_string(),
-                c.symbol_queries
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect::<Vec<_>>(),
+                sym_q,
                 c.text_queries
                     .iter()
                     .map(|s| s.to_string())
