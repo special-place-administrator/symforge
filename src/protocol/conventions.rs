@@ -228,8 +228,16 @@ pub fn detect_conventions(index: &LiveIndex) -> ProjectConventions {
 
 /// Extract the top N import root names from the index (cheap — single pass, no formatting).
 /// Returns lowercase crate/module roots like `["serde", "tokio", "anyhow"]`.
+///
+/// Sources (unioned):
+/// 1. `use`/`import` references extracted by tree-sitter (covers explicit imports).
+/// 2. Manifest dependencies from `Cargo.toml` / `package.json` (covers crates used
+///    only via derive macros, path-qualified syntax, or re-exports that tree-sitter
+///    does not classify as imports — e.g. `thiserror`).
 pub fn extract_top_import_roots(index: &LiveIndex, limit: usize) -> Vec<String> {
     let mut counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+
+    // Source 1: explicit import references from the tree-sitter index.
     for (_path, file) in index.all_files() {
         for reference in &file.references {
             if matches!(reference.kind, crate::domain::index::ReferenceKind::Import) {
@@ -244,6 +252,46 @@ pub fn extract_top_import_roots(index: &LiveIndex, limit: usize) -> Vec<String> 
             }
         }
     }
+
+    // Source 2: manifest dependency names (Cargo.toml / package.json).
+    // These ensure crates used only via derive macros or path-qualified syntax
+    // (e.g. `#[derive(thiserror::Error)]`) still appear in the import list.
+    for (path, file) in index.all_files() {
+        let is_cargo = path.ends_with("Cargo.toml");
+        let is_package_json = path.ends_with("package.json");
+        if !is_cargo && !is_package_json {
+            continue;
+        }
+        for sym in &file.symbols {
+            // Cargo.toml: "dependencies.thiserror", "dev-dependencies.once_cell"
+            // package.json: "dependencies.express", "devDependencies.lodash"
+            let dep_name = if is_cargo {
+                sym.name
+                    .strip_prefix("dependencies.")
+                    .or_else(|| sym.name.strip_prefix("dev-dependencies."))
+            } else {
+                sym.name
+                    .strip_prefix("dependencies.")
+                    .or_else(|| sym.name.strip_prefix("devDependencies."))
+            };
+            if let Some(raw) = dep_name {
+                // Skip nested sub-keys like "dependencies.serde.version".
+                if raw.contains('.') {
+                    continue;
+                }
+                // Normalize: Cargo crate hyphens → underscores (e.g. tree-sitter → tree_sitter).
+                let normalized = if is_cargo {
+                    raw.replace('-', "_").to_ascii_lowercase()
+                } else {
+                    raw.to_ascii_lowercase()
+                };
+                if normalized.len() > 1 {
+                    counts.entry(normalized).or_insert(1);
+                }
+            }
+        }
+    }
+
     let mut vec: Vec<(String, u32)> = counts.into_iter().collect();
     vec.sort_by(|a, b| b.1.cmp(&a.1));
     vec.into_iter().take(limit).map(|(name, _)| name).collect()

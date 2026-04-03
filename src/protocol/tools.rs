@@ -10769,6 +10769,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_explore_concept_enrichment_from_cargo_manifest() {
+        // thiserror has NO import references — only a Cargo.toml dependency symbol.
+        // The enrichment should still surface it via the manifest path.
+        let sym = make_symbol("Error", SymbolKind::Enum, 0, 5);
+        let content = b"#[derive(thiserror::Error)]\npub enum Error {}\n";
+        let (key, file) = make_file("src/error.rs", content, vec![sym]);
+
+        // Cargo.toml with a dependencies.thiserror symbol (no import refs needed).
+        let cargo_sym = SymbolRecord {
+            name: "dependencies.thiserror".to_string(),
+            kind: SymbolKind::Key,
+            depth: 1,
+            sort_order: 0,
+            byte_range: (0, 20),
+            item_byte_range: Some((0, 20)),
+            line_range: (0, 0),
+            doc_byte_range: None,
+        };
+        let cargo_content = b"[dependencies]\nthiserror = \"2.0\"\n";
+        let cargo_file = IndexedFile {
+            relative_path: "Cargo.toml".to_string(),
+            language: LanguageId::Toml,
+            classification: crate::domain::FileClassification::for_code_path("Cargo.toml"),
+            content: cargo_content.to_vec(),
+            symbols: vec![cargo_sym],
+            parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
+            byte_len: cargo_content.len() as u64,
+            content_hash: "test".to_string(),
+            references: vec![],
+            alias_map: std::collections::HashMap::new(),
+            mtime_secs: 0,
+        };
+
+        let server = make_server(make_live_index_ready(vec![
+            (key, file),
+            ("Cargo.toml".to_string(), cargo_file),
+        ]));
+        let result = server
+            .explore(Parameters(super::ExploreInput {
+                query: "error handling".to_string(),
+                limit: Some(5),
+                depth: None,
+                include_noise: None,
+                language: None,
+                path_prefix: None,
+                estimate: None,
+            }))
+            .await;
+        assert!(
+            result.contains("Enriched with project imports: thiserror"),
+            "should enrich from Cargo.toml manifest deps, got: {result}"
+        );
+    }
+
+    #[tokio::test]
     async fn test_explore_fallback_returns_results() {
         let content = b"fn process_data() { let x = 42; }\n";
         let sym = make_symbol("process_data", SymbolKind::Function, 0, 0);
