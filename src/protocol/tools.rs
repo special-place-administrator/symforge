@@ -2947,7 +2947,7 @@ impl SymForgeServer {
 
         // Capture the symbol definition from the index so we can prepend it
         // (the sidecar only returns reference locations, not the definition itself).
-        let (symbol_header, impl_block_tip, raw_chars) = {
+        let (symbol_header, impl_block_tip, callees_text, raw_chars) = {
             let guard = self.index.read();
             loading_guard!(guard);
 
@@ -2964,7 +2964,7 @@ impl SymForgeServer {
                 )
             });
 
-            let impl_block_tip = file_path_hint
+            let (impl_block_tip, callees_text) = file_path_hint
                 .map(|path| {
                     let view = guard.capture_context_bundle_view(
                         path,
@@ -2972,11 +2972,13 @@ impl SymForgeServer {
                         params.0.symbol_kind.as_deref(),
                         params.0.symbol_line,
                     );
-                    format::context_bundle_impl_suggestion_tip(&view)
+                    let tip = format::context_bundle_impl_suggestion_tip(&view);
+                    let callees = format::context_bundle_callees_text(&view);
+                    (tip, callees)
                 })
                 .unwrap_or_default();
 
-            (header, impl_block_tip, raw)
+            (header, impl_block_tip, callees_text, raw)
         };
 
         let state = sidecar_state_for_server(self);
@@ -2995,6 +2997,10 @@ impl SymForgeServer {
                     output.push_str("\n\n");
                 }
                 output.push_str(&refs_text);
+                if !callees_text.is_empty() {
+                    output.push('\n');
+                    output.push_str(&callees_text);
+                }
                 if !impl_block_tip.is_empty() {
                     output.push_str(impl_block_tip.trim_start_matches('\n'));
                 }

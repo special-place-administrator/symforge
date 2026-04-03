@@ -2349,6 +2349,17 @@ pub fn context_bundle_impl_suggestion_tip(view: &ContextBundleView) -> String {
     }
 }
 
+/// Extract a compact callees section from a context bundle view for use in
+/// default `get_symbol_context` mode (which otherwise only shows callers).
+pub fn context_bundle_callees_text(view: &ContextBundleView) -> String {
+    match view {
+        ContextBundleView::Found(found) if found.callees.total_count > 0 => {
+            format_context_bundle_section("Callees", &found.callees)
+        }
+        _ => String::new(),
+    }
+}
+
 pub fn context_bundle_result_view_with_max_tokens(
     view: &ContextBundleView,
     verbosity: &str,

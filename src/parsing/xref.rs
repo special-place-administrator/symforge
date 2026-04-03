@@ -840,6 +840,116 @@ pub fn extract_references(
         }
     }
 
+    // --- Rust macro-body fallback ---
+    //
+    // tree-sitter parses Rust macro bodies as `token_tree` (raw tokens), so
+    // `call_expression` / `scoped_identifier` queries never fire inside macros
+    // like `format!(... crate::hash::digest_hex(...))`.  Fall back to a simple
+    // text scan for `qualified::path::name(` patterns whose byte positions are
+    // not already covered by a tree-sitter capture.
+    if *language == LanguageId::Rust {
+        let captured_call_ranges: Vec<(u32, u32)> = references
+            .iter()
+            .filter(|r| r.kind == ReferenceKind::Call)
+            .map(|r| r.byte_range)
+            .collect();
+
+        // Scan for `ident::ident(` patterns — at least two `::` segments.
+        let bytes = source.as_bytes();
+        let len = bytes.len();
+        let mut i = 0;
+        while i < len {
+            // Quick check: find `(` which may terminate a qualified call.
+            if bytes[i] != b'(' {
+                i += 1;
+                continue;
+            }
+            let paren_pos = i;
+
+            // Walk backwards over optional whitespace before `(`.
+            let mut j = paren_pos;
+            while j > 0 && matches!(bytes[j - 1], b' ' | b'\t') {
+                j -= 1;
+            }
+            let name_end = j;
+
+            // Walk backwards over the trailing identifier (the function name).
+            while j > 0 && (bytes[j - 1].is_ascii_alphanumeric() || bytes[j - 1] == b'_') {
+                j -= 1;
+            }
+            let name_start = j;
+            if name_start == name_end {
+                i += 1;
+                continue;
+            }
+
+            // Must be preceded by `::` to be a qualified call.
+            if j < 2 || bytes[j - 1] != b':' || bytes[j - 2] != b':' {
+                i += 1;
+                continue;
+            }
+
+            // Walk further back collecting `segment::` prefixes.
+            let mut path_start = j - 2;
+            loop {
+                let seg_end = path_start;
+                while path_start > 0
+                    && (bytes[path_start - 1].is_ascii_alphanumeric()
+                        || bytes[path_start - 1] == b'_')
+                {
+                    path_start -= 1;
+                }
+                if path_start == seg_end {
+                    // No identifier before `::` — stop.
+                    path_start = seg_end;
+                    break;
+                }
+                // Another `::` before this segment?
+                if path_start >= 2 && bytes[path_start - 1] == b':' && bytes[path_start - 2] == b':'
+                {
+                    path_start -= 2;
+                } else {
+                    break;
+                }
+            }
+
+            let qualified_text = &source[path_start..name_end];
+            let name_text = &source[name_start..name_end];
+
+            // Must have at least one `::` (two segments).
+            if !qualified_text.contains("::")
+                || name_text.is_empty()
+                // Skip if inside a string literal (very rough: odd number of `"` before).
+                || source[..path_start].matches('"').count() % 2 != 0
+            {
+                i += 1;
+                continue;
+            }
+
+            let byte_start = name_start as u32;
+            let byte_end = name_end as u32;
+
+            // Skip if already captured by a tree-sitter query match.
+            let already = captured_call_ranges.iter().any(|&(cs, ce)| {
+                (cs <= byte_start && byte_end <= ce) || (byte_start <= cs && cs < byte_end)
+            });
+
+            if !already {
+                let line = bytes[..path_start].iter().filter(|&&b| b == b'\n').count() as u32;
+                references.push(ReferenceRecord {
+                    name: name_text.to_string(),
+                    qualified_name: Some(qualified_text.to_string()),
+                    kind: ReferenceKind::Call,
+                    byte_range: (byte_start, byte_end),
+                    line_range: (line, line),
+                    enclosing_symbol_index: None,
+                });
+            }
+
+            i += 1;
+        }
+    }
+
     (references, alias_map)
 }
 
@@ -943,6 +1053,49 @@ mod tests {
             has_ref(&refs, "println", ReferenceKind::MacroUse),
             "refs: {:?}",
             refs
+        );
+    }
+
+    #[test]
+    fn test_rust_qualified_call_inside_macro_body() {
+        // tree-sitter parses macro bodies as token_tree (raw tokens), so the
+        // call_expression query never fires.  The text-based fallback should
+        // still capture the qualified call.
+        let src = r#"fn project_key() -> String {
+    format!("project-{}", crate::hash::digest_hex(b"abc"))
+}"#;
+        let (refs, _) = parse_and_extract(src, LanguageId::Rust);
+        let call = refs
+            .iter()
+            .find(|r| r.name == "digest_hex" && r.kind == ReferenceKind::Call);
+        assert!(
+            call.is_some(),
+            "should find digest_hex call inside macro body, refs: {:?}",
+            refs
+        );
+        let call = call.unwrap();
+        assert_eq!(
+            call.qualified_name.as_deref(),
+            Some("crate::hash::digest_hex"),
+            "should have full qualified name"
+        );
+    }
+
+    #[test]
+    fn test_rust_qualified_call_outside_macro_not_duplicated() {
+        // A normal qualified call should be captured by tree-sitter AND the
+        // fallback should not add a duplicate.
+        let src = "fn main() { crate::hash::digest_hex(b\"abc\"); }";
+        let (refs, _) = parse_and_extract(src, LanguageId::Rust);
+        let calls: Vec<_> = refs
+            .iter()
+            .filter(|r| r.name == "digest_hex" && r.kind == ReferenceKind::Call)
+            .collect();
+        assert_eq!(
+            calls.len(),
+            1,
+            "should have exactly one Call ref (no duplicates), got: {:?}",
+            calls
         );
     }
 
