@@ -3521,6 +3521,7 @@ pub struct ExploreResultViewInput<'a> {
     pub derived_seed_terms: &'a [String],
     pub derived_symbols: &'a [String],
     pub derived_seed_files: &'a [String],
+    pub enriched_imports: &'a [String],
     pub depth: u32,
 }
 
@@ -3535,11 +3536,18 @@ pub fn explore_result_view(input: ExploreResultViewInput<'_>) -> String {
         symbol_deps,
         derived_seed_terms,
         derived_symbols,
+        enriched_imports,
         derived_seed_files,
         depth,
     } = input;
 
     let mut lines = vec![format!("── Exploring: {label} ──")];
+    if !enriched_imports.is_empty() {
+        lines.push(format!(
+            "Enriched with project imports: {}",
+            enriched_imports.join(", ")
+        ));
+    }
     lines.push(String::new());
 
     if !derived_symbols.is_empty() || !derived_seed_files.is_empty() {

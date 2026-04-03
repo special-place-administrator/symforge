@@ -5048,6 +5048,7 @@ impl SymForgeServer {
 
         let concept = super::explore::match_concept(&params.0.query);
 
+        let mut enriched_imports: Vec<String> = Vec::new();
         let (label, symbol_queries, text_queries, remainder_terms) = if let Some((key, c)) = concept
         {
             let remainder = Self::compute_remainder_terms(&params.0.query, key);
@@ -5057,10 +5058,11 @@ impl SymForgeServer {
                 .collect();
             // Convention-aware enrichment: add project-specific imports related to the concept.
             let project_imports =
-                crate::protocol::conventions::extract_top_import_roots(&guard, 30);
+                crate::protocol::conventions::extract_top_import_roots(&guard, 100);
             let enrichment =
                 super::explore::enrich_concept_with_imports(c, &project_imports);
-            sym_q.extend(enrichment);
+            sym_q.extend(enrichment.clone());
+            enriched_imports = enrichment;
             (
                 c.label.to_string(),
                 sym_q,
@@ -5548,6 +5550,7 @@ impl SymForgeServer {
                 .as_ref()
                 .map(|cluster| cluster.promoted_symbols.as_slice())
                 .unwrap_or(&[]),
+            enriched_imports: &enriched_imports,
             derived_seed_files: derived_cluster
                 .as_ref()
                 .map(|cluster| cluster.seed_files.as_slice())
@@ -10710,6 +10713,33 @@ mod tests {
         assert!(
             !result.contains("Auto-derived cluster:"),
             "static concept matches should not emit fallback-derived clustering: {result}"
+        );
+    }
+
+
+    #[tokio::test]
+    async fn test_explore_concept_enrichment_shows_annotation() {
+        let sym = make_symbol("Error", SymbolKind::Enum, 0, 5);
+        let content = b"use thiserror::Error;\npub enum Error {}\n";
+        let refs = vec![
+            make_ref("thiserror", Some("thiserror::Error"), ReferenceKind::Import, 0, None),
+        ];
+        let (key, file) = make_file_with_refs("src/error.rs", content, vec![sym], refs);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let result = server
+            .explore(Parameters(super::ExploreInput {
+                query: "error handling".to_string(),
+                limit: Some(5),
+                depth: None,
+                include_noise: None,
+                language: None,
+                path_prefix: None,
+                estimate: None,
+            }))
+            .await;
+        assert!(
+            result.contains("Enriched with project imports: thiserror"),
+            "should annotate convention enrichment, got: {result}"
         );
     }
 
