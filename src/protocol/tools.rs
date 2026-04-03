@@ -5649,7 +5649,8 @@ impl SymForgeServer {
     pub(crate) async fn ask(&self, params: Parameters<SmartQueryInput>) -> String {
         use crate::protocol::smart_query;
 
-        let q = params.0.query.trim();
+        let original_q = params.0.query.trim();
+        let q = smart_query::strip_leading_articles(original_q);
         if q.is_empty() {
             return "query requires a non-empty question.".to_string();
         }
@@ -5844,6 +5845,9 @@ impl SymForgeServer {
             smart_query::route_invocation(&intent),
             assessment.rationale,
         );
+        if original_q != q {
+            envelope.push_str(&format!("\nOriginal query: {original_q}"));
+        }
         if let Some(next_step) = assessment.suggested_next_step {
             envelope.push_str(&format!("\nSuggested next step: {next_step}"));
         }
