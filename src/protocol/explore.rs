@@ -240,21 +240,86 @@ pub const CONCEPT_MAP: &[(&str, ConceptPattern)] = &[
     ),
 ];
 
+/// Lightweight English word stemmer for concept matching.
+/// Strips common suffixes so inflected queries ("errors", "handling", "serialization")
+/// match concept keys ("error", "handling", "serialization").
+pub fn stem_word(word: &str) -> String {
+    let w = word.to_ascii_lowercase();
+    // Longest suffixes first to avoid partial stripping.
+    for (suffix, min_base) in &[
+        ("ization", 3usize),
+        ("isation", 3),
+        ("ation", 3),
+        ("tion", 3),
+        ("sion", 3),
+        ("ment", 3),
+        ("ness", 3),
+        ("ible", 3),
+        ("able", 3),
+        ("ize", 3),
+        ("ise", 3),
+        ("ing", 3),
+        ("ed", 3),
+        ("er", 3),
+        ("ly", 3),
+        ("es", 3),
+        ("s", 3),
+    ] {
+        if let Some(base) = w.strip_suffix(suffix) {
+            if base.len() >= *min_base && !(*suffix == "s" && w.ends_with("ss")) {
+                return base.to_string();
+            }
+        }
+    }
+    w
+}
+
+/// Check whether two words match after stemming, using exact-stem or tight prefix overlap.
+/// Prefix overlap (min 4 chars, max 2 char difference) handles -ing → base vs base+e
+/// ("handl" ↔ "handle") without false positives like "data" ↔ "database".
+fn stems_match(a: &str, b: &str) -> bool {
+    let sa = stem_word(a);
+    let sb = stem_word(b);
+    if sa == sb {
+        return true;
+    }
+    let min_len = sa.len().min(sb.len());
+    let max_len = sa.len().max(sb.len());
+    min_len >= 4
+        && max_len - min_len <= 2
+        && (sa.starts_with(sb.as_str()) || sb.starts_with(sa.as_str()))
+}
+
 /// Find the best matching concept for a query.
 /// Returns the matched key and the corresponding pattern, or `None` if no concept matches.
 /// Uses word-boundary matching to avoid substring collisions (e.g. "clinical" should not match "cli").
+/// Falls back to stemmed matching when exact words don't match.
 pub fn match_concept(query: &str) -> Option<(&'static str, &'static ConceptPattern)> {
     let query_words: Vec<&str> = query.split_whitespace().collect();
+
+    // Exact word-boundary match (original behavior).
+    let exact = CONCEPT_MAP.iter().find(|(key, _)| {
+        let key_words: Vec<&str> = key.split_whitespace().collect();
+        query_words.windows(key_words.len()).any(|window| {
+            window
+                .iter()
+                .zip(key_words.iter())
+                .all(|(qw, kw)| qw.eq_ignore_ascii_case(kw))
+        })
+    });
+    if let Some((key, pattern)) = exact {
+        return Some((*key, pattern));
+    }
+
+    // Stemmed fallback with bag-of-words matching: each key word must match some query
+    // word after stemming.  Order-independent so "handle errors" matches "error handling".
     CONCEPT_MAP
         .iter()
         .find(|(key, _)| {
             let key_words: Vec<&str> = key.split_whitespace().collect();
-            query_words.windows(key_words.len()).any(|window| {
-                window
-                    .iter()
-                    .zip(key_words.iter())
-                    .all(|(qw, kw)| qw.eq_ignore_ascii_case(kw))
-            })
+            key_words
+                .iter()
+                .all(|kw| query_words.iter().any(|qw| stems_match(qw, kw)))
         })
         .map(|(key, pattern)| (*key, pattern))
 }
@@ -330,5 +395,52 @@ mod tests {
         assert!(match_concept("capital investment").is_none());
         assert!(match_concept("cli tools").is_some());
         assert!(match_concept("api endpoints").is_some());
+    }
+
+    #[test]
+    fn test_stem_word_common_suffixes() {
+        assert_eq!(stem_word("errors"), "error");
+        assert_eq!(stem_word("handling"), "handl");
+        assert_eq!(stem_word("serialization"), "serial");
+        assert_eq!(stem_word("serialize"), "serial");
+        assert_eq!(stem_word("parsed"), "pars");
+        assert_eq!(stem_word("caching"), "cach");
+        assert_eq!(stem_word("deployments"), "deployment"); // strips -s first
+    }
+
+    #[test]
+    fn test_stem_word_preserves_short_words() {
+        assert_eq!(stem_word("cli"), "cli");
+        assert_eq!(stem_word("api"), "api");
+        assert_eq!(stem_word("log"), "log");
+    }
+
+    #[test]
+    fn test_stems_match_inflected_variants() {
+        assert!(stems_match("error", "errors"));
+        assert!(stems_match("handle", "handling"));
+        assert!(stems_match("parse", "parsing"));
+        assert!(stems_match("serialize", "serialization"));
+    }
+
+    #[test]
+    fn test_stems_match_rejects_short_prefix_overlap() {
+        // "cli" vs "clinical" — short stem, should not prefix-match
+        assert!(!stems_match("cli", "clinical"));
+    }
+
+    #[test]
+    fn test_match_concept_stemmed_fallback() {
+        // "handle errors" should match "error handling" via stemming
+        let concept = match_concept("handle errors");
+        assert!(concept.is_some());
+        assert_eq!(concept.unwrap().1.label, "Error Handling");
+    }
+
+    #[test]
+    fn test_match_concept_stemmed_serialized() {
+        let concept = match_concept("serialized data");
+        assert!(concept.is_some());
+        assert_eq!(concept.unwrap().1.label, "Serialization");
     }
 }
