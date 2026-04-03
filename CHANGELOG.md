@@ -1,5 +1,21 @@
 # Changelog
 
+## [6.1.0](https://github.com/special-place-administrator/symforge/compare/v6.0.6...v6.1.0) (2026-04-03)
+
+
+### Features
+
+* add session recording to all 24 tools for complete context_inventory tracking ([679c7e3](https://github.com/special-place-administrator/symforge/commit/679c7e3715ba2ff0d9594c5bc39645e64f9f30c0))
+* add word stemming to explore concept matching for inflected queries ([223356d](https://github.com/special-place-administrator/symforge/commit/223356dfd4598af8f59d7500979a29255a57356a))
+* convention-aware concept enrichment in explore ([fec34d2](https://github.com/special-place-administrator/symforge/commit/fec34d21a3f06b6ba491de94399814166ef7abea))
+* strip leading articles from ask queries and show original when transformed ([daea07b](https://github.com/special-place-administrator/symforge/commit/daea07b06f6cc39f6e1b93a540a612978b2e41ce))
+* tree-sitter partial-parse diagnostics and AST-based diff_symbols ([0b5f91c](https://github.com/special-place-administrator/symforge/commit/0b5f91cf6e2dd748558fbe827216a7060a575024))
+
+
+### Bug Fixes
+
+* investigation_suggest no longer reports empty state when session has activity ([fb85a8e](https://github.com/special-place-administrator/symforge/commit/fb85a8e5163ca9ce81ecbe777fd9bc57cad63d61))
+
 ## [6.0.6](https://github.com/special-place-administrator/symforge/compare/v6.0.5...v6.0.6) (2026-04-03)
 
 
