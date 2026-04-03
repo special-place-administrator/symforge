@@ -21,7 +21,15 @@ pub fn suggest_next_steps(
         .filter(|(path, _, tokens)| !path.is_empty() && *tokens > 0)
         .collect();
 
-    if fetched_symbols.is_empty() && snap.fetched_files.is_empty() {
+    // Check the unfiltered snapshot (fetched_symbols local var filters tokens > 0,
+    // but a 0-token fetch still means the session has activity).
+    let has_any_data = !snap.fetched_symbols.is_empty()
+        || !snap.fetched_files.is_empty()
+        || !snap.listed_symbols.is_empty()
+        || !snap.listed_files.is_empty()
+        || !snap.summary_outputs.is_empty();
+
+    if !has_any_data {
         lines.push("No symbols or files fetched yet. Start with:".to_string());
         lines.push("  - get_repo_map(detail=\"compact\") for project overview".to_string());
         lines.push("  - explore(query=\"<topic>\") for concept discovery".to_string());
@@ -30,9 +38,12 @@ pub fn suggest_next_steps(
     }
 
     lines.push(format!(
-        "You've loaded {} symbols and {} files (~{} tokens).",
+        "Session: {} symbol bodies, {} file bodies, {} listed symbols, {} listed files, {} summaries (~{} tokens).",
         fetched_symbols.len(),
         snap.fetched_files.len(),
+        snap.listed_symbols.len(),
+        snap.listed_files.len(),
+        snap.summary_outputs.len(),
         snap.total_tokens
     ));
 
@@ -107,6 +118,36 @@ pub fn suggest_next_steps(
             lines.push(format!(
                 "  get_symbol_context(name=\"{name}\", path=\"{path}\", verbosity=\"compact\")"
             ));
+        }
+    } else if !snap.listed_symbols.is_empty() {
+        // Symbols appeared in search results but bodies weren't loaded yet.
+        lines.push(String::new());
+        lines.push("Symbols seen in search results but not yet loaded:".to_string());
+        for (path, name, _) in snap.listed_symbols.iter().take(10) {
+            if path.is_empty() {
+                lines.push(format!("  {name} — seen in search results"));
+            } else {
+                lines.push(format!("  {name} ({path}) — seen in search results"));
+            }
+        }
+        if snap.listed_symbols.len() > 10 {
+            lines.push(format!(
+                "  ... and {} more",
+                snap.listed_symbols.len() - 10
+            ));
+        }
+        lines.push(String::new());
+        lines.push("To load a symbol's full context, call:".to_string());
+        if let Some((path, name, _)) = snap.listed_symbols.first() {
+            if path.is_empty() {
+                lines.push(format!(
+                    "  get_symbol_context(name=\"{name}\", verbosity=\"compact\")"
+                ));
+            } else {
+                lines.push(format!(
+                    "  get_symbol_context(name=\"{name}\", path=\"{path}\", verbosity=\"compact\")"
+                ));
+            }
         }
     } else {
         lines.push(String::new());
@@ -357,7 +398,11 @@ mod tests {
     }
 
     #[test]
-    fn suggest_next_steps_ignores_list_only_symbols() {
+    fn suggest_next_steps_zero_token_symbol_is_not_fetched() {
+        // A symbol recorded with 0 tokens is filtered out of `fetched_symbols`
+        // (the token > 0 filter), so it doesn't count as a "fetched body".
+        // But it IS present in the session, so we should NOT see the
+        // "No symbols or files fetched yet" empty-state message.
         let caller = make_symbol("caller", SymbolKind::Function, 0, 4);
         let (caller_key, caller_file) =
             make_file("src/lib.rs", b"fn caller() {}", vec![caller], vec![]);
@@ -368,6 +413,26 @@ mod tests {
 
         let output = suggest_next_steps(&index, &session, None);
 
-        assert!(output.contains("No symbols or files fetched yet."));
+        // Should NOT show the empty-state message since session has data
+        assert!(!output.contains("No symbols or files fetched yet."));
+        // Should show session summary
+        assert!(output.contains("Session:"));
+    }
+
+    #[test]
+    fn suggest_next_steps_listed_symbols_shown_when_no_fetched() {
+        let helper = make_symbol("helper", SymbolKind::Function, 0, 1);
+        let (helper_key, helper_file) =
+            make_file("src/helper.rs", b"pub fn helper() {}", vec![helper], vec![]);
+        let index = make_index(vec![(helper_key, helper_file)]);
+
+        let session = SessionContext::new();
+        session.record_listed_symbol("src/helper.rs", "helper");
+
+        let output = suggest_next_steps(&index, &session, None);
+
+        assert!(!output.contains("No symbols or files fetched yet."));
+        assert!(output.contains("Symbols seen in search results but not yet loaded:"));
+        assert!(output.contains("helper (src/helper.rs)"));
     }
 }
