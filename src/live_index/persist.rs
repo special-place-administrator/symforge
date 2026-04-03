@@ -772,7 +772,10 @@ mod tests {
             published.generation >= 2,
             "expected published generation to advance through verify transitions"
         );
-        assert_eq!(published.snapshot_verify_state, SnapshotVerifyState::Completed);
+        assert_eq!(
+            published.snapshot_verify_state,
+            SnapshotVerifyState::Completed
+        );
         assert_eq!(published.file_count, 0);
         assert_eq!(published.parsed_count, 0);
         assert_eq!(published.partial_parse_count, 0);

@@ -121,9 +121,7 @@ async fn run_mcp_server_async() -> anyhow::Result<()> {
         .map(|v| v == "0" || v.is_empty())
         .unwrap_or(true);
 
-    if use_daemon
-        && let Some(root) = resolved_root.clone()
-    {
+    if use_daemon && let Some(root) = resolved_root.clone() {
         match daemon::connect_or_spawn_session(&root, "mcp-stdio", Some(std::process::id())).await {
             Ok(session) => return run_remote_mcp_server_async(session).await,
             Err(error) => {

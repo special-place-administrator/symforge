@@ -110,9 +110,7 @@ pub fn plan_edit(index: &LiveIndex, target: &str) -> String {
         lines.push(format!(
             "  2. get_symbol(path=\"{path}\", name=\"<target>\") — read specific symbols"
         ));
-        lines.push(
-            "  3. Use edit_within_symbol or replace_symbol_body for changes".to_string(),
-        );
+        lines.push("  3. Use edit_within_symbol or replace_symbol_body for changes".to_string());
         lines.push(format!(
             "  4. analyze_file_impact(path=\"{path}\") — verify"
         ));

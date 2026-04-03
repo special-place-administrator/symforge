@@ -2857,10 +2857,8 @@ impl LiveIndex {
 
         let mut resolved: Vec<TypeDependencyView> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
-        let mut queue: Vec<(String, u8)> = type_names
-            .iter()
-            .map(|n| (n.to_string(), 0u8))
-            .collect();
+        let mut queue: Vec<(String, u8)> =
+            type_names.iter().map(|n| (n.to_string(), 0u8)).collect();
 
         while let Some((name, depth)) = queue.pop() {
             if seen.contains(&name) || resolved.len() >= MAX_DEPENDENCIES {
@@ -5558,7 +5556,10 @@ public class PacketsController {
     #[test]
     fn test_is_filtered_name_rust_builtins() {
         use super::is_filtered_name;
-        assert!(is_filtered_name("i32", &LanguageId::Rust), "i32 is a Rust built-in");
+        assert!(
+            is_filtered_name("i32", &LanguageId::Rust),
+            "i32 is a Rust built-in"
+        );
         assert!(
             is_filtered_name("bool", &LanguageId::Rust),
             "bool is a Rust built-in"
@@ -5636,7 +5637,11 @@ public class PacketsController {
         let index = make_index(vec![("src/lib.rs", file)], false);
 
         let callees = index.callees_for_symbol("src/lib.rs", 0);
-        assert_eq!(callees.len(), 1, "Rust callees should not use Python/TS filters");
+        assert_eq!(
+            callees.len(),
+            1,
+            "Rust callees should not use Python/TS filters"
+        );
         assert_eq!(callees[0].name, "Object");
     }
 
@@ -5661,7 +5666,11 @@ public class PacketsController {
         let index = make_index(vec![("src/model.rs", object_file)], false);
 
         let deps = index.resolve_type_dependencies(&["Object"], 0);
-        assert_eq!(deps.len(), 1, "Rust type names should survive non-Rust builtin filters");
+        assert_eq!(
+            deps.len(),
+            1,
+            "Rust type names should survive non-Rust builtin filters"
+        );
         assert_eq!(deps[0].name, "Object");
     }
 

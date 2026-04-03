@@ -1,3 +1,4 @@
+use serde::Deserialize;
 /// Integration tests for the LiveIndex startup pipeline.
 ///
 /// These tests prove that discovery → parsing → LiveIndex work together end-to-end,
@@ -12,7 +13,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
-use serde::Deserialize;
 use symforge::live_index::persist;
 use symforge::live_index::{IndexState, LiveIndex, ParseStatus};
 use tempfile::tempdir;
@@ -227,7 +227,10 @@ fn test_startup_binary_reports_branch_health() {
     let mut latest_surface = None;
 
     while Instant::now() < deadline {
-        if let Some(status) = child.try_wait().expect("startup process should be pollable") {
+        if let Some(status) = child
+            .try_wait()
+            .expect("startup process should be pollable")
+        {
             panic!("startup process exited before health probe completed: {status}");
         }
 

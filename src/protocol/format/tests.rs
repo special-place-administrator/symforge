@@ -848,7 +848,10 @@ fn test_health_report_from_published_state_shows_partial_parse_files() {
         load_source: IndexLoadSource::FreshLoad,
         snapshot_verify_state: SnapshotVerifyState::NotNeeded,
         is_empty: false,
-        partial_parse_files: vec!["src/partial_a.rs".to_string(), "src/partial_b.rs".to_string()],
+        partial_parse_files: vec![
+            "src/partial_a.rs".to_string(),
+            "src/partial_b.rs".to_string(),
+        ],
         failed_files: vec![],
         tier_counts: (3, 0, 0),
     };

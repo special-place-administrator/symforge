@@ -2096,7 +2096,9 @@ fn what_changed_parse_state_label(
 ) -> &'static str {
     match mode {
         WhatChangedMode::Timestamp(_) => "parsed",
-        _ if include_symbol_diff => "degraded (git path diff + lexical symbol diff)",
+        _ if include_symbol_diff => {
+            "degraded (git path diff + lexical symbol diff — regex extraction may miss nested symbols)"
+        }
         _ => "not-applicable (git path diff)",
     }
 }
@@ -2145,7 +2147,7 @@ fn render_diff_symbols_output(
     let envelope = search_format::format_search_envelope(
         "exact (git ref diff)",
         "git ref diff",
-        "degraded (lexical signature extraction)",
+        "degraded (lexical signature extraction — regex-based, may miss nested symbols or misattribute changes in complex expressions; lower confidence than AST-based diff)",
         &completeness,
         &scope_parts.join("; "),
         &search_paths_evidence(changed_files.iter().copied()),
@@ -3240,8 +3242,10 @@ impl SymForgeServer {
             (output.len() * 10 / 4) as u64,
             (output.len() / 4) as u64,
         );
-        self.session_context
-            .record_summary_output("search_symbols", (output.len() / 4) as u32);
+        self.session_context.record_summary_output(
+            "search_symbols",
+            (output.len() / 4).min(u32::MAX as usize) as u32,
+        );
         // Session tracking: record each symbol hit as list-only until its body is fetched.
         for hit in &result.hits {
             self.session_context
@@ -3395,6 +3399,10 @@ impl SymForgeServer {
                         "get_file_context (file overview)",
                         "search_symbols (name-based lookup)",
                     ]));
+                    self.session_context.record_summary_output(
+                        "search_text",
+                        (output.len() / 4).min(u32::MAX as usize) as u32,
+                    );
                     return output;
                 }
             }
@@ -3415,7 +3423,12 @@ impl SymForgeServer {
             "get_file_context (file overview)",
             "search_symbols (name-based lookup)",
         ]);
-        format!("{output}{hint}")
+        let result = format!("{output}{hint}");
+        self.session_context.record_summary_output(
+            "search_text",
+            (result.len() / 4).min(u32::MAX as usize) as u32,
+        );
+        result
     }
 
     /// Internal: trace_symbol logic, called by get_symbol_context when sections are provided.
@@ -3978,12 +3991,28 @@ impl SymForgeServer {
                                 &filtered,
                                 "No indexed files matched the requested filters since the last index load.",
                             );
-                            format!("{envelope}\n\n{output}")
+                            let result = format!("{envelope}\n\n{output}");
+                            self.session_context.record_summary_output(
+                                "what_changed",
+                                (result.len() / 4).min(u32::MAX as usize) as u32,
+                            );
+                            result
                         }
-                        Err(error) => error,
+                        Err(error) => {
+                            self.session_context.record_summary_output(
+                                "what_changed",
+                                (error.len() / 4).min(u32::MAX as usize) as u32,
+                            );
+                            error
+                        }
                     }
                 } else {
-                    format::what_changed_timestamp_view(&view, *since_ts)
+                    let result = format::what_changed_timestamp_view(&view, *since_ts);
+                    self.session_context.record_summary_output(
+                        "what_changed",
+                        (result.len() / 4).min(u32::MAX as usize) as u32,
+                    );
+                    result
                 }
             }
             WhatChangedMode::Uncommitted => {
@@ -4457,8 +4486,10 @@ impl SymForgeServer {
                     (output.len() * 8 / 4) as u64,
                     (output.len() / 4) as u64,
                 );
-                self.session_context
-                    .record_summary_output("find_references", (output.len() / 4) as u32);
+                self.session_context.record_summary_output(
+                    "find_references",
+                    (output.len() / 4).min(u32::MAX as usize) as u32,
+                );
                 self.session_context.record_listed_symbol("", &input.name);
                 match envelope {
                     Some(envelope) => format!("{envelope}\n\n{output}"),
@@ -4742,39 +4773,93 @@ impl SymForgeServer {
             "set", "test", "update",
         ];
 
-        let mut candidates = Vec::new();
-        for token in Self::ask_symbol_candidate_tokens(query) {
-            if GENERIC_SYMBOLS.contains(&token.to_ascii_lowercase().as_str()) {
-                continue;
+        /// Score a single (path, symbol) match for prominence. Higher = more canonical.
+        fn score_match(path: &str, line_start: u32, line_end: u32) -> i32 {
+            let mut score = 0i32;
+            if path.starts_with("src/") || path.contains("/src/") {
+                score += 10;
             }
+            let lower = path.to_ascii_lowercase();
+            if !lower.contains("test")
+                && !lower.contains("vendor")
+                && !lower.contains("example")
+                && !lower.contains("bench")
+            {
+                score += 5;
+            }
+            let span = line_end.saturating_sub(line_start);
+            score += ((span / 10) as i32).min(10);
+            score
+        }
 
-            let mut exact_match_count = 0usize;
-            let mut canonical_name: Option<String> = None;
-            for (_path, file) in index.all_files() {
+        /// Search `index` for an exact (case-insensitive) match for `token`.
+        /// Returns `Some((canonical_name, best_score))` when 1-5 matches are found.
+        fn find_token(index: &crate::live_index::LiveIndex, token: &str) -> Option<(String, i32)> {
+            let mut matches: Vec<(String, i32)> = Vec::new(); // (canonical_name, score)
+            for (path, file) in index.all_files() {
                 for symbol in &file.symbols {
-                    if symbol.name.eq_ignore_ascii_case(&token) {
-                        exact_match_count += 1;
-                        if canonical_name.is_none() {
-                            canonical_name = Some(symbol.name.clone());
-                        }
+                    if symbol.name.eq_ignore_ascii_case(token) {
+                        let s =
+                            score_match(path.as_str(), symbol.line_range.0, symbol.line_range.1);
+                        matches.push((symbol.name.clone(), s));
                     }
                 }
             }
+            if matches.is_empty() || matches.len() > 5 {
+                return None;
+            }
+            // Pick the match with the highest score; stable (first wins on tie).
+            let best = matches
+                .into_iter()
+                .max_by_key(|(_, score)| *score)
+                .expect("non-empty; guarded by is_empty check above");
+            Some(best)
+        }
 
-            if exact_match_count == 1
-                && let Some(name) = canonical_name
-            {
-                candidates.push(name);
+        // Collect (canonical_name, score) for each qualifying token.
+        let mut candidates: Vec<(String, i32)> = Vec::new();
+        let tokens = Self::ask_symbol_candidate_tokens(query);
+        for token in &tokens {
+            if GENERIC_SYMBOLS.contains(&token.to_ascii_lowercase().as_str()) {
+                continue;
+            }
+            if let Some(hit) = find_token(index, token) {
+                candidates.push(hit);
             }
         }
 
-        candidates.sort();
-        candidates.dedup();
-        if candidates.len() == 1 {
-            candidates.into_iter().next()
-        } else {
-            None
+        // Compound token joining: try "token_a_token_b" for adjacent pairs when
+        // no single-token candidate was found yet.
+        if candidates.is_empty() && tokens.len() >= 2 {
+            for window in tokens.windows(2) {
+                let joined = format!("{}_{}", window[0], window[1]);
+                if GENERIC_SYMBOLS.contains(&joined.to_ascii_lowercase().as_str()) {
+                    continue;
+                }
+                if let Some(hit) = find_token(index, &joined) {
+                    candidates.push(hit);
+                }
+            }
         }
+
+        if candidates.is_empty() {
+            return None;
+        }
+
+        // Deduplicate by canonical name, keeping the entry with the highest score.
+        candidates.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+        candidates.dedup_by(|later, first| {
+            // `dedup_by` drops `later` when true is returned.  The sort above orders ascending
+            // by name, then descending by score within each name group, so `first` always holds
+            // the highest score for a given name — exactly the entry we want to keep.
+            later.0.eq_ignore_ascii_case(&first.0)
+        });
+
+        // Pick the single candidate with the highest prominence score.
+        candidates
+            .into_iter()
+            .max_by_key(|(_, score)| *score)
+            .map(|(name, _)| name)
     }
 
     fn extract_exact_implementation_understanding_candidate(
@@ -5431,7 +5516,7 @@ impl SymForgeServer {
             (output.len() / 4) as u64,
         );
         self.session_context
-            .record_summary_output("explore", (output.len() / 4) as u32);
+            .record_summary_output("explore", (output.len() / 4).min(u32::MAX as usize) as u32);
         output
     }
 
@@ -13571,6 +13656,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_ask_upgrades_multi_definition_symbol_prefers_src() {
+        // Symbol "MyHandler" appears in both src/ and tests/; the src/ definition
+        // must win and the query must still upgrade to get_symbol_context.
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("src");
+        let tests_dir = dir.path().join("tests");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::create_dir_all(&tests_dir).unwrap();
+
+        // src/handler.rs — large definition (lines 0-40)
+        let src_content: &[u8] = b"struct MyHandler;\nimpl MyHandler {\n    fn run(&self) {}\n    fn stop(&self) {}\n    fn pause(&self) {}\n    fn resume(&self) {}\n    fn status(&self) {}\n    fn reset(&self) {}\n    fn init(&self) {}\n    fn close(&self) {}\n    fn open(&self) {}\n    fn flush(&self) {}\n    fn drain(&self) {}\n    fn process(&self) {}\n    fn submit(&self) {}\n    fn cancel(&self) {}\n    fn wait(&self) {}\n    fn poll(&self) {}\n    fn tick(&self) {}\n    fn advance(&self) {}\n    fn check(&self) {}\n}\n";
+        std::fs::write(src_dir.join("handler.rs"), src_content).unwrap();
+
+        // tests/test_handler.rs — short test stub (lines 0-5)
+        let test_content: &[u8] = b"struct MyHandler;\n#[test]\nfn it_works() {}\n";
+        std::fs::write(tests_dir.join("test_handler.rs"), test_content).unwrap();
+
+        let src_result =
+            crate::parsing::process_file("src/handler.rs", src_content, LanguageId::Rust);
+        let src_indexed = crate::live_index::store::IndexedFile::from_parse_result(
+            src_result,
+            src_content.to_vec(),
+        );
+
+        let test_result =
+            crate::parsing::process_file("tests/test_handler.rs", test_content, LanguageId::Rust);
+        let test_indexed = crate::live_index::store::IndexedFile::from_parse_result(
+            test_result,
+            test_content.to_vec(),
+        );
+
+        let server = make_server_with_root(
+            make_live_index_ready(vec![
+                ("src/handler.rs".to_string(), src_indexed),
+                ("tests/test_handler.rs".to_string(), test_indexed),
+            ]),
+            Some(dir.path().to_path_buf()),
+        );
+
+        let input = super::SmartQueryInput {
+            query: "how does MyHandler work?".to_string(),
+        };
+        let result = server.ask(Parameters(input)).await;
+
+        assert!(
+            result.contains("Chosen tool: get_symbol_context"),
+            "multi-definition symbol should still upgrade to get_symbol_context: {result}"
+        );
+        assert!(
+            result.contains("Invocation: get_symbol_context(name=\"MyHandler\")"),
+            "result: {result}"
+        );
+    }
+
+    #[tokio::test]
     async fn test_ask_keeps_broad_explore_for_generic_understanding_query() {
         let dir = tempfile::tempdir().unwrap();
         let src_dir = dir.path().join("src");
@@ -14015,7 +14155,7 @@ mod tests {
             "diff_symbols should report git authority: {result}"
         );
         assert!(
-            result.contains("Parse state: degraded (lexical signature extraction)"),
+            result.contains("Parse state: degraded (lexical signature extraction — regex-based, may miss nested symbols or misattribute changes in complex expressions; lower confidence than AST-based diff)"),
             "diff_symbols should report lexical parse state: {result}"
         );
         assert!(

@@ -5,7 +5,10 @@
 #[derive(Debug)]
 pub enum QueryIntent {
     /// "who calls X", "callers of X", "references to X"
-    FindCallers { symbol: String, path: Option<String> },
+    FindCallers {
+        symbol: String,
+        path: Option<String>,
+    },
     /// "where is X defined", "find symbol X"
     FindSymbol { name: String, kind: Option<String> },
     /// "find file X", "where is file X", "path to X"
@@ -778,7 +781,8 @@ mod tests {
 
     #[test]
     fn test_assess_route_exact() {
-        let (intent, matched_prefix) = classify_intent_with_match("who calls optimize_deterministic");
+        let (intent, matched_prefix) =
+            classify_intent_with_match("who calls optimize_deterministic");
         let assessment = assess_route(&intent, matched_prefix);
         assert_eq!(assessment.confidence, RouteConfidence::Exact);
         assert_eq!(assessment.suggested_next_step, None);
@@ -821,7 +825,8 @@ mod tests {
 
     #[test]
     fn test_classify_intent_with_match_reports_explicit_prefix() {
-        let (intent, matched_prefix) = classify_intent_with_match("who calls optimize_deterministic");
+        let (intent, matched_prefix) =
+            classify_intent_with_match("who calls optimize_deterministic");
         assert!(matched_prefix);
         assert!(matches!(intent, QueryIntent::FindCallers { .. }));
     }
