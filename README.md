@@ -5,12 +5,11 @@ A code-native MCP server that gives AI coding agents structured, symbol-aware ac
 Works with MCP-compatible clients including Claude Code, Codex, Gemini CLI, VS Code MCP, Kilo Code, Roo Code, Cline, Continue, JetBrains plugins, and custom agents.
 
 > [!IMPORTANT]
-> **Rust-native** ◆ **31 tools** ◆ **19 source languages** ◆ **5 config formats** ◆ **6 prompts** ◆ **Built-in resources**
+> **Rust-native** · **31 tools** · **19 source languages** · **5 config formats** · **6 prompts** · **Built-in resources**
 >
 > **Use SymForge first** for source-code reads, search, repo orientation, symbol tracing, and structural edits.
 > **Use raw file reads** for docs and config when exact wording is the point.
 > **Use shell tools** for builds, tests, package managers, Docker, and general system tasks.
-> **Kilo Code is workspace-local** and should be initialized from the target project directory.
 
 ## When to use SymForge
 
@@ -43,7 +42,7 @@ During global install, SymForge auto-configures these home-scoped clients if the
 - Codex
 - Gemini CLI
 
-Kilo Code is different:
+Kilo Code is workspace-local:
 
 ```bash
 symforge init --client kilo-code
@@ -64,107 +63,91 @@ symforge init --client all
 
 After setup, confirm in your client that the SymForge MCP server is connected or ready.
 
-## Core workflows
+## Tool reference
 
-| Goal | Use these tools first |
-|------|------------------------|
-| Start in a repo | `health`, `get_repo_map`, `explore` |
-| Read code | `get_file_context`, `get_symbol`, `get_symbol_context` |
-| Exact raw read | `get_file_content` |
-| Find code | `search_symbols`, `search_text`, `search_files` |
-| Trace impact | `find_references`, `find_dependents`, `what_changed`, `diff_symbols` |
-| Edit code | `edit_plan`, `replace_symbol_body`, `edit_within_symbol`, `insert_symbol`, `delete_symbol`, `batch_edit`, `batch_rename`, `batch_insert` |
-| Refresh index after edits | `analyze_file_impact`, `index_folder` |
-| Validate configs | `validate_file_syntax` |
-| Ask in plain English | `ask` |
+### Orientation and context
 
-Practical defaults:
+| Tool | Purpose |
+|------|---------|
+| `health` | Index status, file/symbol counts, watcher state, parse diagnostics |
+| `get_repo_map` | Structured overview of the entire repository |
+| `explore` | Concept-driven exploration with stemmed matching and convention enrichment |
+| `ask` | Natural language questions routed to the right tool internally |
+| `conventions` | Auto-detect project coding patterns |
+| `context_inventory` | See what symbols and files you've already fetched this session |
+| `investigation_suggest` | Find gaps in your loaded context |
 
-- call `get_file_context` before reading a source file
-- use `search_text` or `search_symbols` before broad grep or raw file scans
-- use `get_file_content` when exact docs/config text matters
-- run `analyze_file_impact` after small edits and `index_folder` after larger multi-file work
-- `edit_plan` accepts a bare symbol, a file path, or `path::symbol`; `batch_edit` and `batch_insert` also accept shorthand strings like `src/lib.rs::helper => delete` and `src/lib.rs::helper`
+### Reading code
 
-## Need deeper reference?
+| Tool | Purpose |
+|------|---------|
+| `get_file_context` | File outline, imports, consumers — call before reading a source file |
+| `get_file_content` | Exact raw text with optional line ranges — for docs, config, or when you need the literal source |
+| `get_symbol` | Full source of a function, struct, class, etc. by name (batch mode supported) |
+| `get_symbol_context` | Symbol body + callers + callees + type dependencies |
 
-The README is intentionally action-first. For deeper reference material, use the wiki:
+### Searching
 
-- [SymForge Wiki Home](https://github.com/special-place-administrator/symforge/wiki)
-- [Architecture and How It Works](https://github.com/special-place-administrator/symforge/wiki/Architecture-and-How-It-Works)
-- [Tool Reference](https://github.com/special-place-administrator/symforge/wiki/Tool-Reference)
-- [Runtime Model](https://github.com/special-place-administrator/symforge/wiki/Runtime-Model)
-- [Supported Languages and Config Formats](https://github.com/special-place-administrator/symforge/wiki/Supported-Languages-and-Config-Formats)
-- [Benchmarks and Token Savings](https://github.com/special-place-administrator/symforge/wiki/Benchmarks-and-Token-Savings)
+| Tool | Purpose |
+|------|---------|
+| `search_symbols` | Find symbols by name, kind, language, path prefix |
+| `search_text` | Full-text search with enclosing symbol context |
+| `search_files` | Ranked file path discovery with co-change coupling |
 
-> [!IMPORTANT]
-> **NOTICE — One prompt for any AI agent after SymForge install**
->
-> If your AI agent still falls back to built-in file reads, grep, or text-based edits after SymForge is installed, give it the following prompt once. It is written to work whether the machine has one client or several.
->
-> ```text
-> SymForge is already installed on this machine. Your job is to detect which supported AI clients are actually installed on this computer or in this workspace, configure SymForge for the ones you find, and update only the relevant instruction files. Do not assume every client is installed. Do not split this into multiple partial tasks. Complete the whole setup flow for every detected client.
->
-> Work in this order:
-> 1. Detect installed clients and existing config files before editing anything.
-> 2. Prefer running `symforge init` for any client that supports it.
-> 3. Repair or add the SymForge MCP entry in that client's MCP config only if needed.
-> 4. Update the corresponding global or workspace instruction file so the agent treats SymForge as the primary code navigation and structural editing layer.
-> 5. Validate the edited config, reload the client if needed, and confirm that SymForge is connected or ready.
->
-> Requirements:
-> - First inspect what exists. Only modify files for clients you actually detect.
-> - Preserve existing user instructions and existing MCP servers. Merge missing SymForge settings; do not duplicate entries or overwrite unrelated content.
-> - Use the SymForge binary path for the current OS: `~/.symforge/bin/symforge` on macOS/Linux or `C:\Users\<user>\.symforge\bin\symforge.exe` on Windows. Use no arguments unless that client already requires extra fields.
-> - For JSON-based MCP clients, keep the client's existing schema. Native VS Code MCP uses a top-level `servers` object in `mcp.json`. Many extension-managed clients use a top-level `mcpServers` object. Reuse the schema already present in that client's config file instead of forcing one client's format into another.
-> - Preserve client-specific keys such as `disabled`, `alwaysAllow`, `autoApprove`, `timeout`, `type`, `env`, or trust fields if that client supports them. Do not invent unsupported keys.
-> - If a SymForge entry already exists, update it in place. Do not create duplicate `symforge` entries.
-> - After editing any JSON config, validate that it is still valid JSON and confirm the client can start the SymForge MCP server.
-> - If a client reports MCP schema errors that mention another tool or server, do not blame SymForge by default. Check the other configured MCP servers in that client, because many strict clients reject the whole MCP set when any one server advertises invalid JSON Schema.
->
-> Detect and update whichever of these are actually present:
-> - Claude Code: `~/.claude.json`, `~/.claude/settings.json`, `~/.claude/CLAUDE.md`
-> - Codex: `~/.codex/config.toml`, `~/.codex/AGENTS.md`
-> - Gemini CLI: `~/.gemini/settings.json`, `~/.gemini/GEMINI.md`
-> - Native VS Code MCP: workspace or user `mcp.json` and the nearest project instruction file such as `AGENTS.md`
-> - Cline: its MCP JSON settings file plus its rules file such as `~/Documents/Cline/Rules/mandatory.md`
-> - Kilo Code: `.kilocode/mcp.json` and `.kilocode/rules/symforge.md`
-> - Roo Code and similar extensions: their existing MCP JSON file if present, otherwise the nearest MCP config file the extension already uses, plus the nearest project instruction file the client already consumes
-> - If a client is not installed or you cannot find its real config path from existing files, do not guess and do not create random paths for it
->
-> Client-specific setup notes:
-> - Claude Code, Codex, and Gemini CLI are home-scoped clients. If their home directories already exist, prefer `symforge init` and then verify the written config instead of hand-authoring everything from scratch.
-> - Kilo Code is workspace-local. Run `symforge init --client kilo-code` from the target project directory when possible. That workspace should end up with `.kilocode/mcp.json`, `.kilocode/rules/symforge.md`, and `.symforge/`.
-> - Native VS Code MCP usually uses user- or workspace-level `mcp.json`. Keep its top-level `servers` shape intact.
-> - Cline, Roo Code, Kilo Code, and similar VS Code extensions may use extension-managed JSON files instead of native VS Code `mcp.json`. Detect the real file first and preserve its root key and surrounding schema.
-> - For VS Code-family extensions, update both sides when appropriate: the MCP JSON file that launches SymForge and the instruction/rules file the extension already consumes.
->
-> Add or merge a SymForge rule block with this behavior:
-> - When SymForge is available, prefer it over built-in file, search, and edit tools for source code work.
-> - Use SymForge first for: `search_symbols`, `search_text`, `get_file_context`, `get_repo_map`, `get_symbol`, `get_symbol_context`, `find_references`, `find_dependents`, `inspect_match`, `what_changed`, `diff_symbols`, `explore`, `ask`, `conventions`, `edit_plan`, `context_inventory`, `investigation_suggest`.
-> - Prefer SymForge edit tools: `replace_symbol_body`, `edit_within_symbol`, `insert_symbol`, `delete_symbol`, `batch_edit`, `batch_rename`, `batch_insert`.
-> - Do not default to built-in tools such as `read_file`, `search_files`, `list_files`, `write_to_file`, `replace_in_file`, grep, or broad raw file reads for normal source-code work.
-> - Raw reads are still acceptable for non-code files where exact wording matters, such as docs and config files.
-> - If SymForge reports that the project is empty, missing, stale, loading, degraded, or otherwise unavailable, do not give up on SymForge. Run `health`, then run `index_folder` on the workspace root if needed, then retry the original SymForge operation.
-> - Only fall back to built-in code tools after SymForge recovery was attempted and still failed for a non-indexing reason.
-> - After small edits, run `analyze_file_impact` on changed files.
-> - After larger multi-file jobs, major refactors, or sprint-sized tasks, run `index_folder` on the workspace root so the index is fresh.
-> - Before finishing a large task, do a final `health` check and reindex if needed.
->
-> Your output must include:
-> - which clients you detected
-> - which files you changed
-> - which files you intentionally left untouched because the client was not installed or no real config file was found
-> - the SymForge rule block you added or updated
-> - confirmation that each edited MCP config still parses and points to the SymForge binary
-> ```
+### Tracing impact
+
+| Tool | Purpose |
+|------|---------|
+| `find_references` | Call sites, imports, type usages, implementations |
+| `find_dependents` | File-level dependency graph |
+| `trace_symbol` | Multi-hop caller/callee chains for a symbol |
+| `what_changed` | Files changed since a timestamp, ref, or uncommitted |
+| `diff_symbols` | Symbol-level diff between git refs (AST-based for supported languages) |
+| `analyze_file_impact` | Re-index a file after editing and report affected dependents |
+| `inspect_match` | Deep-dive a search match with full symbol context |
+
+### Editing code
+
+| Tool | Purpose |
+|------|---------|
+| `edit_plan` | Analyze impact and suggest the right edit tool sequence |
+| `replace_symbol_body` | Replace a symbol's entire definition by name |
+| `edit_within_symbol` | Scoped find-and-replace within a symbol's range |
+| `insert_symbol` | Insert code before or after a named symbol |
+| `delete_symbol` | Remove a symbol and its doc comments by name |
+| `batch_edit` | Multiple symbol-addressed edits atomically across files |
+| `batch_insert` | Insert code before/after multiple symbols across files |
+| `batch_rename` | Rename a symbol and update all references project-wide |
+
+### Validation and indexing
+
+| Tool | Purpose |
+|------|---------|
+| `validate_file_syntax` | Parse diagnostics with line/column location for code and config files |
+| `index_folder` | Full reindex of a directory |
+
+### Practical defaults
+
+- Call `get_file_context` before reading a source file
+- Use `search_text` or `search_symbols` before broad grep or raw file scans
+- Use `get_file_content` when exact docs/config text matters
+- Run `analyze_file_impact` after small edits; `index_folder` after larger multi-file work
+- `edit_plan` accepts a bare symbol, a file path, or `path::symbol`
+- `batch_edit` and `batch_insert` accept shorthand strings like `src/lib.rs::helper => delete`
+
+## Agent setup prompt
+
+If your AI agent still falls back to built-in file reads, grep, or text-based edits after SymForge is installed, give it the setup prompt from the wiki:
+
+**[Agent Setup Prompt](https://github.com/special-place-administrator/symforge/wiki/Agent-Setup-Prompt)**
+
+This prompt detects installed clients, configures SymForge for each, updates instruction files, and validates the setup.
 
 ## Operational notes
 
 - `symforge daemon` is optional if you want a shared index across multiple terminal sessions.
 - Index snapshots persist at `.symforge/index.bin` for fast restarts.
-- Use `get_file_content` for literal document and config reads.
-- Use `validate_file_syntax` when a config file may be malformed.
+- Use `validate_file_syntax` when a config file may be malformed — it now reports tree-sitter parse diagnostics with line and column locations.
 
 ## Environment variables
 
@@ -174,188 +157,22 @@ The README is intentionally action-first. For deeper reference material, use the
 | `SYMFORGE_AUTO_INDEX` | `true` | Enables project discovery and startup indexing |
 | `SYMFORGE_HOOK_VERBOSE` | unset | Set to `1` for stderr hook diagnostics |
 | `SYMFORGE_CB_THRESHOLD` | `0.20` | Parse-failure circuit-breaker threshold |
-| `SYMFORGE_RECONCILE_INTERVAL` | `30` | Watcher reconciliation interval in seconds; set to `0` to disable periodic reconciliation sweeps |
+| `SYMFORGE_RECONCILE_INTERVAL` | `30` | Watcher reconciliation interval in seconds; `0` disables periodic sweeps |
 | `SYMFORGE_SIDECAR_BIND` | `127.0.0.1` | Sidecar bind host for local in-process mode |
-| `SYMFORGE_DAEMON_BIND` | loopback bind host | Overrides the daemon bind host used for the shared local daemon |
+| `SYMFORGE_DAEMON_BIND` | `127.0.0.1` | Daemon bind host for shared local daemon |
 
-> [!NOTE]
-> **Run This In Your Terminal**
->
-> These commands establish a recommended baseline for normal SymForge behavior.
-> They are useful if you want your shell or user profile to hold explicit SymForge defaults instead of relying on implicit defaults.
+For platform-specific setup scripts (PowerShell, CMD, bash, zsh), see the wiki:
 
-> [!TIP]
-> **Recommended baseline**
->
-> - keep startup indexing enabled with `SYMFORGE_AUTO_INDEX=true`
-> - keep hook diagnostics off by default by leaving `SYMFORGE_HOOK_VERBOSE` unset
-> - keep the standard watcher reconciliation interval with `SYMFORGE_RECONCILE_INTERVAL=30`
-> - keep loopback bind hosts for `SYMFORGE_SIDECAR_BIND` and `SYMFORGE_DAEMON_BIND`
-> - keep the standard circuit-breaker threshold with `SYMFORGE_CB_THRESHOLD=0.20`
+**[Environment Setup Scripts](https://github.com/special-place-administrator/symforge/wiki/Environment-Setup-Scripts)**
 
-> [!WARNING]
-> **Copy carefully**
->
-> The examples below set a recommended baseline, not a debug profile.
-> The persistent examples are written to be idempotent: re-running them updates the same variables instead of appending duplicate config blocks.
+## Deeper reference
 
-### PowerShell
-
-Current terminal session only:
-
-```powershell
-$env:SYMFORGE_HOME = "$HOME\\.symforge"
-$env:SYMFORGE_AUTO_INDEX = "true"
-Remove-Item Env:SYMFORGE_HOOK_VERBOSE -ErrorAction SilentlyContinue
-$env:SYMFORGE_CB_THRESHOLD = "0.20"
-$env:SYMFORGE_RECONCILE_INTERVAL = "30"
-$env:SYMFORGE_SIDECAR_BIND = "127.0.0.1"
-$env:SYMFORGE_DAEMON_BIND = "127.0.0.1"
-```
-
-Persist for the current Windows user:
-
-```powershell
-[Environment]::SetEnvironmentVariable("SYMFORGE_HOME", "$HOME\\.symforge", "User")
-[Environment]::SetEnvironmentVariable("SYMFORGE_AUTO_INDEX", "true", "User")
-[Environment]::SetEnvironmentVariable("SYMFORGE_HOOK_VERBOSE", $null, "User")
-[Environment]::SetEnvironmentVariable("SYMFORGE_CB_THRESHOLD", "0.20", "User")
-[Environment]::SetEnvironmentVariable("SYMFORGE_RECONCILE_INTERVAL", "30", "User")
-[Environment]::SetEnvironmentVariable("SYMFORGE_SIDECAR_BIND", "127.0.0.1", "User")
-[Environment]::SetEnvironmentVariable("SYMFORGE_DAEMON_BIND", "127.0.0.1", "User")
-```
-
-These calls overwrite the same user-level variable names, so re-running them is already idempotent.
-
-### CMD
-
-Current terminal session only:
-
-```bat
-set SYMFORGE_HOME=%USERPROFILE%\.symforge
-set SYMFORGE_AUTO_INDEX=true
-set SYMFORGE_HOOK_VERBOSE=
-set SYMFORGE_CB_THRESHOLD=0.20
-set SYMFORGE_RECONCILE_INTERVAL=30
-set SYMFORGE_SIDECAR_BIND=127.0.0.1
-set SYMFORGE_DAEMON_BIND=127.0.0.1
-```
-
-Persist for the current Windows user:
-
-```bat
-setx SYMFORGE_HOME "%USERPROFILE%\.symforge"
-setx SYMFORGE_AUTO_INDEX "true"
-setx SYMFORGE_HOOK_VERBOSE ""
-setx SYMFORGE_CB_THRESHOLD "0.20"
-setx SYMFORGE_RECONCILE_INTERVAL "30"
-setx SYMFORGE_SIDECAR_BIND "127.0.0.1"
-setx SYMFORGE_DAEMON_BIND "127.0.0.1"
-```
-
-`setx` updates the same variable names instead of creating duplicates. Open a new terminal after running it.
-
-### Linux Terminal
-
-Current shell session only:
-
-```bash
-export SYMFORGE_HOME="$HOME/.symforge"
-export SYMFORGE_AUTO_INDEX=true
-unset SYMFORGE_HOOK_VERBOSE
-export SYMFORGE_CB_THRESHOLD=0.20
-export SYMFORGE_RECONCILE_INTERVAL=30
-export SYMFORGE_SIDECAR_BIND=127.0.0.1
-export SYMFORGE_DAEMON_BIND=127.0.0.1
-```
-
-Persist for future shells:
-
-```bash
-export SYMFORGE_RC_FILE="$HOME/.bashrc"
-python3 - <<'PY'
-from pathlib import Path
-import os, re
-
-path = Path(os.environ["SYMFORGE_RC_FILE"]).expanduser()
-start = "# >>> SymForge env >>>"
-end = "# <<< SymForge env <<<"
-block = """# >>> SymForge env >>>
-export SYMFORGE_HOME="$HOME/.symforge"
-export SYMFORGE_AUTO_INDEX=true
-export SYMFORGE_CB_THRESHOLD=0.20
-export SYMFORGE_RECONCILE_INTERVAL=30
-export SYMFORGE_SIDECAR_BIND=127.0.0.1
-export SYMFORGE_DAEMON_BIND=127.0.0.1
-# <<< SymForge env <<<"""
-
-text = path.read_text() if path.exists() else ""
-pattern = re.compile(re.escape(start) + r".*?" + re.escape(end), re.S)
-if pattern.search(text):
-    text = pattern.sub(block, text)
-else:
-    if text and not text.endswith("\n"):
-        text += "\n"
-    text += block + "\n"
-path.write_text(text)
-PY
-unset SYMFORGE_RC_FILE
-
-source ~/.bashrc
-```
-
-If you use `zsh`, put the same lines in `~/.zshrc` instead.
-
-### macOS Terminal
-
-Current shell session only:
-
-```bash
-export SYMFORGE_HOME="$HOME/.symforge"
-export SYMFORGE_AUTO_INDEX=true
-unset SYMFORGE_HOOK_VERBOSE
-export SYMFORGE_CB_THRESHOLD=0.20
-export SYMFORGE_RECONCILE_INTERVAL=30
-export SYMFORGE_SIDECAR_BIND=127.0.0.1
-export SYMFORGE_DAEMON_BIND=127.0.0.1
-```
-
-Persist for future shells:
-
-```bash
-export SYMFORGE_RC_FILE="$HOME/.zshrc"
-python3 - <<'PY'
-from pathlib import Path
-import os, re
-
-path = Path(os.environ["SYMFORGE_RC_FILE"]).expanduser()
-start = "# >>> SymForge env >>>"
-end = "# <<< SymForge env <<<"
-block = """# >>> SymForge env >>>
-export SYMFORGE_HOME="$HOME/.symforge"
-export SYMFORGE_AUTO_INDEX=true
-export SYMFORGE_CB_THRESHOLD=0.20
-export SYMFORGE_RECONCILE_INTERVAL=30
-export SYMFORGE_SIDECAR_BIND=127.0.0.1
-export SYMFORGE_DAEMON_BIND=127.0.0.1
-# <<< SymForge env <<<"""
-
-text = path.read_text() if path.exists() else ""
-pattern = re.compile(re.escape(start) + r".*?" + re.escape(end), re.S)
-if pattern.search(text):
-    text = pattern.sub(block, text)
-else:
-    if text and not text.endswith("\n"):
-        text += "\n"
-    text += block + "\n"
-path.write_text(text)
-PY
-unset SYMFORGE_RC_FILE
-
-source ~/.zshrc
-```
-
-If you use `bash` on macOS, put the same lines in `~/.bash_profile` or `~/.bashrc`.
+- [SymForge Wiki Home](https://github.com/special-place-administrator/symforge/wiki)
+- [Architecture and How It Works](https://github.com/special-place-administrator/symforge/wiki/Architecture-and-How-It-Works)
+- [Tool Reference](https://github.com/special-place-administrator/symforge/wiki/Tool-Reference)
+- [Runtime Model](https://github.com/special-place-administrator/symforge/wiki/Runtime-Model)
+- [Supported Languages and Config Formats](https://github.com/special-place-administrator/symforge/wiki/Supported-Languages-and-Config-Formats)
+- [Benchmarks and Token Savings](https://github.com/special-place-administrator/symforge/wiki/Benchmarks-and-Token-Savings)
 
 ## Build from source
 
