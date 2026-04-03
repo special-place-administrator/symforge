@@ -3951,6 +3951,27 @@ mod tests {
         assert!(matches[0].confident);
     }
 
+    #[test]
+    fn test_find_qualified_usages_macro_body_classified_confident() {
+        // Qualified paths inside macro_rules! bodies are real code references
+        // and should be classified as confident (not uncertain).
+        let source = r#"
+macro_rules! make_widget {
+    ($val:expr) => {
+        Widget::new($val)
+    };
+}
+fn uses_it() { Widget::default(); }
+"#;
+        let matches = find_qualified_usages("Widget", source);
+        assert_eq!(matches.len(), 2, "should find Widget in macro body and fn body");
+        assert!(
+            matches.iter().all(|m| m.confident),
+            "macro body matches must be confident: {:?}",
+            matches.iter().map(|m| (&m.context, m.confident)).collect::<Vec<_>>()
+        );
+    }
+
     // -- atomic_write_file --
 
     #[test]
