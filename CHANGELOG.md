@@ -1,5 +1,12 @@
 # Changelog
 
+## [6.3.0](https://github.com/special-place-administrator/symforge/compare/v6.2.0...v6.3.0) (2026-04-03)
+
+
+### Features
+
+* enrich explore with manifest dependencies for derive-only crates ([85005e2](https://github.com/special-place-administrator/symforge/commit/85005e267b04cb3e69d5cd466dd29320ed010036))
+
 ## [6.2.0](https://github.com/special-place-administrator/symforge/compare/v6.1.0...v6.2.0) (2026-04-03)
 
 
