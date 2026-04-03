@@ -2586,7 +2586,7 @@ impl SymForgeServer {
             );
         }
         let detail = params.0.detail.as_deref().unwrap_or("compact");
-        match detail {
+        let output = match detail {
             "full" => {
                 let published = self.index.published_state();
                 if let Some(message) = loading_guard_message_from_published(&published) {
@@ -2691,7 +2691,10 @@ impl SymForgeServer {
                     Err(other) => format!("Repository map failed: HTTP {}", other.as_u16()),
                 }
             }
-        }
+        };
+        self.session_context
+            .record_summary_output("get_repo_map", (output.len() / 4).min(u32::MAX as usize) as u32);
+        output
     }
 
     /// Rich file summary: symbol outline, imports, consumers, references, and git activity.
@@ -3137,6 +3140,8 @@ impl SymForgeServer {
             }
         }
 
+        self.session_context
+            .record_summary_output("analyze_file_impact", (result.len() / 4).min(u32::MAX as usize) as u32);
         result
     }
 
@@ -3550,7 +3555,10 @@ impl SymForgeServer {
             )
         };
 
-        format::inspect_match_result_view(&view)
+        let output = format::inspect_match_result_view(&view);
+        self.session_context
+            .record_summary_output("inspect_match", (output.len() / 4).min(u32::MAX as usize) as u32);
+        output
     }
 
     /// Find files by path, filename, or folder — ranked by relevance. With changed_with=path,
@@ -3615,10 +3623,13 @@ impl SymForgeServer {
                 _ => None,
             };
             let output = format::search_files_resolve_result_view(&view);
-            return match envelope {
+            let result = match envelope {
                 Some(envelope) => format!("{envelope}\n\n{output}"),
                 None => output,
             };
+            self.session_context
+                .record_summary_output("search_files", (result.len() / 4).min(u32::MAX as usize) as u32);
+            return result;
         }
 
         // Handle changed_with (git temporal coupling)
@@ -3790,10 +3801,13 @@ impl SymForgeServer {
             _ => None,
         };
         let output = format::search_files_result_view(&view);
-        match envelope {
+        let result = match envelope {
             Some(envelope) => format!("{envelope}\n\n{output}"),
             None => output,
-        }
+        };
+        self.session_context
+            .record_summary_output("search_files", (result.len() / 4).min(u32::MAX as usize) as u32);
+        result
     }
 
     /// Diagnostic: index status, file/symbol counts, load time, watcher state, token savings,
@@ -3850,6 +3864,8 @@ impl SymForgeServer {
             &self.index.git_temporal(),
         ));
 
+        self.session_context
+            .record_summary_output("health", (result.len() / 4).min(u32::MAX as usize) as u32);
         result
     }
 
@@ -3910,7 +3926,10 @@ impl SymForgeServer {
                     root,
                 );
 
-                format!("Indexed {} files, {} symbols.", file_count, symbol_count)
+                let output = format!("Indexed {} files, {} symbols.", file_count, symbol_count);
+                self.session_context
+                    .record_summary_output("index_folder", (output.len() / 4).min(u32::MAX as usize) as u32);
+                output
             }
             Err(e) => format!("Index failed: {e}"),
         }
@@ -4082,7 +4101,12 @@ impl SymForgeServer {
                                     output.push_str("\n\n");
                                     output.push_str(&sym_diff);
                                 }
-                                format!("{envelope}\n\n{output}")
+                                let result = format!("{envelope}\n\n{output}");
+                                self.session_context.record_summary_output(
+                                    "what_changed",
+                                    (result.len() / 4).min(u32::MAX as usize) as u32,
+                                );
+                                result
                             }
                             Err(e) => e,
                         }
@@ -4158,7 +4182,12 @@ impl SymForgeServer {
                                     output.push_str("\n\n");
                                     output.push_str(&sym_diff);
                                 }
-                                format!("{envelope}\n\n{output}")
+                                let result = format!("{envelope}\n\n{output}");
+                                self.session_context.record_summary_output(
+                                    "what_changed",
+                                    (result.len() / 4).min(u32::MAX as usize) as u32,
+                                );
+                                result
                             }
                             Err(e) => e,
                         }
@@ -4294,7 +4323,10 @@ impl SymForgeServer {
             guard.capture_shared_file(&input.path)
         };
         if let Some(file) = indexed_file {
-            return format::validate_file_syntax_result(&input.path, file.as_ref());
+            let output = format::validate_file_syntax_result(&input.path, file.as_ref());
+            self.session_context
+                .record_summary_output("validate_file_syntax", (output.len() / 4).min(u32::MAX as usize) as u32);
+            return output;
         }
 
         let extension = std::path::Path::new(&input.path)
@@ -4331,7 +4363,10 @@ impl SymForgeServer {
             classification,
         );
         let file = IndexedFile::from_parse_result(result, bytes);
-        format::validate_file_syntax_result(&input.path, &file)
+        let output = format::validate_file_syntax_result(&input.path, &file);
+        self.session_context
+            .record_summary_output("validate_file_syntax", (output.len() / 4).min(u32::MAX as usize) as u32);
+        output
     }
 
     /// Find all references or implementations for a symbol. Modes: (1) default/references: call sites,
@@ -4526,14 +4561,17 @@ impl SymForgeServer {
         let limits =
             format::OutputLimits::new(input.limit.unwrap_or(20), input.max_per_file.unwrap_or(10));
         let fmt = input.format.as_deref().unwrap_or("text");
-        match fmt {
+        let output = match fmt {
             "mermaid" => format::find_dependents_mermaid(&view, &input.path, &limits),
             "dot" => format::find_dependents_dot(&view, &input.path, &limits),
             _ if input.compact.unwrap_or(false) => {
                 format::find_dependents_compact_view(&view, &input.path, &limits)
             }
             _ => format::find_dependents_result_view(&view, &input.path, &limits),
-        }
+        };
+        self.session_context
+            .record_summary_output("find_dependents", (output.len() / 4).min(u32::MAX as usize) as u32);
+        output
     }
 
     /// Extract query terms that aren't part of the matched concept key,
@@ -5538,7 +5576,10 @@ impl SymForgeServer {
             loading_guard!(guard);
             crate::protocol::conventions::detect_conventions(&guard)
         };
-        crate::protocol::conventions::format_conventions(&conv)
+        let output = crate::protocol::conventions::format_conventions(&conv);
+        self.session_context
+            .record_summary_output("conventions", (output.len() / 4).min(u32::MAX as usize) as u32);
+        output
     }
 
     #[tool(
@@ -5550,7 +5591,10 @@ impl SymForgeServer {
         }
         let guard = self.index.read();
         loading_guard!(guard);
-        crate::protocol::edit_plan::plan_edit(&guard, &params.0.target)
+        let output = crate::protocol::edit_plan::plan_edit(&guard, &params.0.target);
+        self.session_context
+            .record_summary_output("edit_plan", (output.len() / 4).min(u32::MAX as usize) as u32);
+        output
     }
 
     #[tool(
@@ -5568,11 +5612,14 @@ impl SymForgeServer {
         }
         let guard = self.index.read();
         loading_guard!(guard);
-        crate::protocol::investigation::suggest_next_steps(
+        let output = crate::protocol::investigation::suggest_next_steps(
             &guard,
             &self.session_context,
             params.0.focus.as_deref(),
-        )
+        );
+        self.session_context
+            .record_summary_output("investigation_suggest", (output.len() / 4).min(u32::MAX as usize) as u32);
+        output
     }
 
     #[tool(
@@ -5794,7 +5841,10 @@ impl SymForgeServer {
             envelope.push_str(&format!("\nSuggested next step: {next_step}"));
         }
 
-        format!("{envelope}\n{route_desc}\n\n{result}")
+        let output = format!("{envelope}\n{route_desc}\n\n{result}");
+        self.session_context
+            .record_summary_output("ask", (output.len() / 4).min(u32::MAX as usize) as u32);
+        output
     }
 
     /// Symbol-level diff between two git refs. Shows +added, -removed, ~modified symbols per changed
@@ -5902,6 +5952,8 @@ impl SymForgeServer {
             code_only,
         );
         self.record_tool_savings((output.len() * 5 / 4) as u64, (output.len() / 4) as u64);
+        self.session_context
+            .record_summary_output("diff_symbols", (output.len() / 4).min(u32::MAX as usize) as u32);
         output
     }
 
