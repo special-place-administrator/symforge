@@ -1,5 +1,12 @@
 # Changelog
 
+## [6.2.0](https://github.com/special-place-administrator/symforge/compare/v6.1.0...v6.2.0) (2026-04-03)
+
+
+### Features
+
+* surface convention-enrichment annotation in explore output ([baed689](https://github.com/special-place-administrator/symforge/commit/baed689f3674ef5e2c4f4bb0a069a8553c6d8a48))
+
 ## [6.1.0](https://github.com/special-place-administrator/symforge/compare/v6.0.6...v6.1.0) (2026-04-03)
 
 
