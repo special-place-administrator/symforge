@@ -1,5 +1,12 @@
 # Changelog
 
+## [6.0.5](https://github.com/special-place-administrator/symforge/compare/v6.0.4...v6.0.5) (2026-04-03)
+
+
+### Bug Fixes
+
+* saturate token-estimate casts, harden unwrap, fix cargo fmt ([9b76caa](https://github.com/special-place-administrator/symforge/commit/9b76caa22b90e87f44490caa54ceb4f17e99a22d))
+
 ## [6.0.4](https://github.com/special-place-administrator/symforge/compare/v6.0.3...v6.0.4) (2026-04-02)
 
 
