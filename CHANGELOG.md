@@ -1,5 +1,18 @@
 # Changelog
 
+## [7.2.0](https://github.com/special-place-administrator/symforge/compare/v7.1.0...v7.2.0) (2026-04-07)
+
+
+### Features
+
+* universal symbol name resolution and C++ qualified names ([59b7fa2](https://github.com/special-place-administrator/symforge/commit/59b7fa2b59da6fbc3a39da5690d014af360fd758))
+* universal symbol name resolution for all languages ([2ecd65a](https://github.com/special-place-administrator/symforge/commit/2ecd65a94a63434c3a2fae36b1eafebd04197428))
+
+
+### Bug Fixes
+
+* resolve impl blocks when LLM drops the `impl` prefix ([23d01de](https://github.com/special-place-administrator/symforge/commit/23d01de2529757d9b4874e6fda44e4cffb32726b))
+
 ## [7.1.0](https://github.com/special-place-administrator/symforge/compare/v7.0.0...v7.1.0) (2026-04-07)
 
 
