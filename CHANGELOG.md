@@ -1,5 +1,13 @@
 # Changelog
 
+## [7.1.0](https://github.com/special-place-administrator/symforge/compare/v7.0.0...v7.1.0) (2026-04-07)
+
+
+### Features
+
+* C/C++ parser improvements, whitespace-flexible editing, insert-after fix ([207fb25](https://github.com/special-place-administrator/symforge/commit/207fb259c6c6f617345f789d04737ec28c3402a7))
+* C/C++ parser improvements, whitespace-flexible editing, insert-after fix ([739c867](https://github.com/special-place-administrator/symforge/commit/739c867bdafb7e0b0b6b2e1e59d41192de9f35ea))
+
 ## [7.0.0](https://github.com/special-place-administrator/symforge/compare/v6.3.0...v7.0.0) (2026-04-03)
 
 
