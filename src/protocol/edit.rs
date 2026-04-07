@@ -354,6 +354,11 @@ pub(crate) fn build_insert_before(
 }
 
 /// Build the bytes to insert after a symbol: existing content + blank line + indented content.
+///
+/// Handles the C/C++ quirk where struct/enum/class definitions end their tree-sitter
+/// node at `}` while the actual declaration includes a trailing `;`.  When the byte
+/// immediately following the symbol end (skipping spaces/tabs) is `;`, the insertion
+/// point moves past it so the result stays syntactically valid.
 pub(crate) fn build_insert_after(
     file_content: &[u8],
     sym: &SymbolRecord,
@@ -369,11 +374,24 @@ pub(crate) fn build_insert_after(
     insertion.extend_from_slice(le);
     insertion.extend_from_slice(le);
     insertion.extend_from_slice(&indented);
-    apply_splice(
-        file_content,
-        (sym.byte_range.1, sym.byte_range.1),
-        &insertion,
-    )
+    // Skip past a trailing `;` that belongs to the parent declaration (C/C++
+    // struct/enum/class: tree-sitter node ends at `}`, declaration at `};`).
+    let insert_pos = skip_trailing_semicolon(file_content, sym.byte_range.1 as usize) as u32;
+    apply_splice(file_content, (insert_pos, insert_pos), &insertion)
+}
+
+/// If the byte(s) immediately after `pos` (skipping spaces and tabs, but not
+/// newlines) form a `;`, return the position just past it.  Otherwise return `pos`.
+fn skip_trailing_semicolon(content: &[u8], pos: usize) -> usize {
+    let mut i = pos;
+    while i < content.len() && (content[i] == b' ' || content[i] == b'\t') {
+        i += 1;
+    }
+    if i < content.len() && content[i] == b';' {
+        i + 1
+    } else {
+        pos
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -565,6 +583,140 @@ pub(crate) fn build_edit_within(
     let effective_range = (sym.effective_start(), sym.byte_range.1);
     let new_content = apply_splice(file_content, effective_range, new_body.as_bytes());
     Ok((new_content, count))
+}
+
+// ---------------------------------------------------------------------------
+// Whitespace-flexible matching fallback
+// ---------------------------------------------------------------------------
+
+/// Return the leading whitespace of the first non-blank line.
+fn indent_of_first_nonempty<'a>(lines: &[&'a str]) -> &'a str {
+    for line in lines {
+        let trimmed = line.trim_start();
+        if !trimmed.is_empty() {
+            return &line[..line.len() - trimmed.len()];
+        }
+    }
+    ""
+}
+
+/// Re-indent `line` from `old_base` indentation to `file_base`.
+fn reindent_line(line: &str, old_base: &str, file_base: &str) -> String {
+    if line.trim().is_empty() {
+        return String::new();
+    }
+    match line.strip_prefix(old_base) {
+        Some(rest) => format!("{file_base}{rest}"),
+        None => {
+            // Line has different indent depth than the base.
+            let line_indent = line.len() - line.trim_start().len();
+            let old_indent = old_base.len();
+            if line_indent < old_indent {
+                // Less indented (e.g. closing brace) — preserve relative de-indent.
+                let deficit = old_indent - line_indent;
+                if file_base.len() > deficit {
+                    format!(
+                        "{}{}",
+                        &file_base[..file_base.len() - deficit],
+                        line.trim_start()
+                    )
+                } else {
+                    line.trim_start().to_string()
+                }
+            } else {
+                // More indented but prefix mismatch (tabs vs spaces mix).
+                let extra = &line[old_indent..line_indent];
+                format!("{file_base}{extra}{}", line.trim_start())
+            }
+        }
+    }
+}
+
+/// Attempt a whitespace-flexible find-and-replace within `body`.
+///
+/// When an exact match of `old_text` fails, this tries matching lines
+/// with leading whitespace stripped.  If found, `new_text` is re-indented
+/// to match the file's actual indentation before replacement.
+///
+/// Returns `Some((new_body, count))` on success, `None` if no flexible
+/// match is found either.
+pub(crate) fn try_whitespace_flexible_replace(
+    body: &str,
+    old_text: &str,
+    new_text: &str,
+    replace_all: bool,
+) -> Option<(String, usize)> {
+    let body_lines: Vec<&str> = body.lines().collect();
+    let old_lines: Vec<&str> = old_text.lines().collect();
+
+    if old_lines.is_empty() || old_lines.iter().all(|l| l.trim().is_empty()) {
+        return None;
+    }
+
+    let old_trimmed: Vec<&str> = old_lines.iter().map(|l| l.trim_start()).collect();
+    let window = old_trimmed.len();
+
+    // Find matching positions (line-aligned, trimmed comparison).
+    let mut matches: Vec<usize> = Vec::new();
+    for start in 0..=body_lines.len().saturating_sub(window) {
+        let hit = old_trimmed
+            .iter()
+            .enumerate()
+            .all(|(i, ot)| body_lines[start + i].trim_start() == *ot);
+        if hit {
+            matches.push(start);
+            if !replace_all {
+                break;
+            }
+        }
+    }
+
+    if matches.is_empty() {
+        return None;
+    }
+
+    // Pre-compute byte offset of each line start.
+    let mut line_starts: Vec<usize> = vec![0];
+    for (i, b) in body.bytes().enumerate() {
+        if b == b'\n' {
+            line_starts.push(i + 1);
+        }
+    }
+
+    let count = matches.len();
+    let mut result = body.to_string();
+
+    // Process in reverse so earlier byte offsets remain valid.
+    for &m in matches.iter().rev() {
+        let byte_start = line_starts[m];
+        let byte_end = if m + window < line_starts.len() {
+            line_starts[m + window]
+        } else {
+            body.len()
+        };
+
+        let matched_lines = &body_lines[m..m + window];
+        let old_base = indent_of_first_nonempty(&old_lines);
+        let file_base = indent_of_first_nonempty(matched_lines);
+
+        let reindented: Vec<String> = new_text
+            .lines()
+            .map(|l| reindent_line(l, old_base, file_base))
+            .collect();
+        let mut replacement = reindented.join("\n");
+
+        // Preserve trailing newline when the matched region included one.
+        if byte_end > byte_start
+            && result.as_bytes().get(byte_end - 1) == Some(&b'\n')
+            && !replacement.ends_with('\n')
+        {
+            replacement.push('\n');
+        }
+
+        result.replace_range(byte_start..byte_end, &replacement);
+    }
+
+    Some((result, count))
 }
 
 // ---------------------------------------------------------------------------
@@ -2712,6 +2864,38 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_build_insert_after_skips_trailing_semicolon() {
+        // C/C++ struct: tree-sitter node ends at `}` (exclusive end = 21),
+        // declaration has `};` so `;` is at byte 21.
+        let content = b"struct Foo { int x; };\n";
+        let sym = make_test_symbol("Foo", SymbolKind::Struct, (0, 21), 1);
+        let result = build_insert_after(content, &sym, "struct Bar { int y; };", LineEnding::Lf);
+        let text = std::str::from_utf8(&result).unwrap();
+        // The insertion should go AFTER the `;`, not between `}` and `;`
+        assert!(
+            text.contains("};\n\nstruct Bar"),
+            "should insert after semicolon, got: {text}"
+        );
+        assert!(
+            !text.contains("}\n\nstruct Bar"),
+            "should not split '}}; ' got: {text}"
+        );
+    }
+
+    #[test]
+    fn test_build_insert_after_no_semicolon_unchanged() {
+        // Functions don't have trailing `;` — behavior unchanged
+        let content = b"fn foo() {}\nfn bar() {}\n";
+        let sym = make_test_symbol("foo", SymbolKind::Function, (0, 11), 1);
+        let result = build_insert_after(content, &sym, "fn baz() {}", LineEnding::Lf);
+        let text = std::str::from_utf8(&result).unwrap();
+        assert!(
+            text.contains("fn foo() {}\n\nfn baz() {}"),
+            "got: {text}"
+        );
+    }
+
     // -- build_delete --
 
     #[test]
@@ -2769,6 +2953,68 @@ mod tests {
         let sym = make_test_symbol("foo", SymbolKind::Function, (0, 18), 1);
         let result = build_edit_within(content, &sym, "missing", "new", false);
         assert!(result.is_err());
+    }
+
+    // -- whitespace-flexible fallback --
+
+    #[test]
+    fn test_ws_flexible_basic_indent_mismatch() {
+        let body = "fn foo() {\n        let x = 1;\n        let y = 2;\n    }";
+        let old = "    let x = 1;\n    let y = 2;";
+        let new = "    let x = 10;\n    let y = 20;";
+        let (result, count) = try_whitespace_flexible_replace(body, old, new, false).unwrap();
+        assert_eq!(count, 1);
+        assert!(result.contains("        let x = 10;"));
+        assert!(result.contains("        let y = 20;"));
+        assert!(!result.contains("let x = 1;"));
+    }
+
+    #[test]
+    fn test_ws_flexible_replace_all() {
+        let body = "fn f() {\n    a();\n    b();\n    a();\n}";
+        let old = "  a();";
+        let new = "  z();";
+        let (result, count) = try_whitespace_flexible_replace(body, old, new, true).unwrap();
+        assert_eq!(count, 2);
+        assert_eq!(result.matches("z()").count(), 2);
+        assert_eq!(result.matches("a()").count(), 0);
+    }
+
+    #[test]
+    fn test_ws_flexible_no_match_returns_none() {
+        let body = "fn foo() {\n    let x = 1;\n}";
+        let old = "let y = 99;";
+        assert!(try_whitespace_flexible_replace(body, old, "z", false).is_none());
+    }
+
+    #[test]
+    fn test_ws_flexible_preserves_relative_indent() {
+        let body = "impl Foo {\n        fn bar() {\n            inner();\n        }\n    }";
+        let old = "    fn bar() {\n        inner();\n    }";
+        let new = "    fn bar() {\n        outer();\n        extra();\n    }";
+        let (result, _) = try_whitespace_flexible_replace(body, old, new, false).unwrap();
+        assert!(result.contains("        fn bar() {"));
+        assert!(result.contains("            outer();"));
+        assert!(result.contains("            extra();"));
+        assert!(result.contains("        }"));
+    }
+
+    #[test]
+    fn test_ws_flexible_trailing_newline_preserved() {
+        let body = "fn f() {\n    old();\n    next();\n}";
+        let old = "  old();";
+        let new = "  new();";
+        let (result, count) = try_whitespace_flexible_replace(body, old, new, false).unwrap();
+        assert_eq!(count, 1);
+        // The line after the match should still be present.
+        assert!(result.contains("    next();"));
+    }
+
+    #[test]
+    fn test_ws_flexible_empty_old_returns_none() {
+        let body = "fn f() {}";
+        assert!(try_whitespace_flexible_replace(body, "", "x", false).is_none());
+        assert!(try_whitespace_flexible_replace(body, "   \n  ", "x", false).is_none());
     }
 
     // -- execute_batch_edit --

@@ -238,6 +238,126 @@ pub const CONCEPT_MAP: &[(&str, ConceptPattern)] = &[
             kind_filters: &[],
         },
     ),
+    // -- C/C++ and systems programming concepts --
+    (
+        "memory allocation",
+        ConceptPattern {
+            label: "Memory Allocation",
+            symbol_queries: &[
+                "malloc", "calloc", "realloc", "free", "alloc", "aligned_malloc",
+                "aligned_free", "mmap", "munmap", "arena", "pool", "allocator",
+            ],
+            text_queries: &[
+                "malloc(", "calloc(", "realloc(", "free(",
+                "new ", "delete ", "aligned_alloc(",
+                "mmap(", "VirtualAlloc", "HeapAlloc",
+            ],
+            kind_filters: &["fn"],
+        },
+    ),
+    (
+        "tensor operations",
+        ConceptPattern {
+            label: "Tensor Operations",
+            symbol_queries: &[
+                "tensor", "matmul", "mul_mat", "conv", "softmax", "layernorm",
+                "attention", "embedding", "quantize", "dequantize",
+            ],
+            text_queries: &[
+                "ggml_tensor", "ggml_mul_mat", "ggml_add", "torch::Tensor",
+                "at::Tensor", "cudnn", "cublas",
+            ],
+            kind_filters: &[],
+        },
+    ),
+    (
+        "simd",
+        ConceptPattern {
+            label: "SIMD / Vectorization",
+            symbol_queries: &[
+                "simd", "avx", "sse", "neon", "wasm_simd", "intrinsic", "vec_dot",
+            ],
+            text_queries: &[
+                "__m128", "__m256", "__m512", "_mm_", "_mm256_", "_mm512_",
+                "vfmadd", "vmulps", "float32x4", "vdotq", "#include <immintrin.h>",
+            ],
+            kind_filters: &[],
+        },
+    ),
+    (
+        "threading",
+        ConceptPattern {
+            label: "Threading / Parallelism",
+            symbol_queries: &[
+                "thread", "pthread", "mutex", "barrier", "atomic", "parallel",
+                "task_queue", "worker", "pool",
+            ],
+            text_queries: &[
+                "pthread_create", "pthread_mutex", "std::thread", "std::mutex",
+                "omp_get_thread_num", "#pragma omp", "atomic_load", "atomic_store",
+            ],
+            kind_filters: &[],
+        },
+    ),
+    (
+        "gpu compute",
+        ConceptPattern {
+            label: "GPU / Compute",
+            symbol_queries: &[
+                "cuda", "metal", "vulkan", "opencl", "sycl", "kernel", "backend",
+                "device", "queue", "command_buffer",
+            ],
+            text_queries: &[
+                "cudaMalloc", "cudaMemcpy", "__global__", "MTLDevice",
+                "vkCreateDevice", "clCreateContext", "ggml_backend",
+            ],
+            kind_filters: &[],
+        },
+    ),
+    (
+        "quantization",
+        ConceptPattern {
+            label: "Quantization",
+            symbol_queries: &[
+                "quantize", "dequantize", "quant", "block_q", "ggml_type",
+            ],
+            text_queries: &[
+                "GGML_TYPE_Q", "block_q4", "block_q8", "quantize_row",
+                "dequantize_row", "ggml_quantize",
+            ],
+            kind_filters: &[],
+        },
+    ),
+    (
+        "file io",
+        ConceptPattern {
+            label: "File I/O",
+            symbol_queries: &[
+                "read", "write", "open", "close", "fopen", "fread", "fwrite",
+                "mmap", "stream", "buffer",
+            ],
+            text_queries: &[
+                "fopen(", "fclose(", "fread(", "fwrite(", "std::ifstream",
+                "std::ofstream", "open(", "read(", "write(",
+            ],
+            kind_filters: &["fn"],
+        },
+    ),
+    (
+        "string processing",
+        ConceptPattern {
+            label: "String Processing",
+            symbol_queries: &[
+                "string", "str", "format", "parse", "split", "token", "utf8",
+                "encode", "decode",
+            ],
+            text_queries: &[
+                "snprintf", "strlen", "strcmp", "strcat", "std::string",
+                "string_view", "fmt::format",
+            ],
+            kind_filters: &[],
+        },
+    ),
 ];
 
 /// Lightweight English word stemmer for concept matching.
@@ -403,7 +523,7 @@ mod tests {
 
     #[test]
     fn test_match_concept_returns_none_for_unknown() {
-        let concept = match_concept("quantum entanglement");
+        let concept = match_concept("origami folding");
         assert!(concept.is_none());
     }
 
@@ -488,5 +608,33 @@ mod tests {
         let concept = match_concept("serialized data");
         assert!(concept.is_some());
         assert_eq!(concept.unwrap().1.label, "Serialization");
+    }
+
+    #[test]
+    fn test_match_concept_memory_allocation() {
+        let concept = match_concept("memory allocation");
+        assert!(concept.is_some(), "should match memory allocation concept");
+        assert_eq!(concept.unwrap().1.label, "Memory Allocation");
+    }
+
+    #[test]
+    fn test_match_concept_tensor_operations() {
+        let concept = match_concept("tensor operations");
+        assert!(concept.is_some(), "should match tensor ops concept");
+        assert_eq!(concept.unwrap().1.label, "Tensor Operations");
+    }
+
+    #[test]
+    fn test_match_concept_gpu_compute() {
+        let concept = match_concept("gpu compute");
+        assert!(concept.is_some(), "should match gpu concept");
+        assert_eq!(concept.unwrap().1.label, "GPU / Compute");
+    }
+
+    #[test]
+    fn test_match_concept_simd_vectorization() {
+        let concept = match_concept("SIMD intrinsics");
+        assert!(concept.is_some(), "should match simd concept");
+        assert_eq!(concept.unwrap().1.label, "SIMD / Vectorization");
     }
 }

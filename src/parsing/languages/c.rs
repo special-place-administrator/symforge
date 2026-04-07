@@ -1,6 +1,8 @@
 use tree_sitter::Node;
 
-use super::{DocCommentSpec, SymbolSink, collect_symbols, push_named_symbol, walk_children};
+use super::{
+    DocCommentSpec, SymbolSink, collect_symbols, has_child_kind, push_named_symbol, walk_children,
+};
 
 pub(super) const DOC_SPEC: DocCommentSpec = DocCommentSpec {
     comment_node_types: &["comment"],
@@ -22,8 +24,13 @@ fn walk_node(
 ) {
     let kind = match node.kind() {
         "function_definition" => Some(SymbolKind::Function),
-        "struct_specifier" => Some(SymbolKind::Struct),
-        "enum_specifier" => Some(SymbolKind::Enum),
+        // Only extract struct/enum definitions (with a body), not type-reference
+        // usages like `enum ggml_type param` in function signatures.
+        "struct_specifier" if has_child_kind(node, "field_declaration_list") => {
+            Some(SymbolKind::Struct)
+        }
+        "enum_specifier" if has_child_kind(node, "enumerator_list") => Some(SymbolKind::Enum),
+        "enumerator" => Some(SymbolKind::Constant),
         "type_definition" => Some(SymbolKind::Type),
         _ => None,
     };
@@ -70,6 +77,16 @@ fn find_c_name(node: &Node, source: &str) -> Option<String> {
             // The typedef alias is the last type_identifier or identifier before the semicolon
             for child in children.iter().rev() {
                 if child.kind() == "type_identifier" || child.kind() == "identifier" {
+                    return Some(child.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                }
+            }
+            None
+        }
+        "enumerator" => {
+            // enum Foo { BAR = 1 }; — enumerator's name is an `identifier` child.
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "identifier" {
                     return Some(child.utf8_text(source.as_bytes()).unwrap_or("").to_string());
                 }
             }
@@ -172,6 +189,57 @@ mod tests {
         let e = symbols.iter().find(|s| s.kind == SymbolKind::Enum);
         assert!(e.is_some(), "should extract enum, got: {:?}", symbols);
         assert_eq!(e.unwrap().name, "Color");
+    }
+
+    #[test]
+    fn test_c_language_enum_variants_extracted() {
+        let source = "enum Color { RED, GREEN = 1, BLUE };";
+        let symbols = parse_c(source);
+        let variants: Vec<_> = symbols
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Constant)
+            .collect();
+        assert_eq!(variants.len(), 3, "should extract 3 variants, got: {:?}", variants);
+        let names: Vec<&str> = variants.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"RED"), "missing RED");
+        assert!(names.contains(&"GREEN"), "missing GREEN");
+        assert!(names.contains(&"BLUE"), "missing BLUE");
+    }
+
+    #[test]
+    fn test_c_language_enum_variants_nested_under_enum() {
+        let source = "enum Status {\n    OK = 0,\n    ERR = 1\n};";
+        let symbols = parse_c(source);
+        let enum_sym = symbols.iter().find(|s| s.kind == SymbolKind::Enum).unwrap();
+        let variants: Vec<_> = symbols
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Constant)
+            .collect();
+        // Variants should be at greater depth than the enum
+        for v in &variants {
+            assert!(
+                v.depth > enum_sym.depth,
+                "variant {} depth {} should be > enum depth {}",
+                v.name, v.depth, enum_sym.depth
+            );
+        }
+    }
+
+    #[test]
+    fn test_c_language_enum_in_param_not_extracted() {
+        // `enum Color` used as a parameter type should NOT create an Enum symbol.
+        let source = "void paint(enum Color c) { }";
+        let symbols = parse_c(source);
+        let enums: Vec<_> = symbols.iter().filter(|s| s.kind == SymbolKind::Enum).collect();
+        assert!(enums.is_empty(), "parameter-type enum should not be extracted: {:?}", enums);
+    }
+
+    #[test]
+    fn test_c_language_struct_in_param_not_extracted() {
+        let source = "void draw(struct Point p) { }";
+        let symbols = parse_c(source);
+        let structs: Vec<_> = symbols.iter().filter(|s| s.kind == SymbolKind::Struct).collect();
+        assert!(structs.is_empty(), "parameter-type struct should not be extracted: {:?}", structs);
     }
 
     #[test]
