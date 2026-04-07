@@ -6448,9 +6448,21 @@ impl SymForgeServer {
         let normalized_new_str =
             String::from_utf8(normalized_new).unwrap_or_else(|_| params.0.new_text.clone());
         let (new_body, count) = if params.0.replace_all {
-            let replaced = body_str.replace(&normalized_old_str, &normalized_new_str);
             let count = body_str.matches(&normalized_old_str).count();
-            (replaced, count)
+            if count > 0 {
+                (body_str.replace(&normalized_old_str, &normalized_new_str), count)
+            } else {
+                // Fallback: try whitespace-flexible matching.
+                match edit::try_whitespace_flexible_replace(
+                    body_str,
+                    &normalized_old_str,
+                    &normalized_new_str,
+                    true,
+                ) {
+                    Some(result) => result,
+                    None => (body_str.to_string(), 0), // hits count==0 error below
+                }
+            }
         } else {
             match body_str.find(&normalized_old_str) {
                 Some(_) => (
@@ -6458,23 +6470,34 @@ impl SymForgeServer {
                     1,
                 ),
                 None => {
-                    // Show a preview of the symbol body so the LLM can see what's actually there
-                    let preview_len = 800.min(body_str.len());
-                    let preview = &body_str[..preview_len];
-                    let truncated = if preview_len < body_str.len() {
-                        format!("\n... ({} more bytes)", body_str.len() - preview_len)
-                    } else {
-                        String::new()
-                    };
-                    return format!(
-                        "Error: `{}` not found within symbol `{}`. \
-                         The symbol body is ({} bytes):\n```\n{}{}\n```",
-                        params.0.old_text,
-                        params.0.name,
-                        body_str.len(),
-                        preview,
-                        truncated
-                    );
+                    // Fallback: try whitespace-flexible matching.
+                    match edit::try_whitespace_flexible_replace(
+                        body_str,
+                        &normalized_old_str,
+                        &normalized_new_str,
+                        false,
+                    ) {
+                        Some(result) => result,
+                        None => {
+                            // Show a preview of the symbol body so the LLM can see what's actually there
+                            let preview_len = 800.min(body_str.len());
+                            let preview = &body_str[..preview_len];
+                            let truncated = if preview_len < body_str.len() {
+                                format!("\n... ({} more bytes)", body_str.len() - preview_len)
+                            } else {
+                                String::new()
+                            };
+                            return format!(
+                                "Error: `{}` not found within symbol `{}`. \
+                                 The symbol body is ({} bytes):\n```\n{}{}\n```",
+                                params.0.old_text,
+                                params.0.name,
+                                body_str.len(),
+                                preview,
+                                truncated
+                            );
+                        }
+                    }
                 }
             }
         };

@@ -1,6 +1,8 @@
 use tree_sitter::Node;
 
-use super::{DocCommentSpec, SymbolSink, collect_symbols, push_named_symbol, walk_children};
+use super::{
+    DocCommentSpec, SymbolSink, collect_symbols, has_child_kind, push_named_symbol, walk_children,
+};
 
 pub(super) const DOC_SPEC: DocCommentSpec = DocCommentSpec {
     comment_node_types: &["comment"],
@@ -22,10 +24,17 @@ fn walk_node(
 ) {
     let kind = match node.kind() {
         "function_definition" => Some(SymbolKind::Function),
-        "struct_specifier" => Some(SymbolKind::Struct),
-        "enum_specifier" => Some(SymbolKind::Enum),
+        // Only extract struct/enum/class definitions (with a body), not type-reference
+        // usages like `enum ggml_type param` in function signatures.
+        "struct_specifier" if has_child_kind(node, "field_declaration_list") => {
+            Some(SymbolKind::Struct)
+        }
+        "enum_specifier" if has_child_kind(node, "enumerator_list") => Some(SymbolKind::Enum),
+        "enumerator" => Some(SymbolKind::Constant),
         "type_definition" => Some(SymbolKind::Type),
-        "class_specifier" => Some(SymbolKind::Class),
+        "class_specifier" if has_child_kind(node, "field_declaration_list") => {
+            Some(SymbolKind::Class)
+        }
         "namespace_definition" => Some(SymbolKind::Module),
         // template_declaration: handled by walk_children recursion into inner symbol
         _ => None,
@@ -72,6 +81,15 @@ fn find_cpp_name(node: &Node, source: &str) -> Option<String> {
             let children: Vec<_> = node.children(&mut cursor).collect();
             for child in children.iter().rev() {
                 if child.kind() == "type_identifier" || child.kind() == "identifier" {
+                    return Some(child.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                }
+            }
+            None
+        }
+        "enumerator" => {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "identifier" {
                     return Some(child.utf8_text(source.as_bytes()).unwrap_or("").to_string());
                 }
             }
@@ -189,6 +207,40 @@ mod tests {
         let e = symbols.iter().find(|s| s.kind == SymbolKind::Enum);
         assert!(e.is_some(), "should extract enum, got: {:?}", symbols);
         assert_eq!(e.unwrap().name, "Color");
+    }
+
+    #[test]
+    fn test_cpp_language_enum_variants_extracted() {
+        let source = "enum class Direction { NORTH, SOUTH = 2, EAST, WEST };";
+        let symbols = parse_cpp(source);
+        let variants: Vec<_> = symbols
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Constant)
+            .collect();
+        assert_eq!(variants.len(), 4, "should extract 4 variants, got: {:?}", variants);
+        let names: Vec<&str> = variants.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"NORTH"), "missing NORTH");
+        assert!(names.contains(&"SOUTH"), "missing SOUTH");
+        assert!(names.contains(&"EAST"), "missing EAST");
+        assert!(names.contains(&"WEST"), "missing WEST");
+    }
+
+    #[test]
+    fn test_cpp_language_enum_variants_nested_under_enum() {
+        let source = "enum Flags {\n    A = 1,\n    B = 2\n};";
+        let symbols = parse_cpp(source);
+        let enum_sym = symbols.iter().find(|s| s.kind == SymbolKind::Enum).unwrap();
+        let variants: Vec<_> = symbols
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Constant)
+            .collect();
+        for v in &variants {
+            assert!(
+                v.depth > enum_sym.depth,
+                "variant {} depth {} should be > enum depth {}",
+                v.name, v.depth, enum_sym.depth
+            );
+        }
     }
 
     #[test]

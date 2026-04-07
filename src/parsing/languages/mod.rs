@@ -219,6 +219,13 @@ pub(super) fn next_child_depth(kind: Option<SymbolKind>, depth: u32) -> u32 {
     if kind.is_some() { depth + 1 } else { depth }
 }
 
+/// Check whether `node` has a direct child with the given tree-sitter node kind.
+/// Used to distinguish definitions (which have a body) from type-reference usages.
+pub(super) fn has_child_kind(node: &Node, kind: &str) -> bool {
+    let mut cursor = node.walk();
+    node.children(&mut cursor).any(|c| c.kind() == kind)
+}
+
 pub(super) fn walk_children(
     node: &Node,
     source: &str,
