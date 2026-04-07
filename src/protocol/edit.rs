@@ -2787,6 +2787,27 @@ mod tests {
         assert_eq!(result.unwrap().0, 1);
     }
 
+    #[test]
+    fn test_resolve_or_error_impl_prefix_fallback() {
+        // LLMs often send "Trait for Type" instead of "impl Trait for Type"
+        let file = make_test_indexed_file(vec![
+            make_test_symbol("impl MyTrait for MyStruct", SymbolKind::Impl, (0, 50), 1),
+        ]);
+        // Without the `impl ` prefix — should still resolve
+        let result = resolve_or_error(&file, "MyTrait for MyStruct", None, None);
+        assert!(result.is_ok(), "should resolve impl without prefix: {:?}", result);
+    }
+
+    #[test]
+    fn test_resolve_or_error_impl_prefix_fallback_inherent() {
+        // LLMs send "MyStruct" instead of "impl MyStruct"
+        let file = make_test_indexed_file(vec![
+            make_test_symbol("impl MyStruct", SymbolKind::Impl, (0, 50), 1),
+        ]);
+        let result = resolve_or_error(&file, "MyStruct", None, None);
+        assert!(result.is_ok(), "should resolve inherent impl without prefix: {:?}", result);
+    }
+
     // -- indentation --
 
     #[test]

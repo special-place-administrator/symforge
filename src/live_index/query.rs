@@ -443,6 +443,30 @@ pub(crate) fn resolve_symbol_selector<'a>(
         candidates.retain(|(_, symbol)| symbol.line_range.0 + 1 == symbol_line);
     }
 
+    // Fallback: LLMs often drop the `impl ` prefix when referring to impl blocks
+    // (e.g. "Trait for Type" instead of "impl Trait for Type", or "Type" instead
+    // of "impl Type").  Try prepending "impl " when exact match finds nothing.
+    if candidates.is_empty() {
+        let impl_name = format!("impl {name}");
+        let mut retry: Vec<(usize, &SymbolRecord)> = file
+            .symbols
+            .iter()
+            .enumerate()
+            .filter(|(_, symbol)| {
+                symbol.name == impl_name
+                    && symbol_kind
+                        .map(|kind| symbol.kind.to_string().eq_ignore_ascii_case(kind))
+                        .unwrap_or(true)
+            })
+            .collect();
+        if let Some(sl) = symbol_line {
+            retry.retain(|(_, symbol)| symbol.line_range.0 + 1 == sl);
+        }
+        if !retry.is_empty() {
+            candidates = retry;
+        }
+    }
+
     match candidates.len() {
         0 => SymbolSelectorMatch::NotFound,
         1 => {
