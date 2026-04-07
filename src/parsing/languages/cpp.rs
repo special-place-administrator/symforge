@@ -125,15 +125,9 @@ fn extract_declarator_name(node: &Node, source: &str) -> Option<String> {
     match node.kind() {
         "identifier" => Some(node.utf8_text(source.as_bytes()).unwrap_or("").to_string()),
         "qualified_identifier" => {
-            // Take the last identifier segment: "Foo::bar" -> "bar"
-            let mut cursor = node.walk();
-            let mut last_ident = None;
-            for child in node.children(&mut cursor) {
-                if child.kind() == "identifier" || child.kind() == "type_identifier" {
-                    last_ident = Some(child.utf8_text(source.as_bytes()).unwrap_or("").to_string());
-                }
-            }
-            last_ident
+            // Preserve the full qualified name: "Foo::bar" stays "Foo::bar".
+            // LLMs see the qualified form in source and will send it to edit tools.
+            Some(node.utf8_text(source.as_bytes()).unwrap_or("").to_string())
         }
         "destructor_name" => {
             // ~ClassName
@@ -285,8 +279,8 @@ mod tests {
             "should extract qualified method, got: {:?}",
             symbols
         );
-        // Should extract just the method name (last segment)
-        assert_eq!(func.unwrap().name, "bar");
+        // Should preserve the full qualified name
+        assert_eq!(func.unwrap().name, "Foo::bar");
     }
 
     #[test]
