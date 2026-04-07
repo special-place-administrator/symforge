@@ -1,6 +1,6 @@
 ![SymForge](./symforge-banner_02.png)
 
-A code-native MCP server that gives AI coding agents structured, symbol-aware access to codebases. Built in Rust with tree-sitter, it replaces raw file scanning with tools that understand code as symbols, references, dependency graphs, and git history through a single MCP connection.
+A code-native MCP server that gives AI coding agents structured, symbol language-aware navigation across your codebase. Built in Rust with tree-sitter, it replaces raw file scanning with tools that understand code as symbols, references, dependency graphs, and git history through a single MCP connection.
 
 Works with MCP-compatible clients including Claude Code, Codex, Gemini CLI, VS Code MCP, Kilo Code, Roo Code, Cline, Continue, JetBrains plugins, and custom agents.
 
