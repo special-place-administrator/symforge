@@ -118,15 +118,8 @@ fn extract_declarator_name(node: &Node, source: &str) -> Option<String> {
     match node.kind() {
         "identifier" => Some(node.utf8_text(source.as_bytes()).unwrap_or("").to_string()),
         "qualified_identifier" => {
-            // C++ style: take the last identifier segment
-            let mut cursor = node.walk();
-            let mut last_ident = None;
-            for child in node.children(&mut cursor) {
-                if child.kind() == "identifier" || child.kind() == "type_identifier" {
-                    last_ident = Some(child.utf8_text(source.as_bytes()).unwrap_or("").to_string());
-                }
-            }
-            last_ident
+            // Preserve the full qualified name so edit tools match what the LLM sees.
+            Some(node.utf8_text(source.as_bytes()).unwrap_or("").to_string())
         }
         _ => {
             // Recurse into pointer_declarator, function_declarator, abstract_declarator etc.
