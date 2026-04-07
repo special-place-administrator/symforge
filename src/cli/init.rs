@@ -1,13 +1,15 @@
-//! `symforge init` command — client-aware Claude/Codex/Gemini/Kilo Code configuration.
+//! `symforge init` command — client-aware Claude/Claude Desktop/Codex/Gemini/Kilo Code configuration.
 //!
 //! Strategy:
 //! 1. Discover the absolute path of the running symforge binary.
-//! 2. Configure Claude, Codex, Gemini, Kilo Code, or all based on the selected client target.
-//! 3. For Claude, merge symforge hook entries into `~/.claude/settings.json`
+//! 2. Configure Claude, Claude Desktop, Codex, Gemini, Kilo Code, or all based on the selected client target.
+//! 3. For Claude (Code), merge symforge hook entries into `~/.claude/settings.json`
 //!    and register the MCP server in `~/.claude.json`.
-//! 4. For Codex, register the MCP server in `~/.codex/config.toml`.
-//! 5. For Kilo Code, register the MCP server in `.kilocode/mcp.json` (workspace-local).
-//! 6. Create `.symforge/` in the current working directory (runtime needs it).
+//! 4. For Claude Desktop, register the MCP server in `claude_desktop_config.json`.
+//!    On Windows, a `.cmd` wrapper is generated to fix the System32 CWD issue.
+//! 5. For Codex, register the MCP server in `~/.codex/config.toml`.
+//! 6. For Kilo Code, register the MCP server in `.kilocode/mcp.json` (workspace-local).
+//! 7. Create `.symforge/` in the current working directory (runtime needs it).
 //!
 //! Identification: any hook entry whose `hooks[].command` contains the substring
 //! `"symforge hook"` is considered a symforge-owned entry and will be replaced.
@@ -31,6 +33,7 @@ struct InitPaths {
     claude_settings: PathBuf,
     claude_config: PathBuf,
     claude_memory: PathBuf,
+    claude_desktop_config: PathBuf,
     codex_config: PathBuf,
     codex_agents: PathBuf,
     gemini_settings: PathBuf,
@@ -42,10 +45,32 @@ struct InitPaths {
 
 impl InitPaths {
     fn from_home_and_working_dir(home: &std::path::Path, working_dir: &std::path::Path) -> Self {
+        // Claude Desktop config path varies by platform:
+        // - Windows: %APPDATA%\Claude\claude_desktop_config.json
+        // - macOS:   ~/Library/Application Support/Claude/claude_desktop_config.json
+        // - Linux:   ~/.config/Claude/claude_desktop_config.json
+        let claude_desktop_config = if cfg!(windows) {
+            std::env::var("APPDATA")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| home.join("AppData").join("Roaming"))
+                .join("Claude")
+                .join("claude_desktop_config.json")
+        } else if cfg!(target_os = "macos") {
+            home.join("Library")
+                .join("Application Support")
+                .join("Claude")
+                .join("claude_desktop_config.json")
+        } else {
+            home.join(".config")
+                .join("Claude")
+                .join("claude_desktop_config.json")
+        };
+
         Self {
             claude_settings: home.join(".claude").join("settings.json"),
             claude_config: home.join(".claude.json"),
             claude_memory: home.join(".claude").join("CLAUDE.md"),
+            claude_desktop_config,
             codex_config: home.join(".codex").join("config.toml"),
             codex_agents: home.join(".codex").join("AGENTS.md"),
             gemini_settings: home.join(".gemini").join("settings.json"),
@@ -109,6 +134,17 @@ pub fn run_init_with_context(
         eprintln!(
             "Claude guidance written to {}",
             paths.claude_memory.display()
+        );
+    }
+
+    if matches!(client, InitClient::ClaudeDesktop | InitClient::All) {
+        register_claude_desktop_mcp_server(
+            &paths.claude_desktop_config,
+            &binary_path_str,
+        )?;
+        eprintln!(
+            "Claude Desktop MCP server registered in {}",
+            paths.claude_desktop_config.display()
         );
     }
 
@@ -504,6 +540,81 @@ pub fn register_mcp_server(
         .with_context(|| format!("writing {}", claude_json_path.display()))?;
 
     Ok(())
+}
+
+/// Register symforge as an MCP server in Claude Desktop's `claude_desktop_config.json`.
+///
+/// On Windows, Claude Desktop launches MCP servers with CWD = `C:\WINDOWS\System32`,
+/// which causes symforge to crash with "Access is denied (os error 5)" when it tries
+/// to write files. We work around this by generating a thin `.cmd` wrapper that changes
+/// directory to `%USERPROFILE%` before launching the real binary.
+///
+/// On other platforms the binary is registered directly (no CWD issue).
+pub fn register_claude_desktop_mcp_server(
+    desktop_config_path: &std::path::Path,
+    binary_path: &str,
+) -> anyhow::Result<()> {
+    if let Some(parent) = desktop_config_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+
+    let mut config: Value = if desktop_config_path.exists() {
+        let raw = std::fs::read_to_string(desktop_config_path)
+            .with_context(|| format!("reading {}", desktop_config_path.display()))?;
+        serde_json::from_str(&raw)
+            .with_context(|| format!("parsing {}", desktop_config_path.display()))?
+    } else {
+        json!({})
+    };
+
+    if !config["mcpServers"].is_object() {
+        config["mcpServers"] = json!({});
+    }
+
+    let command_path = if cfg!(windows) {
+        // Generate a wrapper script that sets CWD before launching symforge.
+        let wrapper_path = create_desktop_wrapper_windows(binary_path)?;
+        native_command_path(&wrapper_path)
+    } else {
+        native_command_path(binary_path)
+    };
+
+    config["mcpServers"]["symforge"] = json!({
+        "command": command_path,
+        "args": [],
+        "env": {}
+    });
+
+    let pretty = serde_json::to_string_pretty(&config)?;
+    std::fs::write(desktop_config_path, pretty)
+        .with_context(|| format!("writing {}", desktop_config_path.display()))?;
+
+    Ok(())
+}
+
+/// Create a `.cmd` wrapper next to the symforge binary that sets CWD before launching it.
+///
+/// Returns the absolute path to the wrapper script.
+#[cfg(windows)]
+fn create_desktop_wrapper_windows(binary_path: &str) -> anyhow::Result<String> {
+    let bin_path = std::path::Path::new(binary_path);
+    let wrapper_dir = bin_path
+        .parent()
+        .context("cannot determine parent directory of symforge binary")?;
+    let wrapper_path = wrapper_dir.join("symforge-desktop.cmd");
+
+    let script = "@echo off\r\ncd /d \"%USERPROFILE%\"\r\n\"%~dp0symforge.exe\" %*\r\n";
+
+    std::fs::write(&wrapper_path, script)
+        .with_context(|| format!("writing {}", wrapper_path.display()))?;
+
+    Ok(wrapper_path.display().to_string())
+}
+
+#[cfg(not(windows))]
+fn create_desktop_wrapper_windows(_binary_path: &str) -> anyhow::Result<String> {
+    unreachable!("desktop wrapper is only created on Windows")
 }
 
 /// Register symforge as an MCP server in `~/.codex/config.toml`.

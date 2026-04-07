@@ -46,6 +46,8 @@ pub enum Commands {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum InitClient {
     Claude,
+    #[value(name = "claude-desktop", alias = "desktop")]
+    ClaudeDesktop,
     Codex,
     Gemini,
     #[value(name = "kilo-code", alias = "kilo")]
