@@ -1,5 +1,12 @@
 # Changelog
 
+## [7.3.0](https://github.com/special-place-administrator/symforge/compare/v7.2.0...v7.3.0) (2026-04-07)
+
+
+### Features
+
+* add Claude Desktop MCP server registration with Windows CWD fix ([c6c4377](https://github.com/special-place-administrator/symforge/commit/c6c437799841cf11ab3ffae910716781a8e4dc80))
+
 ## [7.2.0](https://github.com/special-place-administrator/symforge/compare/v7.1.0...v7.2.0) (2026-04-07)
 
 
