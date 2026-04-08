@@ -141,6 +141,7 @@ impl SymForgeServer {
                     depth: None,
                     max_files: None,
                     estimate: None,
+                    max_tokens: None,
                 }))
                 .await
             }
@@ -151,6 +152,7 @@ impl SymForgeServer {
                     depth: None,
                     max_files: None,
                     estimate: None,
+                    max_tokens: None,
                 }))
                 .await
             }
@@ -164,6 +166,7 @@ impl SymForgeServer {
                     code_only: None,
                     include_symbol_diff: None,
                     estimate: None,
+                    max_tokens: None,
                 }))
                 .await
             }

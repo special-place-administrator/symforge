@@ -300,6 +300,9 @@ pub struct SearchSymbolsInput {
     /// When true, return an approximate token cost estimate instead of actual content.
     #[serde(default, deserialize_with = "lenient_bool")]
     pub estimate: Option<bool>,
+    /// Optional maximum token budget for the response.
+    #[serde(default, deserialize_with = "lenient_u64")]
+    pub max_tokens: Option<u64>,
 }
 
 /// Input for `search_text`.
@@ -360,6 +363,9 @@ pub struct SearchTextInput {
     /// When true, return an approximate token cost estimate instead of actual content.
     #[serde(default, deserialize_with = "lenient_bool")]
     pub estimate: Option<bool>,
+    /// Optional maximum token budget for the response. Output is truncated at a line boundary if exceeded.
+    #[serde(default, deserialize_with = "lenient_u64")]
+    pub max_tokens: Option<u64>,
 }
 
 /// Input for `search_files`.
@@ -381,6 +387,9 @@ pub struct SearchFilesInput {
     /// When true, return an approximate token cost estimate instead of actual content.
     #[serde(default, deserialize_with = "lenient_bool")]
     pub estimate: Option<bool>,
+    /// Optional maximum token budget for the response.
+    #[serde(default, deserialize_with = "lenient_u64")]
+    pub max_tokens: Option<u64>,
 }
 
 /// Input for `index_folder`.
@@ -418,6 +427,9 @@ pub struct WhatChangedInput {
     /// When true, return an approximate token cost estimate instead of actual content.
     #[serde(default, deserialize_with = "lenient_bool")]
     pub estimate: Option<bool>,
+    /// Optional maximum token budget for the response.
+    #[serde(default, deserialize_with = "lenient_u64")]
+    pub max_tokens: Option<u64>,
 }
 
 /// Input for `get_file_content`.
@@ -510,6 +522,9 @@ pub struct FindReferencesInput {
     /// When true, return an approximate token cost estimate instead of actual content.
     #[serde(default, deserialize_with = "lenient_bool")]
     pub estimate: Option<bool>,
+    /// Optional maximum token budget for the response.
+    #[serde(default, deserialize_with = "lenient_u64")]
+    pub max_tokens: Option<u64>,
 }
 
 /// Input for `find_dependents`.
@@ -531,6 +546,9 @@ pub struct FindDependentsInput {
     /// When true, return an approximate token cost estimate instead of actual content.
     #[serde(default, deserialize_with = "lenient_bool")]
     pub estimate: Option<bool>,
+    /// Optional maximum token budget for the response.
+    #[serde(default, deserialize_with = "lenient_u64")]
+    pub max_tokens: Option<u64>,
 }
 
 /// Input for `get_repo_map`.
@@ -549,6 +567,9 @@ pub struct GetRepoMapInput {
     /// When true, return an approximate token cost estimate instead of actual content.
     #[serde(default, deserialize_with = "lenient_bool")]
     pub estimate: Option<bool>,
+    /// Optional maximum token budget for the response.
+    #[serde(default, deserialize_with = "lenient_u64")]
+    pub max_tokens: Option<u64>,
 }
 
 /// Input for `get_file_context`.
@@ -665,6 +686,9 @@ pub struct InspectMatchInput {
     /// When true, return an approximate token cost estimate instead of actual content.
     #[serde(default, deserialize_with = "lenient_bool")]
     pub estimate: Option<bool>,
+    /// Optional maximum token budget for the response.
+    #[serde(default, deserialize_with = "lenient_u64")]
+    pub max_tokens: Option<u64>,
 }
 
 /// Input for `explore`.
@@ -691,6 +715,9 @@ pub struct ExploreInput {
     /// When true, return an approximate token cost estimate instead of actual content.
     #[serde(default, deserialize_with = "lenient_bool")]
     pub estimate: Option<bool>,
+    /// Optional maximum token budget for the response.
+    #[serde(default, deserialize_with = "lenient_u64")]
+    pub max_tokens: Option<u64>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -699,6 +726,9 @@ pub struct SmartQueryInput {
     /// "who calls optimize_deterministic", "where is LiveIndex defined",
     /// "how does the parser work", "what changed", "find file tools.rs"
     pub query: String,
+    /// Optional maximum token budget for the response.
+    #[serde(default, deserialize_with = "lenient_u64")]
+    pub max_tokens: Option<u64>,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
@@ -739,6 +769,9 @@ pub struct DiffSymbolsInput {
     /// When true, return an approximate token cost estimate instead of actual content.
     #[serde(default, deserialize_with = "lenient_bool")]
     pub estimate: Option<bool>,
+    /// Optional maximum token budget for the response.
+    #[serde(default, deserialize_with = "lenient_u64")]
+    pub max_tokens: Option<u64>,
 }
 
 enum WhatChangedMode {
@@ -2698,7 +2731,7 @@ impl SymForgeServer {
             "get_repo_map",
             (output.len() / 4).min(u32::MAX as usize) as u32,
         );
-        output
+        format::enforce_token_budget(output, params.0.max_tokens)
     }
 
     /// Rich file summary: symbol outline, imports, consumers, references, and git activity.
@@ -3272,7 +3305,7 @@ impl SymForgeServer {
             self.session_context
                 .record_listed_symbol(&hit.path, &hit.name);
         }
-        output
+        format::enforce_token_budget(output, params.0.max_tokens)
     }
 
     /// Full-text search across file contents — literal, OR-terms, or regex. Shows matches with
@@ -3450,7 +3483,7 @@ impl SymForgeServer {
             "search_text",
             (result.len() / 4).min(u32::MAX as usize) as u32,
         );
-        result
+        format::enforce_token_budget(result, params.0.max_tokens)
     }
 
     /// Internal: trace_symbol logic, called by get_symbol_context when sections are provided.
@@ -3572,7 +3605,7 @@ impl SymForgeServer {
             "inspect_match",
             (output.len() / 4).min(u32::MAX as usize) as u32,
         );
-        output
+        format::enforce_token_budget(output, params.0.max_tokens)
     }
 
     /// Find files by path, filename, or folder — ranked by relevance. With changed_with=path,
@@ -3642,7 +3675,8 @@ impl SymForgeServer {
                 Some(envelope) => format!("{envelope}\n\n{output}"),
                 None => output,
             };
-            self.session_context.record_summary_output(
+            let result = format::enforce_token_budget(result, params.0.max_tokens);
+        self.session_context.record_summary_output(
                 "search_files",
                 (result.len() / 4).min(u32::MAX as usize) as u32,
             );
@@ -4130,7 +4164,7 @@ impl SymForgeServer {
                                     "what_changed",
                                     (result.len() / 4).min(u32::MAX as usize) as u32,
                                 );
-                                result
+                                format::enforce_token_budget(result, params.0.max_tokens)
                             }
                             Err(e) => e,
                         }
@@ -4563,10 +4597,11 @@ impl SymForgeServer {
                     (output.len() / 4).min(u32::MAX as usize) as u32,
                 );
                 self.session_context.record_listed_symbol("", &input.name);
-                match envelope {
+                let result = match envelope {
                     Some(envelope) => format!("{envelope}\n\n{output}"),
                     None => output,
-                }
+                };
+                format::enforce_token_budget(result, params.0.max_tokens)
             }
             Err(error) => error,
         }
@@ -4605,7 +4640,7 @@ impl SymForgeServer {
             "find_dependents",
             (output.len() / 4).min(u32::MAX as usize) as u32,
         );
-        output
+        format::enforce_token_budget(output, params.0.max_tokens)
     }
 
     /// Extract query terms that aren't part of the matched concept key,
@@ -5602,7 +5637,7 @@ impl SymForgeServer {
         );
         self.session_context
             .record_summary_output("explore", (output.len() / 4).min(u32::MAX as usize) as u32);
-        output
+        format::enforce_token_budget(output, params.0.max_tokens)
     }
 
     #[tool(
@@ -5735,6 +5770,7 @@ impl SymForgeServer {
                     mode: None,
                     direction: None,
                     estimate: None,
+                    max_tokens: None,
                 };
                 self.find_references(Parameters(input)).await
             }
@@ -5748,6 +5784,7 @@ impl SymForgeServer {
                     include_generated: None,
                     include_tests: None,
                     estimate: None,
+                    max_tokens: None,
                 };
                 self.search_symbols(Parameters(input)).await
             }
@@ -5759,6 +5796,7 @@ impl SymForgeServer {
                     changed_with: None,
                     resolve: None,
                     estimate: None,
+                    max_tokens: None,
                 };
                 self.search_files(Parameters(input)).await
             }
@@ -5772,6 +5810,7 @@ impl SymForgeServer {
                     code_only: Some(true),
                     include_symbol_diff: Some(true),
                     estimate: None,
+                    max_tokens: None,
                 };
                 self.what_changed(Parameters(input)).await
             }
@@ -5784,6 +5823,7 @@ impl SymForgeServer {
                     language: None,
                     path_prefix: None,
                     estimate: None,
+                    max_tokens: None,
                 };
                 self.explore(Parameters(input)).await
             }
@@ -5815,6 +5855,7 @@ impl SymForgeServer {
                     mode: Some("implementations".to_string()),
                     direction: None,
                     estimate: None,
+                    max_tokens: None,
                 };
                 self.find_references(Parameters(input)).await
             }
@@ -5839,6 +5880,7 @@ impl SymForgeServer {
                     include_generated: None,
                     include_tests: None,
                     estimate: None,
+                    max_tokens: None,
                 };
                 self.search_text(Parameters(input)).await
             }
@@ -5850,6 +5892,7 @@ impl SymForgeServer {
                     format: None,
                     compact: Some(true),
                     estimate: None,
+                    max_tokens: None,
                 };
                 self.find_dependents(Parameters(input)).await
             }
@@ -5866,6 +5909,7 @@ impl SymForgeServer {
                     mode: Some("implementations".to_string()),
                     direction: None,
                     estimate: None,
+                    max_tokens: None,
                 };
                 self.find_references(Parameters(input)).await
             }
@@ -5878,6 +5922,7 @@ impl SymForgeServer {
                     language: None,
                     path_prefix: None,
                     estimate: None,
+                    max_tokens: None,
                 };
                 self.explore(Parameters(input)).await
             }
@@ -5900,7 +5945,7 @@ impl SymForgeServer {
         let output = format!("{envelope}\n{route_desc}\n\n{result}");
         self.session_context
             .record_summary_output("ask", (output.len() / 4).min(u32::MAX as usize) as u32);
-        output
+        format::enforce_token_budget(output, params.0.max_tokens)
     }
 
     /// Symbol-level diff between two git refs. Shows +added, -removed, ~modified symbols per changed
@@ -6013,7 +6058,7 @@ impl SymForgeServer {
             "diff_symbols",
             (output.len() / 4).min(u32::MAX as usize) as u32,
         );
-        output
+        format::enforce_token_budget(output, params.0.max_tokens)
     }
 
     // ─── Edit tools (Tier 1) ─────────────────────────────────────────────────
@@ -7164,6 +7209,7 @@ mod tests {
                 depth: None,
                 max_files: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert!(
@@ -7182,6 +7228,7 @@ mod tests {
                 depth: None,
                 max_files: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert_eq!(result, crate::protocol::format::empty_guard_message());
@@ -7231,6 +7278,7 @@ mod tests {
                 depth: None,
                 max_files: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert!(
@@ -7254,6 +7302,7 @@ mod tests {
                 depth: None,
                 max_files: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
 
@@ -8036,6 +8085,7 @@ mod tests {
                 code_only: None,
                 include_symbol_diff: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
 
@@ -8060,6 +8110,7 @@ mod tests {
                 include_generated: None,
                 include_tests: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert!(
@@ -8100,6 +8151,7 @@ mod tests {
                 include_generated: None,
                 include_tests: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert!(
@@ -8142,6 +8194,7 @@ mod tests {
                 include_generated: None,
                 include_tests: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
 
@@ -8213,6 +8266,7 @@ mod tests {
                 include_generated: None,
                 include_tests: None, // default: false
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
 
@@ -8256,6 +8310,7 @@ mod tests {
                 include_generated: Some(true),
                 include_tests: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
 
@@ -8303,6 +8358,7 @@ mod tests {
                 include_generated: None,
                 include_tests: Some(true),
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
 
@@ -8351,6 +8407,7 @@ mod tests {
                 include_generated: None,
                 include_tests: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
 
@@ -8396,6 +8453,7 @@ mod tests {
                 include_generated: None,
                 include_tests: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert!(
@@ -8423,6 +8481,7 @@ mod tests {
                 include_generated: None,
                 include_tests: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert!(
@@ -8450,6 +8509,7 @@ mod tests {
                 include_generated: None,
                 include_tests: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert!(
@@ -8477,6 +8537,7 @@ mod tests {
                 include_generated: None,
                 include_tests: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert!(
@@ -8510,6 +8571,7 @@ mod tests {
                 follow_refs_limit: None,
                 ranked: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert!(
@@ -8573,6 +8635,7 @@ mod tests {
                 follow_refs_limit: None,
                 ranked: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
 
@@ -8616,6 +8679,7 @@ mod tests {
                 follow_refs_limit: None,
                 ranked: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert!(
@@ -8664,6 +8728,7 @@ mod tests {
                 follow_refs_limit: None,
                 ranked: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
 
@@ -8704,6 +8769,7 @@ mod tests {
                 follow_refs_limit: None,
                 ranked: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
 
@@ -8756,6 +8822,7 @@ mod tests {
                 follow_refs_limit: None,
                 ranked: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
 
@@ -8808,6 +8875,7 @@ mod tests {
                 follow_refs_limit: None,
                 ranked: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
 
@@ -8852,6 +8920,7 @@ mod tests {
                 follow_refs_limit: None,
                 ranked: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
 
@@ -8899,6 +8968,7 @@ mod tests {
                 follow_refs_limit: None,
                 ranked: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
 
@@ -8937,6 +9007,7 @@ mod tests {
                 follow_refs_limit: None,
                 ranked: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
 
@@ -8987,6 +9058,7 @@ mod tests {
                 follow_refs_limit: None,
                 ranked: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
 
@@ -9023,6 +9095,7 @@ mod tests {
                 follow_refs_limit: None,
                 ranked: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
 
@@ -9051,6 +9124,7 @@ mod tests {
                 changed_with: None,
                 resolve: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert!(result.contains("2 matching files"), "got: {result}");
@@ -9083,6 +9157,7 @@ mod tests {
                 changed_with: None,
                 resolve: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert_eq!(result, "No indexed source files matching 'src/service.rs'");
@@ -9101,6 +9176,7 @@ mod tests {
                 changed_with: Some("src/daemon.rs".to_string()),
                 resolve: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         // Without git temporal data, should return informative message (not an error/panic)
@@ -9163,6 +9239,7 @@ mod tests {
                 changed_with: Some("src/auth.rs".to_string()),
                 resolve: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
 
@@ -9186,6 +9263,7 @@ mod tests {
                 changed_with: None,
                 resolve: Some(true),
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert!(
@@ -9213,6 +9291,7 @@ mod tests {
                 changed_with: None,
                 resolve: Some(true),
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert!(
@@ -9316,6 +9395,7 @@ mod tests {
                 code_only: None,
                 include_symbol_diff: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert!(
@@ -9350,6 +9430,7 @@ mod tests {
                 code_only: None,
                 include_symbol_diff: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert!(
@@ -9398,6 +9479,7 @@ mod tests {
                 code_only: None,
                 include_symbol_diff: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert!(
@@ -9441,6 +9523,7 @@ mod tests {
                 code_only: None,
                 include_symbol_diff: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert!(
@@ -9469,6 +9552,7 @@ mod tests {
                 code_only: None,
                 include_symbol_diff: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert!(
@@ -9509,6 +9593,7 @@ mod tests {
                 code_only: None,
                 include_symbol_diff: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert!(
@@ -10775,6 +10860,7 @@ mod tests {
                 language: None,
                 path_prefix: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert!(
@@ -10813,6 +10899,7 @@ mod tests {
                 language: None,
                 path_prefix: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert!(
@@ -10869,6 +10956,7 @@ mod tests {
                 language: None,
                 path_prefix: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert!(
@@ -10892,6 +10980,7 @@ mod tests {
                 language: None,
                 path_prefix: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert!(
@@ -10912,6 +11001,7 @@ mod tests {
                 language: None,
                 path_prefix: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert!(
@@ -10944,6 +11034,7 @@ mod tests {
                 language: None,
                 path_prefix: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert!(
@@ -10980,6 +11071,7 @@ mod tests {
                 language: None,
                 path_prefix: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert!(
@@ -11026,6 +11118,7 @@ mod tests {
                 language: None,
                 path_prefix: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
 
@@ -11080,6 +11173,7 @@ mod tests {
                 language: None,
                 path_prefix: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
 
@@ -11172,6 +11266,7 @@ mod tests {
                 language: None,
                 path_prefix: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
 
@@ -11223,6 +11318,7 @@ mod tests {
                 language: None,
                 path_prefix: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
 
@@ -11262,6 +11358,7 @@ mod tests {
                 language: None,
                 path_prefix: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert!(
@@ -11294,6 +11391,7 @@ mod tests {
                 language: None,
                 path_prefix: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert!(
@@ -11326,6 +11424,7 @@ mod tests {
                 language: None,
                 path_prefix: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert!(
@@ -11371,6 +11470,7 @@ mod tests {
                 language: None,
                 path_prefix: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert!(
@@ -11407,6 +11507,7 @@ mod tests {
                 language: None,
                 path_prefix: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert!(
@@ -11439,6 +11540,7 @@ mod tests {
                 language: None,
                 path_prefix: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert!(
@@ -11591,6 +11693,7 @@ mod tests {
                 context: None,
                 sibling_limit: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
 
@@ -11625,6 +11728,7 @@ mod tests {
                 context: Some(0),
                 sibling_limit: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
 
@@ -11663,6 +11767,7 @@ mod tests {
                 context: Some(0),
                 sibling_limit: Some(5),
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
 
@@ -11700,6 +11805,7 @@ mod tests {
                 context: Some(0),
                 sibling_limit: Some(0),
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
 
@@ -11721,6 +11827,7 @@ mod tests {
                 depth: None,
                 max_files: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert!(
@@ -11743,6 +11850,7 @@ mod tests {
                 depth: None,
                 max_files: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert_eq!(result, crate::protocol::format::empty_guard_message());
@@ -11764,6 +11872,7 @@ mod tests {
                 mode: None,
                 direction: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert_eq!(result, crate::protocol::format::empty_guard_message());
@@ -11780,6 +11889,7 @@ mod tests {
                 format: None,
                 compact: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert_eq!(result, crate::protocol::format::empty_guard_message());
@@ -11950,6 +12060,7 @@ mod tests {
                 mode: None,
                 direction: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         // Should get "No references found" not a guard message
@@ -11999,6 +12110,7 @@ mod tests {
                 mode: None,
                 direction: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
 
@@ -12046,6 +12158,7 @@ mod tests {
                 mode: None,
                 direction: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
 
@@ -12068,6 +12181,7 @@ mod tests {
                 format: None,
                 compact: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert!(
@@ -12107,6 +12221,7 @@ mod tests {
                 limit: None,
                 max_per_file: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
 
@@ -12157,6 +12272,7 @@ mod tests {
                 limit: None,
                 max_per_file: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
 
@@ -12208,6 +12324,7 @@ mod tests {
                 limit: None,
                 max_per_file: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
 
@@ -12235,6 +12352,7 @@ mod tests {
                     include_generated: None,
                     include_tests: None,
                     estimate: None,
+                    max_tokens: None,
                 }))
                 .await;
             assert!(
@@ -12257,6 +12375,7 @@ mod tests {
                 context: None,
                 sibling_limit: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert!(
@@ -12292,6 +12411,7 @@ mod tests {
                 follow_refs_limit: None,
                 ranked: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert!(
@@ -12331,6 +12451,7 @@ mod tests {
                 follow_refs_limit: None,
                 ranked: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         // With group_by: "symbol", should show symbol name and match count
@@ -12371,6 +12492,7 @@ mod tests {
                 follow_refs_limit: None,
                 ranked: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         // Should exclude the "use" import line
@@ -12397,6 +12519,7 @@ mod tests {
                 context: None,
                 sibling_limit: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         assert!(
@@ -12446,6 +12569,7 @@ mod tests {
                 follow_refs_limit: None,
                 ranked: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         // Should show that connect() is called by handler() in src/api.rs
@@ -12488,6 +12612,7 @@ mod tests {
                 follow_refs_limit: None,
                 ranked: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
         // follow_refs ran but found no cross-references — should signal this explicitly
@@ -13366,6 +13491,7 @@ mod tests {
                 include_tests: None,
                 include_generated: None,
                 estimate: None,
+                max_tokens: None,
             };
             let search_result = server.search_text(Parameters(search_input)).await;
             assert!(
@@ -13781,6 +13907,7 @@ mod tests {
 
         let input = super::SmartQueryInput {
             query: "who calls helper".to_string(),
+            max_tokens: None,
         };
         let result = server.ask(Parameters(input)).await;
         assert!(
@@ -13820,6 +13947,7 @@ mod tests {
 
         let input = super::SmartQueryInput {
             query: "LiveIndex".to_string(),
+            max_tokens: None,
         };
         let result = server.ask(Parameters(input)).await;
         assert!(
@@ -13838,6 +13966,7 @@ mod tests {
         let server = make_server(make_live_index_ready(vec![]));
         let input = super::SmartQueryInput {
             query: "error handling patterns".to_string(),
+            max_tokens: None,
         };
         let result = server.ask(Parameters(input)).await;
         assert!(
@@ -13867,6 +13996,7 @@ mod tests {
 
         let input = super::SmartQueryInput {
             query: "how does BusActor work?".to_string(),
+            max_tokens: None,
         };
         let result = server.ask(Parameters(input)).await;
 
@@ -13930,6 +14060,7 @@ mod tests {
 
         let input = super::SmartQueryInput {
             query: "how does MyHandler work?".to_string(),
+            max_tokens: None,
         };
         let result = server.ask(Parameters(input)).await;
 
@@ -13962,6 +14093,7 @@ mod tests {
 
         let input = super::SmartQueryInput {
             query: "how does handle work?".to_string(),
+            max_tokens: None,
         };
         let result = server.ask(Parameters(input)).await;
 
@@ -13991,6 +14123,7 @@ mod tests {
 
         let input = super::SmartQueryInput {
             query: "what are the main actor types?".to_string(),
+            max_tokens: None,
         };
         let result = server.ask(Parameters(input)).await;
 
@@ -14032,6 +14165,7 @@ mod tests {
 
         let input = super::SmartQueryInput {
             query: "what are the main types?".to_string(),
+            max_tokens: None,
         };
         let result = server.ask(Parameters(input)).await;
 
@@ -14061,6 +14195,7 @@ mod tests {
 
         let input = super::SmartQueryInput {
             query: "who calls helper in src/lib.rs".to_string(),
+            max_tokens: None,
         };
         let result = server.ask(Parameters(input)).await;
 
@@ -14376,6 +14511,7 @@ mod tests {
                 compact: Some(true),
                 summary_only: None,
                 estimate: None,
+                max_tokens: None,
             }))
             .await;
 
