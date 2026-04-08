@@ -419,26 +419,14 @@ fn build_post_tool_use_entries(binary_path: &str) -> Vec<Value> {
 }
 
 fn build_pre_tool_use_entries(binary_path: &str) -> Vec<Value> {
-    // One entry per tool so matchers are specific. The pre-tool handler reads
-    // the tool_name from stdin and outputs a suggestion — no sidecar needed.
-    vec![
-        json!({
-            "matcher": "Grep",
-            "hooks": [{"type": "command", "command": format!("{binary_path} hook pre-tool"), "timeout": 2}]
-        }),
-        json!({
-            "matcher": "Read",
-            "hooks": [{"type": "command", "command": format!("{binary_path} hook pre-tool"), "timeout": 2}]
-        }),
-        json!({
-            "matcher": "Glob",
-            "hooks": [{"type": "command", "command": format!("{binary_path} hook pre-tool"), "timeout": 2}]
-        }),
-        json!({
-            "matcher": "Edit",
-            "hooks": [{"type": "command", "command": format!("{binary_path} hook pre-tool"), "timeout": 2}]
-        }),
-    ]
+    // Single entry matching all tools where SymForge can help.
+    // The pre-tool handler reads tool_name from stdin and outputs a suggestion.
+    // When the SymForge sidecar is already running (agent actively using MCP
+    // tools), the hint is suppressed to avoid noise — see run_hook() in hook.rs.
+    vec![json!({
+        "matcher": "Grep|Read|Glob|Edit",
+        "hooks": [{"type": "command", "command": format!("{binary_path} hook pre-tool"), "timeout": 2}]
+    })]
 }
 
 fn build_session_start_entries(binary_path: &str) -> Vec<Value> {

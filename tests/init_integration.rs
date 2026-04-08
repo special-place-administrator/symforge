@@ -520,7 +520,10 @@ fn test_run_init_claude_only_updates_claude_files() {
 fn test_run_init_all_updates_both_clients() {
     let home = TempDir::new().unwrap();
     let cwd = TempDir::new().unwrap();
-    let binary_path = std::path::PathBuf::from(FAKE_BINARY);
+    // On Windows, InitClient::All triggers ClaudeDesktop which writes a .cmd
+    // wrapper next to the binary.  Use a temp dir so the write succeeds.
+    let bin_dir = TempDir::new().unwrap();
+    let binary_path = bin_dir.path().join("symforge");
 
     run_init_with_context(InitClient::All, home.path(), cwd.path(), &binary_path)
         .expect("all-client init must succeed");

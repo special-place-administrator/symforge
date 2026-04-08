@@ -215,10 +215,20 @@ pub fn run_hook(subcommand: Option<&HookSubcommand>) -> anyhow::Result<()> {
 
     // PreTool is a special case: no sidecar call needed, just output a
     // tool-preference suggestion based on the tool_name from stdin.
+    //
+    // Suppress hints when the SymForge sidecar is already running — this means
+    // the agent is actively using SymForge tools and any Read/Grep/Edit calls
+    // are intentional fallbacks (e.g., reading external crate source, editing
+    // files where raw content is needed in context). Only show the hint when
+    // there is no active sidecar, meaning the agent may not realize SymForge
+    // is available.
     if matches!(subcommand, Some(HookSubcommand::PreTool)) {
-        let suggestion = pre_tool_suggestion(&input);
-        if !suggestion.is_empty() {
-            println!("{}", success_json("PreToolUse", &json_escape(&suggestion)));
+        let sidecar_active = read_port_file().is_ok();
+        if !sidecar_active {
+            let suggestion = pre_tool_suggestion(&input);
+            if !suggestion.is_empty() {
+                println!("{}", success_json("PreToolUse", &json_escape(&suggestion)));
+            }
         }
         return Ok(());
     }
