@@ -4,7 +4,8 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
-use parking_lot::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use arc_swap::ArcSwap;
+use parking_lot::{Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
 
 use rayon::prelude::*;
@@ -147,6 +148,18 @@ pub struct CircuitBreakerState {
     threshold: f64,
     /// First few failure details (path, reason) for summary reporting.
     failure_details: Mutex<Vec<(String, String)>>,
+}
+
+impl Clone for CircuitBreakerState {
+    fn clone(&self) -> Self {
+        Self {
+            total: AtomicUsize::new(self.total.load(Ordering::Relaxed)),
+            failed: AtomicUsize::new(self.failed.load(Ordering::Relaxed)),
+            tripped: AtomicBool::new(self.tripped.load(Ordering::Relaxed)),
+            threshold: self.threshold,
+            failure_details: Mutex::new(self.failure_details.lock().clone()),
+        }
+    }
 }
 
 impl CircuitBreakerState {
@@ -297,6 +310,7 @@ pub struct PublishedIndexState {
 }
 
 /// The in-memory index: file contents and parsed symbols for all discovered files.
+#[derive(Clone)]
 pub struct LiveIndex {
     /// Keyed by `relative_path` (forward-slash normalized).
     pub(crate) files: HashMap<String, Arc<IndexedFile>>,
@@ -342,41 +356,39 @@ pub struct PreUpdateSymbol {
 
 /// Central shared handle for the live in-memory index.
 ///
-/// This is intentionally a thin compatibility shell over the current `RwLock<LiveIndex>` so the
-/// project can later attach published read snapshots or other state-machine metadata here without
-/// another repo-wide alias migration.
+/// Uses `ArcSwap` for lock-free concurrent reads. Readers load an `Arc<LiveIndex>` snapshot
+/// without blocking; writers serialize through `write_mutex`, clone-mutate-swap the live
+/// index, then atomically publish derived state. A failed mutation is simply discarded —
+/// readers never observe a partially-mutated index.
 ///
-/// # Lock ordering
-///
-/// When multiple locks must be held simultaneously, always acquire them in this order to prevent
-/// deadlocks:
-///
-/// 1. `live`
-/// 2. `pre_update_symbols`
-/// 3. `published_state`
-/// 4. `published_repo_outline`
-///
-/// `git_temporal` is an independently locked side-table and may be acquired in any position
-/// relative to the others provided it is **not** held while acquiring `live`.
+/// `published_state`, `published_repo_outline`, and `git_temporal` also use `ArcSwap`
+/// for contention-free reads (previously `RwLock<Arc<T>>`).
 pub struct SharedIndexHandle {
-    live: RwLock<LiveIndex>,
-    published_state: RwLock<Arc<PublishedIndexState>>,
-    published_repo_outline: RwLock<Arc<RepoOutlineView>>,
+    live: ArcSwap<LiveIndex>,
+    /// Serializes writers — only one mutation in flight at a time.
+    write_mutex: Mutex<()>,
+    published_state: ArcSwap<PublishedIndexState>,
+    published_repo_outline: ArcSwap<RepoOutlineView>,
     next_generation: AtomicU64,
-    /// Git temporal intelligence — independently locked side-table with
+    /// Git temporal intelligence — independently swapped side-table with
     /// per-file churn, ownership, and co-change data. Populated asynchronously
     /// after index load/reload completes.
-    git_temporal: RwLock<Arc<super::git_temporal::GitTemporalIndex>>,
+    git_temporal: ArcSwap<super::git_temporal::GitTemporalIndex>,
     /// Pre-update symbol snapshots: saved automatically by `update_file` before
     /// the index entry is replaced. Consumed (take) by `analyze_file_impact` to
     /// compute accurate diffs even when the watcher re-indexes before the hook fires.
-    pre_update_symbols: RwLock<HashMap<String, Vec<PreUpdateSymbol>>>,
+    pre_update_symbols: Mutex<HashMap<String, Vec<PreUpdateSymbol>>>,
 }
 
 /// Write guard that republishes lightweight handle state when mutated data is released.
+///
+/// Holds an owned clone of the `LiveIndex`. On drop, if any mutation occurred (via
+/// `DerefMut`), the modified index is swapped into the `ArcSwap` and published state
+/// is refreshed. If no mutation occurred, the clone is simply discarded.
 pub struct SharedIndexWriteGuard<'a> {
     handle: &'a SharedIndexHandle,
-    guard: RwLockWriteGuard<'a, LiveIndex>,
+    _mutex: MutexGuard<'a, ()>,
+    index: Option<LiveIndex>,
     dirty: bool,
 }
 
@@ -385,12 +397,13 @@ impl SharedIndexHandle {
         let published_state = Arc::new(PublishedIndexState::capture(0, &index));
         let published_repo_outline = Arc::new(index.capture_repo_outline_view());
         Self {
-            live: RwLock::new(index),
-            published_state: RwLock::new(published_state),
-            published_repo_outline: RwLock::new(published_repo_outline),
+            live: ArcSwap::new(Arc::new(index)),
+            write_mutex: Mutex::new(()),
+            published_state: ArcSwap::new(published_state),
+            published_repo_outline: ArcSwap::new(published_repo_outline),
             next_generation: AtomicU64::new(1),
-            git_temporal: RwLock::new(Arc::new(super::git_temporal::GitTemporalIndex::pending())),
-            pre_update_symbols: RwLock::new(HashMap::new()),
+            git_temporal: ArcSwap::new(Arc::new(super::git_temporal::GitTemporalIndex::pending())),
+            pre_update_symbols: Mutex::new(HashMap::new()),
         }
     }
 
@@ -398,42 +411,57 @@ impl SharedIndexHandle {
         Arc::new(Self::new(index))
     }
 
-    pub fn read(&self) -> RwLockReadGuard<'_, LiveIndex> {
-        self.live.read()
+    /// Lock-free read: returns a guard that derefs to `&LiveIndex`.
+    ///
+    /// The returned guard holds a snapshot of the index at the time of the call.
+    /// Concurrent writes do not affect the snapshot — they swap in a new `Arc`
+    /// that subsequent `read()` calls will see.
+    pub fn read(&self) -> arc_swap::Guard<Arc<LiveIndex>> {
+        self.live.load()
     }
 
+    /// Acquire exclusive write access. The returned guard holds an owned clone
+    /// of the current `LiveIndex`. Mutations via `DerefMut` mark the guard
+    /// dirty; on drop the modified index is swapped in and published.
     pub fn write(&self) -> SharedIndexWriteGuard<'_> {
+        let mutex = self.write_mutex.lock();
+        let snapshot = (*self.live.load_full()).clone();
         SharedIndexWriteGuard {
             handle: self,
-            guard: self.live.write(),
+            _mutex: mutex,
+            index: Some(snapshot),
             dirty: false,
         }
     }
 
+    /// Lock-free read of the published state snapshot.
     pub fn published_state(&self) -> Arc<PublishedIndexState> {
-        self.published_state.read().clone()
+        self.published_state.load_full()
     }
 
+    /// Lock-free read of the published repo outline.
     pub fn published_repo_outline(&self) -> Arc<RepoOutlineView> {
-        self.published_repo_outline.read().clone()
+        self.published_repo_outline.load_full()
     }
 
     pub fn reload(&self, root: &Path) -> anyhow::Result<()> {
         // Build new index data OUTSIDE the write lock (file I/O + parsing).
-        // Only the final swap acquires the lock, reducing block time from
+        // Only the final swap acquires the mutex, reducing block time from
         // seconds (full I/O) to milliseconds (in-memory index rebuild).
         let data = LiveIndex::build_reload_data(root)?;
-        let mut live = self.live.write();
+        let _wg = self.write_mutex.lock();
+        let mut live = (*self.live.load_full()).clone();
         live.apply_reload_data(data);
-        self.publish_locked(&live);
+        self.swap_and_publish(live);
         Ok(())
     }
 
     pub fn update_file(&self, path: String, file: IndexedFile) {
-        let mut live = self.live.write();
+        let _wg = self.write_mutex.lock();
+        let current = self.live.load_full();
         // Capture pre-update symbols so analyze_file_impact can diff correctly
         // even when the watcher re-indexes before the hook fires.
-        if let Some(existing) = live.get_file(&path) {
+        if let Some(existing) = current.get_file(&path) {
             let snapshot: Vec<PreUpdateSymbol> = existing
                 .symbols
                 .iter()
@@ -444,37 +472,30 @@ impl SharedIndexHandle {
                     byte_range: s.byte_range,
                 })
                 .collect();
-            self.pre_update_symbols
-                .write()
-                .insert(path.clone(), snapshot);
+            self.pre_update_symbols.lock().insert(path.clone(), snapshot);
         }
+        let mut live = (*current).clone();
         let path_clone = path.clone();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             live.update_file(path, file);
         }));
-        if let Err(panic_info) = result {
-            let msg = panic_info
-                .downcast_ref::<String>()
-                .map(|s| s.as_str())
-                .or_else(|| panic_info.downcast_ref::<&str>().copied())
-                .unwrap_or("unknown");
-            tracing::error!(
-                "index mutation panicked for '{}': {} — attempting repair",
-                path_clone,
-                msg
-            );
-            // Wrap repair in its own catch_unwind to prevent double-panic abort.
-            let repair_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                live.repair_file_indices(&path_clone);
-            }));
-            if repair_result.is_err() {
+        match result {
+            Ok(()) => self.swap_and_publish(live),
+            Err(panic_info) => {
+                // Clone-mutate-swap means the original index is untouched on panic —
+                // no repair needed, just log and discard the failed clone.
+                let msg = panic_info
+                    .downcast_ref::<String>()
+                    .map(|s| s.as_str())
+                    .or_else(|| panic_info.downcast_ref::<&str>().copied())
+                    .unwrap_or("unknown");
                 tracing::error!(
-                    "repair also panicked for '{}' — index may be inconsistent",
-                    path_clone
+                    "index mutation panicked for '{}': {} — original index preserved",
+                    path_clone,
+                    msg
                 );
             }
         }
-        self.publish_locked(&live);
     }
 
     /// Update only the stored mtime for a file without re-parsing.
@@ -484,90 +505,97 @@ impl SharedIndexHandle {
     /// reconciliation loop detects the mtime difference and re-checks the file
     /// on every sweep, causing an infinite stale → hash-skip → stale loop.
     pub fn touch_mtime(&self, path: &str, new_mtime: u64) {
-        let mut live = self.live.write();
-        if let Some(file) = live.files.get_mut(path)
+        let _wg = self.write_mutex.lock();
+        let current = self.live.load_full();
+        if let Some(file) = current.files.get(path)
             && file.mtime_secs != new_mtime
         {
-            let mut updated = (**file).clone();
+            let mut live = (*current).clone();
+            let mut updated = (**live.files.get(path).unwrap()).clone();
             updated.mtime_secs = new_mtime;
-            *file = std::sync::Arc::new(updated);
+            live.files.insert(path.to_string(), Arc::new(updated));
+            self.live.store(Arc::new(live));
+            // mtime-only change doesn't affect published state
         }
     }
 
     pub fn add_file(&self, path: String, file: IndexedFile) {
-        let mut live = self.live.write();
+        let _wg = self.write_mutex.lock();
+        let mut live = (*self.live.load_full()).clone();
         let path_clone = path.clone();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             live.add_file(path, file);
         }));
-        if let Err(panic_info) = result {
-            let msg = panic_info
-                .downcast_ref::<String>()
-                .map(|s| s.as_str())
-                .or_else(|| panic_info.downcast_ref::<&str>().copied())
-                .unwrap_or("unknown");
-            tracing::error!(
-                "index add panicked for '{}': {} — repairing",
-                path_clone,
-                msg
-            );
-            live.repair_file_indices(&path_clone);
+        match result {
+            Ok(()) => self.swap_and_publish(live),
+            Err(panic_info) => {
+                let msg = panic_info
+                    .downcast_ref::<String>()
+                    .map(|s| s.as_str())
+                    .or_else(|| panic_info.downcast_ref::<&str>().copied())
+                    .unwrap_or("unknown");
+                tracing::error!(
+                    "index add panicked for '{}': {} — original index preserved",
+                    path_clone,
+                    msg
+                );
+            }
         }
-        self.publish_locked(&live);
     }
 
     pub fn remove_file(&self, path: &str) {
-        let mut live = self.live.write();
+        let _wg = self.write_mutex.lock();
+        let mut live = (*self.live.load_full()).clone();
         let path_owned = path.to_string();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             live.remove_file(path);
         }));
-        if let Err(panic_info) = result {
-            let msg = panic_info
-                .downcast_ref::<String>()
-                .map(|s| s.as_str())
-                .or_else(|| panic_info.downcast_ref::<&str>().copied())
-                .unwrap_or("unknown");
-            tracing::error!(
-                "index remove panicked for '{}': {} — repairing",
-                path_owned,
-                msg
-            );
-            live.repair_file_indices(&path_owned);
+        match result {
+            Ok(()) => self.swap_and_publish(live),
+            Err(panic_info) => {
+                let msg = panic_info
+                    .downcast_ref::<String>()
+                    .map(|s| s.as_str())
+                    .or_else(|| panic_info.downcast_ref::<&str>().copied())
+                    .unwrap_or("unknown");
+                tracing::error!(
+                    "index remove panicked for '{}': {} — original index preserved",
+                    path_owned,
+                    msg
+                );
+            }
         }
-        self.publish_locked(&live);
     }
 
     pub fn mark_snapshot_verify_running(&self) {
-        let mut live = self.live.write();
+        let _wg = self.write_mutex.lock();
+        let mut live = (*self.live.load_full()).clone();
         live.mark_snapshot_verify_running();
-        self.publish_locked(&live);
+        self.swap_and_publish(live);
     }
 
     pub fn mark_snapshot_verify_completed(&self) {
-        let mut live = self.live.write();
+        let _wg = self.write_mutex.lock();
+        let mut live = (*self.live.load_full()).clone();
         live.mark_snapshot_verify_completed();
-        self.publish_locked(&live);
+        self.swap_and_publish(live);
     }
 
-    /// Publish a new read snapshot from the current `live` index.
+    /// Swap a new `LiveIndex` into the `ArcSwap` and publish derived state.
     ///
-    /// # Lock ordering — CALLER MUST hold `self.live` (read or write) first.
-    ///
-    /// This method acquires `published_state` and `published_repo_outline` (steps
-    /// 3–4 in the struct-level ordering). Acquiring `live` after calling this
-    /// method will deadlock.
-    fn publish_locked(&self, live: &LiveIndex) {
+    /// Must be called while holding `write_mutex`.
+    fn swap_and_publish(&self, live: LiveIndex) {
         let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
-        let published_state = Arc::new(PublishedIndexState::capture(generation, live));
+        let published_state = Arc::new(PublishedIndexState::capture(generation, &live));
         let published_repo_outline = Arc::new(live.capture_repo_outline_view());
-        *self.published_state.write() = published_state;
-        *self.published_repo_outline.write() = published_repo_outline;
+        self.live.store(Arc::new(live));
+        self.published_state.store(published_state);
+        self.published_repo_outline.store(published_repo_outline);
     }
 
-    /// Read the current git temporal index (lock-free Arc clone).
+    /// Lock-free read of the git temporal index.
     pub fn git_temporal(&self) -> Arc<super::git_temporal::GitTemporalIndex> {
-        self.git_temporal.read().clone()
+        self.git_temporal.load_full()
     }
 
     /// Take (consume) the pre-update symbol snapshot for a file, if any.
@@ -576,12 +604,12 @@ impl SharedIndexHandle {
     /// `update_file` call — prevents the watcher race where the index is already
     /// updated to the post-edit state before the hook fires.
     pub fn take_pre_update_symbols(&self, path: &str) -> Option<Vec<PreUpdateSymbol>> {
-        self.pre_update_symbols.write().remove(path)
+        self.pre_update_symbols.lock().remove(path)
     }
 
     /// Atomically replace the git temporal index with a new version.
     pub fn update_git_temporal(&self, index: super::git_temporal::GitTemporalIndex) {
-        *self.git_temporal.write() = Arc::new(index);
+        self.git_temporal.store(Arc::new(index));
     }
 }
 
@@ -589,21 +617,23 @@ impl<'a> Deref for SharedIndexWriteGuard<'a> {
     type Target = LiveIndex;
 
     fn deref(&self) -> &Self::Target {
-        &self.guard
+        self.index.as_ref().expect("SharedIndexWriteGuard used after drop")
     }
 }
 
 impl DerefMut for SharedIndexWriteGuard<'_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.dirty = true;
-        &mut self.guard
+        self.index.as_mut().expect("SharedIndexWriteGuard used after drop")
     }
 }
 
 impl Drop for SharedIndexWriteGuard<'_> {
     fn drop(&mut self) {
         if self.dirty {
-            self.handle.publish_locked(&self.guard);
+            if let Some(live) = self.index.take() {
+                self.handle.swap_and_publish(live);
+            }
         }
     }
 }
@@ -1287,37 +1317,6 @@ impl LiveIndex {
         let (by_basename, by_dir_component) = build_path_indices_from_files(&self.files);
         self.files_by_basename = by_basename;
         self.files_by_dir_component = by_dir_component;
-    }
-
-    /// Repair all auxiliary indices for a single file path after a panic or
-    /// detected corruption.
-    ///
-    /// Performs a thorough O(reverse_index_size) scan to remove ALL stale entries
-    /// pointing to this path, then rebuilds from the primary store. Only called
-    /// on the exceptional panic-recovery path, never during normal operations.
-    pub(crate) fn repair_file_indices(&mut self, path: &str) {
-        // 1. Thorough reverse index cleanup: scan ALL entries, not just those
-        //    matching current file references (old refs may differ from new).
-        self.reverse_index.retain(|_name, locs| {
-            locs.retain(|loc| loc.file_path != path);
-            !locs.is_empty()
-        });
-
-        // 2. Remove path indices (basename + dir component).
-        self.remove_path_indices_for_path(path);
-
-        // 3. Rebuild from primary store state.
-        if self.files.contains_key(path) {
-            if let Some(file) = self.files.get(path) {
-                self.trigram_index.update_file(path, &file.content);
-            }
-            self.insert_reverse_index_for_path(path);
-            self.insert_path_indices_for_path(path);
-        } else {
-            self.trigram_index.remove_file(path);
-        }
-
-        tracing::info!("repaired auxiliary indices for '{path}'");
     }
 
     fn insert_path_indices_for_path(&mut self, path: &str) {

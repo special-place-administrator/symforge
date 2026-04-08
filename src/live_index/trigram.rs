@@ -15,6 +15,7 @@ use crate::live_index::store::IndexedFile;
 /// `id_to_path`: file_id -> relative_path for result lookup.
 /// `path_to_id`: relative_path -> file_id for update/remove.
 /// `next_id`: auto-increment counter for fresh IDs.
+#[derive(Clone)]
 pub struct TrigramIndex {
     map: HashMap<[u8; 3], Vec<u64>>,
     id_to_path: HashMap<u64, String>,

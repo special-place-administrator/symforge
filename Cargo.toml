@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0"
+arc-swap = "1"
 sha2 = "0.10"
 parking_lot = "0.12"
 rayon = "1.10"
