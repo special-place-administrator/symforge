@@ -2,6 +2,11 @@
 //!
 //! Implements `ast_grep_core::Language` and `LanguageExt` so we can use
 //! ast-grep's structural pattern matching on indexed source files.
+//!
+//! Key detail: many languages don't accept `$` as an identifier character.
+//! We must replace `$` with a Unicode expando char before parsing so
+//! tree-sitter treats metavariables as valid identifiers. The expando chars
+//! match the official `ast-grep-language` crate exactly.
 
 use crate::domain::index::LanguageId;
 use ast_grep_core::language::Language;
@@ -9,37 +14,75 @@ use ast_grep_core::matcher::PatternBuilder;
 use ast_grep_core::meta_var::MetaVariable;
 use ast_grep_core::tree_sitter::{LanguageExt, StrDoc, TSLanguage};
 use ast_grep_core::{Pattern, PatternError};
+use std::borrow::Cow;
 
 /// Wrapper that implements ast-grep's `Language` trait for a SymForge `LanguageId`.
 #[derive(Clone)]
 pub struct SgLang {
     ts_lang: TSLanguage,
+    /// The character used to replace `$` before parsing. Languages that accept
+    /// `$` in identifiers (JavaScript, TypeScript, Java, Dart) use `$` directly.
+    /// Others use a Unicode letter that the grammar accepts as an identifier.
+    expando: char,
+}
+
+/// Pre-process a pattern string by replacing `$` metavariable sigils with the
+/// language-specific expando character. This is the same algorithm used by the
+/// official `ast-grep-language` crate.
+fn pre_process_pattern(expando: char, query: &str) -> Cow<'_, str> {
+    if expando == '$' {
+        return Cow::Borrowed(query);
+    }
+    let mut ret = Vec::with_capacity(query.len());
+    let mut dollar_count = 0usize;
+    for c in query.chars() {
+        if c == '$' {
+            dollar_count += 1;
+            continue;
+        }
+        let need_replace = matches!(c, 'A'..='Z' | '_') || dollar_count == 3;
+        let sigil = if need_replace { expando } else { '$' };
+        ret.extend(std::iter::repeat(sigil).take(dollar_count));
+        dollar_count = 0;
+        ret.push(c);
+    }
+    // Trailing anonymous multiple ($$$)
+    let sigil = if dollar_count == 3 { expando } else { '$' };
+    ret.extend(std::iter::repeat(sigil).take(dollar_count));
+    Cow::Owned(ret.into_iter().collect())
 }
 
 impl SgLang {
     /// Returns `None` for config-only languages (JSON, TOML, YAML, Markdown, Env)
     /// that have no meaningful AST patterns.
     pub fn from_language_id(lang: &LanguageId) -> Option<Self> {
-        let ts_lang: TSLanguage = match lang {
-            LanguageId::Rust => tree_sitter_rust::LANGUAGE.into(),
-            LanguageId::Python => tree_sitter_python::LANGUAGE.into(),
-            LanguageId::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
-            LanguageId::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-            LanguageId::Go => tree_sitter_go::LANGUAGE.into(),
-            LanguageId::Java => tree_sitter_java::LANGUAGE.into(),
-            LanguageId::C => tree_sitter_c::LANGUAGE.into(),
-            LanguageId::Cpp => tree_sitter_cpp::LANGUAGE.into(),
-            LanguageId::CSharp => tree_sitter_c_sharp::LANGUAGE.into(),
-            LanguageId::Ruby => tree_sitter_ruby::LANGUAGE.into(),
-            LanguageId::Php => tree_sitter_php::LANGUAGE_PHP.into(),
-            LanguageId::Swift => tree_sitter_swift::LANGUAGE.into(),
-            LanguageId::Perl => tree_sitter_perl::LANGUAGE.into(),
-            LanguageId::Kotlin => tree_sitter_kotlin_sg::LANGUAGE.into(),
-            LanguageId::Dart => tree_sitter_dart::language(),
-            LanguageId::Elixir => tree_sitter_elixir::LANGUAGE.into(),
-            LanguageId::Html => tree_sitter_html::LANGUAGE.into(),
-            LanguageId::Css => tree_sitter_css::LANGUAGE.into(),
-            LanguageId::Scss => tree_sitter_scss::language(),
+        // Expando chars sourced from the official ast-grep-language crate.
+        // Languages that accept `$` as an identifier char use '$' (no replacement).
+        // Languages that don't accept `$` use a Unicode letter the grammar allows.
+        let (ts_lang, expando): (TSLanguage, char) = match lang {
+            // Expando languages (don't accept $ in identifiers)
+            LanguageId::Rust => (tree_sitter_rust::LANGUAGE.into(), 'µ'),
+            LanguageId::Python => (tree_sitter_python::LANGUAGE.into(), 'µ'),
+            LanguageId::Go => (tree_sitter_go::LANGUAGE.into(), 'µ'),
+            LanguageId::C => (tree_sitter_c::LANGUAGE.into(), '𐀀'),
+            LanguageId::Cpp => (tree_sitter_cpp::LANGUAGE.into(), '𐀀'),
+            LanguageId::CSharp => (tree_sitter_c_sharp::LANGUAGE.into(), 'µ'),
+            LanguageId::Ruby => (tree_sitter_ruby::LANGUAGE.into(), 'µ'),
+            LanguageId::Php => (tree_sitter_php::LANGUAGE_PHP.into(), 'µ'),
+            LanguageId::Swift => (tree_sitter_swift::LANGUAGE.into(), 'µ'),
+            LanguageId::Kotlin => (tree_sitter_kotlin_sg::LANGUAGE.into(), 'µ'),
+            LanguageId::Elixir => (tree_sitter_elixir::LANGUAGE.into(), 'µ'),
+            LanguageId::Css => (tree_sitter_css::LANGUAGE.into(), '_'),
+            LanguageId::Scss => (tree_sitter_scss::language(), '_'),
+            // Stub languages (accept $ in identifiers — no expando needed)
+            LanguageId::JavaScript => (tree_sitter_javascript::LANGUAGE.into(), '$'),
+            LanguageId::TypeScript => {
+                (tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(), '$')
+            }
+            LanguageId::Java => (tree_sitter_java::LANGUAGE.into(), '$'),
+            LanguageId::Dart => (tree_sitter_dart::language(), '$'),
+            LanguageId::Perl => (tree_sitter_perl::LANGUAGE.into(), '$'),
+            LanguageId::Html => (tree_sitter_html::LANGUAGE.into(), '$'),
             // Config-only languages — no structural patterns
             LanguageId::Json
             | LanguageId::Toml
@@ -47,7 +90,7 @@ impl SgLang {
             | LanguageId::Markdown
             | LanguageId::Env => return None,
         };
-        Some(Self { ts_lang })
+        Some(Self { ts_lang, expando })
     }
 }
 
@@ -58,6 +101,14 @@ impl Language for SgLang {
 
     fn field_to_id(&self, field: &str) -> Option<u16> {
         self.ts_lang.field_id_for_name(field).map(|f| f.get())
+    }
+
+    fn expando_char(&self) -> char {
+        self.expando
+    }
+
+    fn pre_process_pattern<'q>(&self, query: &'q str) -> Cow<'q, str> {
+        pre_process_pattern(self.expando, query)
     }
 
     fn build_pattern(&self, builder: &PatternBuilder) -> Result<Pattern, PatternError> {
@@ -201,5 +252,57 @@ fn world(x: i32) {
             structural_search(source, "const $NAME = $VALUE", &LanguageId::JavaScript)
                 .expect("pattern should compile");
         assert_eq!(matches.len(), 2);
+    }
+
+    #[test]
+    fn test_structural_search_rust_struct() {
+        let source = r#"
+pub struct Foo {
+    pub name: String,
+    pub age: u32,
+}
+struct Bar {
+    x: i32,
+}
+"#;
+        // `struct $NAME` matches bare structs; `pub struct` needs explicit `pub` in pattern
+        let bare = structural_search(source, "struct $NAME { $$$FIELDS }", &LanguageId::Rust)
+            .expect("pattern should compile");
+        assert_eq!(bare.len(), 1, "bare struct pattern matches Bar");
+        assert!(bare[0].text.contains("Bar"));
+
+        let pub_matches =
+            structural_search(source, "pub struct $NAME { $$$FIELDS }", &LanguageId::Rust)
+                .expect("pattern should compile");
+        assert_eq!(pub_matches.len(), 1, "pub struct pattern matches Foo");
+        assert!(pub_matches[0].text.contains("Foo"));
+    }
+
+    #[test]
+    fn test_structural_search_rust_impl() {
+        let source = "impl Foo { fn bar(&self) {} }";
+        let matches =
+            structural_search(source, "impl $TYPE { $$$ }", &LanguageId::Rust)
+                .expect("pattern should compile");
+        assert_eq!(matches.len(), 1);
+        assert!(matches[0].text.contains("Foo"));
+    }
+
+    #[test]
+    fn test_structural_search_python_function() {
+        let source = "def greet(name):\n    print(name)\n";
+        let matches =
+            structural_search(source, "def $FNAME($$$):\n    $$$", &LanguageId::Python)
+                .expect("pattern should compile");
+        assert!(!matches.is_empty(), "should match Python function def");
+    }
+
+    #[test]
+    fn test_structural_search_go_function() {
+        let source = "func hello() { fmt.Println(\"hello\") }";
+        let matches =
+            structural_search(source, "func $NAME() { $$$ }", &LanguageId::Go)
+                .expect("pattern should compile");
+        assert_eq!(matches.len(), 1);
     }
 }
