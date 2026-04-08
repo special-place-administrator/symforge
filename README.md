@@ -1,8 +1,8 @@
 ![SymForge](./symforge-banner_02.png)
 
-A code-native MCP server that gives AI coding agents structured, symbol language-aware navigation across your codebase. Built in Rust with tree-sitter, it replaces raw file scanning with tools that understand code as symbols, references, dependency graphs, and git history through a single MCP connection.
+A code-native MCP server that gives AI coding agents structured, symbol-aware navigation across your codebase. Built in Rust with tree-sitter, it replaces raw file scanning with tools that understand code as symbols, references, dependency graphs, and git history through a single MCP connection.
 
-Works with MCP-compatible clients including Claude Code, Codex, Gemini CLI, VS Code MCP, Kilo Code, Roo Code, Cline, Continue, JetBrains plugins, and custom agents.
+Works with MCP-compatible clients including Claude Code, Claude Desktop, Codex, Gemini CLI, VS Code MCP, Kilo Code, Roo Code, Cline, Continue, JetBrains plugins, and custom agents.
 
 > [!IMPORTANT]
 > **Rust-native** · **31 tools** · **19 source languages** · **5 config formats** · **6 prompts** · **Built-in resources**
@@ -11,12 +11,24 @@ Works with MCP-compatible clients including Claude Code, Codex, Gemini CLI, VS C
 > **Use raw file reads** for docs and config when exact wording is the point.
 > **Use shell tools** for builds, tests, package managers, Docker, and general system tasks.
 
+## What's new in v7.4
+
+- **ast-grep structural search** — `search_text` now supports `structural=true` for AST-pattern matching. Use `$VAR` for single-node metavariables and `$$$` for multi-node wildcards (e.g., `fn $NAME($$$) { $$$ }`). Powered by ast-grep-core with full tree-sitter integration across all 19 languages.
+- **Adaptive detail levels** — Tools with `max_tokens` auto-cascade verbosity from full to compact to signature to summary to stay within budget. No more truncated output — responses degrade gracefully.
+- **Lock-free concurrent reads** — Replaced `RwLock` with `ArcSwap` for the shared index handle. Zero reader contention under concurrent tool calls.
+- **Per-result confidence scores** — Search and navigation tools now report confidence (high/medium/low) on each result based on match quality, caller count, and churn.
+- **Token budget enforcement** — 11 search/navigation tools accept `max_tokens` and truncate at line boundaries when exceeded.
+- **MCP tool annotations** — All tools now declare `readOnlyHint` and `openWorldHint` per the MCP spec, enabling smarter client-side tool selection.
+- **Claude Desktop support** — `symforge init --client claude-desktop` registers the MCP server in Claude Desktop's config. On Windows, generates a `.cmd` wrapper to avoid the System32 CWD issue.
+- **Smarter PreToolUse hooks** — When the SymForge sidecar is already running, tool-preference hints are suppressed to reduce noise for agents that are actively using SymForge.
+
 ## When to use SymForge
 
 Use SymForge when an agent needs to:
 
 - understand a repo without reading large files blindly
 - find symbols, call sites, dependencies, and changed code
+- search code by AST structure instead of text patterns
 - edit code structurally by symbol instead of by raw text
 - reindex and inspect impact after edits
 
@@ -39,6 +51,7 @@ This installs the npm wrapper and downloads the platform binary to `~/.symforge/
 During global install, SymForge auto-configures these home-scoped clients if their home directories already exist:
 
 - Claude Code
+- Claude Desktop
 - Codex
 - Gemini CLI
 
@@ -55,6 +68,7 @@ Run that from the target project directory. It writes `.kilocode/mcp.json`, `.ki
 ```bash
 symforge init
 symforge init --client claude
+symforge init --client claude-desktop
 symforge init --client codex
 symforge init --client gemini
 symforge init --client kilo-code
@@ -70,7 +84,7 @@ After setup, confirm in your client that the SymForge MCP server is connected or
 | Tool | Purpose |
 |------|---------|
 | `health` | Index status, file/symbol counts, watcher state, parse diagnostics |
-| `get_repo_map` | Structured overview of the entire repository |
+| `get_repo_map` | Structured overview of the entire repository (auto-adapts detail to token budget) |
 | `explore` | Concept-driven exploration with stemmed matching and convention enrichment |
 | `ask` | Natural language questions routed to the right tool internally |
 | `conventions` | Auto-detect project coding patterns |
@@ -84,14 +98,14 @@ After setup, confirm in your client that the SymForge MCP server is connected or
 | `get_file_context` | File outline, imports, consumers — call before reading a source file |
 | `get_file_content` | Exact raw text with optional line ranges — for docs, config, or when you need the literal source |
 | `get_symbol` | Full source of a function, struct, class, etc. by name (batch mode supported) |
-| `get_symbol_context` | Symbol body + callers + callees + type dependencies |
+| `get_symbol_context` | Symbol body + callers + callees + type dependencies (supports bundle mode for edit prep) |
 
 ### Searching
 
 | Tool | Purpose |
 |------|---------|
 | `search_symbols` | Find symbols by name, kind, language, path prefix |
-| `search_text` | Full-text search with enclosing symbol context |
+| `search_text` | Full-text search with enclosing symbol context. Supports literal, OR-terms, regex, and structural AST patterns (`structural=true`) |
 | `search_files` | Ranked file path discovery with co-change coupling |
 
 ### Tracing impact
@@ -126,14 +140,33 @@ After setup, confirm in your client that the SymForge MCP server is connected or
 | `validate_file_syntax` | Parse diagnostics with line/column location for code and config files |
 | `index_folder` | Full reindex of a directory |
 
+### Structural search examples
+
+With `structural=true`, the `search_text` tool uses [ast-grep](https://ast-grep.github.io/) pattern syntax to match code by AST structure rather than text:
+
+```
+# Find all functions in Rust
+search_text(query="fn $NAME($$$) { $$$ }", structural=true, language="Rust")
+
+# Find all React useState hooks
+search_text(query="const [$STATE, $SETTER] = useState($$$)", structural=true, language="TypeScript")
+
+# Find all try-catch blocks in Java
+search_text(query="try { $$$ } catch ($E) { $$$ }", structural=true, language="Java")
+```
+
+Metavariable syntax: `$NAME` matches a single AST node, `$$$` matches zero or more nodes. Captures are shown in results.
+
 ### Practical defaults
 
 - Call `get_file_context` before reading a source file
 - Use `search_text` or `search_symbols` before broad grep or raw file scans
+- Use `structural=true` when you need pattern matching that respects code structure (ignores comments, whitespace, formatting)
 - Use `get_file_content` when exact docs/config text matters
 - Run `analyze_file_impact` after small edits; `index_folder` after larger multi-file work
 - `edit_plan` accepts a bare symbol, a file path, or `path::symbol`
 - `batch_edit` and `batch_insert` accept shorthand strings like `src/lib.rs::helper => delete`
+- Use `max_tokens` on any search/navigation tool to control response size — output adapts verbosity automatically
 
 ## Agent setup prompt
 
@@ -147,7 +180,8 @@ This prompt detects installed clients, configures SymForge for each, updates ins
 
 - `symforge daemon` is optional if you want a shared index across multiple terminal sessions.
 - Index snapshots persist at `.symforge/index.bin` for fast restarts.
-- Use `validate_file_syntax` when a config file may be malformed — it now reports tree-sitter parse diagnostics with line and column locations.
+- Use `validate_file_syntax` when a config file may be malformed — it reports tree-sitter parse diagnostics with line and column locations.
+- PreToolUse hooks auto-suppress when the sidecar is active — no redundant "use SymForge" hints when you're already using it.
 
 ## Environment variables
 
