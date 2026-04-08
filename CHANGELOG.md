@@ -1,5 +1,12 @@
 # Changelog
 
+## [7.4.1](https://github.com/special-place-administrator/symforge/compare/v7.4.0...v7.4.1) (2026-04-08)
+
+
+### Bug Fixes
+
+* add expando_char preprocessing for ast-grep structural patterns ([9bc10db](https://github.com/special-place-administrator/symforge/commit/9bc10db97fd318557c46b23f3028f37db2bbd0ad))
+
 ## [7.4.0](https://github.com/special-place-administrator/symforge/compare/v7.3.0...v7.4.0) (2026-04-08)
 
 
