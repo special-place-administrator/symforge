@@ -1,5 +1,27 @@
 # Changelog
 
+## [7.4.0](https://github.com/special-place-administrator/symforge/compare/v7.3.0...v7.4.0) (2026-04-08)
+
+
+### Features
+
+* add adaptive detail levels based on token budget ([6d873df](https://github.com/special-place-administrator/symforge/commit/6d873dfe7d3ed2458f7fbf38e20e01f8fe117b9e))
+* add ast-grep structural search to search_text tool ([3c2f22c](https://github.com/special-place-administrator/symforge/commit/3c2f22c5bf466717e1eeab7c7a9d94f317f36d86))
+* add max_tokens budget enforcement to 11 search/navigation tools ([3802398](https://github.com/special-place-administrator/symforge/commit/3802398209bb22e43251e1b948bf0fd7dd2d154d))
+* add MCP tool annotations to all 30 tools ([2f9d44b](https://github.com/special-place-administrator/symforge/commit/2f9d44b706b7bfa17e35003ae2bd5681e05d5a5a))
+* add per-result confidence scores to 5 search/navigation tools ([bd0e97d](https://github.com/special-place-administrator/symforge/commit/bd0e97dccf64e92ee1fa3b316506e7e56bf96108))
+
+
+### Bug Fixes
+
+* suppress PreToolUse hints when sidecar active, fix Windows init test ([0ed2a9b](https://github.com/special-place-administrator/symforge/commit/0ed2a9b6777599e00adc1530aff0132627020396))
+
+
+### Performance Improvements
+
+* eliminate per-query allocations in trigram search ([7c3dd1d](https://github.com/special-place-administrator/symforge/commit/7c3dd1d9ae9fcaf4ebf50e8d65d724118a047702))
+* replace RwLock with ArcSwap for lock-free concurrent reads ([7fad483](https://github.com/special-place-administrator/symforge/commit/7fad4830f52ddabdf1e55bca684246409b9819e0))
+
 ## [7.3.0](https://github.com/special-place-administrator/symforge/compare/v7.2.0...v7.3.0) (2026-04-07)
 
 
