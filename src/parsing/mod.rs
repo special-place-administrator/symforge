@@ -1,3 +1,4 @@
+pub mod ast_grep;
 pub mod config_extractors;
 pub mod languages;
 pub mod xref;

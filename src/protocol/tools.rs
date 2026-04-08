@@ -307,6 +307,7 @@ pub struct SearchSymbolsInput {
 
 /// Input for `search_text`.
 #[derive(Deserialize, Serialize, JsonSchema)]
+#[derive(Default)]
 pub struct SearchTextInput {
     /// Search query (case-insensitive substring match unless `regex` is true).
     pub query: Option<String>,
@@ -366,6 +367,11 @@ pub struct SearchTextInput {
     /// Optional maximum token budget for the response. Output is truncated at a line boundary if exceeded.
     #[serde(default, deserialize_with = "lenient_u64")]
     pub max_tokens: Option<u64>,
+    /// When true, interpret `query` as an ast-grep structural pattern instead of a text search.
+    /// Matches AST patterns using tree-sitter. Use `$VAR` for single-node metavariables
+    /// and `$$$` for multi-node wildcards. Example: `fn $NAME($$$) { $$$ }`.
+    #[serde(default, deserialize_with = "lenient_bool")]
+    pub structural: Option<bool>,
 }
 
 /// Input for `search_files`.
@@ -3355,12 +3361,13 @@ impl SymForgeServer {
         format::enforce_token_budget(output, params.0.max_tokens)
     }
 
-    /// Full-text search across file contents — literal, OR-terms, or regex. Shows matches with
-    /// enclosing symbol context. Use group_by='symbol' to deduplicate, follow_refs=true to inline
-    /// callers (control cost with follow_refs_limit). Use when searching for string patterns in code.
+    /// Full-text search across file contents — literal, OR-terms, regex, or structural AST patterns.
+    /// Shows matches with enclosing symbol context. Use group_by='symbol' to deduplicate,
+    /// follow_refs=true to inline callers. Set structural=true to match AST patterns using
+    /// ast-grep syntax ($VAR for metavariables, $$$ for multi-node wildcards).
     /// NOT for symbol name search (use search_symbols). NOT for file path search (use search_files).
     #[tool(
-        description = "Prefer this over grep/ripgrep for code search — it returns matches with enclosing symbol context instead of raw lines alone. Full-text search across file contents: literal, OR-terms, or regex. Use group_by='symbol' to deduplicate and follow_refs=true to inline callers when you want quick impact clues. Use when searching for string patterns in code after or instead of raw grep. NOT for symbol name search (use search_symbols). NOT for file path search (use search_files).",
+        description = "Prefer this over grep/ripgrep for code search — it returns matches with enclosing symbol context instead of raw lines alone. Full-text search across file contents: literal, OR-terms, regex, or structural AST patterns. Use group_by='symbol' to deduplicate and follow_refs=true to inline callers. Set structural=true with query as an ast-grep pattern to match code by AST structure (e.g., 'fn $NAME($$$) { $$$ }'). NOT for symbol name search (use search_symbols). NOT for file path search (use search_files).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn search_text(&self, params: Parameters<SearchTextInput>) -> String {
@@ -3376,6 +3383,44 @@ impl SymForgeServer {
                 est, limit, per_file
             );
         }
+        // Structural (AST-pattern) search mode.
+        if params.0.structural.unwrap_or(false) {
+            let pattern = match params.0.query.as_deref() {
+                Some(p) if !p.trim().is_empty() => p.trim(),
+                _ => return "Error: `query` is required for structural search.".to_string(),
+            };
+            let options = match search_text_options_from_input(&params.0) {
+                Ok(o) => o,
+                Err(message) => return message,
+            };
+            let result = {
+                let guard = self.index.read();
+                loading_guard!(guard);
+                search::search_structural(&guard, pattern, &options)
+            };
+            let output = render_search_text_output(
+                self,
+                result,
+                params.0.group_by.as_deref(),
+                params.0.terms.as_deref(),
+                &options,
+                false,
+                false,
+                false,
+            );
+            let hint = format::compact_next_step_hint(&[
+                "inspect_match (deep-dive one hit)",
+                "get_file_context (file overview)",
+                "search_symbols (name-based lookup)",
+            ]);
+            let result = format!("{output}{hint}");
+            self.session_context.record_summary_output(
+                "search_text",
+                (result.len() / 4).min(u32::MAX as usize) as u32,
+            );
+            return format::enforce_token_budget(result, params.0.max_tokens);
+        }
+
         let mut options = match search_text_options_from_input(&params.0) {
             Ok(options) => options,
             Err(message) => return message,
@@ -5934,6 +5979,7 @@ impl SymForgeServer {
                     include_tests: None,
                     estimate: None,
                     max_tokens: None,
+                    structural: None,
                 };
                 self.search_text(Parameters(input)).await
             }
@@ -8625,6 +8671,7 @@ mod tests {
                 ranked: None,
                 estimate: None,
                 max_tokens: None,
+                structural: None,
             }))
             .await;
         assert!(
@@ -8689,6 +8736,7 @@ mod tests {
                 ranked: None,
                 estimate: None,
                 max_tokens: None,
+                structural: None,
             }))
             .await;
 
@@ -8733,6 +8781,7 @@ mod tests {
                 ranked: None,
                 estimate: None,
                 max_tokens: None,
+                structural: None,
             }))
             .await;
         assert!(
@@ -8782,6 +8831,7 @@ mod tests {
                 ranked: None,
                 estimate: None,
                 max_tokens: None,
+                structural: None,
             }))
             .await;
 
@@ -8823,6 +8873,7 @@ mod tests {
                 ranked: None,
                 estimate: None,
                 max_tokens: None,
+                structural: None,
             }))
             .await;
 
@@ -8876,6 +8927,7 @@ mod tests {
                 ranked: None,
                 estimate: None,
                 max_tokens: None,
+                structural: None,
             }))
             .await;
 
@@ -8929,6 +8981,7 @@ mod tests {
                 ranked: None,
                 estimate: None,
                 max_tokens: None,
+                structural: None,
             }))
             .await;
 
@@ -8974,6 +9027,7 @@ mod tests {
                 ranked: None,
                 estimate: None,
                 max_tokens: None,
+                structural: None,
             }))
             .await;
 
@@ -9022,6 +9076,7 @@ mod tests {
                 ranked: None,
                 estimate: None,
                 max_tokens: None,
+                structural: None,
             }))
             .await;
 
@@ -9061,6 +9116,7 @@ mod tests {
                 ranked: None,
                 estimate: None,
                 max_tokens: None,
+                structural: None,
             }))
             .await;
 
@@ -9112,6 +9168,7 @@ mod tests {
                 ranked: None,
                 estimate: None,
                 max_tokens: None,
+                structural: None,
             }))
             .await;
 
@@ -9149,6 +9206,7 @@ mod tests {
                 ranked: None,
                 estimate: None,
                 max_tokens: None,
+                structural: None,
             }))
             .await;
 
@@ -12466,6 +12524,7 @@ mod tests {
                 ranked: None,
                 estimate: None,
                 max_tokens: None,
+                structural: None,
             }))
             .await;
         assert!(
@@ -12506,6 +12565,7 @@ mod tests {
                 ranked: None,
                 estimate: None,
                 max_tokens: None,
+                structural: None,
             }))
             .await;
         // With group_by: "symbol", should show symbol name and match count
@@ -12547,6 +12607,7 @@ mod tests {
                 ranked: None,
                 estimate: None,
                 max_tokens: None,
+                structural: None,
             }))
             .await;
         // Should exclude the "use" import line
@@ -12624,6 +12685,7 @@ mod tests {
                 ranked: None,
                 estimate: None,
                 max_tokens: None,
+                structural: None,
             }))
             .await;
         // Should show that connect() is called by handler() in src/api.rs
@@ -12667,6 +12729,7 @@ mod tests {
                 ranked: None,
                 estimate: None,
                 max_tokens: None,
+                structural: None,
             }))
             .await;
         // follow_refs ran but found no cross-references — should signal this explicitly
@@ -13546,6 +13609,7 @@ mod tests {
                 include_generated: None,
                 estimate: None,
                 max_tokens: None,
+                structural: None,
             };
             let search_result = server.search_text(Parameters(search_input)).await;
             assert!(

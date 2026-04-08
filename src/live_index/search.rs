@@ -1028,6 +1028,144 @@ pub fn search_text_with_options(
     ))
 }
 
+/// Structural (AST-pattern) search across indexed files.
+///
+/// Uses ast-grep to match a tree-sitter AST pattern against source files.
+/// Returns results in the same `TextSearchResult` format as text search so
+/// the existing rendering pipeline can display them unchanged.
+pub fn search_structural(
+    index: &LiveIndex,
+    pattern: &str,
+    options: &TextSearchOptions,
+) -> Result<TextSearchResult, TextSearchError> {
+    let compiled_globs = compile_text_glob_filters(options)?;
+
+    let mut files: Vec<TextFileMatches> = Vec::new();
+    let mut total_matches = 0usize;
+    let mut suppressed_by_noise = 0usize;
+
+    // Collect candidate files filtered by options.
+    let mut candidates: Vec<(String, crate::domain::index::LanguageId)> = index
+        .all_files()
+        .filter(|(path, file)| file_matches_text_options(path, file, options, &compiled_globs))
+        .map(|(path, file)| (path.clone(), file.language.clone()))
+        .collect();
+    candidates.sort_by(|a, b| a.0.cmp(&b.0));
+
+    for (path, lang) in &candidates {
+        if total_matches >= options.total_limit {
+            break;
+        }
+
+        let file = match index.get_file(path) {
+            Some(f) => f,
+            None => continue,
+        };
+
+        let content_str = String::from_utf8_lossy(&file.content);
+
+        let structural_matches =
+            match crate::parsing::ast_grep::structural_search(&content_str, pattern, lang) {
+                Ok(m) => m,
+                Err(_) => continue, // skip files where pattern doesn't apply (e.g., config langs)
+            };
+
+        if structural_matches.is_empty() {
+            continue;
+        }
+
+        // Pre-compute Rust test module line ranges for noise filtering.
+        let test_ranges: Vec<(u32, u32)> = if !options.noise_policy.include_tests
+            && *lang == crate::domain::index::LanguageId::Rust
+        {
+            compute_test_ranges(file)
+        } else {
+            Vec::new()
+        };
+
+        let remaining = options.total_limit.saturating_sub(total_matches);
+        let per_file_limit = options.max_per_file.min(remaining);
+
+        let mut matches: Vec<TextLineMatch> = Vec::new();
+        for sm in &structural_matches {
+            let line_idx = sm.start_line;
+
+            // Skip matches inside Rust #[cfg(test)] modules.
+            if !test_ranges.is_empty() {
+                let line_num = line_idx as u32;
+                if test_ranges
+                    .iter()
+                    .any(|&(start, end)| line_num >= start && line_num <= end)
+                {
+                    suppressed_by_noise += 1;
+                    continue;
+                }
+            }
+
+            // Build display line: first line of matched text + captures summary.
+            let first_line = sm.text.lines().next().unwrap_or(&sm.text);
+            let display = if sm.captures.is_empty() {
+                first_line.to_string()
+            } else {
+                let caps: Vec<String> = sm
+                    .captures
+                    .iter()
+                    .map(|(name, val)| {
+                        let short = if val.len() > 40 {
+                            format!("{}...", &val[..37])
+                        } else {
+                            val.clone()
+                        };
+                        format!("${name}={short}")
+                    })
+                    .collect();
+                format!("{first_line}  // {}", caps.join(", "))
+            };
+
+            matches.push(TextLineMatch {
+                line_number: line_idx + 1,
+                line: display,
+                enclosing_symbol: file
+                    .symbols
+                    .iter()
+                    .filter(|s| {
+                        s.line_range.0 <= (line_idx as u32) && s.line_range.1 >= (line_idx as u32)
+                    })
+                    .max_by_key(|s| s.depth)
+                    .map(|s| EnclosingMatchSymbol {
+                        name: s.name.clone(),
+                        kind: s.kind.to_string(),
+                        line_range: s.line_range,
+                    }),
+            });
+            if matches.len() >= per_file_limit {
+                break;
+            }
+        }
+
+        if !matches.is_empty() {
+            let rendered_lines = options
+                .context
+                .map(|ctx| build_context_rendered_lines(&content_str, &matches, ctx));
+            total_matches += matches.len();
+            files.push(TextFileMatches {
+                path: path.clone(),
+                matches,
+                rendered_lines,
+                callers: None,
+            });
+        }
+    }
+
+    Ok(TextSearchResult {
+        label: format!("structural '{pattern}'"),
+        total_matches,
+        files,
+        suppressed_by_noise,
+        overflow_count: 0,
+    })
+}
+
 fn file_matches_text_options(
     path: &str,
     file: &crate::live_index::IndexedFile,
