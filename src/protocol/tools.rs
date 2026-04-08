@@ -664,6 +664,9 @@ pub struct TraceSymbolInput {
     pub sections: Option<Vec<String>>,
     /// Output verbosity: "summary" (one-line natural language summary ~90% smaller), "signature" (name+params+return only, ~80% smaller), "compact" (signature + first doc line), "full" (default — complete body).
     pub verbosity: Option<String>,
+    /// Optional maximum token budget for the response.
+    #[serde(default, deserialize_with = "lenient_u64")]
+    pub max_tokens: Option<u64>,
     /// When true, return an approximate token cost estimate instead of actual content.
     #[serde(default, deserialize_with = "lenient_bool")]
     pub estimate: Option<bool>,
@@ -2333,6 +2336,7 @@ fn render_symbol_context_header(
     symbol_kind: Option<&str>,
     symbol_line: Option<u32>,
     verbosity: &str,
+    max_tokens: Option<u64>,
 ) -> Option<String> {
     use crate::live_index::query::{SymbolSelectorMatch, resolve_symbol_selector};
 
@@ -2342,15 +2346,28 @@ fn render_symbol_context_header(
                 &file.content[sym.byte_range.0 as usize..sym.byte_range.1 as usize],
             )
             .ok()?;
-            let rendered = format::apply_verbosity(body, verbosity);
-            Some(format!(
+            let (rendered, actual_level) = format::resolve_verbosity(
+                body,
+                Some(verbosity),
+                max_tokens,
+                0.7, // standalone symbol — allocate 70% of budget to body
+            );
+            let mut output = format!(
                 "{}\n[{}, {}:{}-{}]",
                 rendered,
                 sym.kind,
                 file.relative_path,
                 sym.line_range.0 + 1,
                 sym.line_range.1 + 1
-            ))
+            );
+            if actual_level != "full" && actual_level != verbosity {
+                output.push_str(&format!(
+                    "\n[adaptive verbosity: {} — fits within {} token budget]",
+                    actual_level,
+                    max_tokens.unwrap_or(0)
+                ));
+            }
+            Some(output)
         }
         SymbolSelectorMatch::NotFound | SymbolSelectorMatch::Ambiguous(_) => None,
     }
@@ -2631,7 +2648,24 @@ impl SymForgeServer {
                 est, detail, file_count
             );
         }
-        let detail = params.0.detail.as_deref().unwrap_or("compact");
+        let detail = if let Some(ref d) = params.0.detail {
+            d.as_str()
+        } else if let Some(max_tokens) = params.0.max_tokens {
+            // Adaptive detail: auto-select "full" when the estimated output fits
+            // within the token budget, otherwise fall back to "compact".
+            let guard = self.index.read();
+            let file_count = guard.file_count();
+            drop(guard);
+            let max_files = params.0.max_files.unwrap_or(200) as usize;
+            let full_estimate = max_files.min(file_count) * 30;
+            if (full_estimate as u64) <= max_tokens {
+                "full"
+            } else {
+                "compact"
+            }
+        } else {
+            "compact"
+        };
         let output = match detail {
             "full" => {
                 let published = self.index.published_state();
@@ -2956,6 +2990,7 @@ impl SymForgeServer {
                 symbol_line: params.0.symbol_line,
                 sections: sections_param,
                 verbosity: params.0.verbosity.clone(),
+                max_tokens: params.0.max_tokens,
                 estimate: None,
             };
             let trace_result = self.trace_symbol(Parameters(trace_input)).await;
@@ -3014,6 +3049,7 @@ impl SymForgeServer {
                     params.0.symbol_kind.as_deref(),
                     params.0.symbol_line,
                     verbosity,
+                    max_tokens,
                 )
             });
 
@@ -3571,7 +3607,7 @@ impl SymForgeServer {
         }
 
         let verbosity = params.0.verbosity.as_deref().unwrap_or("full");
-        let output = format::trace_symbol_result_view(&trace_view, &params.0.name, verbosity);
+        let output = format::trace_symbol_result_view(&trace_view, &params.0.name, verbosity, params.0.max_tokens);
         self.session_context.record_symbol(
             &params.0.path,
             &params.0.name,
@@ -11626,6 +11662,7 @@ mod tests {
                 symbol_line: None,
                 sections: None,
                 verbosity: None,
+                max_tokens: None,
                 estimate: None,
             }))
             .await;

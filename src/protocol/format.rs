@@ -2417,7 +2417,12 @@ fn render_context_bundle_found_with_max_tokens(
     verbosity: &str,
     max_tokens: Option<u64>,
 ) -> String {
-    let body = apply_verbosity(&view.body, verbosity);
+    let (body, actual_level) = resolve_verbosity(
+        &view.body,
+        Some(verbosity),
+        max_tokens,
+        0.4, // allocate 40% of budget to body, leave room for deps
+    );
     let mut output = format!(
         "{}\n[{}, {}:{}-{}, {} bytes]\n",
         body,
@@ -2427,6 +2432,13 @@ fn render_context_bundle_found_with_max_tokens(
         view.line_range.1 + 1,
         view.byte_count
     );
+    if actual_level != "full" && actual_level != verbosity {
+        output.push_str(&format!(
+            "[adaptive verbosity: {} — body reduced to fit {} token budget]\n",
+            actual_level,
+            max_tokens.unwrap_or(0)
+        ));
+    }
     output.push_str(&format_context_bundle_section("Callers", &view.callers));
     output.push_str(&format_context_bundle_section("Callees", &view.callees));
     output.push_str(&format_context_bundle_section(
@@ -2469,6 +2481,7 @@ pub fn trace_symbol_result_view(
     view: &crate::live_index::TraceSymbolView,
     name: &str,
     verbosity: &str,
+    max_tokens: Option<u64>,
 ) -> String {
     match view {
         crate::live_index::TraceSymbolView::FileNotFound { path } => not_found_file(path),
@@ -2491,7 +2504,7 @@ pub fn trace_symbol_result_view(
         } => not_found_symbol_names(relative_path, symbol_names, name),
         crate::live_index::TraceSymbolView::Found(found) => {
             let mut output =
-                render_context_bundle_found_with_max_tokens(&found.context_bundle, verbosity, None);
+                render_context_bundle_found_with_max_tokens(&found.context_bundle, verbosity, max_tokens);
 
             if !found.siblings.is_empty() {
                 output.push_str(&format_siblings(&found.siblings, 0));
@@ -2920,6 +2933,82 @@ pub(crate) fn apply_verbosity(body: &str, verbosity: &str) -> String {
         }
         _ => body.to_string(),
     }
+}
+
+/// Auto-select the richest verbosity level whose output fits within a token budget.
+///
+/// Cascades through `full → compact → signature → summary`, returning the first
+/// level whose rendered output is ≤ `body_budget_tokens * 4` bytes.  Always returns
+/// at least the summary level even if it exceeds the budget.
+///
+/// Returns `(rendered_body, level_name)`.
+pub(crate) fn adaptive_verbosity(body: &str, body_budget_tokens: u64) -> (String, &'static str) {
+    let max_bytes = (body_budget_tokens as usize).saturating_mul(4);
+
+    // Try full first
+    if body.len() <= max_bytes {
+        return (body.to_string(), "full");
+    }
+
+    // Try compact
+    let compact = apply_verbosity(body, "compact");
+    if compact.len() <= max_bytes {
+        return (compact, "compact");
+    }
+
+    // Try signature
+    let signature = apply_verbosity(body, "signature");
+    if signature.len() <= max_bytes {
+        return (signature, "signature");
+    }
+
+    // Summary as last resort
+    (apply_verbosity(body, "summary"), "summary")
+}
+
+/// Resolve verbosity for a symbol body, with adaptive fallback.
+///
+/// - If `explicit_verbosity` is `Some` (user chose a level), applies it directly.
+/// - If `max_tokens` is `Some` and no explicit verbosity, auto-selects the richest
+///   level fitting within `max_tokens * body_fraction`.
+/// - Otherwise returns the full body.
+///
+/// `body_fraction` controls how much of the total token budget is allocated to the
+/// body (e.g. 0.4 for bundle mode where dependencies need space, 0.7 for standalone).
+///
+/// Returns `(rendered_body, level_name)`.
+pub(crate) fn resolve_verbosity(
+    body: &str,
+    explicit_verbosity: Option<&str>,
+    max_tokens: Option<u64>,
+    body_fraction: f64,
+) -> (String, &'static str) {
+    // Explicit user choice always wins
+    if let Some(v) = explicit_verbosity {
+        if v != "full" {
+            let level: &'static str = match v {
+                "summary" => "summary",
+                "signature" => "signature",
+                "compact" => "compact",
+                _ => "full",
+            };
+            return (apply_verbosity(body, v), level);
+        }
+    }
+
+    // Adaptive: auto-select when budget is set and no explicit verbosity (or explicit "full")
+    if let Some(tokens) = max_tokens {
+        if tokens > 0 {
+            let body_budget = (tokens as f64 * body_fraction) as u64;
+            let (rendered, level) = adaptive_verbosity(body, body_budget);
+            if level != "full" {
+                return (rendered, level);
+            }
+        }
+    }
+
+    // Default: full
+    (body.to_string(), "full")
 }
 
 /// Generate a one-line natural language summary for a symbol body.
