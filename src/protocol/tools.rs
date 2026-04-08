@@ -2405,7 +2405,8 @@ impl SymForgeServer {
     /// NOT for understanding who calls it (use find_references or get_symbol_context).
     /// NOT for edit preparation (use get_symbol_context with bundle=true).
     #[tool(
-        description = "Prefer this over reading an entire file when you already know the symbol or have narrowed to one file. Retrieves the complete source code of a specific symbol with doc comments. Single mode: provide path + name. Batch mode: provide targets[] array for 2+ symbols or code slices in one call (each target is file path + symbol name or byte range). When multiple symbols share the same name, pass symbol_line (1-based) to disambiguate; auto-selects by kind tier when possible. Use search_symbols first if you only know part of the name. NOT for understanding callers (use find_references or get_symbol_context). NOT for edit preparation (use get_symbol_context with bundle=true)."
+        description = "Prefer this over reading an entire file when you already know the symbol or have narrowed to one file. Retrieves the complete source code of a specific symbol with doc comments. Single mode: provide path + name. Batch mode: provide targets[] array for 2+ symbols or code slices in one call (each target is file path + symbol name or byte range). When multiple symbols share the same name, pass symbol_line (1-based) to disambiguate; auto-selects by kind tier when possible. Use search_symbols first if you only know part of the name. NOT for understanding callers (use find_references or get_symbol_context). NOT for edit preparation (use get_symbol_context with bundle=true).",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn get_symbol(&self, params: Parameters<GetSymbolInput>) -> String {
         if let Some(result) = self.proxy_tool_call("get_symbol", &params.0).await {
@@ -2560,7 +2561,8 @@ impl SymForgeServer {
     /// counts and language tags — supports path and depth params for subtree browsing.
     /// NOT for file details (use get_file_context) or finding symbols (use search_symbols).
     #[tool(
-        description = "Start here for project orientation and the first code-reading pass before any broad raw file read. Returns a structural overview of the repository. Modes: (1) default/compact: ~500 token overview with file count, languages, and directory tree. (2) detail='full': complete symbol outline of every file — warning: large output. (3) detail='tree': browsable file tree with per-file symbol counts and language tags — supports path and depth params for subtree browsing. NOT for file details (use get_file_context) or finding symbols (use search_symbols)."
+        description = "Start here for project orientation and the first code-reading pass before any broad raw file read. Returns a structural overview of the repository. Modes: (1) default/compact: ~500 token overview with file count, languages, and directory tree. (2) detail='full': complete symbol outline of every file — warning: large output. (3) detail='tree': browsable file tree with per-file symbol counts and language tags — supports path and depth params for subtree browsing. NOT for file details (use get_file_context) or finding symbols (use search_symbols).",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn get_repo_map(&self, params: Parameters<GetRepoMapInput>) -> String {
         if let Some(result) = self.proxy_tool_call("get_repo_map", &params.0).await {
@@ -2705,7 +2707,8 @@ impl SymForgeServer {
     /// Much smaller than reading the raw file.
     /// NOT for reading actual source code (use get_file_content or get_symbol).
     #[tool(
-        description = "Prefer this over raw file reads for code understanding — it usually saves 70-95% of tokens by returning the file's symbol outline and structure first. Rich file summary: symbol outline, imports, consumers, references, and git activity. Use sections=['outline'] for a fast first pass, or sections=['outline','imports'] to stay compact. Best tool for understanding a file before editing or before deciding whether you need exact raw text. NOT for reading actual source code (use get_file_content or get_symbol)."
+        description = "Prefer this over raw file reads for code understanding — it usually saves 70-95% of tokens by returning the file's symbol outline and structure first. Rich file summary: symbol outline, imports, consumers, references, and git activity. Use sections=['outline'] for a fast first pass, or sections=['outline','imports'] to stay compact. Best tool for understanding a file before editing or before deciding whether you need exact raw text. NOT for reading actual source code (use get_file_content or get_symbol).",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn get_file_context(&self, params: Parameters<GetFileContextInput>) -> String {
         if let Some(result) = self.proxy_tool_call("get_file_context", &params.0).await {
@@ -2781,7 +2784,8 @@ impl SymForgeServer {
     /// 'implementations', 'git' (empty array = all). Set verbosity='signature' for ~80% smaller output.
     /// NOT for just the symbol body (use get_symbol).
     #[tool(
-        description = "Symbol usage analysis with three modes. (1) Default: definition + callers grouped by file + callees + type usages. (2) bundle=true: symbol body + full definitions of all referenced custom types, resolved recursively — best for edit preparation (requires path). (3) sections=[...]: comprehensive trace analysis — definition, callers, callees, implementations, type dependencies, git activity. Valid sections: 'dependents', 'siblings', 'implementations', 'git' (empty array = all). Set verbosity='signature' for ~80% smaller output. NOT for just the symbol body (use get_symbol)."
+        description = "Symbol usage analysis with three modes. (1) Default: definition + callers grouped by file + callees + type usages. (2) bundle=true: symbol body + full definitions of all referenced custom types, resolved recursively — best for edit preparation (requires path). (3) sections=[...]: comprehensive trace analysis — definition, callers, callees, implementations, type dependencies, git activity. Valid sections: 'dependents', 'siblings', 'implementations', 'git' (empty array = all). Set verbosity='signature' for ~80% smaller output. NOT for just the symbol body (use get_symbol).",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn get_symbol_context(
         &self,
@@ -3074,7 +3078,8 @@ impl SymForgeServer {
     /// symbols and affected dependents. Set include_co_changes=true to also see git temporal coupling data
     /// (files that historically change together with this file). Always call this after making edits.
     #[tool(
-        description = "Call AFTER editing a file. Re-reads from disk, updates the index, reports added/removed/modified symbols and affected dependents. Set include_co_changes=true to also see git temporal coupling data (files that historically change together). Always call this after making edits to keep the index current."
+        description = "Call AFTER editing a file. Re-reads from disk, updates the index, reports added/removed/modified symbols and affected dependents. Set include_co_changes=true to also see git temporal coupling data (files that historically change together). Always call this after making edits to keep the index current.",
+        annotations(read_only_hint = false, destructive_hint = false, idempotent_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn analyze_file_impact(
         &self,
@@ -3155,7 +3160,8 @@ impl SymForgeServer {
     /// one of query, kind, or path_prefix is required).
     /// NOT for text content search (use search_text). NOT for file path search (use search_files).
     #[tool(
-        description = "Prefer this before grep when you are looking for a function, class, type, or other symbol by name. Finds symbols across the repository in milliseconds and returns name, kind, file, and line range. Use when you know part of a symbol name but not the file. Supports kind filter, language filter, and path prefix scope. Query is optional — omit it to browse all symbols matching kind/path_prefix (browse mode defaults to limit=20, sorted by path+line). At least one of query, kind, or path_prefix is required. NOT for text content search (use search_text). NOT for file path search (use search_files)."
+        description = "Prefer this before grep when you are looking for a function, class, type, or other symbol by name. Finds symbols across the repository in milliseconds and returns name, kind, file, and line range. Use when you know part of a symbol name but not the file. Supports kind filter, language filter, and path prefix scope. Query is optional — omit it to browse all symbols matching kind/path_prefix (browse mode defaults to limit=20, sorted by path+line). At least one of query, kind, or path_prefix is required. NOT for text content search (use search_text). NOT for file path search (use search_files).",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn search_symbols(&self, params: Parameters<SearchSymbolsInput>) -> String {
         let query_str = params.0.query.as_deref().unwrap_or("").trim();
@@ -3274,7 +3280,8 @@ impl SymForgeServer {
     /// callers (control cost with follow_refs_limit). Use when searching for string patterns in code.
     /// NOT for symbol name search (use search_symbols). NOT for file path search (use search_files).
     #[tool(
-        description = "Prefer this over grep/ripgrep for code search — it returns matches with enclosing symbol context instead of raw lines alone. Full-text search across file contents: literal, OR-terms, or regex. Use group_by='symbol' to deduplicate and follow_refs=true to inline callers when you want quick impact clues. Use when searching for string patterns in code after or instead of raw grep. NOT for symbol name search (use search_symbols). NOT for file path search (use search_files)."
+        description = "Prefer this over grep/ripgrep for code search — it returns matches with enclosing symbol context instead of raw lines alone. Full-text search across file contents: literal, OR-terms, or regex. Use group_by='symbol' to deduplicate and follow_refs=true to inline callers when you want quick impact clues. Use when searching for string patterns in code after or instead of raw grep. NOT for symbol name search (use search_symbols). NOT for file path search (use search_files).",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn search_text(&self, params: Parameters<SearchTextInput>) -> String {
         if let Some(result) = self.proxy_tool_call("search_text", &params.0).await {
@@ -3532,7 +3539,8 @@ impl SymForgeServer {
     /// Inspect a specific line in full symbol context: shows the enclosing symbol, parent chain,
     /// and siblings. Works standalone with just path + line, or after search_text to deep-dive a match.
     #[tool(
-        description = "Inspect a specific line in full symbol context: enclosing symbol, parent chain (e.g. module → class → method), and sibling symbols. Works standalone with just path + line number, or after search_text to deep-dive a specific hit. NOT for finding all occurrences of a pattern (use search_text). NOT for understanding a symbol's callers and callees (use get_symbol_context)."
+        description = "Inspect a specific line in full symbol context: enclosing symbol, parent chain (e.g. module → class → method), and sibling symbols. Works standalone with just path + line number, or after search_text to deep-dive a specific hit. NOT for finding all occurrences of a pattern (use search_text). NOT for understanding a symbol's callers and callees (use get_symbol_context).",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn inspect_match(&self, params: Parameters<InspectMatchInput>) -> String {
         if let Some(result) = self.proxy_tool_call("inspect_match", &params.0).await {
@@ -3571,7 +3579,8 @@ impl SymForgeServer {
     /// finds co-changing files via git temporal coupling. Set resolve=true for exact path resolution.
     /// NOT for file content search (use search_text). NOT for symbol names (use search_symbols).
     #[tool(
-        description = "Find files by path, filename, or folder — ranked by relevance. Modes: (1) default: fuzzy search ranked by relevance, (2) changed_with=path: co-changing files via git temporal coupling, (3) resolve=true: resolve an ambiguous filename or partial path to one exact project path. NOT for file content search (use search_text). NOT for symbol names (use search_symbols)."
+        description = "Find files by path, filename, or folder — ranked by relevance. Modes: (1) default: fuzzy search ranked by relevance, (2) changed_with=path: co-changing files via git temporal coupling, (3) resolve=true: resolve an ambiguous filename or partial path to one exact project path. NOT for file content search (use search_text). NOT for symbol names (use search_symbols).",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn search_files(&self, params: Parameters<SearchFilesInput>) -> String {
         if let Some(result) = self.proxy_tool_call("search_files", &params.0).await {
@@ -3824,7 +3833,8 @@ impl SymForgeServer {
     /// hook adoption metrics, git temporal status. Always responds even during loading. Use to
     /// verify SymForge is working.
     #[tool(
-        description = "Diagnostic: index status, file/symbol counts, load time, watcher state, token savings, hook adoption metrics, git temporal status. Always responds even during loading. Use to verify SymForge is working. NOT for diagnosing a specific file or symbol (use get_file_context or get_symbol)."
+        description = "Diagnostic: index status, file/symbol counts, load time, watcher state, token savings, hook adoption metrics, git temporal status. Always responds even during loading. Use to verify SymForge is working. NOT for diagnosing a specific file or symbol (use get_file_context or get_symbol).",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn health(&self) -> String {
         if let Some(result) = self.proxy_tool_call_without_params("health").await {
@@ -3882,7 +3892,8 @@ impl SymForgeServer {
     /// Reindex a directory from scratch — replaces the current index, restarts watcher, triggers
     /// git temporal analysis. Use when switching projects. Destructive to current index.
     #[tool(
-        description = "Reindex a directory from scratch — replaces the current index, restarts watcher, triggers git temporal analysis. Use when switching projects. Destructive to current index. NOT for re-reading a single changed file (use analyze_file_impact). NOT for reading content from an existing index (use get_file_content)."
+        description = "Reindex a directory from scratch — replaces the current index, restarts watcher, triggers git temporal analysis. Use when switching projects. Destructive to current index. NOT for re-reading a single changed file (use analyze_file_impact). NOT for reading content from an existing index (use get_file_content).",
+        annotations(read_only_hint = false, destructive_hint = false, idempotent_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn index_folder(&self, params: Parameters<IndexFolderInput>) -> String {
         if let Some(result) = self.proxy_tool_call("index_folder", &params.0).await {
@@ -3952,7 +3963,8 @@ impl SymForgeServer {
     /// Set code_only=true to exclude non-source files (docs, configs, lock files).
     /// Set include_symbol_diff=true to also get a symbol-level diff in the same response (git modes only).
     #[tool(
-        description = "List changed files: uncommitted=true for working tree, git_ref for ref comparison, since for timestamp filter. Filter with path_prefix and/or language. Set code_only=true to exclude non-source files (docs, configs, lock files). Set include_symbol_diff=true to also include a symbol-level diff in the same response (git_ref and uncommitted modes only), saving a round-trip vs calling diff_symbols separately. NOT for symbol-level change detail alone (use diff_symbols). NOT for finding files by name or content (use search_files or search_text)."
+        description = "List changed files: uncommitted=true for working tree, git_ref for ref comparison, since for timestamp filter. Filter with path_prefix and/or language. Set code_only=true to exclude non-source files (docs, configs, lock files). Set include_symbol_diff=true to also include a symbol-level diff in the same response (git_ref and uncommitted modes only), saving a round-trip vs calling diff_symbols separately. NOT for symbol-level change detail alone (use diff_symbols). NOT for finding files by name or content (use search_files or search_text).",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn what_changed(&self, params: Parameters<WhatChangedInput>) -> String {
         if let Some(result) = self.proxy_tool_call("what_changed", &params.0).await {
@@ -4216,7 +4228,8 @@ impl SymForgeServer {
     /// For structured understanding use get_file_context. For a single function
     /// body use get_symbol.
     #[tool(
-        description = "Read exact raw file content. Modes: full file, line range, around_line/around_match/around_symbol, or chunked paging. Use this for exact docs/config reads, whitespace-sensitive inspection, or exact source excerpts after narrowing with get_file_context, search_text, or get_symbol. For structured code understanding use get_file_context first. For a single function body use get_symbol."
+        description = "Read exact raw file content. Modes: full file, line range, around_line/around_match/around_symbol, or chunked paging. Use this for exact docs/config reads, whitespace-sensitive inspection, or exact source excerpts after narrowing with get_file_context, search_text, or get_symbol. For structured code understanding use get_file_context first. For a single function body use get_symbol.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn get_file_content(&self, params: Parameters<GetFileContentInput>) -> String {
         let mut input = params.0;
@@ -4312,7 +4325,8 @@ impl SymForgeServer {
     /// Validate a file's syntax and surface parser diagnostics with exact locations when available.
     /// Best for malformed TOML/JSON/YAML and other config files where you need authoritative parse errors.
     #[tool(
-        description = "Validate a file's syntax and surface parser diagnostics with exact locations when available. Best for malformed TOML/JSON/YAML and other config files where you need authoritative parse errors. Uses the indexed file when available and falls back to direct parsing from disk when needed. NOT for understanding file structure (use get_file_context). NOT for searching file content (use search_text)."
+        description = "Validate a file's syntax and surface parser diagnostics with exact locations when available. Best for malformed TOML/JSON/YAML and other config files where you need authoritative parse errors. Uses the indexed file when available and falls back to direct parsing from disk when needed. NOT for understanding file structure (use get_file_context). NOT for searching file content (use search_text).",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn validate_file_syntax(
         &self,
@@ -4392,7 +4406,8 @@ impl SymForgeServer {
     /// NOT for file-level dependencies (use find_dependents).
     /// NOT for full refactoring context (use get_symbol_context with sections=[...]).
     #[tool(
-        description = "Find all references or implementations for a symbol. Modes: (1) default/references: call sites, imports, type usages grouped by file - set compact=true for ~60-75% smaller output. (2) mode='implementations': find trait/interface implementors bidirectionally - set direction='trait'/'type'/'auto'. Use when you need 'who calls this?' or 'who implements this?' NOT for file-level dependencies (use find_dependents). NOT for full refactoring context (use get_symbol_context with sections=[...])."
+        description = "Find all references or implementations for a symbol. Modes: (1) default/references: call sites, imports, type usages grouped by file - set compact=true for ~60-75% smaller output. (2) mode='implementations': find trait/interface implementors bidirectionally - set direction='trait'/'type'/'auto'. Use when you need 'who calls this?' or 'who implements this?' NOT for file-level dependencies (use find_dependents). NOT for full refactoring context (use get_symbol_context with sections=[...]).",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn find_references(&self, params: Parameters<FindReferencesInput>) -> String {
         if let Some(result) = self.proxy_tool_call("find_references", &params.0).await {
@@ -4562,7 +4577,8 @@ impl SymForgeServer {
     /// NOT for symbol-level references (use find_references).
     /// NOT for git co-change patterns (use analyze_file_impact with include_co_changes=true).
     #[tool(
-        description = "File-level dependency graph: which files import the given file. Set compact=true for ~60-75% smaller output. Supports Mermaid/Graphviz output. Use for 'what breaks if I change this file?' NOT for symbol-level references (use find_references). NOT for git co-change patterns (use analyze_file_impact with include_co_changes=true)."
+        description = "File-level dependency graph: which files import the given file. Set compact=true for ~60-75% smaller output. Supports Mermaid/Graphviz output. Use for 'what breaks if I change this file?' NOT for symbol-level references (use find_references). NOT for git co-change patterns (use analyze_file_impact with include_co_changes=true).",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn find_dependents(&self, params: Parameters<FindDependentsInput>) -> String {
         if let Some(result) = self.proxy_tool_call("find_dependents", &params.0).await {
@@ -5040,7 +5056,8 @@ impl SymForgeServer {
     /// dependency chains (~3000 tokens). NOT for finding a specific symbol by name
     /// (use search_symbols). NOT for text content search (use search_text).
     #[tool(
-        description = "Start here when you don't know where to look. Accepts a natural-language concept and returns related symbols, patterns, and files. Set depth=2 for signatures and callers of top symbols (~1500 tokens). Set depth=3 for implementations and type dependency chains (~3000 tokens). NOT for finding a specific symbol by name (use search_symbols). NOT for text content search (use search_text)."
+        description = "Start here when you don't know where to look. Accepts a natural-language concept and returns related symbols, patterns, and files. Set depth=2 for signatures and callers of top symbols (~1500 tokens). Set depth=3 for implementations and type dependency chains (~3000 tokens). NOT for finding a specific symbol by name (use search_symbols). NOT for text content search (use search_text).",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn explore(&self, params: Parameters<ExploreInput>) -> String {
         if let Some(result) = self.proxy_tool_call("explore", &params.0).await {
@@ -5589,7 +5606,8 @@ impl SymForgeServer {
     }
 
     #[tool(
-        description = "Detect project coding conventions from the indexed codebase. Returns error handling style, naming patterns, test organization, common imports, and file structure. Use when you need to write code that fits the project's existing patterns."
+        description = "Detect project coding conventions from the indexed codebase. Returns error handling style, naming patterns, test organization, common imports, and file structure. Use when you need to write code that fits the project's existing patterns.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn conventions(&self) -> String {
         if let Some(result) = self.proxy_tool_call_without_params("conventions").await {
@@ -5609,7 +5627,8 @@ impl SymForgeServer {
     }
 
     #[tool(
-        description = "Plan an edit: analyzes a target symbol or file, counts references, and suggests the right sequence of SymForge edit tools. Accepts a bare symbol name, a file path, or an exact selector like `src/lib.rs::helper`. Use before making changes to understand impact."
+        description = "Plan an edit: analyzes a target symbol or file, counts references, and suggests the right sequence of SymForge edit tools. Accepts a bare symbol name, a file path, or an exact selector like `src/lib.rs::helper`. Use before making changes to understand impact.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn edit_plan(&self, params: Parameters<EditPlanInput>) -> String {
         if let Some(result) = self.proxy_tool_call("edit_plan", &params.0).await {
@@ -5626,7 +5645,8 @@ impl SymForgeServer {
     }
 
     #[tool(
-        description = "Suggest what to investigate next based on what you've already loaded. Analyzes session context to find referenced-but-not-loaded symbols. Use during deep investigations to find gaps."
+        description = "Suggest what to investigate next based on what you've already loaded. Analyzes session context to find referenced-but-not-loaded symbols. Use during deep investigations to find gaps.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn investigation_suggest(
         &self,
@@ -5653,7 +5673,8 @@ impl SymForgeServer {
     }
 
     #[tool(
-        description = "Show what symbols and files have been fetched this session. Returns a context inventory with token counts. Use to track your context budget and avoid re-fetching content you already have."
+        description = "Show what symbols and files have been fetched this session. Returns a context inventory with token counts. Use to track your context budget and avoid re-fetching content you already have.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn context_inventory(&self) -> String {
         if let Some(result) = self
@@ -5667,7 +5688,8 @@ impl SymForgeServer {
     }
 
     #[tool(
-        description = "Natural language entry point — ask any question about the codebase and SymForge routes to the right tool internally. Use when unsure which specific tool to call. Examples: 'who calls X', 'where is X defined', 'how does X work', 'what changed', 'find file X'. Returns the result plus which tool was used, so you can call it directly next time."
+        description = "Natural language entry point — ask any question about the codebase and SymForge routes to the right tool internally. Use when unsure which specific tool to call. Examples: 'who calls X', 'where is X defined', 'how does X work', 'what changed', 'find file X'. Returns the result plus which tool was used, so you can call it directly next time.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn ask(&self, params: Parameters<SmartQueryInput>) -> String {
         use crate::protocol::smart_query;
@@ -5886,7 +5908,8 @@ impl SymForgeServer {
     /// Use for code review to see which functions/classes changed.
     /// NOT for file-level change lists (use what_changed).
     #[tool(
-        description = "Symbol-level diff between two git refs. Shows +added, -removed, ~modified symbols per changed file. Filter with path_prefix and/or language. Set code_only=true to exclude non-source files. Use for code review to see which functions/classes changed. NOT for file-level change lists (use what_changed)."
+        description = "Symbol-level diff between two git refs. Shows +added, -removed, ~modified symbols per changed file. Filter with path_prefix and/or language. Set code_only=true to exclude non-source files. Use for code review to see which functions/classes changed. NOT for file-level change lists (use what_changed).",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn diff_symbols(&self, params: Parameters<DiffSymbolsInput>) -> String {
         if let Some(result) = self.proxy_tool_call("diff_symbols", &params.0).await {
@@ -6044,7 +6067,8 @@ impl SymForgeServer {
     /// NOT for small edits within a symbol (use edit_within_symbol).
     /// NOT for removing a symbol entirely (use delete_symbol).
     #[tool(
-        description = "Replace a symbol's entire definition with new source code. The index resolves the symbol's byte range server-side — no need to read the file first. Content is auto-indented to match the original symbol's indentation level. Use symbol_line to disambiguate overloaded names. NOT for small edits within a symbol (use edit_within_symbol). NOT for removing a symbol entirely (use delete_symbol)."
+        description = "Replace a symbol's entire definition with new source code. The index resolves the symbol's byte range server-side — no need to read the file first. Content is auto-indented to match the original symbol's indentation level. Use symbol_line to disambiguate overloaded names. NOT for small edits within a symbol (use edit_within_symbol). NOT for removing a symbol entirely (use delete_symbol).",
+        annotations(read_only_hint = false, destructive_hint = true, idempotent_hint = false, open_world_hint = false)
     )]
     pub(crate) async fn replace_symbol_body(
         &self,
@@ -6181,7 +6205,8 @@ impl SymForgeServer {
     /// symbol's indentation level — provide unindented code.
     /// NOT for replacing existing code (use replace_symbol_body or edit_within_symbol).
     #[tool(
-        description = "Insert code before or after a named symbol. Set position='before' or 'after' (default 'after'). Content is auto-indented to match the target symbol's indentation level — provide unindented code. Use symbol_line to disambiguate overloaded names. NOT for replacing existing code (use replace_symbol_body or edit_within_symbol)."
+        description = "Insert code before or after a named symbol. Set position='before' or 'after' (default 'after'). Content is auto-indented to match the target symbol's indentation level — provide unindented code. Use symbol_line to disambiguate overloaded names. NOT for replacing existing code (use replace_symbol_body or edit_within_symbol).",
+        annotations(read_only_hint = false, destructive_hint = false, idempotent_hint = false, open_world_hint = false)
     )]
     pub(crate) async fn insert_symbol(
         &self,
@@ -6286,7 +6311,8 @@ impl SymForgeServer {
     /// Remove a symbol's entire definition and clean up surrounding blank lines.
     /// NOT for replacing a symbol (use replace_symbol_body).
     #[tool(
-        description = "Remove a symbol's entire definition and clean up surrounding blank lines. Use symbol_line to disambiguate overloaded names. NOT for replacing a symbol (use replace_symbol_body)."
+        description = "Remove a symbol's entire definition and clean up surrounding blank lines. Use symbol_line to disambiguate overloaded names. NOT for replacing a symbol (use replace_symbol_body).",
+        annotations(read_only_hint = false, destructive_hint = true, idempotent_hint = false, open_world_hint = false)
     )]
     pub(crate) async fn delete_symbol(
         &self,
@@ -6384,7 +6410,8 @@ impl SymForgeServer {
     /// NOT for replacing the entire symbol (use replace_symbol_body).
     /// NOT for adding new symbols (use insert_before/after_symbol).
     #[tool(
-        description = "Find-and-replace scoped to a symbol's byte range — won't affect code outside it. The LLM never needs to read the symbol body — just provide the old and new text. Set replace_all=true for every occurrence within the symbol. NOT for replacing the entire symbol (use replace_symbol_body). NOT for adding new symbols (use insert_before/after_symbol)."
+        description = "Find-and-replace scoped to a symbol's byte range — won't affect code outside it. The LLM never needs to read the symbol body — just provide the old and new text. Set replace_all=true for every occurrence within the symbol. NOT for replacing the entire symbol (use replace_symbol_body). NOT for adding new symbols (use insert_before/after_symbol).",
+        annotations(read_only_hint = false, destructive_hint = false, idempotent_hint = false, open_world_hint = false)
     )]
     pub(crate) async fn edit_within_symbol(
         &self,
@@ -6587,7 +6614,8 @@ impl SymForgeServer {
     /// Apply multiple symbol-addressed edits atomically.
     /// Set dry_run=true for a read-only preview that makes no file changes.
     #[tool(
-        description = "Apply multiple symbol-addressed edits atomically across files. Each edit specifies a file, symbol, and operation (replace/insert_before/insert_after/delete/edit_within). Accepts either structured edits or shorthand strings like `src/lib.rs::helper => edit_within old >>> new`. All symbols are validated before any writes — if any resolution fails, no files are modified. Set dry_run=true for a READ-ONLY preview that shows what would change without writing (safe, no confirmation needed). Edits within the same file must target non-overlapping symbols. NOT for single-symbol edits (use replace_symbol_body, insert_symbol, etc.)."
+        description = "Apply multiple symbol-addressed edits atomically across files. Each edit specifies a file, symbol, and operation (replace/insert_before/insert_after/delete/edit_within). Accepts either structured edits or shorthand strings like `src/lib.rs::helper => edit_within old >>> new`. All symbols are validated before any writes — if any resolution fails, no files are modified. Set dry_run=true for a READ-ONLY preview that shows what would change without writing (safe, no confirmation needed). Edits within the same file must target non-overlapping symbols. NOT for single-symbol edits (use replace_symbol_body, insert_symbol, etc.).",
+        annotations(read_only_hint = false, destructive_hint = true, idempotent_hint = false, open_world_hint = false)
     )]
     pub(crate) async fn batch_edit(&self, params: Parameters<edit::BatchEditInput>) -> String {
         if let Some(result) = self.proxy_tool_call("batch_edit", &params.0).await {
@@ -6649,7 +6677,8 @@ impl SymForgeServer {
     /// Rename a symbol and update all references project-wide.
     /// Set dry_run=true for a read-only preview that makes no file changes.
     #[tool(
-        description = "Rename a symbol and update all references across the project. Finds the definition and all usage sites via the index's reverse reference map. Set dry_run=true for a READ-ONLY preview that lists affected files without writing any changes (safe, no confirmation needed). Applies confident matches transactionally across files; uncertain matches are surfaced for manual review instead of being modified. Common names (e.g. `new`, `get`) can still produce false positives — verify with what_changed afterward. NOT for replacing a symbol's body (use replace_symbol_body)."
+        description = "Rename a symbol and update all references across the project. Finds the definition and all usage sites via the index's reverse reference map. Set dry_run=true for a READ-ONLY preview that lists affected files without writing any changes (safe, no confirmation needed). Applies confident matches transactionally across files; uncertain matches are surfaced for manual review instead of being modified. Common names (e.g. `new`, `get`) can still produce false positives — verify with what_changed afterward. NOT for replacing a symbol's body (use replace_symbol_body).",
+        annotations(read_only_hint = false, destructive_hint = true, idempotent_hint = false, open_world_hint = false)
     )]
     pub(crate) async fn batch_rename(&self, params: Parameters<edit::BatchRenameInput>) -> String {
         if let Some(result) = self.proxy_tool_call("batch_rename", &params.0).await {
@@ -6693,7 +6722,8 @@ impl SymForgeServer {
 
     /// Insert the same code at multiple symbol locations across files.
     #[tool(
-        description = "Insert the same code before or after multiple symbols across the project. Useful for adding logging, instrumentation, or boilerplate to many locations at once. Accepts either structured targets or shorthand strings like `src/lib.rs::helper`. Code is auto-indented to match each target symbol. All targets are validated before any writes, and live execution applies transactionally across files with rollback on failure. Set dry_run=true for a READ-ONLY preview. NOT for inserting at a single location (use insert_symbol)."
+        description = "Insert the same code before or after multiple symbols across the project. Useful for adding logging, instrumentation, or boilerplate to many locations at once. Accepts either structured targets or shorthand strings like `src/lib.rs::helper`. Code is auto-indented to match each target symbol. All targets are validated before any writes, and live execution applies transactionally across files with rollback on failure. Set dry_run=true for a READ-ONLY preview. NOT for inserting at a single location (use insert_symbol).",
+        annotations(read_only_hint = false, destructive_hint = false, idempotent_hint = false, open_world_hint = false)
     )]
     pub(crate) async fn batch_insert(&self, params: Parameters<edit::BatchInsertInput>) -> String {
         if let Some(result) = self.proxy_tool_call("batch_insert", &params.0).await {

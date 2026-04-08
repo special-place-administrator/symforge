@@ -236,6 +236,97 @@ fn single_edit_accepts_shorthand_string() {
     assert!(edits[0].is_string(), "shorthand edit should be a string");
 }
 
+#[test]
+fn all_tools_have_annotations() {
+    const READ_ONLY: &[&str] = &[
+        "health",
+        "get_symbol",
+        "get_repo_map",
+        "get_file_context",
+        "get_symbol_context",
+        "search_symbols",
+        "search_text",
+        "search_files",
+        "find_references",
+        "find_dependents",
+        "get_file_content",
+        "validate_file_syntax",
+        "what_changed",
+        "diff_symbols",
+        "explore",
+        "inspect_match",
+        "ask",
+        "conventions",
+        "edit_plan",
+        "investigation_suggest",
+        "context_inventory",
+    ];
+
+    const DESTRUCTIVE_WRITE: &[&str] = &[
+        "replace_symbol_body",
+        "delete_symbol",
+        "batch_edit",
+        "batch_rename",
+    ];
+
+    const ADDITIVE_WRITE: &[&str] = &[
+        "insert_symbol",
+        "edit_within_symbol",
+        "batch_insert",
+    ];
+
+    const IDEMPOTENT_STATE: &[&str] = &[
+        "index_folder",
+        "analyze_file_impact",
+    ];
+
+    let tools = SymForgeServer::tool_definitions();
+
+    for tool in &tools {
+        let name = tool.name.as_ref();
+        let ann = tool.annotations.as_ref().unwrap_or_else(|| {
+            panic!("tool '{name}' is missing annotations")
+        });
+
+        // All SymForge tools are closed-world (local files only)
+        assert_eq!(
+            ann.open_world_hint,
+            Some(false),
+            "tool '{name}' must have open_world_hint = false"
+        );
+
+        if READ_ONLY.contains(&name) {
+            assert_eq!(
+                ann.read_only_hint,
+                Some(true),
+                "read-only tool '{name}' must have read_only_hint = true"
+            );
+        } else if DESTRUCTIVE_WRITE.contains(&name) {
+            assert_eq!(ann.read_only_hint, Some(false), "destructive tool '{name}'");
+            assert_eq!(ann.destructive_hint, Some(true), "destructive tool '{name}'");
+            assert_eq!(ann.idempotent_hint, Some(false), "destructive tool '{name}'");
+        } else if ADDITIVE_WRITE.contains(&name) {
+            assert_eq!(ann.read_only_hint, Some(false), "additive tool '{name}'");
+            assert_eq!(ann.destructive_hint, Some(false), "additive tool '{name}'");
+            assert_eq!(ann.idempotent_hint, Some(false), "additive tool '{name}'");
+        } else if IDEMPOTENT_STATE.contains(&name) {
+            assert_eq!(ann.read_only_hint, Some(false), "idempotent tool '{name}'");
+            assert_eq!(ann.destructive_hint, Some(false), "idempotent tool '{name}'");
+            assert_eq!(ann.idempotent_hint, Some(true), "idempotent tool '{name}'");
+        } else {
+            panic!("tool '{name}' is not in any annotation classification list");
+        }
+    }
+
+    // Verify total coverage matches expected count
+    let classified = READ_ONLY.len() + DESTRUCTIVE_WRITE.len() + ADDITIVE_WRITE.len() + IDEMPOTENT_STATE.len();
+    assert_eq!(
+        classified,
+        EXPECTED_TOOLS.len(),
+        "classification lists must cover all expected tools"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
