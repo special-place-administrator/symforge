@@ -60,12 +60,16 @@ impl TrigramIndex {
             return Vec::new();
         }
 
-        if query.len() < 3 {
+        // Lowercase query once — reused for both trigram extraction and verification.
+        let query_lower: Vec<u8> = query.iter().map(|b| b.to_ascii_lowercase()).collect();
+
+        if query_lower.len() < 3 {
             // Fall back to linear scan for short queries
-            return self.linear_scan(query, files);
+            return self.linear_scan_lower(&query_lower, files);
         }
 
-        let trigrams = extract_trigrams(query);
+        // Trigrams are extracted from already-lowercased query; index stores lowercase trigrams.
+        let trigrams = extract_trigrams(&query_lower);
 
         // Collect posting lists for each trigram in the query
         let mut posting_lists: Vec<&Vec<u64>> =
@@ -88,21 +92,14 @@ impl TrigramIndex {
             }
         }
 
-        // Verify candidates actually contain the query (eliminates false positives)
+        // Verify candidates actually contain the query (eliminates false positives).
+        // Uses allocation-free CI scan; query_lower was computed once above.
         candidates
             .into_iter()
             .filter_map(|id| {
                 let path = self.id_to_path.get(&id)?;
                 let file = files.get(path)?;
-                // Case-insensitive byte-level containment check
-                let content_lower: Vec<u8> = file
-                    .as_ref()
-                    .content
-                    .iter()
-                    .map(|b| b.to_ascii_lowercase())
-                    .collect();
-                let query_lower: Vec<u8> = query.iter().map(|b| b.to_ascii_lowercase()).collect();
-                if contains_bytes(&content_lower, &query_lower) {
+                if contains_bytes_ci(&file.as_ref().content, &query_lower) {
                     Some(path.clone())
                 } else {
                     None
@@ -122,8 +119,9 @@ impl TrigramIndex {
         // Get or allocate file_id
         let file_id = self.get_or_alloc_id(path);
 
-        // Insert new trigrams
-        let trigrams = extract_trigrams(content);
+        // Insert new trigrams — index stores lowercase trigrams for CI search.
+        let content_lower: Vec<u8> = content.iter().map(|b| b.to_ascii_lowercase()).collect();
+        let trigrams = extract_trigrams(&content_lower);
         for tg in trigrams {
             let list = self.map.entry(tg).or_default();
             // Insert in sorted order (maintaining sorted invariant for binary search)
@@ -146,22 +144,16 @@ impl TrigramIndex {
 
     // ── Private helpers ──────────────────────────────────────────────────────
 
-    /// Linear scan through all files for short queries (< 3 bytes).
-    fn linear_scan<V>(&self, query: &[u8], files: &HashMap<String, V>) -> Vec<String>
+    /// Linear scan through all files. `query_lower` must already be ASCII-lowercased.
+    /// Uses allocation-free CI byte scan per candidate.
+    fn linear_scan_lower<V>(&self, query_lower: &[u8], files: &HashMap<String, V>) -> Vec<String>
     where
         V: AsRef<IndexedFile>,
     {
-        let query_lower: Vec<u8> = query.iter().map(|b| b.to_ascii_lowercase()).collect();
         files
             .iter()
             .filter_map(|(path, file)| {
-                let content_lower: Vec<u8> = file
-                    .as_ref()
-                    .content
-                    .iter()
-                    .map(|b| b.to_ascii_lowercase())
-                    .collect();
-                if contains_bytes(&content_lower, &query_lower) {
+                if contains_bytes_ci(&file.as_ref().content, query_lower) {
                     Some(path.clone())
                 } else {
                     None
@@ -201,7 +193,8 @@ impl TrigramIndex {
     /// Insert a file without clearing old trigrams first (used in build_from_files).
     fn insert_file(&mut self, path: &str, content: &[u8]) {
         let file_id = self.get_or_alloc_id(path);
-        let trigrams = extract_trigrams(content);
+        let content_lower: Vec<u8> = content.iter().map(|b| b.to_ascii_lowercase()).collect();
+        let trigrams = extract_trigrams(&content_lower);
         for tg in trigrams {
             let list = self.map.entry(tg).or_default();
             match list.binary_search(&file_id) {
@@ -219,23 +212,36 @@ impl Default for TrigramIndex {
 }
 
 /// Extract the set of unique 3-byte windows from `bytes`.
+///
+/// Callers are responsible for lowercasing `bytes` before calling this function.
+/// The function operates on the bytes as-is without any case conversion.
 fn extract_trigrams(bytes: &[u8]) -> HashSet<[u8; 3]> {
-    let bytes_lower: Vec<u8> = bytes.iter().map(|b| b.to_ascii_lowercase()).collect();
-    if bytes_lower.len() < 3 {
+    if bytes.len() < 3 {
         return HashSet::new();
     }
-    bytes_lower.windows(3).map(|w| [w[0], w[1], w[2]]).collect()
+    bytes.windows(3).map(|w| [w[0], w[1], w[2]]).collect()
 }
 
-/// Check whether `haystack` contains `needle` as a contiguous subsequence.
-fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
-    if needle.is_empty() {
+/// Case-insensitive byte containment check without allocation.
+///
+/// `needle_lower` must already be ASCII-lowercased; `haystack` is compared
+/// one byte at a time via `to_ascii_lowercase()` so no temporary Vec is needed.
+fn contains_bytes_ci(haystack: &[u8], needle_lower: &[u8]) -> bool {
+    if needle_lower.is_empty() {
         return true;
     }
-    if needle.len() > haystack.len() {
+    if needle_lower.len() > haystack.len() {
         return false;
     }
-    haystack.windows(needle.len()).any(|w| w == needle)
+    'outer: for i in 0..=(haystack.len() - needle_lower.len()) {
+        for j in 0..needle_lower.len() {
+            if haystack[i + j].to_ascii_lowercase() != needle_lower[j] {
+                continue 'outer;
+            }
+        }
+        return true;
+    }
+    false
 }
 
 // ── Unit tests ───────────────────────────────────────────────────────────────
