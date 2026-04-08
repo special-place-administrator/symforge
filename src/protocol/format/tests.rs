@@ -419,6 +419,7 @@ fn test_search_text_result_view_matches_live_index_output() {
         search::search_text(&index, Some("let"), None, false),
         None,
         None,
+        None,
     );
 
     assert_eq!(captured_result, live_result);
@@ -502,7 +503,7 @@ fn test_search_text_result_view_renders_context_windows_with_separators() {
         },
     );
 
-    let rendered = search_text_result_view(result, None, None);
+    let rendered = search_text_result_view(result, None, None, None);
 
     assert!(
         rendered.contains("src/lib.rs"),
@@ -530,6 +531,7 @@ fn test_search_text_result_view_renders_context_windows_with_separators() {
 fn test_search_text_result_view_group_by_symbol_keeps_duplicate_names_separate() {
     let rendered = search_text_result_view(
         Ok(search::TextSearchResult {
+
             label: "'needle'".to_string(),
             total_matches: 2,
             files: vec![search::TextFileMatches {
@@ -561,6 +563,7 @@ fn test_search_text_result_view_group_by_symbol_keeps_duplicate_names_separate()
             overflow_count: 0,
         }),
         Some("symbol"),
+        None,
         None,
     );
 

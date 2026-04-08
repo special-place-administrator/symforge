@@ -302,9 +302,14 @@ pub fn search_symbols_result_view(result: &search::SymbolSearchResult, query: &s
         } else {
             &hit.name
         };
+        let confidence = match hit.tier {
+            search::SymbolMatchTier::Exact => 1.0f32,
+            search::SymbolMatchTier::Prefix => 0.85,
+            search::SymbolMatchTier::Substring => 0.70,
+        };
         lines.push(format!(
-            "  {}: {} {}  ({})",
-            hit.line, hit.kind, display_name, hit.path
+            "  {}: {} {}  ({})  [{:.2}]",
+            hit.line, hit.kind, display_name, hit.path, confidence
         ));
     }
 
@@ -330,7 +335,7 @@ pub fn search_text_result_with_options(
     regex: bool,
 ) -> String {
     let result = search::search_text(index, query, terms, regex);
-    search_text_result_view(result, None, None)
+    search_text_result_view(result, None, None, None)
 }
 
 /// Returns true if the line looks like an import statement or a non-doc comment.
@@ -366,6 +371,7 @@ pub fn search_text_result_view(
     result: Result<search::TextSearchResult, search::TextSearchError>,
     group_by: Option<&str>,
     terms: Option<&[String]>,
+    match_confidence: Option<f32>,
 ) -> String {
     let result = match result {
         Ok(result) => result,
@@ -421,11 +427,20 @@ pub fn search_text_result_view(
         );
     }
 
-    let mut lines = vec![format!(
-        "{} matches in {} files",
-        result.total_matches,
-        result.files.len()
-    )];
+    let mut lines = vec![if let Some(confidence) = match_confidence {
+        format!(
+            "{} matches in {} files  [{:.2}]",
+            result.total_matches,
+            result.files.len(),
+            confidence
+        )
+    } else {
+        format!(
+            "{} matches in {} files",
+            result.total_matches,
+            result.files.len()
+        )
+    }];
     for file in &result.files {
         lines.push(file.path.clone());
         if let Some(rendered_lines) = &file.rendered_lines {
@@ -1247,15 +1262,22 @@ pub fn search_files_result_view(view: &SearchFilesView) -> String {
                     }
                     lines.push(header.to_string());
                 }
+                let confidence = match hit.tier {
+                    SearchFilesTier::CoChange => 0.60f32,
+                    SearchFilesTier::StrongPath => 0.80,
+                    SearchFilesTier::Basename => 0.90,
+                    SearchFilesTier::LoosePath => 0.40,
+                };
                 if let (Some(score), Some(shared)) = (hit.coupling_score, hit.shared_commits) {
                     lines.push(format!(
-                        "  {}  ({:.0}% coupled, {} shared commits)",
+                        "  {}  ({:.0}% coupled, {} shared commits)  [{:.2}]",
                         hit.path,
                         score * 100.0,
-                        shared
+                        shared,
+                        confidence
                     ));
                 } else {
-                    lines.push(format!("  {}", hit.path));
+                    lines.push(format!("  {}  [{:.2}]", hit.path, confidence));
                 }
             }
 
@@ -1919,10 +1941,10 @@ pub fn find_references_result_view(
     let shown_files = view.files.len().min(limits.max_files);
     let mut lines = if shown_files < total_files {
         vec![format!(
-            "{total} references across {total_files} files (showing {shown_files})"
+            "{total} references across {total_files} files (showing {shown_files})  [1.00]"
         )]
     } else {
-        vec![format!("{total} references in {total_files} files")]
+        vec![format!("{total} references in {total_files} files  [1.00]")]
     };
     if view.total_refs > 50 {
         lines.push(format!(
@@ -3522,6 +3544,7 @@ pub struct ExploreResultViewInput<'a> {
     pub derived_symbols: &'a [String],
     pub derived_seed_files: &'a [String],
     pub enriched_imports: &'a [String],
+    pub symbol_scores: &'a [f32],
     pub depth: u32,
 }
 
@@ -3538,6 +3561,7 @@ pub fn explore_result_view(input: ExploreResultViewInput<'_>) -> String {
         derived_symbols,
         enriched_imports,
         derived_seed_files,
+        symbol_scores,
         depth,
     } = input;
 
@@ -3570,13 +3594,14 @@ pub fn explore_result_view(input: ExploreResultViewInput<'_>) -> String {
     if depth >= 2 && !enriched_symbols.is_empty() {
         // Depth 2+: show enriched symbols with signatures
         lines.push(format!("Symbols ({} found):", symbol_hits.len()));
-        for (name, kind, path, signature, dependents) in enriched_symbols {
+        for (i, (name, kind, path, signature, dependents)) in enriched_symbols.iter().enumerate() {
+            let score_suffix = symbol_scores.get(i).map(|s| format!("  [{:.2}]", s)).unwrap_or_default();
             if let Some(sig) = signature {
                 // Show first line of signature only to keep it compact
                 let first_line = sig.lines().next().unwrap_or(sig);
-                lines.push(format!("  {first_line}  [{kind}, {path}]"));
+                lines.push(format!("  {first_line}  [{kind}, {path}]{score_suffix}"));
             } else {
-                lines.push(format!("  {kind} {name}  {path}"));
+                lines.push(format!("  {kind} {name}  {path}{score_suffix}"));
             }
             if !dependents.is_empty() {
                 lines.push(format!("    <- used by: {}", dependents.join(", ")));
@@ -3584,16 +3609,18 @@ pub fn explore_result_view(input: ExploreResultViewInput<'_>) -> String {
         }
         // Show remaining non-enriched symbols in compact form
         if symbol_hits.len() > enriched_symbols.len() {
-            for (name, kind, path) in &symbol_hits[enriched_symbols.len()..] {
-                lines.push(format!("  {kind} {name}  {path}"));
+            for (i, (name, kind, path)) in symbol_hits[enriched_symbols.len()..].iter().enumerate() {
+                let score_suffix = symbol_scores.get(enriched_symbols.len() + i).map(|s| format!("  [{:.2}]", s)).unwrap_or_default();
+                lines.push(format!("  {kind} {name}  {path}{score_suffix}"));
             }
         }
         lines.push(String::new());
     } else if !symbol_hits.is_empty() {
         // Depth 1: original compact format
         lines.push(format!("Symbols ({} found):", symbol_hits.len()));
-        for (name, kind, path) in symbol_hits {
-            lines.push(format!("  {kind} {name}  {path}"));
+        for (i, (name, kind, path)) in symbol_hits.iter().enumerate() {
+            let score_suffix = symbol_scores.get(i).map(|s| format!("  [{:.2}]", s)).unwrap_or_default();
+            lines.push(format!("  {kind} {name}  {path}{score_suffix}"));
         }
         lines.push(String::new());
     }

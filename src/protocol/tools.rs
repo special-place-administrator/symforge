@@ -2231,7 +2231,18 @@ fn render_search_text_output(
         }
         _ => None,
     };
-    let output = format::search_text_result_view(result, group_by, terms);
+    let confidence = if auto_corrected_regex {
+        0.75f32
+    } else if is_regex && auto_detected_regex {
+        0.80
+    } else if is_regex {
+        0.85
+    } else if options.ranked {
+        0.80
+    } else {
+        0.95
+    };
+    let output = format::search_text_result_view(result, group_by, terms, Some(confidence));
     match envelope {
         Some(envelope) => format!("{envelope}\n\n{output}"),
         None => output,
@@ -5461,6 +5472,11 @@ impl SymForgeServer {
         // Filter out weak matches (score < 8 means single text-only hit in a doc file).
         ranked.retain(|(_, score)| *score >= 8);
         ranked.truncate(limit);
+        let max_score = ranked.first().map(|(_, s)| *s as f32).unwrap_or(1.0);
+        let symbol_scores: Vec<f32> = ranked
+            .iter()
+            .map(|(_, s)| if max_score > 0.0 { (*s as f32 / max_score).min(1.0) } else { 0.0 })
+            .collect();
         let symbol_hits: Vec<(String, String, String)> =
             ranked.into_iter().map(|(k, _)| k).collect();
 
@@ -5617,6 +5633,7 @@ impl SymForgeServer {
                 .map(|cluster| cluster.promoted_symbols.as_slice())
                 .unwrap_or(&[]),
             enriched_imports: &enriched_imports,
+            symbol_scores: &symbol_scores,
             derived_seed_files: derived_cluster
                 .as_ref()
                 .map(|cluster| cluster.seed_files.as_slice())
