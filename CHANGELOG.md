@@ -1,5 +1,12 @@
 # Changelog
 
+## [7.4.2](https://github.com/special-place-administrator/symforge/compare/v7.4.1...v7.4.2) (2026-04-09)
+
+
+### Performance Improvements
+
+* add release profile optimization and Aho-Corasick multi-term search ([aed8ec8](https://github.com/special-place-administrator/symforge/commit/aed8ec8b975b69f0118dc4fbed3c9d852879f164))
+
 ## [7.4.1](https://github.com/special-place-administrator/symforge/compare/v7.4.0...v7.4.1) (2026-04-08)
 
 
