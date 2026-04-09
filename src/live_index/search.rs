@@ -973,6 +973,21 @@ pub fn search_text_with_options(
         .whole_word
         .then(|| compile_literal_whole_word_matcher(&normalized_terms, case_sensitive));
 
+    // Aho-Corasick automaton for multi-term OR searches: matches all patterns in
+    // a single pass over each line, eliminating per-line .to_lowercase() allocation
+    // for case-insensitive searches.  Only used when: >1 term, not whole-word mode,
+    // and all terms are ASCII (aho-corasick only does ASCII case folding).
+    let all_ascii = normalized_terms.iter().all(|t| t.is_ascii());
+    let multi_term_ac = (normalized_terms.len() > 1
+        && !options.whole_word
+        && all_ascii)
+        .then(|| {
+            aho_corasick::AhoCorasick::builder()
+                .ascii_case_insensitive(!case_sensitive)
+                .build(&normalized_terms)
+                .expect("literal terms always build")
+        });
+
     let label = if normalized_terms.len() == 1 {
         format!("'{}'", normalized_terms[0])
     } else {
@@ -1012,6 +1027,11 @@ pub fn search_text_with_options(
                 return matcher.is_match(line);
             }
 
+            if let Some(ac) = multi_term_ac.as_ref() {
+                return ac.is_match(line);
+            }
+
+            // Single-term path (or non-ASCII multi-term fallback)
             if case_sensitive {
                 normalized_terms.iter().any(|term| line.contains(term))
             } else {
