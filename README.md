@@ -21,6 +21,8 @@ Works with MCP-compatible clients including Claude Code, Claude Desktop, Codex, 
 - **MCP tool annotations** — All tools now declare `readOnlyHint` and `openWorldHint` per the MCP spec, enabling smarter client-side tool selection.
 - **Claude Desktop support** — `symforge init --client claude-desktop` registers the MCP server in Claude Desktop's config. On Windows, generates a `.cmd` wrapper to avoid the System32 CWD issue.
 - **Smarter PreToolUse hooks** — When the SymForge sidecar is already running, tool-preference hints are suppressed to reduce noise for agents that are actively using SymForge.
+- **Release profile optimization** (v7.4.2) — LTO, single codegen unit, and symbol stripping reduce the release binary by ~3%. Cross-crate inlining across 330 packages improves runtime performance.
+- **Aho-Corasick multi-term search** (v7.4.2) — Multi-term OR searches in `search_text` now use a single-pass Aho-Corasick automaton instead of sequential substring matching, eliminating per-line allocations for case-insensitive queries.
 
 ## When to use SymForge
 
@@ -212,10 +214,10 @@ For platform-specific setup scripts (PowerShell, CMD, bash, zsh), see the wiki:
 
 ```bash
 cargo build --release
-cargo test
+cargo test --all-targets -- --test-threads=1
 ```
 
-The Cargo package name is `symforge`.
+The release profile enables LTO and single codegen unit for smaller binaries and better cross-crate optimization. Release builds take longer (~4 min) than dev builds (~15 sec). The Cargo package name is `symforge`.
 
 ## License
 
