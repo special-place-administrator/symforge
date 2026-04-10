@@ -735,6 +735,11 @@ pub struct ReplaceSymbolBodyInput {
     #[serde(default, deserialize_with = "super::tools::lenient_u32")]
     pub symbol_line: Option<u32>,
     /// Complete new source code for the symbol (replaces the entire definition).
+    // `body` is accepted as a legacy alias for leniency toward models that drop
+    // the `new_` prefix. Providing both `new_body` and `body` in the same payload
+    // is a hard error (duplicate field) — we refuse to silently choose between
+    // ambiguous inputs. See tests in this file for the accept/reject contract.
+    #[serde(alias = "body")]
     pub new_body: String,
     /// When true, validate and preview but skip the actual write.
     #[serde(default, deserialize_with = "super::tools::lenient_bool")]
@@ -4740,6 +4745,49 @@ fn uses_it() { Widget::default(); }
         assert!(
             error.contains("JSON object with path/name fields"),
             "error: {error}"
+        );
+    }
+
+    // -- ReplaceSymbolBodyInput: new_body / body alias --
+    //
+    // These three tests lock in the minimal alias contract: the canonical
+    // field name is `new_body`, `body` is accepted as a legacy alias, and
+    // providing both at once is a hard error rather than a silent pick.
+
+    #[test]
+    fn test_replace_symbol_body_input_accepts_canonical_new_body() {
+        let raw = r#"{"path":"src/lib.rs","name":"foo","new_body":"fn foo() {}"}"#;
+        let input: ReplaceSymbolBodyInput = serde_json::from_str(raw).unwrap();
+        assert_eq!(input.path, "src/lib.rs");
+        assert_eq!(input.name, "foo");
+        assert_eq!(input.new_body, "fn foo() {}");
+    }
+
+    #[test]
+    fn test_replace_symbol_body_input_accepts_body_alias() {
+        let raw = r#"{"path":"src/lib.rs","name":"foo","body":"fn foo() {}"}"#;
+        let input: ReplaceSymbolBodyInput = serde_json::from_str(raw).unwrap();
+        assert_eq!(input.path, "src/lib.rs");
+        assert_eq!(input.name, "foo");
+        assert_eq!(input.new_body, "fn foo() {}");
+    }
+
+    #[test]
+    fn test_replace_symbol_body_input_rejects_both_new_body_and_body() {
+        // Use a raw JSON string (not serde_json::json!) so the parser actually
+        // streams both keys to the struct visitor; a serde_json::Value literal
+        // would silently dedupe keys in its backing Map and never exercise the
+        // duplicate-field path.
+        let raw = r#"{"path":"src/lib.rs","name":"foo","new_body":"a","body":"b"}"#;
+        let result: Result<ReplaceSymbolBodyInput, _> = serde_json::from_str(raw);
+        assert!(
+            result.is_err(),
+            "expected duplicate-field error, got Ok(ReplaceSymbolBodyInput)"
+        );
+        let err = result.err().unwrap().to_string();
+        assert!(
+            err.contains("duplicate field"),
+            "expected duplicate-field error, got: {err}"
         );
     }
 }
