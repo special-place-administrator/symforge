@@ -1,5 +1,12 @@
 # Changelog
 
+## [7.4.3](https://github.com/special-place-administrator/symforge/compare/v7.4.2...v7.4.3) (2026-04-10)
+
+
+### Bug Fixes
+
+* accept 'body' as alias for 'new_body' in replace_symbol_body ([8996c9b](https://github.com/special-place-administrator/symforge/commit/8996c9b1d8454e45be5e5173df6bce6195754da4))
+
 ## [7.4.2](https://github.com/special-place-administrator/symforge/compare/v7.4.1...v7.4.2) (2026-04-09)
 
 
