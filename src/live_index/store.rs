@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use arc_swap::ArcSwap;
 use parking_lot::{Mutex, MutexGuard};
@@ -19,6 +19,65 @@ use crate::domain::{
     SymbolRecord, find_enclosing_symbol,
 };
 use crate::{discovery, parsing};
+
+const INDEXING_THREAD_STACK_SIZE_ENV: &str = "SYMFORGE_INDEXING_THREAD_STACK_BYTES";
+#[cfg(windows)]
+const DEFAULT_INDEXING_THREAD_STACK_BYTES: usize = 4 * 1024 * 1024;
+#[cfg(windows)]
+const MIN_INDEXING_THREAD_STACK_BYTES: usize = 3 * 1024 * 1024;
+
+static INDEXING_THREAD_POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
+
+#[cfg(windows)]
+fn indexing_thread_stack_size() -> usize {
+    match std::env::var(INDEXING_THREAD_STACK_SIZE_ENV) {
+        Ok(raw) => match raw.parse::<usize>() {
+            Ok(bytes) if bytes >= MIN_INDEXING_THREAD_STACK_BYTES => bytes,
+            Ok(bytes) => {
+                warn!(
+                    env = INDEXING_THREAD_STACK_SIZE_ENV,
+                    requested = bytes,
+                    minimum = MIN_INDEXING_THREAD_STACK_BYTES,
+                    "indexing thread stack size too small; using Windows minimum"
+                );
+                MIN_INDEXING_THREAD_STACK_BYTES
+            }
+            Err(error) => {
+                warn!(
+                    env = INDEXING_THREAD_STACK_SIZE_ENV,
+                    value = %raw,
+                    %error,
+                    default = DEFAULT_INDEXING_THREAD_STACK_BYTES,
+                    "invalid indexing thread stack size; using default"
+                );
+                DEFAULT_INDEXING_THREAD_STACK_BYTES
+            }
+        },
+        Err(_) => DEFAULT_INDEXING_THREAD_STACK_BYTES,
+    }
+}
+
+fn indexing_thread_pool() -> &'static rayon::ThreadPool {
+    INDEXING_THREAD_POOL.get_or_init(|| {
+        let builder = rayon::ThreadPoolBuilder::new()
+            .thread_name(|index| format!("symforge-index-{}", index));
+
+        #[cfg(windows)]
+        let builder = {
+            let stack_size = indexing_thread_stack_size();
+            info!(
+                stack_size,
+                env = INDEXING_THREAD_STACK_SIZE_ENV,
+                "initializing indexing thread pool with explicit worker stack size"
+            );
+            builder.stack_size(stack_size)
+        };
+
+        builder
+            .build()
+            .expect("indexing thread pool should initialize")
+    })
+}
 
 /// Per-file parse status stored in the index.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -472,7 +531,9 @@ impl SharedIndexHandle {
                     byte_range: s.byte_range,
                 })
                 .collect();
-            self.pre_update_symbols.lock().insert(path.clone(), snapshot);
+            self.pre_update_symbols
+                .lock()
+                .insert(path.clone(), snapshot);
         }
         let mut live = (*current).clone();
         let path_clone = path.clone();
@@ -617,14 +678,18 @@ impl<'a> Deref for SharedIndexWriteGuard<'a> {
     type Target = LiveIndex;
 
     fn deref(&self) -> &Self::Target {
-        self.index.as_ref().expect("SharedIndexWriteGuard used after drop")
+        self.index
+            .as_ref()
+            .expect("SharedIndexWriteGuard used after drop")
     }
 }
 
 impl DerefMut for SharedIndexWriteGuard<'_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.dirty = true;
-        self.index.as_mut().expect("SharedIndexWriteGuard used after drop")
+        self.index
+            .as_mut()
+            .expect("SharedIndexWriteGuard used after drop")
     }
 }
 
@@ -798,107 +863,112 @@ impl LiveIndex {
             Skip(SkippedFile),
         }
 
-        let outcomes: Vec<AdmissionOutcome> = all_entries
-            .par_iter()
-            .filter_map(|entry| {
-                // Phase 1: size + extension check (no I/O beyond what the walk gave us).
-                let decision_pre = classify_admission(
-                    &entry.absolute_path,
-                    entry.file_size,
-                    None, // no content yet
-                );
+        let outcomes: Vec<AdmissionOutcome> = indexing_thread_pool().install(|| {
+            all_entries
+                .par_iter()
+                .filter_map(|entry| {
+                    // Phase 1: size + extension check (no I/O beyond what the walk gave us).
+                    let decision_pre = classify_admission(
+                        &entry.absolute_path,
+                        entry.file_size,
+                        None, // no content yet
+                    );
 
-                match decision_pre.tier {
-                    AdmissionTier::HardSkip | AdmissionTier::MetadataOnly => {
-                        // No need to read content — already decided.
-                        let sf = SkippedFile {
-                            path: entry.relative_path.clone(),
-                            size: entry.file_size,
-                            extension: entry
-                                .absolute_path
-                                .extension()
-                                .and_then(|e| e.to_str())
-                                .map(|s| s.to_string()),
-                            decision: decision_pre,
-                        };
-                        return Some(AdmissionOutcome::Skip(sf));
+                    match decision_pre.tier {
+                        AdmissionTier::HardSkip | AdmissionTier::MetadataOnly => {
+                            // No need to read content — already decided.
+                            let sf = SkippedFile {
+                                path: entry.relative_path.clone(),
+                                size: entry.file_size,
+                                extension: entry
+                                    .absolute_path
+                                    .extension()
+                                    .and_then(|e| e.to_str())
+                                    .map(|s| s.to_string()),
+                                decision: decision_pre,
+                            };
+                            return Some(AdmissionOutcome::Skip(sf));
+                        }
+                        AdmissionTier::Normal => {}
                     }
-                    AdmissionTier::Normal => {}
-                }
 
-                // Phase 2: we tentatively have Tier-1. If the file has no recognized
-                // language, we cannot parse it — skip it as metadata-only.
-                let language = match &entry.language {
-                    Some(lang) => lang.clone(),
-                    None => {
-                        // Unknown extension, not on denylist, under size limit.
-                        // Read content to do binary sniff, then store as skipped.
-                        let bytes = match std::fs::read(&entry.absolute_path) {
-                            Ok(b) => b,
-                            Err(e) => {
-                                warn!("failed to read {:?}: {}", entry.absolute_path, e);
-                                return None;
-                            }
-                        };
-                        let decision_post =
-                            classify_admission(&entry.absolute_path, entry.file_size, Some(&bytes));
-                        let sf = SkippedFile {
-                            path: entry.relative_path.clone(),
-                            size: entry.file_size,
-                            extension: entry
-                                .absolute_path
-                                .extension()
-                                .and_then(|e| e.to_str())
-                                .map(|s| s.to_string()),
-                            decision: decision_post,
-                        };
-                        return Some(AdmissionOutcome::Skip(sf));
+                    // Phase 2: we tentatively have Tier-1. If the file has no recognized
+                    // language, we cannot parse it — skip it as metadata-only.
+                    let language = match &entry.language {
+                        Some(lang) => lang.clone(),
+                        None => {
+                            // Unknown extension, not on denylist, under size limit.
+                            // Read content to do binary sniff, then store as skipped.
+                            let bytes = match std::fs::read(&entry.absolute_path) {
+                                Ok(b) => b,
+                                Err(e) => {
+                                    warn!("failed to read {:?}: {}", entry.absolute_path, e);
+                                    return None;
+                                }
+                            };
+                            let decision_post = classify_admission(
+                                &entry.absolute_path,
+                                entry.file_size,
+                                Some(&bytes),
+                            );
+                            let sf = SkippedFile {
+                                path: entry.relative_path.clone(),
+                                size: entry.file_size,
+                                extension: entry
+                                    .absolute_path
+                                    .extension()
+                                    .and_then(|e| e.to_str())
+                                    .map(|s| s.to_string()),
+                                decision: decision_post,
+                            };
+                            return Some(AdmissionOutcome::Skip(sf));
+                        }
+                    };
+
+                    // Phase 3: read content and do binary sniff before passing to parser.
+                    let bytes = match std::fs::read(&entry.absolute_path) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            warn!("failed to read {:?}: {}", entry.absolute_path, e);
+                            return None;
+                        }
+                    };
+                    let mtime_secs = std::fs::metadata(&entry.absolute_path)
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+
+                    let decision_post =
+                        classify_admission(&entry.absolute_path, entry.file_size, Some(&bytes));
+
+                    match decision_post.tier {
+                        AdmissionTier::HardSkip | AdmissionTier::MetadataOnly => {
+                            // Binary sniff reclassified this file — do NOT parse.
+                            let sf = SkippedFile {
+                                path: entry.relative_path.clone(),
+                                size: entry.file_size,
+                                extension: entry
+                                    .absolute_path
+                                    .extension()
+                                    .and_then(|e| e.to_str())
+                                    .map(|s| s.to_string()),
+                                decision: decision_post,
+                            };
+                            Some(AdmissionOutcome::Skip(sf))
+                        }
+                        AdmissionTier::Normal => Some(AdmissionOutcome::Parse {
+                            relative_path: entry.relative_path.clone(),
+                            language,
+                            classification: entry.classification,
+                            bytes,
+                            mtime_secs,
+                        }),
                     }
-                };
-
-                // Phase 3: read content and do binary sniff before passing to parser.
-                let bytes = match std::fs::read(&entry.absolute_path) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        warn!("failed to read {:?}: {}", entry.absolute_path, e);
-                        return None;
-                    }
-                };
-                let mtime_secs = std::fs::metadata(&entry.absolute_path)
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-
-                let decision_post =
-                    classify_admission(&entry.absolute_path, entry.file_size, Some(&bytes));
-
-                match decision_post.tier {
-                    AdmissionTier::HardSkip | AdmissionTier::MetadataOnly => {
-                        // Binary sniff reclassified this file — do NOT parse.
-                        let sf = SkippedFile {
-                            path: entry.relative_path.clone(),
-                            size: entry.file_size,
-                            extension: entry
-                                .absolute_path
-                                .extension()
-                                .and_then(|e| e.to_str())
-                                .map(|s| s.to_string()),
-                            decision: decision_post,
-                        };
-                        Some(AdmissionOutcome::Skip(sf))
-                    }
-                    AdmissionTier::Normal => Some(AdmissionOutcome::Parse {
-                        relative_path: entry.relative_path.clone(),
-                        language,
-                        classification: entry.classification,
-                        bytes,
-                        mtime_secs,
-                    }),
-                }
-            })
-            .collect();
+                })
+                .collect()
+        });
 
         // 3. Split outcomes into parse candidates and skipped files.
         let mut skipped_files: Vec<SkippedFile> = Vec::new();
@@ -932,22 +1002,24 @@ impl LiveIndex {
         );
 
         // 4. Parse all admitted files in parallel via Rayon.
-        let mut parse_results: Vec<(String, IndexedFile)> = to_parse
-            .par_iter()
-            .map(
-                |(relative_path, language, classification, bytes, mtime_secs)| {
-                    let result = parsing::process_file_with_classification(
-                        relative_path,
-                        bytes,
-                        language.clone(),
-                        *classification,
-                    );
-                    let indexed = IndexedFile::from_parse_result(result, bytes.clone())
-                        .with_mtime(*mtime_secs);
-                    (relative_path.clone(), indexed)
-                },
-            )
-            .collect();
+        let mut parse_results: Vec<(String, IndexedFile)> = indexing_thread_pool().install(|| {
+            to_parse
+                .par_iter()
+                .map(
+                    |(relative_path, language, classification, bytes, mtime_secs)| {
+                        let result = parsing::process_file_with_classification(
+                            relative_path,
+                            bytes,
+                            language.clone(),
+                            *classification,
+                        );
+                        let indexed = IndexedFile::from_parse_result(result, bytes.clone())
+                            .with_mtime(*mtime_secs);
+                        (relative_path.clone(), indexed)
+                    },
+                )
+                .collect()
+        });
 
         // 5. Sort by path for deterministic circuit-breaker evaluation order.
         parse_results.sort_by(|a, b| a.0.cmp(&b.0));
@@ -1088,34 +1160,37 @@ impl LiveIndex {
         info!("discovered {} source files", discovered.len());
 
         // 2. Parse all files in parallel via Rayon
-        let parse_results: Vec<(String, IndexedFile)> = discovered
-            .par_iter()
-            .filter_map(|df| {
-                let bytes = match std::fs::read(&df.absolute_path) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        warn!("failed to read {:?}: {}", df.absolute_path, e);
-                        return None;
-                    }
-                };
+        let parse_results: Vec<(String, IndexedFile)> = indexing_thread_pool().install(|| {
+            discovered
+                .par_iter()
+                .filter_map(|df| {
+                    let bytes = match std::fs::read(&df.absolute_path) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            warn!("failed to read {:?}: {}", df.absolute_path, e);
+                            return None;
+                        }
+                    };
 
-                let mtime_secs = std::fs::metadata(&df.absolute_path)
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
+                    let mtime_secs = std::fs::metadata(&df.absolute_path)
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
 
-                let result = parsing::process_file_with_classification(
-                    &df.relative_path,
-                    &bytes,
-                    df.language.clone(),
-                    df.classification,
-                );
-                let indexed = IndexedFile::from_parse_result(result, bytes).with_mtime(mtime_secs);
-                Some((df.relative_path.clone(), indexed))
-            })
-            .collect();
+                    let result = parsing::process_file_with_classification(
+                        &df.relative_path,
+                        &bytes,
+                        df.language.clone(),
+                        df.classification,
+                    );
+                    let indexed =
+                        IndexedFile::from_parse_result(result, bytes).with_mtime(mtime_secs);
+                    Some((df.relative_path.clone(), indexed))
+                })
+                .collect()
+        });
 
         // 3. Build new file map with fresh circuit breaker
         let new_cb = CircuitBreakerState::from_env();
