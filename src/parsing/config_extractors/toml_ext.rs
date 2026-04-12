@@ -177,23 +177,23 @@ impl TomlWalker<'_> {
 
 /// Scan TOML line by line, extracting section headers and key = value lines.
 /// Does not recurse into inline tables. Suitable for files that toml_edit rejects.
-fn line_scan(raw: &[u8], line_starts: &[u32]) -> Vec<SymbolRecord> {
+fn line_scan(bytes: &[u8], line_starts: &[u32]) -> Vec<SymbolRecord> {
     let mut symbols = Vec::new();
     let mut sort_order: u32 = 0;
     let mut current_section: String = String::new();
     let mut depth_offset: u32 = 0;
-    let len = raw.len();
+    let len = bytes.len();
     let mut i = 0;
 
     while i < len {
         let line_start = i;
-        let line_end = raw[i..]
+        let line_end = bytes[i..]
             .iter()
             .position(|&b| b == b'\n')
             .map(|p| i + p + 1)
             .unwrap_or(len);
 
-        let line_bytes = &raw[line_start..line_end];
+        let line_bytes = &bytes[line_start..line_end];
         let trimmed = trim_leading_whitespace(line_bytes);
 
         // Skip empty lines and comments
@@ -325,18 +325,18 @@ fn trim_trailing_whitespace(s: &[u8]) -> &[u8] {
 // Raw byte span finders (used by toml_edit walker)
 // ---------------------------------------------------------------------------
 
-fn find_key_value_bytes(raw: &[u8], key: &str, search_from: usize) -> (usize, usize) {
+fn find_key_value_bytes(bytes: &[u8], key: &str, search_from: usize) -> (usize, usize) {
     let key_bytes = key.as_bytes();
-    let len = raw.len();
+    let len = bytes.len();
     let mut i = search_from;
     while i < len {
         let line_start = i;
-        let line_end = raw[i..]
+        let line_end = bytes[i..]
             .iter()
             .position(|&b| b == b'\n')
             .map(|p| i + p + 1)
             .unwrap_or(len);
-        let line = &raw[line_start..line_end];
+        let line = &bytes[line_start..line_end];
         let trimmed = trim_leading_whitespace(line);
         if !trimmed.starts_with(b"#")
             && !trimmed.starts_with(b"[")
@@ -349,11 +349,11 @@ fn find_key_value_bytes(raw: &[u8], key: &str, search_from: usize) -> (usize, us
     (0, 0)
 }
 
-fn find_table_header_bytes(raw: &[u8], key_path: &str) -> (usize, usize) {
+fn find_table_header_bytes(bytes: &[u8], key_path: &str) -> (usize, usize) {
     // key_path has been through join_key_path which escapes dots as ~1 and ~ as ~0.
     // Unescape before building the bracket pattern for raw-text search.
     let unescaped = unescape_key_path(key_path);
-    find_header_pattern(raw, &format!("[{}]", unescaped))
+    find_header_pattern(bytes, &format!("[{}]", unescaped))
 }
 
 /// Reverse the escaping applied by `join_key_path`: `~1` -> `.`, `~0` -> `~`.
@@ -362,21 +362,21 @@ fn unescape_key_path(s: &str) -> String {
     s.replace("~1", ".").replace("~0", "~")
 }
 
-fn find_array_table_header_bytes(raw: &[u8], key_path: &str, index: usize) -> (usize, usize) {
+fn find_array_table_header_bytes(bytes: &[u8], key_path: &str, index: usize) -> (usize, usize) {
     let unescaped = unescape_key_path(key_path);
     let pattern = format!("[[{}]]", unescaped);
     let pattern_bytes = pattern.as_bytes();
-    let len = raw.len();
+    let len = bytes.len();
     let mut i = 0;
     let mut count = 0;
     while i < len {
         let line_start = i;
-        let line_end = raw[i..]
+        let line_end = bytes[i..]
             .iter()
             .position(|&b| b == b'\n')
             .map(|p| i + p + 1)
             .unwrap_or(len);
-        let line = trim_leading_whitespace(&raw[line_start..line_end]);
+        let line = trim_leading_whitespace(&bytes[line_start..line_end]);
         if line.starts_with(pattern_bytes) {
             if count == index {
                 return (line_start, line_end.min(len));
@@ -388,18 +388,18 @@ fn find_array_table_header_bytes(raw: &[u8], key_path: &str, index: usize) -> (u
     (0, 0)
 }
 
-fn find_header_pattern(raw: &[u8], pattern: &str) -> (usize, usize) {
+fn find_header_pattern(bytes: &[u8], pattern: &str) -> (usize, usize) {
     let pattern_bytes = pattern.as_bytes();
-    let len = raw.len();
+    let len = bytes.len();
     let mut i = 0;
     while i < len {
         let line_start = i;
-        let line_end = raw[i..]
+        let line_end = bytes[i..]
             .iter()
             .position(|&b| b == b'\n')
             .map(|p| i + p + 1)
             .unwrap_or(len);
-        let line = trim_leading_whitespace(&raw[line_start..line_end]);
+        let line = trim_leading_whitespace(&bytes[line_start..line_end]);
         if line.starts_with(pattern_bytes) {
             return (line_start, line_end.min(len));
         }

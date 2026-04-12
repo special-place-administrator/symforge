@@ -390,17 +390,17 @@ pub fn run_hook(subcommand: Option<&HookSubcommand>) -> anyhow::Result<()> {
 /// Returns `HookInput::default()` on any parse failure (fail-open).
 pub(crate) fn parse_stdin_input() -> HookInput {
     let stdin = std::io::stdin();
-    let mut raw = String::new();
+    let mut stdin_json = String::new();
     for line in stdin.lock().lines() {
         match line {
             Ok(l) => {
-                raw.push_str(&l);
-                raw.push('\n');
+                stdin_json.push_str(&l);
+                stdin_json.push('\n');
             }
             Err(_) => break,
         }
     }
-    serde_json::from_str(&raw).unwrap_or_default()
+    serde_json::from_str(&stdin_json).unwrap_or_default()
 }
 
 /// Converts an absolute path to a relative path by stripping the `cwd` prefix.

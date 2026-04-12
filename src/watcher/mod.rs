@@ -159,13 +159,13 @@ pub(crate) enum ReindexResult {
 /// Returns the relative forward-slash path if `abs_path` is inside `repo_root`,
 /// or `None` if it lies outside.
 pub(crate) fn normalize_event_path(abs_path: &Path, repo_root: &Path) -> Option<String> {
-    let raw = abs_path.to_string_lossy();
+    let raw_path = abs_path.to_string_lossy();
 
     // Strip \\?\ prefix (Windows extended-length format)
-    let stripped_raw: &str = if let Some(stripped) = raw.strip_prefix(r"\\?\") {
+    let stripped_raw: &str = if let Some(stripped) = raw_path.strip_prefix(r"\\?\") {
         stripped
     } else {
-        &raw
+        raw_path.as_ref()
     };
 
     let clean_abs = Path::new(stripped_raw);

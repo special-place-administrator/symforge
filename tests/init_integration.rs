@@ -18,8 +18,8 @@ fn fake_binary_path() -> std::path::PathBuf {
 /// Read settings.json from the temp dir.
 fn read_settings(dir: &TempDir) -> serde_json::Value {
     let path = dir.path().join("settings.json");
-    let raw = std::fs::read_to_string(&path).expect("settings.json must exist");
-    serde_json::from_str(&raw).expect("settings.json must be valid JSON")
+    let settings_json = std::fs::read_to_string(&path).expect("settings.json must exist");
+    serde_json::from_str(&settings_json).expect("settings.json must be valid JSON")
 }
 
 fn read_text(path: &std::path::Path) -> String {
@@ -187,8 +187,8 @@ fn test_init_registers_mcp_server() {
     symforge::cli::init::register_mcp_server(&claude_json_path, binary_path)
         .expect("register_mcp_server must succeed");
 
-    let raw = std::fs::read_to_string(&claude_json_path).unwrap();
-    let config: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let config_json = std::fs::read_to_string(&claude_json_path).unwrap();
+    let config: serde_json::Value = serde_json::from_str(&config_json).unwrap();
 
     let tok = &config["mcpServers"]["symforge"];
     // On Windows, forward slashes are converted to backslashes for native process spawning.
@@ -256,8 +256,8 @@ fn test_init_mcp_registration_preserves_other_servers() {
 
     symforge::cli::init::register_mcp_server(&claude_json_path, "/usr/local/bin/symforge").unwrap();
 
-    let raw = std::fs::read_to_string(&claude_json_path).unwrap();
-    let config: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let config_json = std::fs::read_to_string(&claude_json_path).unwrap();
+    let config: serde_json::Value = serde_json::from_str(&config_json).unwrap();
 
     assert!(
         config["mcpServers"]["other-server"].is_object(),
@@ -278,31 +278,31 @@ fn test_init_registers_codex_mcp_server() {
     register_codex_mcp_server(&codex_config_path, binary_path)
         .expect("register_codex_mcp_server must succeed");
 
-    let raw = std::fs::read_to_string(&codex_config_path).unwrap();
+    let config_toml = std::fs::read_to_string(&codex_config_path).unwrap();
 
     assert!(
-        raw.contains("[mcp_servers.symforge]"),
-        "config must contain a symforge MCP table: {raw}"
+        config_toml.contains("[mcp_servers.symforge]"),
+        "config must contain a symforge MCP table: {config_toml}"
     );
     assert!(
-        raw.contains(binary_path),
-        "config must contain the Windows binary path: {raw}"
+        config_toml.contains(binary_path),
+        "config must contain the Windows binary path: {config_toml}"
     );
     assert!(
-        raw.contains("startup_timeout_sec"),
-        "config must tune Codex MCP startup timeout: {raw}"
+        config_toml.contains("startup_timeout_sec"),
+        "config must tune Codex MCP startup timeout: {config_toml}"
     );
     assert!(
-        raw.contains("tool_timeout_sec"),
-        "config must tune Codex MCP tool timeout: {raw}"
+        config_toml.contains("tool_timeout_sec"),
+        "config must tune Codex MCP tool timeout: {config_toml}"
     );
     assert!(
-        raw.contains("project_doc_fallback_filenames"),
-        "config must configure project doc fallbacks: {raw}"
+        config_toml.contains("project_doc_fallback_filenames"),
+        "config must configure project doc fallbacks: {config_toml}"
     );
     assert!(
-        raw.contains("CLAUDE.md"),
-        "config must include CLAUDE.md as a project doc fallback: {raw}"
+        config_toml.contains("CLAUDE.md"),
+        "config must include CLAUDE.md as a project doc fallback: {config_toml}"
     );
 }
 
@@ -348,25 +348,25 @@ command = "other.exe"
     )
     .unwrap();
 
-    let raw = std::fs::read_to_string(&codex_config_path).unwrap();
+    let config_toml = std::fs::read_to_string(&codex_config_path).unwrap();
     assert!(
-        raw.contains("# keep this comment"),
+        config_toml.contains("# keep this comment"),
         "existing comments should survive"
     );
     assert!(
-        raw.contains("model = \"gpt-5.4\""),
+        config_toml.contains("model = \"gpt-5.4\""),
         "existing config should survive"
     );
     assert!(
-        raw.contains("[mcp_servers.other]"),
+        config_toml.contains("[mcp_servers.other]"),
         "other MCP servers should survive"
     );
     assert!(
-        raw.contains("README.agent.md"),
+        config_toml.contains("README.agent.md"),
         "existing project doc fallbacks should survive"
     );
     assert!(
-        raw.contains("CLAUDE.md"),
+        config_toml.contains("CLAUDE.md"),
         "SymForge should merge CLAUDE.md into project doc fallbacks"
     );
 }
@@ -380,8 +380,8 @@ fn test_init_registers_kilo_mcp_server() {
     register_kilo_mcp_server(&kilo_config_path, binary_path)
         .expect("register_kilo_mcp_server must succeed");
 
-    let raw = std::fs::read_to_string(&kilo_config_path).unwrap();
-    let config: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let config_json = std::fs::read_to_string(&kilo_config_path).unwrap();
+    let config: serde_json::Value = serde_json::from_str(&config_json).unwrap();
 
     let symforge = &config["mcpServers"]["symforge"];
     assert_eq!(symforge["command"], binary_path);
@@ -429,8 +429,8 @@ fn test_init_kilo_registration_preserves_other_servers() {
 
     register_kilo_mcp_server(&kilo_config_path, "/usr/local/bin/symforge").unwrap();
 
-    let raw = std::fs::read_to_string(&kilo_config_path).unwrap();
-    let config: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let config_json = std::fs::read_to_string(&kilo_config_path).unwrap();
+    let config: serde_json::Value = serde_json::from_str(&config_json).unwrap();
 
     assert!(
         config["mcpServers"]["other-server"].is_object(),

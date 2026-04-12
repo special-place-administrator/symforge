@@ -233,9 +233,9 @@ pub fn merge_hooks_into_settings(
 
     // Read existing settings or start with empty object.
     let mut settings: Value = if settings_path.exists() {
-        let raw = std::fs::read_to_string(settings_path)
+        let settings_json = std::fs::read_to_string(settings_path)
             .with_context(|| format!("reading {}", settings_path.display()))?;
-        serde_json::from_str(&raw)
+        serde_json::from_str(&settings_json)
             .with_context(|| format!("parsing {}", settings_path.display()))?
     } else {
         json!({})
@@ -496,9 +496,9 @@ pub fn register_mcp_server(
     binary_path: &str,
 ) -> anyhow::Result<()> {
     let mut config: Value = if claude_json_path.exists() {
-        let raw = std::fs::read_to_string(claude_json_path)
+        let config_json = std::fs::read_to_string(claude_json_path)
             .with_context(|| format!("reading {}", claude_json_path.display()))?;
-        serde_json::from_str(&raw)
+        serde_json::from_str(&config_json)
             .with_context(|| format!("parsing {}", claude_json_path.display()))?
     } else {
         json!({})
@@ -548,9 +548,9 @@ pub fn register_claude_desktop_mcp_server(
     }
 
     let mut config: Value = if desktop_config_path.exists() {
-        let raw = std::fs::read_to_string(desktop_config_path)
+        let config_json = std::fs::read_to_string(desktop_config_path)
             .with_context(|| format!("reading {}", desktop_config_path.display()))?;
-        serde_json::from_str(&raw)
+        serde_json::from_str(&config_json)
             .with_context(|| format!("parsing {}", desktop_config_path.display()))?
     } else {
         json!({})
@@ -618,17 +618,18 @@ pub fn register_codex_mcp_server(
             .with_context(|| format!("creating {}", parent.display()))?;
     }
 
-    let raw = if codex_config_path.exists() {
+    let config_toml = if codex_config_path.exists() {
         std::fs::read_to_string(codex_config_path)
             .with_context(|| format!("reading {}", codex_config_path.display()))?
     } else {
         String::new()
     };
 
-    let mut config = if raw.trim().is_empty() {
+    let mut config = if config_toml.trim().is_empty() {
         DocumentMut::new()
     } else {
-        raw.parse::<DocumentMut>()
+        config_toml
+            .parse::<DocumentMut>()
             .with_context(|| format!("parsing {}", codex_config_path.display()))?
     };
 
@@ -711,9 +712,9 @@ pub fn register_gemini_mcp_server(
     }
 
     let mut config: Value = if gemini_settings_path.exists() {
-        let raw = std::fs::read_to_string(gemini_settings_path)
+        let config_json = std::fs::read_to_string(gemini_settings_path)
             .with_context(|| format!("reading {}", gemini_settings_path.display()))?;
-        serde_json::from_str(&raw)
+        serde_json::from_str(&config_json)
             .with_context(|| format!("parsing {}", gemini_settings_path.display()))?
     } else {
         json!({})
@@ -752,9 +753,9 @@ pub fn register_kilo_mcp_server(
     }
 
     let mut config: Value = if kilo_config_path.exists() {
-        let raw = std::fs::read_to_string(kilo_config_path)
+        let config_json = std::fs::read_to_string(kilo_config_path)
             .with_context(|| format!("reading {}", kilo_config_path.display()))?;
-        serde_json::from_str(&raw)
+        serde_json::from_str(&config_json)
             .with_context(|| format!("parsing {}", kilo_config_path.display()))?
     } else {
         json!({})
@@ -829,9 +830,9 @@ fn gemini_folder_trust_enabled(gemini_settings_path: &std::path::Path) -> anyhow
         return Ok(false);
     }
 
-    let raw = std::fs::read_to_string(gemini_settings_path)
+    let config_json = std::fs::read_to_string(gemini_settings_path)
         .with_context(|| format!("reading {}", gemini_settings_path.display()))?;
-    let config: Value = serde_json::from_str(&raw)
+    let config: Value = serde_json::from_str(&config_json)
         .with_context(|| format!("parsing {}", gemini_settings_path.display()))?;
 
     Ok(config["security"]["folderTrust"]["enabled"]
@@ -847,9 +848,9 @@ fn gemini_workspace_is_trusted(
         return Ok(false);
     }
 
-    let raw = std::fs::read_to_string(gemini_trusted_folders_path)
+    let trust_rules_json = std::fs::read_to_string(gemini_trusted_folders_path)
         .with_context(|| format!("reading {}", gemini_trusted_folders_path.display()))?;
-    let trust_rules: Value = serde_json::from_str(&raw)
+    let trust_rules: Value = serde_json::from_str(&trust_rules_json)
         .with_context(|| format!("parsing {}", gemini_trusted_folders_path.display()))?;
     let Some(entries) = trust_rules.as_object() else {
         return Ok(false);

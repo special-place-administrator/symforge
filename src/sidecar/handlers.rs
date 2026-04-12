@@ -1053,7 +1053,7 @@ fn symbol_context_text(
     let guard = state.index.read();
     let published = state.index.published_state();
 
-    let raw = if let Some(path) = params.path.as_deref() {
+    let references = if let Some(path) = params.path.as_deref() {
         match guard.find_exact_references_for_symbol(
             path,
             &params.name,
@@ -1075,7 +1075,7 @@ fn symbol_context_text(
     let mut total = 0usize;
     let mut grand_total = 0usize;
 
-    for (file_path, reference) in &raw {
+    for (file_path, reference) in &references {
         grand_total += 1;
         if let Some(ref filter_file) = params.file
             && *file_path != filter_file.as_str()
