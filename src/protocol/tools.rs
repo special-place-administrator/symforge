@@ -4051,8 +4051,10 @@ impl SymForgeServer {
                 root.display()
             );
         }
-        match self.index.reload(&root) {
-            Ok(()) => {
+        let index = Arc::clone(&self.index);
+        let reload_root = root.clone();
+        match tokio::task::spawn_blocking(move || index.reload(&reload_root)).await {
+            Ok(Ok(())) => {
                 let published = self.index.published_state();
                 let file_count = published.file_count;
                 let symbol_count = published.symbol_count;
@@ -4080,7 +4082,8 @@ impl SymForgeServer {
                 );
                 output
             }
-            Err(e) => format!("Index failed: {e}"),
+            Ok(Err(e)) => format!("Index failed: {e}"),
+            Err(join_err) => format!("Index failed: reload task panicked: {join_err}"),
         }
     }
 
@@ -8191,6 +8194,48 @@ mod tests {
         assert!(
             result.contains("src/lib.rs"),
             "what_changed should keep using the indexed repo root after index_folder, got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_index_folder_can_reindex_same_root_twice_locally() {
+        let repo = TempDir::new().expect("temp repo");
+        fs::create_dir_all(repo.path().join("src")).expect("create src dir");
+        fs::write(repo.path().join("src/lib.rs"), "pub fn first() {}\n").expect("write initial file");
+
+        let server = make_server(make_live_index_empty());
+        let first = server
+            .index_folder(Parameters(super::IndexFolderInput {
+                path: repo.path().display().to_string(),
+            }))
+            .await;
+        assert!(
+            first.contains("Indexed 1 files"),
+            "first local index_folder should succeed, got: {first}"
+        );
+
+        fs::write(repo.path().join("src/lib.rs"), "pub fn second() {}\n").expect("update file");
+        let second = server
+            .index_folder(Parameters(super::IndexFolderInput {
+                path: repo.path().display().to_string(),
+            }))
+            .await;
+        assert!(
+            second.contains("Indexed 1 files"),
+            "second local index_folder should also succeed, got: {second}"
+        );
+
+        let outline = server
+            .get_file_context(Parameters(super::GetFileContextInput {
+                path: "src/lib.rs".to_string(),
+                max_tokens: None,
+                sections: Some(vec!["outline".to_string()]),
+                estimate: None,
+            }))
+            .await;
+        assert!(
+            outline.contains("second"),
+            "second local index_folder should refresh the same-root index, got: {outline}"
         );
     }
 
