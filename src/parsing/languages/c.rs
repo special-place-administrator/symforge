@@ -192,7 +192,12 @@ mod tests {
             .iter()
             .filter(|s| s.kind == SymbolKind::Constant)
             .collect();
-        assert_eq!(variants.len(), 3, "should extract 3 variants, got: {:?}", variants);
+        assert_eq!(
+            variants.len(),
+            3,
+            "should extract 3 variants, got: {:?}",
+            variants
+        );
         let names: Vec<&str> = variants.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"RED"), "missing RED");
         assert!(names.contains(&"GREEN"), "missing GREEN");
@@ -213,7 +218,9 @@ mod tests {
             assert!(
                 v.depth > enum_sym.depth,
                 "variant {} depth {} should be > enum depth {}",
-                v.name, v.depth, enum_sym.depth
+                v.name,
+                v.depth,
+                enum_sym.depth
             );
         }
     }
@@ -223,16 +230,30 @@ mod tests {
         // `enum Color` used as a parameter type should NOT create an Enum symbol.
         let source = "void paint(enum Color c) { }";
         let symbols = parse_c(source);
-        let enums: Vec<_> = symbols.iter().filter(|s| s.kind == SymbolKind::Enum).collect();
-        assert!(enums.is_empty(), "parameter-type enum should not be extracted: {:?}", enums);
+        let enums: Vec<_> = symbols
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Enum)
+            .collect();
+        assert!(
+            enums.is_empty(),
+            "parameter-type enum should not be extracted: {:?}",
+            enums
+        );
     }
 
     #[test]
     fn test_c_language_struct_in_param_not_extracted() {
         let source = "void draw(struct Point p) { }";
         let symbols = parse_c(source);
-        let structs: Vec<_> = symbols.iter().filter(|s| s.kind == SymbolKind::Struct).collect();
-        assert!(structs.is_empty(), "parameter-type struct should not be extracted: {:?}", structs);
+        let structs: Vec<_> = symbols
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Struct)
+            .collect();
+        assert!(
+            structs.is_empty(),
+            "parameter-type struct should not be extracted: {:?}",
+            structs
+        );
     }
 
     #[test]

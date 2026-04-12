@@ -76,9 +76,7 @@ impl SgLang {
             LanguageId::Scss => (tree_sitter_scss::language(), '_'),
             // Stub languages (accept $ in identifiers — no expando needed)
             LanguageId::JavaScript => (tree_sitter_javascript::LANGUAGE.into(), '$'),
-            LanguageId::TypeScript => {
-                (tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(), '$')
-            }
+            LanguageId::TypeScript => (tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(), '$'),
             LanguageId::Java => (tree_sitter_java::LANGUAGE.into(), '$'),
             LanguageId::Dart => (tree_sitter_dart::language(), '$'),
             LanguageId::Perl => (tree_sitter_perl::LANGUAGE.into(), '$'),
@@ -214,9 +212,8 @@ fn world(x: i32) {
     println!("{}", x);
 }
 "#;
-        let matches =
-            structural_search(source, "fn $NAME($$$) { $$$ }", &LanguageId::Rust)
-                .expect("pattern should compile");
+        let matches = structural_search(source, "fn $NAME($$$) { $$$ }", &LanguageId::Rust)
+            .expect("pattern should compile");
         assert_eq!(matches.len(), 2);
         assert!(matches[0].text.contains("hello"));
         assert!(matches[1].text.contains("world"));
@@ -248,9 +245,8 @@ fn world(x: i32) {
     #[test]
     fn test_structural_search_javascript() {
         let source = "const x = 42;\nconst y = 100;";
-        let matches =
-            structural_search(source, "const $NAME = $VALUE", &LanguageId::JavaScript)
-                .expect("pattern should compile");
+        let matches = structural_search(source, "const $NAME = $VALUE", &LanguageId::JavaScript)
+            .expect("pattern should compile");
         assert_eq!(matches.len(), 2);
     }
 
@@ -281,9 +277,8 @@ struct Bar {
     #[test]
     fn test_structural_search_rust_impl() {
         let source = "impl Foo { fn bar(&self) {} }";
-        let matches =
-            structural_search(source, "impl $TYPE { $$$ }", &LanguageId::Rust)
-                .expect("pattern should compile");
+        let matches = structural_search(source, "impl $TYPE { $$$ }", &LanguageId::Rust)
+            .expect("pattern should compile");
         assert_eq!(matches.len(), 1);
         assert!(matches[0].text.contains("Foo"));
     }
@@ -291,18 +286,16 @@ struct Bar {
     #[test]
     fn test_structural_search_python_function() {
         let source = "def greet(name):\n    print(name)\n";
-        let matches =
-            structural_search(source, "def $FNAME($$$):\n    $$$", &LanguageId::Python)
-                .expect("pattern should compile");
+        let matches = structural_search(source, "def $FNAME($$$):\n    $$$", &LanguageId::Python)
+            .expect("pattern should compile");
         assert!(!matches.is_empty(), "should match Python function def");
     }
 
     #[test]
     fn test_structural_search_go_function() {
         let source = "func hello() { fmt.Println(\"hello\") }";
-        let matches =
-            structural_search(source, "func $NAME() { $$$ }", &LanguageId::Go)
-                .expect("pattern should compile");
+        let matches = structural_search(source, "func $NAME() { $$$ }", &LanguageId::Go)
+            .expect("pattern should compile");
         assert_eq!(matches.len(), 1);
     }
 }
