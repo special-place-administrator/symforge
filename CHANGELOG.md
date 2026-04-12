@@ -1,5 +1,12 @@
 # Changelog
 
+## [7.4.5](https://github.com/special-place-administrator/symforge/compare/v7.4.4...v7.4.5) (2026-04-12)
+
+
+### Bug Fixes
+
+* use dedicated indexing pool for Windows reindexing ([884f502](https://github.com/special-place-administrator/symforge/commit/884f5025de76e682441f1616af2e9ed8f0fe2d9c))
+
 ## [7.4.4](https://github.com/special-place-administrator/symforge/compare/v7.4.3...v7.4.4) (2026-04-12)
 
 
