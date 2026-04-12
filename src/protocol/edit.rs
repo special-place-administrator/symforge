@@ -2796,28 +2796,40 @@ mod tests {
 
     #[test]
     fn test_resolve_impl_prefix_trait_for_type() {
-        let file = make_test_indexed_file(vec![
-            make_test_symbol("impl MyTrait for MyStruct", SymbolKind::Impl, (0, 50), 1),
-        ]);
+        let file = make_test_indexed_file(vec![make_test_symbol(
+            "impl MyTrait for MyStruct",
+            SymbolKind::Impl,
+            (0, 50),
+            1,
+        )]);
         let result = resolve_or_error(&file, "MyTrait for MyStruct", None, None);
         assert!(result.is_ok(), "should resolve impl without prefix");
     }
 
     #[test]
     fn test_resolve_impl_prefix_inherent() {
-        let file = make_test_indexed_file(vec![
-            make_test_symbol("impl MyStruct", SymbolKind::Impl, (0, 50), 1),
-        ]);
+        let file = make_test_indexed_file(vec![make_test_symbol(
+            "impl MyStruct",
+            SymbolKind::Impl,
+            (0, 50),
+            1,
+        )]);
         let result = resolve_or_error(&file, "MyStruct", None, None);
-        assert!(result.is_ok(), "should resolve inherent impl without prefix");
+        assert!(
+            result.is_ok(),
+            "should resolve inherent impl without prefix"
+        );
     }
 
     #[test]
     fn test_resolve_whitespace_normalised() {
         // Rust generics: LLM might send extra spaces
-        let file = make_test_indexed_file(vec![
-            make_test_symbol("impl Display for Vec<T>", SymbolKind::Impl, (0, 50), 1),
-        ]);
+        let file = make_test_indexed_file(vec![make_test_symbol(
+            "impl Display for Vec<T>",
+            SymbolKind::Impl,
+            (0, 50),
+            1,
+        )]);
         let result = resolve_or_error(&file, "impl Display for Vec< T >", None, None);
         assert!(result.is_ok(), "should resolve with normalised whitespace");
     }
@@ -2825,39 +2837,60 @@ mod tests {
     #[test]
     fn test_resolve_impl_prefix_plus_whitespace() {
         // Combined: missing prefix + whitespace diff
-        let file = make_test_indexed_file(vec![
-            make_test_symbol("impl Display for Vec<T>", SymbolKind::Impl, (0, 50), 1),
-        ]);
+        let file = make_test_indexed_file(vec![make_test_symbol(
+            "impl Display for Vec<T>",
+            SymbolKind::Impl,
+            (0, 50),
+            1,
+        )]);
         let result = resolve_or_error(&file, "Display for Vec< T >", None, None);
-        assert!(result.is_ok(), "should resolve impl prefix + ws normalisation");
+        assert!(
+            result.is_ok(),
+            "should resolve impl prefix + ws normalisation"
+        );
     }
 
     #[test]
     fn test_resolve_cpp_qualified_method() {
         // C++: LLM sends "Foo::bar" but index stores "bar"
-        let file = make_test_indexed_file(vec![
-            make_test_symbol("bar", SymbolKind::Function, (0, 50), 1),
-        ]);
+        let file = make_test_indexed_file(vec![make_test_symbol(
+            "bar",
+            SymbolKind::Function,
+            (0, 50),
+            1,
+        )]);
         let result = resolve_or_error(&file, "Foo::bar", None, None);
-        assert!(result.is_ok(), "should resolve C++ qualified name by stripping");
+        assert!(
+            result.is_ok(),
+            "should resolve C++ qualified name by stripping"
+        );
     }
 
     #[test]
     fn test_resolve_go_receiver_method() {
         // Go: LLM sends "Server.Handle" but index stores "Handle"
-        let file = make_test_indexed_file(vec![
-            make_test_symbol("Handle", SymbolKind::Method, (0, 50), 1),
-        ]);
+        let file = make_test_indexed_file(vec![make_test_symbol(
+            "Handle",
+            SymbolKind::Method,
+            (0, 50),
+            1,
+        )]);
         let result = resolve_or_error(&file, "Server.Handle", None, None);
-        assert!(result.is_ok(), "should resolve Go receiver method by stripping");
+        assert!(
+            result.is_ok(),
+            "should resolve Go receiver method by stripping"
+        );
     }
 
     #[test]
     fn test_resolve_css_at_rule_prefix() {
         // CSS: LLM sends "@media" but index stores "@media (max-width: 768px)"
-        let file = make_test_indexed_file(vec![
-            make_test_symbol("@media (max-width: 768px)", SymbolKind::Other, (0, 50), 1),
-        ]);
+        let file = make_test_indexed_file(vec![make_test_symbol(
+            "@media (max-width: 768px)",
+            SymbolKind::Other,
+            (0, 50),
+            1,
+        )]);
         let result = resolve_or_error(&file, "@media", None, None);
         assert!(result.is_ok(), "should resolve CSS @-rule by prefix match");
     }
@@ -2865,31 +2898,49 @@ mod tests {
     #[test]
     fn test_resolve_css_selector_prefix() {
         // CSS: LLM sends ".btn" but index stores ".btn, .btn-primary"
-        let file = make_test_indexed_file(vec![
-            make_test_symbol(".btn, .btn-primary", SymbolKind::Other, (0, 50), 1),
-        ]);
+        let file = make_test_indexed_file(vec![make_test_symbol(
+            ".btn, .btn-primary",
+            SymbolKind::Other,
+            (0, 50),
+            1,
+        )]);
         let result = resolve_or_error(&file, ".btn", None, None);
-        assert!(result.is_ok(), "should resolve CSS selector by prefix match");
+        assert!(
+            result.is_ok(),
+            "should resolve CSS selector by prefix match"
+        );
     }
 
     #[test]
     fn test_resolve_css_prefix_no_false_positive() {
         // ".btn" should NOT match ".btn-group" (hyphen is not a delimiter)
-        let file = make_test_indexed_file(vec![
-            make_test_symbol(".btn-group", SymbolKind::Other, (0, 50), 1),
-        ]);
+        let file = make_test_indexed_file(vec![make_test_symbol(
+            ".btn-group",
+            SymbolKind::Other,
+            (0, 50),
+            1,
+        )]);
         let result = resolve_or_error(&file, ".btn", None, None);
-        assert!(result.is_err(), "should NOT match .btn-group for .btn query");
+        assert!(
+            result.is_err(),
+            "should NOT match .btn-group for .btn query"
+        );
     }
 
     #[test]
     fn test_resolve_swift_extension() {
         // Swift: LLM sends "extension MyClass: Drawable" but index stores "MyClass"
-        let file = make_test_indexed_file(vec![
-            make_test_symbol("MyClass", SymbolKind::Impl, (0, 50), 1),
-        ]);
+        let file = make_test_indexed_file(vec![make_test_symbol(
+            "MyClass",
+            SymbolKind::Impl,
+            (0, 50),
+            1,
+        )]);
         let result = resolve_or_error(&file, "extension MyClass: Drawable", None, None);
-        assert!(result.is_ok(), "should resolve Swift extension by stripping prefix");
+        assert!(
+            result.is_ok(),
+            "should resolve Swift extension by stripping prefix"
+        );
     }
 
     #[test]
@@ -3008,10 +3059,7 @@ mod tests {
         let sym = make_test_symbol("foo", SymbolKind::Function, (0, 11), 1);
         let result = build_insert_after(content, &sym, "fn baz() {}", LineEnding::Lf);
         let text = std::str::from_utf8(&result).unwrap();
-        assert!(
-            text.contains("fn foo() {}\n\nfn baz() {}"),
-            "got: {text}"
-        );
+        assert!(text.contains("fn foo() {}\n\nfn baz() {}"), "got: {text}");
     }
 
     // -- build_delete --
@@ -4328,11 +4376,18 @@ macro_rules! make_widget {
 fn uses_it() { Widget::default(); }
 "#;
         let matches = find_qualified_usages("Widget", source);
-        assert_eq!(matches.len(), 2, "should find Widget in macro body and fn body");
+        assert_eq!(
+            matches.len(),
+            2,
+            "should find Widget in macro body and fn body"
+        );
         assert!(
             matches.iter().all(|m| m.confident),
             "macro body matches must be confident: {:?}",
-            matches.iter().map(|m| (&m.context, m.confident)).collect::<Vec<_>>()
+            matches
+                .iter()
+                .map(|m| (&m.context, m.confident))
+                .collect::<Vec<_>>()
         );
     }
 

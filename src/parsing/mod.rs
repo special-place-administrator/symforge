@@ -91,12 +91,9 @@ pub fn process_file_with_classification(
     match parse_result {
         Ok(Ok((symbols, has_error, diagnostic, references, alias_map))) => {
             let outcome = if has_error {
-                let warning = diagnostic
-                    .as_ref()
-                    .map(|d| d.summary())
-                    .unwrap_or_else(|| {
-                        "tree-sitter reported syntax errors in the parse tree".to_string()
-                    });
+                let warning = diagnostic.as_ref().map(|d| d.summary()).unwrap_or_else(|| {
+                    "tree-sitter reported syntax errors in the parse tree".to_string()
+                });
                 FileOutcome::PartialParse { warning }
             } else {
                 FileOutcome::Processed
@@ -156,14 +153,15 @@ fn collect_first_error_node(root: &Node, source: &str) -> Option<(String, u32, u
             let snippet_start = node.start_byte();
             let snippet_end = node.end_byte().min(snippet_start + 40);
             let snippet = &source[snippet_start..snippet_end];
-            let kind = if node.is_missing() { "missing" } else { "error" };
-            let message = format!(
-                "syntax {kind} near `{}`",
-                snippet.replace('\n', "\\n")
-            );
+            let kind = if node.is_missing() {
+                "missing"
+            } else {
+                "error"
+            };
+            let message = format!("syntax {kind} near `{}`", snippet.replace('\n', "\\n"));
             return Some((
                 message,
-                start.row as u32 + 1,   // 1-based line
+                start.row as u32 + 1,    // 1-based line
                 start.column as u32 + 1, // 1-based column
                 (node.start_byte() as u32, node.end_byte() as u32),
             ));
@@ -339,12 +337,23 @@ mod tests {
         let source = b"fn broken( { }";
         let result = process_file("bad.rs", source, LanguageId::Rust);
         assert!(matches!(result.outcome, FileOutcome::PartialParse { .. }));
-        let diag = result.parse_diagnostic.expect("should have a diagnostic for partial parse");
+        let diag = result
+            .parse_diagnostic
+            .expect("should have a diagnostic for partial parse");
         assert_eq!(diag.parser, "tree-sitter");
         assert!(diag.line.is_some(), "diagnostic should have a line number");
-        assert!(diag.column.is_some(), "diagnostic should have a column number");
-        assert!(diag.byte_span.is_some(), "diagnostic should have a byte span");
-        assert!(diag.message.contains("syntax"), "message should describe the error");
+        assert!(
+            diag.column.is_some(),
+            "diagnostic should have a column number"
+        );
+        assert!(
+            diag.byte_span.is_some(),
+            "diagnostic should have a byte span"
+        );
+        assert!(
+            diag.message.contains("syntax"),
+            "message should describe the error"
+        );
     }
 
     #[test]

@@ -211,7 +211,12 @@ mod tests {
             .iter()
             .filter(|s| s.kind == SymbolKind::Constant)
             .collect();
-        assert_eq!(variants.len(), 4, "should extract 4 variants, got: {:?}", variants);
+        assert_eq!(
+            variants.len(),
+            4,
+            "should extract 4 variants, got: {:?}",
+            variants
+        );
         let names: Vec<&str> = variants.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"NORTH"), "missing NORTH");
         assert!(names.contains(&"SOUTH"), "missing SOUTH");
@@ -232,7 +237,9 @@ mod tests {
             assert!(
                 v.depth > enum_sym.depth,
                 "variant {} depth {} should be > enum depth {}",
-                v.name, v.depth, enum_sym.depth
+                v.name,
+                v.depth,
+                enum_sym.depth
             );
         }
     }
