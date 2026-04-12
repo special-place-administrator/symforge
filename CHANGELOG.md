@@ -1,5 +1,12 @@
 # Changelog
 
+## [7.4.6](https://github.com/special-place-administrator/symforge/compare/v7.4.5...v7.4.6) (2026-04-12)
+
+
+### Bug Fixes
+
+* restore full self-hosting Rust parsing ([c8b5c51](https://github.com/special-place-administrator/symforge/commit/c8b5c5114fe5040b89bb44a60052a9c894af4117))
+
 ## [7.4.5](https://github.com/special-place-administrator/symforge/compare/v7.4.4...v7.4.5) (2026-04-12)
 
 
