@@ -1,6 +1,6 @@
 {
   "name": "symforge",
-  "version": "7.4.5",
+  "version": "7.4.6",
   "description": "SymForge — in-memory code intelligence for Claude Code, Codex, and Gemini CLI",
   "license": "SEE LICENSE IN LICENSE",
   "repository": {
