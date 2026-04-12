@@ -1,5 +1,12 @@
 # Changelog
 
+## [7.4.4](https://github.com/special-place-administrator/symforge/compare/v7.4.3...v7.4.4) (2026-04-12)
+
+
+### Bug Fixes
+
+* offload local index_folder reload to blocking pool ([5f851da](https://github.com/special-place-administrator/symforge/commit/5f851dac685ad2e9dacae7dfa12db6ac1ffa6436))
+
 ## [7.4.3](https://github.com/special-place-administrator/symforge/compare/v7.4.2...v7.4.3) (2026-04-10)
 
 
