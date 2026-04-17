@@ -1,6 +1,7 @@
 pub mod git_temporal;
 pub mod persist;
 pub mod query;
+pub mod rank_signals;
 pub mod search;
 pub mod store;
 pub mod trigram;
