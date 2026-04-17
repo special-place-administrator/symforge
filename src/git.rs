@@ -259,6 +259,43 @@ impl GitRepo {
     }
 }
 
+/// Count commits reachable from `to` but not from `from`, equivalent to
+/// `git rev-list --count <from>..<to>`.
+///
+/// Returns `Ok(None)` when the two refs share no common ancestor (e.g., one
+/// branch was rebased onto unrelated history, or an orphan branch was created).
+/// In that case the distance is not a meaningful scalar.
+pub fn commit_distance(
+    from: &str,
+    to: &str,
+    repo_root: &Path,
+) -> Result<Option<u32>, String> {
+    let repo = git2::Repository::discover(repo_root)
+        .map_err(|e| format!("failed to open git repository: {e}"))?;
+    let from_oid = repo
+        .revparse_single(from)
+        .map_err(|e| format!("cannot resolve ref '{from}': {e}"))?
+        .id();
+    let to_oid = repo
+        .revparse_single(to)
+        .map_err(|e| format!("cannot resolve ref '{to}': {e}"))?
+        .id();
+    match repo.merge_base(from_oid, to_oid) {
+        Ok(_) => {}
+        Err(e) if e.code() == git2::ErrorCode::NotFound => return Ok(None),
+        Err(e) => return Err(format!("merge_base failed: {e}")),
+    }
+    // graph_ahead_behind(local, upstream):
+    //   ahead  = commits reachable from local not from upstream
+    //   behind = commits reachable from upstream not from local
+    // For `from..to` (commits in `to` not in `from`) set local=to, upstream=from
+    // and read the `ahead` count.
+    let (ahead, _behind) = repo
+        .graph_ahead_behind(to_oid, from_oid)
+        .map_err(|e| format!("graph_ahead_behind failed: {e}"))?;
+    Ok(Some(ahead as u32))
+}
+
 /// Collect changed file paths from a git2 diff.
 fn collect_diff_paths(diff: &git2::Diff<'_>) -> Vec<String> {
     let mut paths = Vec::new();
@@ -300,6 +337,23 @@ fn format_git_timestamp(secs: i64, offset_minutes: i32) -> String {
     format!(
         "{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}{sign}{off_h:02}:{off_m:02}"
     )
+}
+
+/// Return the full SHA of HEAD.
+///
+/// Handles detached HEAD gracefully: when HEAD points directly to a commit
+/// rather than a branch tip, the commit SHA is still returned.
+///
+/// Equivalent of `git rev-parse HEAD`.
+pub fn head_sha(repo_root: &Path) -> Result<String, String> {
+    let repo = git2::Repository::discover(repo_root)
+        .map_err(|e| format!("failed to open git repository: {e}"))?;
+    let commit = repo
+        .revparse_single("HEAD")
+        .map_err(|e| format!("cannot resolve HEAD: {e}"))?
+        .peel_to_commit()
+        .map_err(|e| format!("cannot peel HEAD to commit: {e}"))?;
+    Ok(commit.id().to_string())
 }
 
 /// Convert days since Unix epoch to (year, month, day).
@@ -441,9 +495,138 @@ mod tests {
     }
 
     #[test]
+    fn test_head_sha_returns_full_sha() {
+        let (dir, _repo) = make_test_repo();
+        let sha = head_sha(dir.path()).expect("head_sha");
+        assert_eq!(sha.len(), 40, "expected 40-char full SHA, got {sha:?}");
+        assert!(
+            sha.chars().all(|c| c.is_ascii_hexdigit()),
+            "SHA should be hex: {sha}"
+        );
+    }
+
+    #[test]
+    fn test_head_sha_matches_rev_parse() {
+        let (dir, _repo) = make_test_repo();
+        let cli_sha = String::from_utf8(
+            Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(dir.path())
+                .output()
+                .expect("git rev-parse")
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        let ours = head_sha(dir.path()).expect("head_sha");
+        assert_eq!(ours, cli_sha);
+    }
+
+    #[test]
+    fn test_head_sha_detached_head() {
+        let (dir, _repo) = make_test_repo();
+        // Detach HEAD onto the first commit.
+        let output = Command::new("git")
+            .args(["rev-parse", "HEAD~1"])
+            .current_dir(dir.path())
+            .output()
+            .expect("git rev-parse HEAD~1");
+        let first_commit = String::from_utf8(output.stdout).unwrap().trim().to_string();
+
+        Command::new("git")
+            .args(["checkout", "--detach", &first_commit])
+            .current_dir(dir.path())
+            .output()
+            .expect("git checkout --detach");
+
+        let sha = head_sha(dir.path()).expect("head_sha on detached HEAD");
+        assert_eq!(
+            sha, first_commit,
+            "detached HEAD should return the commit SHA it points at"
+        );
+    }
+
+    #[test]
+    fn test_head_sha_no_commits_errors() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        Command::new("git")
+            .arg("init")
+            .current_dir(dir.path())
+            .output()
+            .expect("git init");
+        // Fresh repo with no commits: HEAD points to unborn branch.
+        assert!(head_sha(dir.path()).is_err());
+    }
+
+    #[test]
+    fn test_head_sha_not_a_repo_errors() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        assert!(head_sha(dir.path()).is_err());
+    }
+
+    #[test]
     fn test_format_git_timestamp() {
         let ts = format_git_timestamp(1710000000, 0);
         assert!(ts.contains("2024"), "timestamp should contain year: {ts}");
         assert!(ts.contains("+00:00"), "UTC offset: {ts}");
+    }
+
+    #[test]
+    fn test_commit_distance_same_ref() {
+        let (dir, _repo) = make_test_repo();
+        let result = commit_distance("HEAD", "HEAD", dir.path()).unwrap();
+        assert_eq!(result, Some(0));
+    }
+
+    #[test]
+    fn test_commit_distance_forward() {
+        // `make_test_repo` creates two commits. HEAD~1 -> HEAD is 1 commit ahead.
+        let (dir, _repo) = make_test_repo();
+        let result = commit_distance("HEAD~1", "HEAD", dir.path()).unwrap();
+        assert_eq!(result, Some(1));
+    }
+
+    #[test]
+    fn test_commit_distance_backward() {
+        // Going from HEAD to HEAD~1 is 0 (HEAD~1 is an ancestor of HEAD).
+        let (dir, _repo) = make_test_repo();
+        let result = commit_distance("HEAD", "HEAD~1", dir.path()).unwrap();
+        assert_eq!(result, Some(0));
+    }
+
+    #[test]
+    fn test_commit_distance_invalid_ref() {
+        let (dir, _repo) = make_test_repo();
+        let result = commit_distance("no_such_ref", "HEAD", dir.path());
+        assert!(result.is_err(), "expected error for invalid ref");
+    }
+
+    #[test]
+    fn test_commit_distance_no_common_ancestor() {
+        let (dir, _repo) = make_test_repo();
+        let root = dir.path();
+        let run = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .output()
+                .expect("git command");
+        };
+
+        // Tag the current tip so we can reference it after switching branches.
+        run(&["tag", "original"]);
+        // Create an orphan branch (no parents, no shared history).
+        run(&["checkout", "--orphan", "orphan_branch"]);
+        fs::write(root.join("orphan.rs"), "fn orphan() {}").unwrap();
+        run(&["add", "orphan.rs"]);
+        run(&["commit", "-m", "orphan commit"]);
+
+        let result = commit_distance("original", "HEAD", root).unwrap();
+        assert_eq!(result, None, "no common ancestor should yield None");
+
+        // And the reverse direction too.
+        let result = commit_distance("HEAD", "original", root).unwrap();
+        assert_eq!(result, None);
     }
 }
