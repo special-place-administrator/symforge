@@ -597,3 +597,201 @@ async fn batch_insert_dry_run_does_not_touch_disk() {
     assert_eq!(fx.read("src/a.rs"), a);
     assert_eq!(fx.read("src/b.rs"), b);
 }
+
+// ─── Edge cases ──────────────────────────────────────────────────────────────
+// Named in CONTEXT.md/todo.md: symbol at file end, empty file, byte-range
+// collision. The refactor must preserve these behaviors byte-identically.
+
+#[tokio::test]
+async fn replace_symbol_body_handles_symbol_at_file_end_without_trailing_newline() {
+    // Final symbol in the file, no trailing newline — exercises the byte-range
+    // slicer at the EOF boundary.
+    let original = "fn keeper() {\n    k();\n}\n\nfn tail() {\n    old();\n}";
+    let fx = Fixture::new(&[("src/lib.rs", original)]);
+
+    let result = call(
+        &fx.server,
+        "replace_symbol_body",
+        json!({
+            "path": "src/lib.rs",
+            "name": "tail",
+            "new_body": "fn tail() {\n    new();\n}",
+        }),
+    )
+    .await;
+
+    assert_contains(&result, "Write semantics: atomic write + reindex");
+    assert_contains(&result, "replaced fn `tail`");
+
+    let on_disk = fx.read("src/lib.rs");
+    assert!(on_disk.contains("new();"), "replaced body at EOF: {on_disk}");
+    assert!(on_disk.contains("fn keeper()"), "sibling kept: {on_disk}");
+    assert!(!on_disk.contains("old();"), "old body removed: {on_disk}");
+}
+
+#[tokio::test]
+async fn delete_symbol_at_file_end_leaves_predecessor_intact() {
+    // Deleting the final symbol should not corrupt the preceding one.
+    let original = "fn keeper() {\n    k();\n}\n\nfn goner() {\n    g();\n}\n";
+    let fx = Fixture::new(&[("src/lib.rs", original)]);
+
+    let result = call(
+        &fx.server,
+        "delete_symbol",
+        json!({
+            "path": "src/lib.rs",
+            "name": "goner",
+        }),
+    )
+    .await;
+
+    assert_contains(&result, "deleted fn `goner`");
+
+    let on_disk = fx.read("src/lib.rs");
+    assert!(!on_disk.contains("goner"), "target removed: {on_disk}");
+    assert!(on_disk.contains("fn keeper()"), "predecessor intact: {on_disk}");
+    assert!(on_disk.contains("k();"), "predecessor body intact: {on_disk}");
+}
+
+#[tokio::test]
+async fn insert_symbol_after_last_symbol_appends_at_eof() {
+    // `after` on the final symbol must append at EOF without mangling the
+    // anchor's trailing bytes.
+    let original = "fn anchor() {\n    a();\n}\n";
+    let fx = Fixture::new(&[("src/lib.rs", original)]);
+
+    let result = call(
+        &fx.server,
+        "insert_symbol",
+        json!({
+            "path": "src/lib.rs",
+            "name": "anchor",
+            "content": "fn appended() {\n    x();\n}",
+            "position": "after",
+        }),
+    )
+    .await;
+
+    assert_contains(&result, "inserted after `anchor`");
+
+    let on_disk = fx.read("src/lib.rs");
+    let anchor_pos = on_disk.find("anchor").expect("anchor kept");
+    let appended_pos = on_disk.find("appended").expect("appended added");
+    assert!(anchor_pos < appended_pos, "order preserved: {on_disk}");
+    assert!(on_disk.contains("a();"), "anchor body intact: {on_disk}");
+    assert!(on_disk.contains("x();"), "new body present: {on_disk}");
+}
+
+#[tokio::test]
+async fn edit_within_symbol_on_empty_file_returns_not_found() {
+    // Empty file indexes no symbols — the resolver reports the miss. Lock in
+    // the not-found shape; the refactor must keep this diagnostic.
+    let fx = Fixture::new(&[("src/empty.rs", "")]);
+
+    let result = call(
+        &fx.server,
+        "edit_within_symbol",
+        json!({
+            "path": "src/empty.rs",
+            "name": "nothing_here",
+            "old_text": "x",
+            "new_text": "y",
+            "replace_all": false,
+        }),
+    )
+    .await;
+
+    assert!(
+        result.to_lowercase().contains("not found"),
+        "expected not-found error; got: {result}"
+    );
+    assert_not_contains(&result, "atomic write");
+    // File remains empty — no write happened on a lookup miss.
+    assert_eq!(fx.read("src/empty.rs"), "");
+}
+
+#[tokio::test]
+async fn replace_symbol_body_on_empty_file_returns_not_found() {
+    let fx = Fixture::new(&[("src/empty.rs", "")]);
+
+    let result = call(
+        &fx.server,
+        "replace_symbol_body",
+        json!({
+            "path": "src/empty.rs",
+            "name": "missing",
+            "new_body": "fn missing() {}",
+        }),
+    )
+    .await;
+
+    assert!(
+        result.to_lowercase().contains("not found"),
+        "expected not-found error; got: {result}"
+    );
+    assert_eq!(fx.read("src/empty.rs"), "");
+}
+
+#[tokio::test]
+async fn batch_edit_rejects_overlapping_ranges_on_same_symbol() {
+    // Two operations targeting the same symbol produce overlapping byte
+    // ranges. `batch_edit` must reject transactionally — no partial write.
+    let original = "fn foo() {\n    f();\n}\n";
+    let fx = Fixture::new(&[("src/a.rs", original)]);
+
+    let result = call(
+        &fx.server,
+        "batch_edit",
+        json!({
+            "edits": [
+                {
+                    "path": "src/a.rs",
+                    "name": "foo",
+                    "operation": { "type": "delete" },
+                },
+                {
+                    "path": "src/a.rs",
+                    "name": "foo",
+                    "operation": { "type": "delete" },
+                },
+            ]
+        }),
+    )
+    .await;
+
+    assert!(
+        result.to_lowercase().contains("overlapping"),
+        "expected overlapping-range rejection; got: {result}"
+    );
+    assert_not_contains(&result, "atomic write");
+    // Transactional semantics: no file write on range collision.
+    assert_eq!(fx.read("src/a.rs"), original);
+}
+
+#[tokio::test]
+async fn edit_within_symbol_replace_all_replaces_every_occurrence() {
+    // Multi-occurrence edit_within — exercises the replace_all=true branch
+    // alongside the single-replacement case already covered above.
+    let original = "fn target() {\n    log(\"x\");\n    log(\"x\");\n    log(\"x\");\n}\n";
+    let fx = Fixture::new(&[("src/lib.rs", original)]);
+
+    let result = call(
+        &fx.server,
+        "edit_within_symbol",
+        json!({
+            "path": "src/lib.rs",
+            "name": "target",
+            "old_text": "log(\"x\")",
+            "new_text": "log(\"y\")",
+            "replace_all": true,
+        }),
+    )
+    .await;
+
+    assert_contains(&result, "edited within `target`");
+    assert_contains(&result, "(3 replacement(s)");
+
+    let on_disk = fx.read("src/lib.rs");
+    assert_eq!(on_disk.matches("log(\"y\")").count(), 3, "all replaced: {on_disk}");
+    assert!(!on_disk.contains("log(\"x\")"), "no residue: {on_disk}");
+}
