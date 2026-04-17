@@ -259,6 +259,43 @@ impl GitRepo {
     }
 }
 
+/// Count commits reachable from `to` but not from `from`, equivalent to
+/// `git rev-list --count <from>..<to>`.
+///
+/// Returns `Ok(None)` when the two refs share no common ancestor (e.g., one
+/// branch was rebased onto unrelated history, or an orphan branch was created).
+/// In that case the distance is not a meaningful scalar.
+pub fn commit_distance(
+    from: &str,
+    to: &str,
+    repo_root: &Path,
+) -> Result<Option<u32>, String> {
+    let repo = git2::Repository::discover(repo_root)
+        .map_err(|e| format!("failed to open git repository: {e}"))?;
+    let from_oid = repo
+        .revparse_single(from)
+        .map_err(|e| format!("cannot resolve ref '{from}': {e}"))?
+        .id();
+    let to_oid = repo
+        .revparse_single(to)
+        .map_err(|e| format!("cannot resolve ref '{to}': {e}"))?
+        .id();
+    match repo.merge_base(from_oid, to_oid) {
+        Ok(_) => {}
+        Err(e) if e.code() == git2::ErrorCode::NotFound => return Ok(None),
+        Err(e) => return Err(format!("merge_base failed: {e}")),
+    }
+    // graph_ahead_behind(local, upstream):
+    //   ahead  = commits reachable from local not from upstream
+    //   behind = commits reachable from upstream not from local
+    // For `from..to` (commits in `to` not in `from`) set local=to, upstream=from
+    // and read the `ahead` count.
+    let (ahead, _behind) = repo
+        .graph_ahead_behind(to_oid, from_oid)
+        .map_err(|e| format!("graph_ahead_behind failed: {e}"))?;
+    Ok(Some(ahead as u32))
+}
+
 /// Collect changed file paths from a git2 diff.
 fn collect_diff_paths(diff: &git2::Diff<'_>) -> Vec<String> {
     let mut paths = Vec::new();
@@ -533,5 +570,63 @@ mod tests {
         let ts = format_git_timestamp(1710000000, 0);
         assert!(ts.contains("2024"), "timestamp should contain year: {ts}");
         assert!(ts.contains("+00:00"), "UTC offset: {ts}");
+    }
+
+    #[test]
+    fn test_commit_distance_same_ref() {
+        let (dir, _repo) = make_test_repo();
+        let result = commit_distance("HEAD", "HEAD", dir.path()).unwrap();
+        assert_eq!(result, Some(0));
+    }
+
+    #[test]
+    fn test_commit_distance_forward() {
+        // `make_test_repo` creates two commits. HEAD~1 -> HEAD is 1 commit ahead.
+        let (dir, _repo) = make_test_repo();
+        let result = commit_distance("HEAD~1", "HEAD", dir.path()).unwrap();
+        assert_eq!(result, Some(1));
+    }
+
+    #[test]
+    fn test_commit_distance_backward() {
+        // Going from HEAD to HEAD~1 is 0 (HEAD~1 is an ancestor of HEAD).
+        let (dir, _repo) = make_test_repo();
+        let result = commit_distance("HEAD", "HEAD~1", dir.path()).unwrap();
+        assert_eq!(result, Some(0));
+    }
+
+    #[test]
+    fn test_commit_distance_invalid_ref() {
+        let (dir, _repo) = make_test_repo();
+        let result = commit_distance("no_such_ref", "HEAD", dir.path());
+        assert!(result.is_err(), "expected error for invalid ref");
+    }
+
+    #[test]
+    fn test_commit_distance_no_common_ancestor() {
+        let (dir, _repo) = make_test_repo();
+        let root = dir.path();
+        let run = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .output()
+                .expect("git command");
+        };
+
+        // Tag the current tip so we can reference it after switching branches.
+        run(&["tag", "original"]);
+        // Create an orphan branch (no parents, no shared history).
+        run(&["checkout", "--orphan", "orphan_branch"]);
+        fs::write(root.join("orphan.rs"), "fn orphan() {}").unwrap();
+        run(&["add", "orphan.rs"]);
+        run(&["commit", "-m", "orphan commit"]);
+
+        let result = commit_distance("original", "HEAD", root).unwrap();
+        assert_eq!(result, None, "no common ancestor should yield None");
+
+        // And the reverse direction too.
+        let result = commit_distance("HEAD", "original", root).unwrap();
+        assert_eq!(result, None);
     }
 }
