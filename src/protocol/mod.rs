@@ -1,6 +1,7 @@
 pub mod conventions;
 pub(crate) mod edit;
 pub(crate) mod edit_format;
+pub mod edit_hooks;
 pub mod edit_plan;
 pub mod explore;
 pub mod format;
