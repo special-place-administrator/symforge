@@ -214,6 +214,7 @@ use crate::live_index::{
 };
 use crate::protocol::edit;
 use crate::protocol::edit_format;
+use crate::protocol::edit_hooks;
 use crate::protocol::format;
 use crate::protocol::search_format;
 use crate::sidecar::handlers::{
@@ -6235,6 +6236,19 @@ impl SymForgeServer {
             Ok(prepared) => prepared,
             Err(e) => return e,
         };
+        let repo_root = match self.capture_repo_root() {
+            Some(root) => root,
+            None => return "Error: no repository root configured.".to_string(),
+        };
+        let hook_ctx = edit_hooks::EditContext {
+            relative_path: &params.0.path,
+            indexed_absolute_path: &abs_path,
+            repo_root: &repo_root,
+        };
+        let resolved_path = match edit_hooks::resolve(&hook_ctx) {
+            Ok(p) => p,
+            Err(e) => return format!("Error: {e}"),
+        };
         let file = {
             let guard = self.index.read();
             loading_guard!(guard);
@@ -6300,7 +6314,7 @@ impl SymForgeServer {
         let indented = edit::apply_indentation(normalized_str, &indent, line_ending);
         let new_content =
             edit::apply_splice(&file.content, (line_start, sym.byte_range.1), &indented);
-        if let Err(e) = edit::atomic_write_file(&abs_path, &new_content) {
+        if let Err(e) = edit::atomic_write_file(&resolved_path, &new_content) {
             return format!("Error writing {}: {e}", params.0.path);
         }
         let old_sig = edit::extract_signature(&file.content, sym.byte_range);
@@ -6310,11 +6324,12 @@ impl SymForgeServer {
         let parent_type = edit::find_parent_impl_type(&file, &sym);
         edit::reindex_after_write(
             &self.index,
-            &abs_path,
+            &resolved_path,
             &params.0.path,
             &new_content,
             file.language.clone(),
         );
+        edit_hooks::after_commit(&hook_ctx, &resolved_path);
         let warnings = edit::detect_stale_references(
             &self.index,
             &params.0.path,
@@ -6377,6 +6392,19 @@ impl SymForgeServer {
             Ok(prepared) => prepared,
             Err(e) => return e,
         };
+        let repo_root = match self.capture_repo_root() {
+            Some(root) => root,
+            None => return "Error: no repository root configured.".to_string(),
+        };
+        let hook_ctx = edit_hooks::EditContext {
+            relative_path: &params.0.path,
+            indexed_absolute_path: &abs_path,
+            repo_root: &repo_root,
+        };
+        let resolved_path = match edit_hooks::resolve(&hook_ctx) {
+            Ok(p) => p,
+            Err(e) => return format!("Error: {e}"),
+        };
         let file = {
             let guard = self.index.read();
             loading_guard!(guard);
@@ -6428,16 +6456,17 @@ impl SymForgeServer {
         } else {
             edit::build_insert_after(&file.content, &sym, &params.0.content, line_ending)
         };
-        if let Err(e) = edit::atomic_write_file(&abs_path, &new_content) {
+        if let Err(e) = edit::atomic_write_file(&resolved_path, &new_content) {
             return format!("Error writing {}: {e}", params.0.path);
         }
         edit::reindex_after_write(
             &self.index,
-            &abs_path,
+            &resolved_path,
             &params.0.path,
             &new_content,
             file.language.clone(),
         );
+        edit_hooks::after_commit(&hook_ctx, &resolved_path);
         format!(
             "{}\n{}",
             edit_format::format_edit_envelope(
@@ -6478,6 +6507,19 @@ impl SymForgeServer {
         let (abs_path, source_authority) = match prepare_exact_path_for_edit(self, &params.0.path) {
             Ok(prepared) => prepared,
             Err(e) => return e,
+        };
+        let repo_root = match self.capture_repo_root() {
+            Some(root) => root,
+            None => return "Error: no repository root configured.".to_string(),
+        };
+        let hook_ctx = edit_hooks::EditContext {
+            relative_path: &params.0.path,
+            indexed_absolute_path: &abs_path,
+            repo_root: &repo_root,
+        };
+        let resolved_path = match edit_hooks::resolve(&hook_ctx) {
+            Ok(p) => p,
+            Err(e) => return format!("Error: {e}"),
         };
         let file = {
             let guard = self.index.read();
@@ -6525,16 +6567,17 @@ impl SymForgeServer {
         let deleted_bytes = (sym.byte_range.1 - sym.byte_range.0) as usize;
         let line_ending = edit::detect_line_ending(&file.content);
         let new_content = edit::build_delete(&file.content, &sym, line_ending);
-        if let Err(e) = edit::atomic_write_file(&abs_path, &new_content) {
+        if let Err(e) = edit::atomic_write_file(&resolved_path, &new_content) {
             return format!("Error writing {}: {e}", params.0.path);
         }
         edit::reindex_after_write(
             &self.index,
-            &abs_path,
+            &resolved_path,
             &params.0.path,
             &new_content,
             file.language.clone(),
         );
+        edit_hooks::after_commit(&hook_ctx, &resolved_path);
         format!(
             "{}\n{}",
             edit_format::format_edit_envelope(
@@ -6577,6 +6620,19 @@ impl SymForgeServer {
         let (abs_path, source_authority) = match prepare_exact_path_for_edit(self, &params.0.path) {
             Ok(prepared) => prepared,
             Err(e) => return e,
+        };
+        let repo_root = match self.capture_repo_root() {
+            Some(root) => root,
+            None => return "Error: no repository root configured.".to_string(),
+        };
+        let hook_ctx = edit_hooks::EditContext {
+            relative_path: &params.0.path,
+            indexed_absolute_path: &abs_path,
+            repo_root: &repo_root,
+        };
+        let resolved_path = match edit_hooks::resolve(&hook_ctx) {
+            Ok(p) => p,
+            Err(e) => return format!("Error: {e}"),
         };
         let file = {
             let guard = self.index.read();
@@ -6728,16 +6784,17 @@ impl SymForgeServer {
         let old_sym_bytes = sym_end - sym_start;
         let effective_range = (sym.effective_start(), sym.byte_range.1);
         let new_content = edit::apply_splice(&file.content, effective_range, new_body.as_bytes());
-        if let Err(e) = edit::atomic_write_file(&abs_path, &new_content) {
+        if let Err(e) = edit::atomic_write_file(&resolved_path, &new_content) {
             return format!("Error writing {}: {e}", params.0.path);
         }
         edit::reindex_after_write(
             &self.index,
-            &abs_path,
+            &resolved_path,
             &params.0.path,
             &new_content,
             file.language.clone(),
         );
+        edit_hooks::after_commit(&hook_ctx, &resolved_path);
         format!(
             "{}\n{}",
             edit_format::format_edit_envelope(
