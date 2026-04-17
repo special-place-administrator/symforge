@@ -302,6 +302,23 @@ fn format_git_timestamp(secs: i64, offset_minutes: i32) -> String {
     )
 }
 
+/// Return the full SHA of HEAD.
+///
+/// Handles detached HEAD gracefully: when HEAD points directly to a commit
+/// rather than a branch tip, the commit SHA is still returned.
+///
+/// Equivalent of `git rev-parse HEAD`.
+pub fn head_sha(repo_root: &Path) -> Result<String, String> {
+    let repo = git2::Repository::discover(repo_root)
+        .map_err(|e| format!("failed to open git repository: {e}"))?;
+    let commit = repo
+        .revparse_single("HEAD")
+        .map_err(|e| format!("cannot resolve HEAD: {e}"))?
+        .peel_to_commit()
+        .map_err(|e| format!("cannot peel HEAD to commit: {e}"))?;
+    Ok(commit.id().to_string())
+}
+
 /// Convert days since Unix epoch to (year, month, day).
 ///
 /// Implements Howard Hinnant's civil calendar algorithm
@@ -438,6 +455,77 @@ mod tests {
         let (_dir, repo) = make_test_repo();
         let entries = repo.log_with_stats(1, 90).unwrap();
         assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn test_head_sha_returns_full_sha() {
+        let (dir, _repo) = make_test_repo();
+        let sha = head_sha(dir.path()).expect("head_sha");
+        assert_eq!(sha.len(), 40, "expected 40-char full SHA, got {sha:?}");
+        assert!(
+            sha.chars().all(|c| c.is_ascii_hexdigit()),
+            "SHA should be hex: {sha}"
+        );
+    }
+
+    #[test]
+    fn test_head_sha_matches_rev_parse() {
+        let (dir, _repo) = make_test_repo();
+        let cli_sha = String::from_utf8(
+            Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(dir.path())
+                .output()
+                .expect("git rev-parse")
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        let ours = head_sha(dir.path()).expect("head_sha");
+        assert_eq!(ours, cli_sha);
+    }
+
+    #[test]
+    fn test_head_sha_detached_head() {
+        let (dir, _repo) = make_test_repo();
+        // Detach HEAD onto the first commit.
+        let output = Command::new("git")
+            .args(["rev-parse", "HEAD~1"])
+            .current_dir(dir.path())
+            .output()
+            .expect("git rev-parse HEAD~1");
+        let first_commit = String::from_utf8(output.stdout).unwrap().trim().to_string();
+
+        Command::new("git")
+            .args(["checkout", "--detach", &first_commit])
+            .current_dir(dir.path())
+            .output()
+            .expect("git checkout --detach");
+
+        let sha = head_sha(dir.path()).expect("head_sha on detached HEAD");
+        assert_eq!(
+            sha, first_commit,
+            "detached HEAD should return the commit SHA it points at"
+        );
+    }
+
+    #[test]
+    fn test_head_sha_no_commits_errors() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        Command::new("git")
+            .arg("init")
+            .current_dir(dir.path())
+            .output()
+            .expect("git init");
+        // Fresh repo with no commits: HEAD points to unborn branch.
+        assert!(head_sha(dir.path()).is_err());
+    }
+
+    #[test]
+    fn test_head_sha_not_a_repo_errors() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        assert!(head_sha(dir.path()).is_err());
     }
 
     #[test]
