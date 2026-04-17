@@ -2,6 +2,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 pub const SYMFORGE_DIR_NAME: &str = ".symforge";
+pub const SYMFORGE_FRECENCY_DB_PATH: &str = ".symforge/frecency.db";
 
 /// Resolve the canonical symforge data directory under `base`.
 pub fn resolve_symforge_dir(base: &Path) -> PathBuf {
