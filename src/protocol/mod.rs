@@ -332,6 +332,45 @@ impl SymForgeServer {
             tracing::warn!("daemon unreachable and no repo root available for local fallback");
         }
     }
+
+    /// Test-only dispatcher that routes a tool call by name and JSON payload.
+    ///
+    /// Mirrors the tool-name match in `daemon::execute_tool_call`, but takes
+    /// `&self` so parity tests can exercise handlers directly without a live
+    /// daemon or MCP transport. Only the tools needed by the `tests/` suites
+    /// are wired up here.
+    #[doc(hidden)]
+    pub async fn dispatch_tool_for_tests(
+        &self,
+        tool_name: &str,
+        params: serde_json::Value,
+    ) -> String {
+        use rmcp::handler::server::wrapper::Parameters;
+        fn decode<T: serde::de::DeserializeOwned>(
+            params: serde_json::Value,
+        ) -> Result<T, String> {
+            serde_json::from_value(params).map_err(|e| format!("invalid tool parameters: {e}"))
+        }
+        macro_rules! call {
+            ($method:ident, $input:ty) => {{
+                match decode::<$input>(params) {
+                    Ok(input) => self.$method(Parameters(input)).await,
+                    Err(e) => e,
+                }
+            }};
+        }
+        match tool_name {
+            "replace_symbol_body" => call!(replace_symbol_body, edit::ReplaceSymbolBodyInput),
+            "insert_symbol" => call!(insert_symbol, edit::InsertSymbolInput),
+            "delete_symbol" => call!(delete_symbol, edit::DeleteSymbolInput),
+            "edit_within_symbol" => call!(edit_within_symbol, edit::EditWithinSymbolInput),
+            "batch_edit" => call!(batch_edit, edit::BatchEditInput),
+            "batch_rename" => call!(batch_rename, edit::BatchRenameInput),
+            "batch_insert" => call!(batch_insert, edit::BatchInsertInput),
+            "search_files" => call!(search_files, tools::SearchFilesInput),
+            other => format!("dispatch_tool_for_tests: unknown tool '{other}'"),
+        }
+    }
 }
 
 /// Wire `SymForgeServer` as an MCP `ServerHandler`.
