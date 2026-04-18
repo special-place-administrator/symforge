@@ -17,7 +17,7 @@ If A and B are not a subset/superset, split them differently — consolidation i
    - `src/daemon.rs::execute_tool_call` — the routing match (`src/daemon.rs:1529-1648`).
    - `src/cli/init.rs::SYMFORGE_TOOL_NAMES` — the client allowlist (`src/cli/init.rs:262-294`).
    - `tests/conformance.rs::EXPECTED_TOOLS` — the registered-handler expectation (`tests/conformance.rs:15-46`).
-   - `src/protocol/tools.rs::mod tests` — test module entry (`src/protocol/tools.rs:6930-6931`).
+   - `src/protocol/tools.rs::mod tests` — test module entry (`src/protocol/tools.rs:7065`).
 3. Working tree is clean on a branch dedicated to this consolidation — each step below is a candidate for its own commit so rollback is granular.
 4. You have read the project's consolidation contract in `CLAUDE.md` ("Tool Consolidation Pattern"). This runbook is the executable form of that contract; it does not override it.
 
@@ -27,7 +27,7 @@ Each step ends with a verification command. Do not start step N+1 until step N's
 
 ### Step 1 — Extend B's input struct with A's parameters
 
-Add every parameter A accepted as an optional field on B's input struct, annotated `#[serde(default)]` (plus the project's `lenient_*` deserializers for numeric/boolean shapes). See `GetSymbolInput` at `src/protocol/tools.rs:232-254` as the canonical shape — note `#[serde(default, deserialize_with = "lenient_u32")]` on optional numerics and `#[serde(default)]` on strings that were previously required.
+Add every parameter A accepted as an optional field on B's input struct, annotated `#[serde(default)]` (plus the project's `lenient_*` deserializers for numeric/boolean shapes). See `GetSymbolInput` at `src/protocol/tools.rs:233-255` as the canonical shape — note `#[serde(default, deserialize_with = "lenient_u32")]` on optional numerics and `#[serde(default)]` on strings that were previously required.
 
 If A introduces a "mode" that B did not have, add a mode/discriminator field rather than reusing existing fields. Overloading existing fields will bite you in step 7.
 
@@ -35,7 +35,7 @@ If A introduces a "mode" that B did not have, add a mode/discriminator field rat
 
 ### Step 2 — Add the mode branch inside B's handler
 
-Inside B's `#[tool]`-annotated method (see the `get_symbol` handler at `src/protocol/tools.rs:2474-2478` for the canonical attribute + signature), branch on the new field and implement A's behaviour using B's surrounding infrastructure (index guard, formatter, error paths). Do not duplicate logic that A already implements — call A's method if it still exists, or move the body into a private helper both call.
+Inside B's `#[tool]`-annotated method (see the `get_symbol` handler at `src/protocol/tools.rs:2475-2479` for the canonical attribute + signature), branch on the new field and implement A's behaviour using B's surrounding infrastructure (index guard, formatter, error paths). Do not duplicate logic that A already implements — call A's method if it still exists, or move the body into a private helper both call.
 
 **Verify:** `cargo test --all-targets --test-threads=1 -- <B_handler_name>`
 (scope to B's tests so the feedback loop is fast; full suite comes at step 7)
@@ -60,7 +60,7 @@ In `src/daemon.rs::execute_tool_call` (`src/daemon.rs:1529-1648`), add a match a
 
 See the `trace_symbol` alias at `src/daemon.rs:1562-1580` as the canonical pattern: it deserializes `TraceSymbolInput`, constructs a `GetSymbolContextInput` with field mapping (note the explicit `sections.unwrap_or_default()` that preserves A's default), then delegates.
 
-In the same commit, add a test inside `mod tests` at `src/protocol/tools.rs:6930` that exercises the alias through the handler with A's original input shape and asserts the output matches the non-aliased call. The existing `test_trace_symbol_delegates_to_formatter` at `src/protocol/tools.rs:11752` is the canonical pattern to copy.
+In the same commit, add a test inside `mod tests` at `src/protocol/tools.rs:7065` that exercises the alias through the handler with A's original input shape and asserts the output matches the non-aliased call. The existing `test_trace_symbol_delegates_to_formatter` at `src/protocol/tools.rs:11886` is the canonical pattern to copy.
 
 **Verify:** `cargo test --all-targets -- --test-threads=1 <A_alias_test_name>`
 
@@ -123,5 +123,5 @@ The critical ordering: **`SYMFORGE_TOOL_NAMES` must never lag behind the alias i
 
 - Project-level contract: `CLAUDE.md` § "Tool Consolidation Pattern".
 - Canonical alias example: `src/daemon.rs:1562-1580` (`trace_symbol`).
-- Canonical alias test: `src/protocol/tools.rs:11752` (`test_trace_symbol_delegates_to_formatter`).
+- Canonical alias test: `src/protocol/tools.rs:11886` (`test_trace_symbol_delegates_to_formatter`).
 - Sibling runbook: `docs/runbooks/add-mcp-tool.md` (forward direction — adding a new tool rather than consolidating).
