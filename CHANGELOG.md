@@ -1,5 +1,31 @@
 # Changelog
 
+## [7.5.0](https://github.com/special-place-administrator/symforge/compare/v7.4.6...v7.5.0) (2026-04-18)
+
+
+### Features
+
+* **coupling:** land co-change coupling feature (T1–3.2) ([d5d2619](https://github.com/special-place-administrator/symforge/commit/d5d2619ddd2f29aa0311631a404fc7067847e212))
+* **edit-and-ranker-hooks#5:** add commit_distance helper in git.rs ([2daa4be](https://github.com/special-place-administrator/symforge/commit/2daa4be360509ec4e46a61a7fe2f4741d9a65dc3))
+* **frecency-ranking#2:** SQLite-backed frecency store with bump + decay scoring ([dc31124](https://github.com/special-place-administrator/symforge/commit/dc31124e6a2b09735d23dd56bb025a0c15e0bd6f))
+* **frecency-ranking#3:** wire bump hooks + no-bump discovery guards ([d804291](https://github.com/special-place-administrator/symforge/commit/d804291a4fcb679e7c9662a5736a359725f54fcd))
+* **frecency-ranking#4:** add rank_by param + fusion to search_files ([74eaa02](https://github.com/special-place-administrator/symforge/commit/74eaa02ba212fe3cb1d31c3aad4fab4158d55882))
+* **frecency-ranking#5:** wire graduated HEAD-change reset into LiveIndex boot path ([1adf995](https://github.com/special-place-administrator/symforge/commit/1adf995fbabb7930ace88579f8310ca72a0ce678))
+* **frecency-ranking#7:** wire bump hooks to real FrecencyStore ([4a07e4c](https://github.com/special-place-administrator/symforge/commit/4a07e4c6d6aca4ec55fff62fd799b187b8903fa6))
+* **frecency-ranking:** cache FrecencyStore per workspace + busy_timeout safety net ([a197f05](https://github.com/special-place-administrator/symforge/commit/a197f058dcfd05e91699fdec1ead3fccd114d269))
+* **git:** add head_sha helper for HEAD resolution ([3778e7f](https://github.com/special-place-administrator/symforge/commit/3778e7fac81d1493e5a3153b136578d3efebe800))
+* **worktree-awareness#2:** add src/worktree.rs with canonicalize + cache + resolve_target_path ([98c17dd](https://github.com/special-place-administrator/symforge/commit/98c17ddee1b702870e023d93d259d3be64eefa2d))
+* **worktree-awareness#3:** plumb working_directory through 7 edit handlers ([f56fcd0](https://github.com/special-place-administrator/symforge/commit/f56fcd043cef664abb274e66001c602607714bab))
+* **worktree-awareness#4:** health misuse counter + conventions answer ([e3062f0](https://github.com/special-place-administrator/symforge/commit/e3062f0c9809de4562878903d795dbebc23d3e66))
+* **worktree-awareness#4:** register WorktreeAwareEditHook + emit reroute response ([79258d7](https://github.com/special-place-administrator/symforge/commit/79258d72a9873d2432fd8abe2e4ac0160363c628))
+
+
+### Bug Fixes
+
+* **ci:** skip merge commits in conventional-commits validator ([0789887](https://github.com/special-place-administrator/symforge/commit/0789887fed0d60a545bb3f2964cdcea1a6ba2b2a))
+* **parsing#1:** clamp error-snippet window to UTF-8 char boundaries ([9a14a7d](https://github.com/special-place-administrator/symforge/commit/9a14a7d204fc5544616bd19566f09995bb82a38c))
+* **parsing:** cap AST walk depth so recursive walkers don't stack-overflow ([77cabec](https://github.com/special-place-administrator/symforge/commit/77cabec7f483a324655c90c27c78cd08d297a6ff))
+
 ## [7.4.6](https://github.com/special-place-administrator/symforge/compare/v7.4.5...v7.4.6) (2026-04-12)
 
 
