@@ -978,6 +978,279 @@ mod tests {
         assert_eq!(failed.parse_diagnostic, Some(failed_diagnostic));
     }
 
+    // ── Format pin: query equivalence across persist → restore ────────────────
+
+    // Tripwire: bumping the persisted-index format version MUST be a deliberate
+    // decision. If this assertion fails, the format is changing — stop and
+    // escalate per `.octogent/tentacles/live-index/CONTEXT.md` §No-surprise rule.
+    #[test]
+    fn test_persist_format_version_is_pinned() {
+        assert_eq!(
+            CURRENT_VERSION, 4,
+            "persist format version changed — a format bump breaks every existing \
+             user's .symforge/index.bin and requires orchestrator approval"
+        );
+    }
+
+    /// Round-trip regression on a non-trivial index spanning 3 languages, a
+    /// cross-file reference, and a partial-parse diagnostic. Asserts that a
+    /// representative set of public query functions returns identical results
+    /// before and after `persist → restore`. This is the contract that protects
+    /// existing users from silent format regressions.
+    #[test]
+    fn test_round_trip_preserves_query_equivalence_multilang_xref_partial() {
+        use crate::domain::{ReferenceKind, SymbolKind};
+
+        let tmp = TempDir::new().unwrap();
+
+        // ── Build a non-trivial index ─────────────────────────────────────────
+        // Rust file: defines `my_func`, calls `other_func` (xref into Python).
+        let rust_content = b"fn my_func() { other_func(); }";
+        let rust_symbol = SymbolRecord {
+            name: "my_func".to_string(),
+            kind: SymbolKind::Function,
+            depth: 0,
+            sort_order: 0,
+            byte_range: (0, 11),
+            item_byte_range: Some((0, 30)),
+            line_range: (0, 0),
+            doc_byte_range: None,
+        };
+        let rust_xref = ReferenceRecord {
+            name: "other_func".to_string(),
+            qualified_name: None,
+            kind: ReferenceKind::Call,
+            byte_range: (15, 25),
+            line_range: (0, 0),
+            enclosing_symbol_index: Some(0),
+        };
+
+        // Python file: defines `other_func`. Carries a partial-parse diagnostic.
+        let python_content = b"def other_func():\n    pass\n";
+        let python_symbol = SymbolRecord {
+            name: "other_func".to_string(),
+            kind: SymbolKind::Function,
+            depth: 0,
+            sort_order: 0,
+            byte_range: (0, 17),
+            item_byte_range: Some((0, 27)),
+            line_range: (0, 1),
+            doc_byte_range: None,
+        };
+        let python_diagnostic = crate::domain::ParseDiagnostic {
+            parser: "tree_sitter_python".to_string(),
+            message: "unterminated decorator".to_string(),
+            line: Some(1),
+            column: Some(0),
+            byte_span: Some((0, 3)),
+            fallback_used: true,
+        };
+
+        // TypeScript file: defines `render`, no xrefs, parses cleanly.
+        let ts_content = b"export function render(): void {}";
+        let ts_symbol = SymbolRecord {
+            name: "render".to_string(),
+            kind: SymbolKind::Function,
+            depth: 0,
+            sort_order: 0,
+            byte_range: (7, 29),
+            item_byte_range: Some((0, 33)),
+            line_range: (0, 0),
+            doc_byte_range: None,
+        };
+
+        let mut alias_map = HashMap::new();
+        alias_map.insert("Map".to_string(), "HashMap".to_string());
+
+        let rust_file = IndexedFile {
+            relative_path: "src/foo.rs".to_string(),
+            language: LanguageId::Rust,
+            classification: crate::domain::FileClassification::for_code_path("src/foo.rs"),
+            content: rust_content.to_vec(),
+            symbols: vec![rust_symbol],
+            parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
+            byte_len: rust_content.len() as u64,
+            content_hash: crate::hash::digest_hex(rust_content),
+            references: vec![rust_xref],
+            alias_map,
+            mtime_secs: 0,
+        };
+        let python_file = IndexedFile {
+            relative_path: "src/bar.py".to_string(),
+            language: LanguageId::Python,
+            classification: crate::domain::FileClassification::for_code_path("src/bar.py"),
+            content: python_content.to_vec(),
+            symbols: vec![python_symbol],
+            parse_status: ParseStatus::PartialParse {
+                warning: python_diagnostic.summary(),
+            },
+            parse_diagnostic: Some(python_diagnostic),
+            byte_len: python_content.len() as u64,
+            content_hash: crate::hash::digest_hex(python_content),
+            references: vec![],
+            alias_map: HashMap::new(),
+            mtime_secs: 0,
+        };
+        let ts_file = IndexedFile {
+            relative_path: "src/baz.ts".to_string(),
+            language: LanguageId::TypeScript,
+            classification: crate::domain::FileClassification::for_code_path("src/baz.ts"),
+            content: ts_content.to_vec(),
+            symbols: vec![ts_symbol],
+            parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
+            byte_len: ts_content.len() as u64,
+            content_hash: crate::hash::digest_hex(ts_content),
+            references: vec![],
+            alias_map: HashMap::new(),
+            mtime_secs: 0,
+        };
+
+        let mut file_map: HashMap<String, Arc<IndexedFile>> = HashMap::new();
+        file_map.insert("src/foo.rs".to_string(), Arc::new(rust_file));
+        file_map.insert("src/bar.py".to_string(), Arc::new(python_file));
+        file_map.insert("src/baz.ts".to_string(), Arc::new(ts_file));
+
+        let trigram_index = crate::live_index::trigram::TrigramIndex::build_from_files(&file_map);
+        let mut before = LiveIndex {
+            files: file_map,
+            loaded_at: Instant::now(),
+            loaded_at_system: SystemTime::now(),
+            load_duration: Duration::ZERO,
+            cb_state: CircuitBreakerState::new(0.20),
+            is_empty: false,
+            load_source: IndexLoadSource::FreshLoad,
+            snapshot_verify_state: SnapshotVerifyState::NotNeeded,
+            reverse_index: HashMap::new(),
+            files_by_basename: HashMap::new(),
+            files_by_dir_component: HashMap::new(),
+            trigram_index,
+            gitignore: None,
+            skipped_files: Vec::new(),
+        };
+        before.rebuild_reverse_index();
+        before.rebuild_path_indices();
+
+        // ── Persist, then restore ─────────────────────────────────────────────
+        serialize_index(&before, tmp.path()).expect("serialize should succeed");
+
+        // Tripwire on the serialized version field itself.
+        let raw = std::fs::read(tmp.path().join(".symforge").join("index.bin")).unwrap();
+        let decoded: IndexSnapshot =
+            postcard::from_bytes(&raw).expect("persisted snapshot decodes");
+        assert_eq!(
+            decoded.version, CURRENT_VERSION,
+            "serialized snapshot must carry CURRENT_VERSION"
+        );
+
+        let snapshot = load_snapshot(tmp.path()).expect("snapshot should load");
+        let after = snapshot_to_live_index(snapshot);
+
+        // ── Query equivalence ────────────────────────────────────────────────
+
+        // Scalars
+        assert_eq!(before.file_count(), after.file_count(), "file_count");
+        assert_eq!(before.symbol_count(), after.symbol_count(), "symbol_count");
+
+        // all_files() — sorted equivalence
+        let mut before_all: Vec<(String, IndexedFile)> = before
+            .all_files()
+            .map(|(p, f)| (p.clone(), f.clone()))
+            .collect();
+        let mut after_all: Vec<(String, IndexedFile)> = after
+            .all_files()
+            .map(|(p, f)| (p.clone(), f.clone()))
+            .collect();
+        before_all.sort_by(|a, b| a.0.cmp(&b.0));
+        after_all.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(before_all.len(), after_all.len(), "all_files len");
+        for ((bp, bf), (ap, af)) in before_all.iter().zip(after_all.iter()) {
+            assert_eq!(bp, ap, "all_files path");
+            assert_eq!(bf.content, af.content, "content for {bp}");
+            assert_eq!(bf.content_hash, af.content_hash, "hash for {bp}");
+            assert_eq!(bf.language, af.language, "language for {bp}");
+            assert_eq!(bf.symbols, af.symbols, "symbols for {bp}");
+            assert_eq!(bf.references, af.references, "references for {bp}");
+            assert_eq!(bf.parse_status, af.parse_status, "parse_status for {bp}");
+            assert_eq!(
+                bf.parse_diagnostic, af.parse_diagnostic,
+                "parse_diagnostic for {bp}"
+            );
+            assert_eq!(bf.alias_map, af.alias_map, "alias_map for {bp}");
+            assert_eq!(bf.classification, af.classification, "classification for {bp}");
+        }
+
+        // Per-file: get_file + symbols_for_file
+        for path in ["src/foo.rs", "src/bar.py", "src/baz.ts"] {
+            let b = before.get_file(path).expect("before file present");
+            let a = after.get_file(path).expect("after file present");
+            assert_eq!(b.content, a.content, "get_file content {path}");
+            assert_eq!(
+                before.symbols_for_file(path),
+                after.symbols_for_file(path),
+                "symbols_for_file {path}"
+            );
+        }
+
+        // Path indices rebuilt identically
+        for basename in ["foo.rs", "bar.py", "baz.ts"] {
+            assert_eq!(
+                before.find_files_by_basename(basename),
+                after.find_files_by_basename(basename),
+                "find_files_by_basename {basename}"
+            );
+        }
+        assert_eq!(
+            before.find_files_by_dir_component("src"),
+            after.find_files_by_dir_component("src"),
+            "find_files_by_dir_component src"
+        );
+
+        // Cross-reference survives the round-trip (reverse index rebuilt from
+        // persisted references).
+        let before_refs: Vec<(String, ReferenceRecord)> = before
+            .find_references_for_name("other_func", None, true)
+            .into_iter()
+            .map(|(p, r)| (p.to_string(), r.clone()))
+            .collect();
+        let after_refs: Vec<(String, ReferenceRecord)> = after
+            .find_references_for_name("other_func", None, true)
+            .into_iter()
+            .map(|(p, r)| (p.to_string(), r.clone()))
+            .collect();
+        assert_eq!(before_refs.len(), 1, "one xref before round-trip");
+        assert_eq!(before_refs, after_refs, "find_references_for_name xref");
+
+        // Health stats: partial/failed breakdown and file/symbol counts.
+        let bh = before.health_stats();
+        let ah = after.health_stats();
+        assert_eq!(bh.file_count, ah.file_count, "health file_count");
+        assert_eq!(bh.symbol_count, ah.symbol_count, "health symbol_count");
+        assert_eq!(bh.parsed_count, ah.parsed_count, "health parsed_count");
+        assert_eq!(
+            bh.partial_parse_count, ah.partial_parse_count,
+            "health partial_parse_count"
+        );
+        assert_eq!(bh.failed_count, ah.failed_count, "health failed_count");
+        assert_eq!(
+            bh.partial_parse_files, ah.partial_parse_files,
+            "health partial_parse_files"
+        );
+        assert_eq!(bh.failed_files, ah.failed_files, "health failed_files");
+        assert_eq!(
+            bh.partial_parse_count, 1,
+            "test setup must include one partial-parse file"
+        );
+
+        // Repo outline: same files, languages, symbol counts.
+        let bo = before.capture_repo_outline_view();
+        let ao = after.capture_repo_outline_view();
+        assert_eq!(bo.total_files, ao.total_files, "outline total_files");
+        assert_eq!(bo.total_symbols, ao.total_symbols, "outline total_symbols");
+        assert_eq!(bo.files, ao.files, "outline files");
+    }
+
     // ── Version mismatch / corrupt data tests ─────────────────────────────────
 
     #[test]
