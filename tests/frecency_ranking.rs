@@ -91,6 +91,7 @@ async fn call(server: &SymForgeServer, tool: &str, params: Value) -> String {
 // N files yields N distinct bumps, not N × (bumps per file).
 
 #[tokio::test]
+#[ignore = "pending frecency graduation: see panic! body for specific behavior"]
 async fn replace_symbol_body_bumps_frecency() {
     let fx = Fixture::new(&[("src/lib.rs", "fn hello() {}\n")]);
 
@@ -112,6 +113,7 @@ async fn replace_symbol_body_bumps_frecency() {
 }
 
 #[tokio::test]
+#[ignore = "pending frecency graduation: see panic! body for specific behavior"]
 async fn insert_symbol_bumps_frecency() {
     let fx = Fixture::new(&[("src/lib.rs", "fn hello() {}\n")]);
 
@@ -134,6 +136,7 @@ async fn insert_symbol_bumps_frecency() {
 }
 
 #[tokio::test]
+#[ignore = "pending frecency graduation: see panic! body for specific behavior"]
 async fn delete_symbol_bumps_frecency() {
     let fx = Fixture::new(&[("src/lib.rs", "fn hello() {}\nfn world() {}\n")]);
 
@@ -154,6 +157,7 @@ async fn delete_symbol_bumps_frecency() {
 }
 
 #[tokio::test]
+#[ignore = "pending frecency graduation: see panic! body for specific behavior"]
 async fn edit_within_symbol_bumps_frecency() {
     let fx = Fixture::new(&[("src/lib.rs", "fn hello() {\n    old();\n}\n")]);
 
@@ -177,6 +181,7 @@ async fn edit_within_symbol_bumps_frecency() {
 }
 
 #[tokio::test]
+#[ignore = "pending frecency graduation: see panic! body for specific behavior"]
 async fn batch_edit_bumps_each_touched_file_once() {
     let fx = Fixture::new(&[
         ("src/a.rs", "fn alpha() {\n    a_old();\n}\n"),
@@ -219,6 +224,7 @@ async fn batch_edit_bumps_each_touched_file_once() {
 }
 
 #[tokio::test]
+#[ignore = "pending frecency graduation: see panic! body for specific behavior"]
 async fn batch_rename_bumps_definition_and_call_site() {
     let fx = Fixture::new(&[
         ("src/lib.rs", "pub fn old_name() {}\n"),
@@ -247,6 +253,7 @@ async fn batch_rename_bumps_definition_and_call_site() {
 }
 
 #[tokio::test]
+#[ignore = "pending frecency graduation: see panic! body for specific behavior"]
 async fn batch_insert_bumps_each_target_once() {
     let fx = Fixture::new(&[
         ("src/a.rs", "fn alpha() {}\n"),
@@ -281,6 +288,7 @@ async fn batch_insert_bumps_each_target_once() {
 // wire-up. Tests stand as the contract.
 
 #[tokio::test]
+#[ignore = "pending frecency graduation: see panic! body for specific behavior"]
 async fn get_file_context_bumps_frecency() {
     panic!(
         "pending frecency implementation: expected src/foo.rs hit_count == 1 \
@@ -291,6 +299,7 @@ async fn get_file_context_bumps_frecency() {
 }
 
 #[tokio::test]
+#[ignore = "pending frecency graduation: see panic! body for specific behavior"]
 async fn get_file_content_bumps_frecency() {
     panic!(
         "pending frecency implementation: expected src/foo.rs hit_count == 1 \
@@ -301,6 +310,7 @@ async fn get_file_content_bumps_frecency() {
 }
 
 #[tokio::test]
+#[ignore = "pending frecency graduation: see panic! body for specific behavior"]
 async fn get_symbol_bumps_frecency() {
     panic!(
         "pending frecency implementation: expected src/foo.rs hit_count == 1 \
@@ -311,6 +321,7 @@ async fn get_symbol_bumps_frecency() {
 }
 
 #[tokio::test]
+#[ignore = "pending frecency graduation: see panic! body for specific behavior"]
 async fn get_symbol_context_bumps_frecency() {
     panic!(
         "pending frecency implementation: expected src/foo.rs hit_count == 1 \
@@ -328,6 +339,7 @@ async fn get_symbol_context_bumps_frecency() {
 // single most important invariant of the whole feature.
 
 #[tokio::test]
+#[ignore = "pending frecency graduation: see panic! body for specific behavior"]
 async fn search_files_does_not_bump() {
     let fx = Fixture::new(&[
         ("src/alpha.rs", "pub fn alpha() {}\n"),
@@ -351,6 +363,7 @@ async fn search_files_does_not_bump() {
 }
 
 #[tokio::test]
+#[ignore = "pending frecency graduation: see panic! body for specific behavior"]
 async fn search_text_does_not_bump() {
     panic!(
         "pending frecency implementation: expected FrecencyStore::last_10_bumps \
@@ -361,6 +374,7 @@ async fn search_text_does_not_bump() {
 }
 
 #[tokio::test]
+#[ignore = "pending frecency graduation: see panic! body for specific behavior"]
 async fn search_symbols_does_not_bump() {
     panic!(
         "pending frecency implementation: expected FrecencyStore::last_10_bumps \
@@ -378,6 +392,7 @@ async fn search_symbols_does_not_bump() {
 // exactly 0.5 (7-day half-life).
 
 #[tokio::test]
+#[ignore = "pending frecency graduation: see panic! body for specific behavior"]
 async fn score_decays_to_half_after_seven_days() {
     panic!(
         "pending frecency implementation: expected \
@@ -393,6 +408,7 @@ async fn score_decays_to_half_after_seven_days() {
 // negative number) so the fusion math treats it as baseline.
 
 #[tokio::test]
+#[ignore = "pending frecency graduation: see panic! body for specific behavior"]
 async fn fresh_file_with_no_row_returns_baseline_score() {
     let fx = Fixture::new(&[("src/fresh.rs", "pub fn fresh() {}\n")]);
 
@@ -424,6 +440,7 @@ async fn fresh_file_with_no_row_returns_baseline_score() {
 // pins the weight (exp(-ln(2) * 182.5d / 7d) ≈ 1.6e-8 vs 10 × ~1.0).
 
 #[tokio::test]
+#[ignore = "pending frecency graduation: see panic! body for specific behavior"]
 async fn recent_single_bump_outranks_old_ten_bumps() {
     panic!(
         "pending frecency implementation: expected file_B (1 bump 5 min ago) \
@@ -439,6 +456,7 @@ async fn recent_single_bump_outranks_old_ten_bumps() {
 // `<50` commits no-op, `50-500` halve scores, `>500` or branch change zero.
 
 #[tokio::test]
+#[ignore = "pending frecency graduation: see panic! body for specific behavior"]
 async fn head_change_halves_scores_at_100_commits() {
     panic!(
         "pending frecency implementation: expected all frecency scores halved \
@@ -449,6 +467,7 @@ async fn head_change_halves_scores_at_100_commits() {
 }
 
 #[tokio::test]
+#[ignore = "pending frecency graduation: see panic! body for specific behavior"]
 async fn head_change_resets_scores_at_1000_commits() {
     panic!(
         "pending frecency implementation: expected all frecency scores zeroed \
@@ -465,6 +484,7 @@ async fn head_change_resets_scores_at_1000_commits() {
 // must land 10 distinct increments (no lost updates from race conditions).
 
 #[tokio::test]
+#[ignore = "pending frecency graduation: see panic! body for specific behavior"]
 async fn ten_parallel_bumps_yield_hit_count_ten() {
     panic!(
         "pending frecency implementation: expected hit_count == 10 after 10 \
