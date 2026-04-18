@@ -5,6 +5,7 @@
 /// Test map:
 ///   test_rust_call_site_extraction          → XREF-01, XREF-02
 ///   test_python_import_and_call_extraction  → XREF-01, XREF-02
+///   test_ruby_multifile_xref_extraction     → XREF-01, XREF-02 (Ruby coverage backfill)
 ///   test_ts_builtin_type_filter             → XREF-04 (roadmap success criterion 2)
 ///   test_alias_map_resolution               → XREF-05
 ///   test_generic_filter                     → XREF-06
@@ -130,6 +131,108 @@ def run():
         !file.references.is_empty(),
         "Python file should have at least one cross-reference extracted"
     );
+}
+
+// ---------------------------------------------------------------------------
+// XREF-01, XREF-02: Ruby multi-file xref extraction (coverage backfill)
+//
+// Uses a 3-file fixture under tests/fixtures/ruby/:
+//   - greeter.rb  (definition of `class Greeter` with `def greet`)
+//   - caller.rb   (requires greeter, calls Greeter.new.greet)
+//   - importer.rb (requires greeter, subclasses Greeter)
+//
+// Proves that Ruby xref extraction produces cross-file references the
+// live index can surface via find_references_for_name.
+// ---------------------------------------------------------------------------
+
+/// Read a fixture file under tests/fixtures/ into a string.
+fn read_fixture(rel_path: &str) -> String {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let path = root.join("tests").join("fixtures").join(rel_path);
+    fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read fixture {}: {e}", path.display()))
+}
+
+#[test]
+fn test_ruby_multifile_xref_extraction() {
+    let greeter = read_fixture("ruby/greeter.rb");
+    let caller = read_fixture("ruby/caller.rb");
+    let importer = read_fixture("ruby/importer.rb");
+
+    let (_dir, shared) = build_index(&[
+        ("greeter.rb", greeter.as_str()),
+        ("caller.rb", caller.as_str()),
+        ("importer.rb", importer.as_str()),
+    ]);
+    let index = shared.read();
+
+    // Sanity: all three Ruby files were indexed.
+    let ruby_files: Vec<_> = index
+        .all_files()
+        .map(|(p, _)| p.clone())
+        .filter(|p| p.ends_with(".rb"))
+        .collect();
+    assert_eq!(
+        ruby_files.len(),
+        3,
+        "expected 3 Ruby files indexed, got: {:?}",
+        ruby_files
+    );
+
+    // XREF-01/02: cross-file Call references for `greet` appear.
+    // caller.rb calls `g.greet('world')` — captured by the method_call rule.
+    let greet_refs = index.find_references_for_name("greet", None, false);
+    let greet_calls: Vec<_> = greet_refs
+        .iter()
+        .filter(|(_, r)| r.kind == ReferenceKind::Call)
+        .collect();
+    assert!(
+        !greet_calls.is_empty(),
+        "should find a Call reference for `greet` from caller.rb, got: {:?}",
+        greet_refs.iter().map(|(_, r)| (&r.name, r.kind)).collect::<Vec<_>>()
+    );
+
+    // XREF-01/02: `require_relative` produces Import references.
+    // Both caller.rb and importer.rb contain `require_relative 'greeter'`.
+    // The Ruby xref query captures the `require`/`require_relative` identifier
+    // as the import name.
+    let import_refs = index.find_references_for_name("require_relative", None, true);
+    let import_count = import_refs
+        .iter()
+        .filter(|(_, r)| r.kind == ReferenceKind::Import)
+        .count();
+    assert!(
+        import_count >= 2,
+        "expected >=2 Import refs (caller.rb + importer.rb), got {}: {:?}",
+        import_count,
+        import_refs.iter().map(|(_, r)| (&r.name, r.kind)).collect::<Vec<_>>()
+    );
+
+    // XREF-01/02: `Greeter` appears as a TypeUsage across caller.rb and importer.rb.
+    let greeter_refs = index.find_references_for_name("Greeter", None, false);
+    let greeter_files: std::collections::BTreeSet<&str> =
+        greeter_refs.iter().map(|(p, _)| *p).collect();
+    assert!(
+        greeter_files.iter().any(|p| p.ends_with("caller.rb")),
+        "expected a Greeter reference from caller.rb, got files: {:?}",
+        greeter_files
+    );
+    assert!(
+        greeter_files.iter().any(|p| p.ends_with("importer.rb")),
+        "expected a Greeter reference from importer.rb, got files: {:?}",
+        greeter_files
+    );
+
+    // Extraction is non-empty for every indexed Ruby file.
+    for file_path in &ruby_files {
+        let file = index
+            .get_file(file_path)
+            .unwrap_or_else(|| panic!("missing indexed file: {file_path}"));
+        assert!(
+            !file.references.is_empty(),
+            "Ruby file {file_path} should have at least one extracted reference"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
