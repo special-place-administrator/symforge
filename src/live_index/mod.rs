@@ -1,3 +1,4 @@
+pub mod frecency;
 pub mod git_temporal;
 pub mod persist;
 pub mod query;
