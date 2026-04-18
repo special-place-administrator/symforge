@@ -226,6 +226,57 @@ pub(super) fn has_child_kind(node: &Node, kind: &str) -> bool {
     node.children(&mut cursor).any(|c| c.kind() == kind)
 }
 
+/// Maximum recursive AST walk depth. Past this, the per-language
+/// `walk_children` helpers bail out instead of descending further. Guards
+/// against stack overflow on pathologically deep inputs (thousands of
+/// nested parens, unterminated macro expansions, hostile source files) when
+/// the walk runs on a thread stack smaller than the dedicated 16 MiB
+/// indexing probe thread — notably the default-stack daemon proxy sessions
+/// and Cargo's default test threads.
+///
+/// Empirically (see `test_process_file_deeply_nested_expression_no_stack_blow`)
+/// a 10 000-deep parse needs roughly 15 MiB of stack. That implies ~1.5 KiB
+/// per recursive frame. At a 1024-frame cap we use ~1.5 MiB of stack in the
+/// worst case, leaving headroom on a 2 MiB default thread and on the 3 MiB
+/// Windows minimum configured in `store::MIN_INDEXING_THREAD_STACK_BYTES`.
+///
+/// Real code never comes close: even heavily-nested generated Rust or
+/// deeply-curried Haskell tops out around 300 levels. Hitting the cap means
+/// the input is adversarial or generated; silently truncating the walk is
+/// the conservative outcome — the parser still produces symbols for
+/// everything it reached, partial-parse style.
+pub(super) const MAX_AST_WALK_DEPTH: u32 = 1024;
+
+thread_local! {
+    static AST_WALK_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// RAII guard for a single recursive frame of the AST walk. `enter_ast_walk_frame`
+/// returns `None` once the thread-local depth counter reaches
+/// `MAX_AST_WALK_DEPTH`; the caller must then return without recursing.
+/// Dropping the guard decrements the counter, so sibling branches see the
+/// correct depth.
+pub(super) struct AstWalkFrame;
+
+impl Drop for AstWalkFrame {
+    fn drop(&mut self) {
+        AST_WALK_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+    }
+}
+
+pub(super) fn enter_ast_walk_frame() -> Option<AstWalkFrame> {
+    AST_WALK_DEPTH.with(|d| {
+        let current = d.get();
+        if current >= MAX_AST_WALK_DEPTH {
+            None
+        } else {
+            d.set(current + 1);
+            Some(AstWalkFrame)
+        }
+    })
+}
+
+
 pub(super) fn walk_children(
     node: &Node,
     source: &str,
@@ -235,6 +286,13 @@ pub(super) fn walk_children(
     kind: Option<SymbolKind>,
     walk: WalkNodeFn,
 ) {
+    let Some(_frame) = enter_ast_walk_frame() else {
+        // Recursion cap reached — stop descending to avoid a stack
+        // overflow on adversarially deep input. Anything collected so far
+        // stays; this mirrors partial-parse semantics used elsewhere in
+        // the parser.
+        return;
+    };
     let child_depth = next_child_depth(kind, depth);
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {

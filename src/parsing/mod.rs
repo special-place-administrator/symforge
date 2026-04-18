@@ -669,4 +669,35 @@ mod tests {
             .expect("spawn stack-blow probe thread");
         handle.join().expect("deep-nesting probe must not panic");
     }
+
+    #[test]
+    fn test_process_file_deeply_nested_expression_on_default_stack_no_panic() {
+        // Companion to `test_process_file_deeply_nested_expression_no_stack_blow`
+        // above — same input, but runs on the default test-thread stack (~2 MiB
+        // on Linux/macOS, ~1 MiB on Windows) without the 16 MiB override. The
+        // previous swarm round flagged the real risk: daemon-proxy sessions and
+        // other caller threads with default-sized stacks would overflow on
+        // adversarial input. The `MAX_AST_WALK_DEPTH` cap in
+        // `src/parsing/languages/mod.rs` silently truncates the AST walk when
+        // recursion reaches the cap, so this now returns cleanly.
+        //
+        // This test doesn't assert anything about the resulting symbol count —
+        // depth-capped partial walks are allowed to drop inner symbols, matching
+        // the rest of the parser's partial-parse philosophy. It only asserts
+        // that the call returns *at all* without crashing the test process.
+        const DEPTH: usize = 10_000;
+        let mut source = String::with_capacity(DEPTH * 2 + 32);
+        source.push_str("fn f() -> i32 { ");
+        for _ in 0..DEPTH {
+            source.push('(');
+        }
+        source.push('1');
+        for _ in 0..DEPTH {
+            source.push(')');
+        }
+        source.push_str(" }");
+        let result = process_file("deep_default.rs", source.as_bytes(), LanguageId::Rust);
+        assert_eq!(result.byte_len, source.len() as u64);
+        assert!(!result.content_hash.is_empty());
+    }
 }

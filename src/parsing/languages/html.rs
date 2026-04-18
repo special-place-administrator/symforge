@@ -67,6 +67,9 @@ fn walk_children(
     symbols: &mut Vec<SymbolRecord>,
     emitted: &mut HashSet<(u32, u32)>,
 ) {
+    let Some(_frame) = super::enter_ast_walk_frame() else {
+        return;
+    };
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         walk_node(&child, source, depth, sort_order, symbols, emitted);
