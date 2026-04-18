@@ -338,6 +338,18 @@ fn spot_verify_sample_from_view(
     mismatches
 }
 
+// ── FrecencyStore init hook (placeholder) ─────────────────────────────────────
+
+/// Initialize the frecency store at [`paths::SYMFORGE_FRECENCY_DB_PATH`].
+///
+/// Today this is a no-op stub. The `frecency-ranking` tentacle will replace
+/// the body to open the SQLite database and bootstrap its schema. Reserved
+/// here so callers can wire the init call into the live-index startup path
+/// without further edits to this module's surface.
+pub fn init_frecency_store(_project_root: &Path) {
+    // intentionally empty — owned by frecency-ranking tentacle
+}
+
 // ── Private helpers ───────────────────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -1292,6 +1304,28 @@ mod tests {
         assert!(
             tmp.path().join(".symforge").join("index.bin").exists(),
             ".symforge/index.bin should be created"
+        );
+    }
+
+    // ── FrecencyStore init hook tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_init_frecency_store_is_noop_does_not_create_db() {
+        let tmp = TempDir::new().unwrap();
+        init_frecency_store(tmp.path());
+        assert!(
+            !tmp.path().join(paths::SYMFORGE_FRECENCY_DB_PATH).exists(),
+            "placeholder init must not create the frecency database file"
+        );
+    }
+
+    #[test]
+    fn test_init_frecency_store_is_noop_does_not_create_symforge_dir() {
+        let tmp = TempDir::new().unwrap();
+        init_frecency_store(tmp.path());
+        assert!(
+            !tmp.path().join(paths::SYMFORGE_DIR_NAME).exists(),
+            "placeholder init must not create the .symforge directory"
         );
     }
 
