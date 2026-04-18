@@ -1087,6 +1087,8 @@ impl LiveIndex {
         index.rebuild_reverse_index();
         index.rebuild_path_indices();
 
+        super::persist::init_frecency_store(root);
+
         Ok(SharedIndexHandle::shared(index))
     }
 

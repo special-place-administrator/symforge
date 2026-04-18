@@ -338,16 +338,68 @@ fn spot_verify_sample_from_view(
     mismatches
 }
 
-// ── FrecencyStore init hook (placeholder) ─────────────────────────────────────
+// ── FrecencyStore init hook ───────────────────────────────────────────────────
 
-/// Initialize the frecency store at [`paths::SYMFORGE_FRECENCY_DB_PATH`].
+/// Open the per-workspace `FrecencyStore` and apply the graduated HEAD-change
+/// reset policy at session startup.
 ///
-/// Today this is a no-op stub. The `frecency-ranking` tentacle will replace
-/// the body to open the SQLite database and bootstrap its schema. Reserved
-/// here so callers can wire the init call into the live-index startup path
-/// without further edits to this module's surface.
-pub fn init_frecency_store(_project_root: &Path) {
-    // intentionally empty — owned by frecency-ranking tentacle
+/// Gated on `SYMFORGE_FRECENCY=1`. With the flag unset (the default), this is
+/// a no-op and the database is never touched.
+///
+/// With the flag on:
+///
+/// 1. Open the SQLite store at `<project_root>/.symforge/frecency.db`,
+///    creating the file and parent directory if missing.
+/// 2. Look up the stored HEAD SHA from the previous session.
+/// 3. Resolve the current HEAD via `git2`. If the project is not a git
+///    repository (or git otherwise fails), silently no-op — the feature must
+///    not break the tool it hooks into.
+/// 4. Compute the commit distance between stored and current HEAD. A transient
+///    `Err` here aborts the cycle and preserves the stored HEAD so the next
+///    session retries; `Ok(None)` signals "unrelated history / branch change"
+///    which the policy correctly maps to a zero reset.
+/// 5. Apply the graduated policy via [`FrecencyStore::reset_or_halve_on_head_change`],
+///    which also persists `current_head` as the new stored HEAD.
+///
+/// Any error along the happy path is silently dropped: a bad store, a git read
+/// failure, or a SQLite transaction failure must never crash the live-index
+/// boot path. The next session retries.
+///
+/// Spec: §"Reset-on-HEAD-change: graduated, not binary" on
+/// `[[SymForge Frecency-Weighted File Ranking]]`.
+pub fn init_frecency_store(project_root: &Path) {
+    if std::env::var(crate::live_index::frecency::FRECENCY_FLAG_ENV).as_deref() != Ok("1") {
+        return;
+    }
+    let db_path = project_root.join(crate::paths::SYMFORGE_FRECENCY_DB_PATH);
+    let _ = run_frecency_init(&db_path, project_root);
+}
+
+/// Body of [`init_frecency_store`] with the env-flag check stripped out.
+///
+/// Split so unit tests can drive the work against a known db path + git repo
+/// without process-wide env mutation.
+fn run_frecency_init(db_path: &Path, repo_root: &Path) -> Result<(), String> {
+    let store = crate::live_index::frecency::FrecencyStore::open(db_path)
+        .map_err(|e| e.to_string())?;
+    let current_head = match crate::git::head_sha(repo_root) {
+        Ok(s) => s,
+        Err(_) => return Ok(()),
+    };
+    let stored_head = store.last_head().map_err(|e| e.to_string())?;
+    let distance = match stored_head.as_deref() {
+        Some(prev) if prev != current_head => {
+            match crate::git::commit_distance(prev, &current_head, repo_root) {
+                Ok(opt) => opt,
+                Err(_) => return Ok(()),
+            }
+        }
+        _ => None,
+    };
+    store
+        .reset_or_halve_on_head_change(stored_head.as_deref(), &current_head, distance)
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────
@@ -1582,23 +1634,199 @@ mod tests {
 
     // ── FrecencyStore init hook tests ─────────────────────────────────────────
 
+    use crate::live_index::frecency::{FRECENCY_FLAG_ENV, FrecencyStore};
+    use std::path::PathBuf;
+    use std::sync::Mutex as StdMutex;
+
+    // Serialize tests that mutate FRECENCY_FLAG_ENV so a parallel runner (or a
+    // sibling test that forgets to clear) cannot interleave env transitions.
+    static FRECENCY_ENV_LOCK: StdMutex<()> = StdMutex::new(());
+
+    fn clear_frecency_flag() {
+        // SAFETY: callers hold FRECENCY_ENV_LOCK and tests run with
+        // --test-threads=1 per the project test policy.
+        unsafe { std::env::remove_var(FRECENCY_FLAG_ENV) };
+    }
+
+    /// Commit `count` empty-tree commits to the repo at `root`, parenting each
+    /// on the last commit of `HEAD`. Returns the SHA of the final commit.
+    fn make_commits(root: &Path, count: usize, base_msg: &str) -> String {
+        let repo = git2::Repository::open(root).expect("open test repo");
+        let sig = git2::Signature::now("t", "t@x").expect("sig");
+        let tree_id = {
+            let mut idx = repo.index().expect("index");
+            idx.write_tree().expect("write tree")
+        };
+        let tree = repo.find_tree(tree_id).expect("find tree");
+        let mut head = repo
+            .head()
+            .expect("head")
+            .peel_to_commit()
+            .expect("peel head");
+        for i in 0..count {
+            let oid = repo
+                .commit(
+                    Some("HEAD"),
+                    &sig,
+                    &sig,
+                    &format!("{base_msg} {i}"),
+                    &tree,
+                    &[&head],
+                )
+                .expect("commit");
+            head = repo.find_commit(oid).expect("find commit");
+        }
+        head.id().to_string()
+    }
+
+    /// Initialize a repo at `root` with one root commit. Returns that SHA.
+    fn init_repo_with_root_commit(root: &Path) -> String {
+        let repo = git2::Repository::init(root).expect("init");
+        let sig = git2::Signature::now("t", "t@x").expect("sig");
+        let tree_id = {
+            let mut idx = repo.index().expect("index");
+            idx.write_tree().expect("write tree")
+        };
+        let tree = repo.find_tree(tree_id).expect("find tree");
+        let oid = repo
+            .commit(Some("HEAD"), &sig, &sig, "root", &tree, &[])
+            .expect("root commit");
+        oid.to_string()
+    }
+
     #[test]
-    fn test_init_frecency_store_is_noop_does_not_create_db() {
+    fn init_frecency_store_is_noop_when_flag_unset() {
+        let _g = FRECENCY_ENV_LOCK.lock().unwrap();
+        clear_frecency_flag();
         let tmp = TempDir::new().unwrap();
         init_frecency_store(tmp.path());
         assert!(
             !tmp.path().join(paths::SYMFORGE_FRECENCY_DB_PATH).exists(),
-            "placeholder init must not create the frecency database file"
+            "init must not create the frecency database when flag is unset"
+        );
+        assert!(
+            !tmp.path().join(paths::SYMFORGE_DIR_NAME).exists(),
+            "init must not create the .symforge directory when flag is unset"
         );
     }
 
     #[test]
-    fn test_init_frecency_store_is_noop_does_not_create_symforge_dir() {
+    fn run_frecency_init_is_noop_when_project_root_is_not_a_repo() {
+        // A path with no .git ancestry must degrade gracefully: the DB may be
+        // opened (migrate is cheap), but no reset policy can apply since there
+        // is no HEAD to read. We assert no last_head gets stored.
         let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("frecency.db");
+        run_frecency_init(&db_path, tmp.path()).expect("init returns Ok on missing repo");
+        let store = FrecencyStore::open(&db_path).unwrap();
+        assert_eq!(
+            store.last_head().unwrap(),
+            None,
+            "no HEAD should be recorded when the project root is not a git repo"
+        );
+    }
+
+    #[test]
+    fn run_frecency_init_records_head_on_first_session() {
+        let tmp = TempDir::new().unwrap();
+        let sha = init_repo_with_root_commit(tmp.path());
+        let db_path = tmp.path().join("frecency.db");
+        run_frecency_init(&db_path, tmp.path()).expect("init ok");
+        let store = FrecencyStore::open(&db_path).unwrap();
+        assert_eq!(store.last_head().unwrap().as_deref(), Some(sha.as_str()));
+    }
+
+    #[test]
+    fn run_frecency_init_is_noop_when_head_unchanged() {
+        let tmp = TempDir::new().unwrap();
+        let sha = init_repo_with_root_commit(tmp.path());
+        let db_path = tmp.path().join("frecency.db");
+        // Seed: stored_head matches current, some bumps already exist.
+        {
+            let store = FrecencyStore::open(&db_path).unwrap();
+            store.bump(&[PathBuf::from("src/a.rs")], 0).unwrap();
+            store.bump(&[PathBuf::from("src/a.rs")], 0).unwrap();
+            store
+                .reset_or_halve_on_head_change(None, &sha, None)
+                .unwrap();
+        }
+        run_frecency_init(&db_path, tmp.path()).expect("init ok");
+        let store = FrecencyStore::open(&db_path).unwrap();
+        assert_eq!(
+            store.score(Path::new("src/a.rs"), 0).unwrap(),
+            2.0,
+            "same-HEAD init must not reset hit counts"
+        );
+        assert_eq!(store.last_head().unwrap().as_deref(), Some(sha.as_str()));
+    }
+
+    #[test]
+    fn run_frecency_init_halves_at_100_commits() {
+        let tmp = TempDir::new().unwrap();
+        let first = init_repo_with_root_commit(tmp.path());
+        let db_path = tmp.path().join("frecency.db");
+        {
+            let store = FrecencyStore::open(&db_path).unwrap();
+            for _ in 0..10 {
+                store.bump(&[PathBuf::from("src/a.rs")], 0).unwrap();
+            }
+            store
+                .reset_or_halve_on_head_change(None, &first, None)
+                .unwrap();
+        }
+        let _new_head = make_commits(tmp.path(), 100, "advance");
+        run_frecency_init(&db_path, tmp.path()).expect("init ok");
+        let store = FrecencyStore::open(&db_path).unwrap();
+        assert_eq!(
+            store.score(Path::new("src/a.rs"), 0).unwrap(),
+            5.0,
+            "100 commits falls into the 50..=500 band and must halve"
+        );
+    }
+
+    #[test]
+    fn run_frecency_init_zeros_above_500_commits() {
+        let tmp = TempDir::new().unwrap();
+        let first = init_repo_with_root_commit(tmp.path());
+        let db_path = tmp.path().join("frecency.db");
+        {
+            let store = FrecencyStore::open(&db_path).unwrap();
+            for _ in 0..10 {
+                store.bump(&[PathBuf::from("src/a.rs")], 0).unwrap();
+            }
+            store
+                .reset_or_halve_on_head_change(None, &first, None)
+                .unwrap();
+        }
+        let _new_head = make_commits(tmp.path(), 501, "advance");
+        run_frecency_init(&db_path, tmp.path()).expect("init ok");
+        let store = FrecencyStore::open(&db_path).unwrap();
+        assert_eq!(
+            store.score(Path::new("src/a.rs"), 0).unwrap(),
+            0.0,
+            ">500 commits must zero hit counts"
+        );
+    }
+
+    #[test]
+    fn init_frecency_store_with_flag_on_wires_boot_policy() {
+        let _g = FRECENCY_ENV_LOCK.lock().unwrap();
+        let tmp = TempDir::new().unwrap();
+        let sha = init_repo_with_root_commit(tmp.path());
+        // SAFETY: test holds FRECENCY_ENV_LOCK; tests are --test-threads=1.
+        unsafe { std::env::set_var(FRECENCY_FLAG_ENV, "1") };
         init_frecency_store(tmp.path());
+        clear_frecency_flag();
+        let db_path = tmp.path().join(paths::SYMFORGE_FRECENCY_DB_PATH);
         assert!(
-            !tmp.path().join(paths::SYMFORGE_DIR_NAME).exists(),
-            "placeholder init must not create the .symforge directory"
+            db_path.exists(),
+            "flag=1 init must create the frecency database"
+        );
+        let store = FrecencyStore::open(&db_path).unwrap();
+        assert_eq!(
+            store.last_head().unwrap().as_deref(),
+            Some(sha.as_str()),
+            "flag=1 init must record current HEAD"
         );
     }
 
