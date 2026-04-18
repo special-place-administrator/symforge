@@ -1,5 +1,18 @@
 # Changelog
 
+## [7.5.2](https://github.com/special-place-administrator/symforge/compare/v7.5.1...v7.5.2) (2026-04-18)
+
+
+### Bug Fixes
+
+* Address v7.5 tool-review bugs (repo-map leak, impact wording, type-scope callers, doc preservation, structural search diagnostics) ([f7129c8](https://github.com/special-place-administrator/symforge/commit/f7129c8d4fb7d72c73f696d595309fa7ce92a49d))
+* **impact:** honest wording when watcher purged the index before call ([c940201](https://github.com/special-place-administrator/symforge/commit/c94020165d49906863306872859c95be9de0bf3c))
+* **impact:** type-scope 'Callers to review' for methods in impl blocks ([762645a](https://github.com/special-place-administrator/symforge/commit/762645a105e1413304a8480c5c5c870b31fb9cab))
+* **replace-symbol-body:** preserve attached docs unless new_body supplies its own ([b9ad6df](https://github.com/special-place-administrator/symforge/commit/b9ad6dfbc8d64435f1b55eba980934acd7ba0d96))
+* **repo-map:** exclude foreign-workspace paths from Key types ([319c2bd](https://github.com/special-place-administrator/symforge/commit/319c2bd483ae53548d067c1d060e7586f570b61e))
+* **structural-search:** distinguish invalid pattern from zero matches ([7f9bef2](https://github.com/special-place-administrator/symforge/commit/7f9bef2810b3becd07eea7d8642a29cc6097b48f))
+* **structural-search:** split pattern-invalid vs language-unsupported errors ([19b74ca](https://github.com/special-place-administrator/symforge/commit/19b74caf8f7d10e1b9501282bf212168cbe2f903))
+
 ## [7.5.1](https://github.com/special-place-administrator/symforge/compare/v7.5.0...v7.5.1) (2026-04-18)
 
 
