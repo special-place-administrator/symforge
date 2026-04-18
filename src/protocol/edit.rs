@@ -1305,7 +1305,7 @@ pub(crate) fn execute_batch_edit(
             working_directory: per_file_working_directory.as_deref(),
         };
         let abs_path = match super::edit_hooks::resolve(&hook_ctx) {
-            Ok(p) => p,
+            Ok(r) => r.target_path,
             Err(e) => return Err(format!("Path resolution error for '{path}': {e}")),
         };
         staged.push(StagedFile {
@@ -1696,7 +1696,7 @@ pub(crate) fn execute_batch_rename(
             working_directory: working_directory.as_deref(),
         };
         let abs = match super::edit_hooks::resolve(&hook_ctx) {
-            Ok(p) => p,
+            Ok(r) => r.target_path,
             Err(e) => return Err(format!("Path resolution error for '{path}': {e}")),
         };
         staged.push(StagedFile {
@@ -2075,7 +2075,7 @@ pub(crate) fn execute_batch_insert(
             working_directory: per_file_working_directory.as_deref(),
         };
         let abs_path = match super::edit_hooks::resolve(&hook_ctx) {
-            Ok(p) => p,
+            Ok(r) => r.target_path,
             Err(e) => return Err(format!("Target {path}: path resolution error: {e}")),
         };
         staged.push(StagedFile {

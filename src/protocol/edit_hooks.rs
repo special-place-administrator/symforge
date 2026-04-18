@@ -18,10 +18,12 @@
 //! Hooks are object-safe (`Box<dyn EditHook>`) so feature tentacles can register
 //! trait objects at startup.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::OnceLock;
 
 use parking_lot::RwLock;
+
+use crate::worktree::ResolvedTarget;
 
 /// Contextual information passed to every hook call.
 #[derive(Debug, Clone, Copy)]
@@ -50,10 +52,18 @@ pub struct EditContext<'a> {
 pub trait EditHook: Send + Sync {
     /// Resolve the absolute path the edit should target.
     ///
-    /// The default implementation returns `ctx.indexed_absolute_path` unchanged;
-    /// feature tentacles may redirect (e.g. to a per-working-directory worktree).
-    fn resolve_target_path(&self, ctx: &EditContext) -> Result<PathBuf, String> {
-        Ok(ctx.indexed_absolute_path.to_path_buf())
+    /// Returns a [`ResolvedTarget`] so the handler can distinguish a
+    /// pass-through (write to indexed path) from a reroute (write to a
+    /// sibling worktree). The default implementation returns
+    /// `ctx.indexed_absolute_path` with `rerouted: false`; feature
+    /// tentacles may redirect (e.g. to a per-working-directory worktree).
+    fn resolve_target_path(&self, ctx: &EditContext) -> Result<ResolvedTarget, String> {
+        let abs = ctx.indexed_absolute_path.to_path_buf();
+        Ok(ResolvedTarget {
+            target_path: abs.clone(),
+            indexed_path: abs,
+            rerouted: false,
+        })
     }
 
     /// Called after an atomic write has committed successfully.
@@ -89,7 +99,7 @@ pub fn register(hook: Box<dyn EditHook>) {
 /// Because [`DefaultEditHook`] is pre-registered and its default impl always
 /// returns `Ok`, this function only returns `Err` when a feature hook explicitly
 /// fails the resolution.
-pub fn resolve(ctx: &EditContext) -> Result<PathBuf, String> {
+pub fn resolve(ctx: &EditContext) -> Result<ResolvedTarget, String> {
     let reg = registry().read();
     // Walk hooks most-recently-registered first so feature hooks win over the default.
     if let Some(hook) = reg.iter().next_back() {
@@ -111,6 +121,7 @@ pub fn after_commit(ctx: &EditContext, resolved_path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn default_hook_returns_indexed_path_unchanged() {
@@ -123,7 +134,9 @@ mod tests {
             working_directory: None,
         };
         let resolved = DefaultEditHook.resolve_target_path(&ctx).expect("resolves");
-        assert_eq!(resolved, abs);
+        assert_eq!(resolved.target_path, abs);
+        assert_eq!(resolved.indexed_path, abs);
+        assert!(!resolved.rerouted);
     }
 
     #[test]
@@ -154,7 +167,8 @@ mod tests {
             working_directory: None,
         };
         let resolved = resolve(&ctx).expect("resolves");
-        assert_eq!(resolved, abs);
+        assert_eq!(resolved.target_path, abs);
+        assert!(!resolved.rerouted);
     }
 
     #[test]
@@ -174,6 +188,7 @@ mod tests {
             working_directory: Some(&cwd),
         };
         let resolved = DefaultEditHook.resolve_target_path(&ctx).expect("resolves");
-        assert_eq!(resolved, abs);
+        assert_eq!(resolved.target_path, abs);
+        assert!(!resolved.rerouted);
     }
 }

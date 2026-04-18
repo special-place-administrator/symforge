@@ -6250,10 +6250,12 @@ impl SymForgeServer {
                 .as_deref()
                 .map(std::path::Path::new),
         };
-        let resolved_path = match edit_hooks::resolve(&hook_ctx) {
-            Ok(p) => p,
+        let resolved_target = match edit_hooks::resolve(&hook_ctx) {
+            Ok(r) => r,
             Err(e) => return format!("Error: {e}"),
         };
+        let resolved_path = resolved_target.target_path.clone();
+        let working_directory_supplied = params.0.working_directory.is_some();
         let file = {
             let guard = self.index.read();
             loading_guard!(guard);
@@ -6365,6 +6367,10 @@ impl SymForgeServer {
             &params.0.name,
             &warnings,
         ));
+        result.push_str(&edit_format::format_reroute_suffix(
+            working_directory_supplied,
+            &resolved_target,
+        ));
         result
     }
 
@@ -6411,10 +6417,12 @@ impl SymForgeServer {
                 .as_deref()
                 .map(std::path::Path::new),
         };
-        let resolved_path = match edit_hooks::resolve(&hook_ctx) {
-            Ok(p) => p,
+        let resolved_target = match edit_hooks::resolve(&hook_ctx) {
+            Ok(r) => r,
             Err(e) => return format!("Error: {e}"),
         };
+        let resolved_path = resolved_target.target_path.clone();
+        let working_directory_supplied = params.0.working_directory.is_some();
         let file = {
             let guard = self.index.read();
             loading_guard!(guard);
@@ -6477,7 +6485,7 @@ impl SymForgeServer {
             file.language.clone(),
         );
         edit_hooks::after_commit(&hook_ctx, &resolved_path);
-        format!(
+        let mut out = format!(
             "{}\n{}",
             edit_format::format_edit_envelope(
                 edit_format::EditSafetyMode::StructuralEditSafe,
@@ -6491,7 +6499,12 @@ impl SymForgeServer {
                 position,
                 params.0.content.len(),
             )
-        )
+        );
+        out.push_str(&edit_format::format_reroute_suffix(
+            working_directory_supplied,
+            &resolved_target,
+        ));
+        out
     }
 
     /// Remove a symbol's entire definition and clean up surrounding blank lines.
@@ -6532,10 +6545,12 @@ impl SymForgeServer {
                 .as_deref()
                 .map(std::path::Path::new),
         };
-        let resolved_path = match edit_hooks::resolve(&hook_ctx) {
-            Ok(p) => p,
+        let resolved_target = match edit_hooks::resolve(&hook_ctx) {
+            Ok(r) => r,
             Err(e) => return format!("Error: {e}"),
         };
+        let resolved_path = resolved_target.target_path.clone();
+        let working_directory_supplied = params.0.working_directory.is_some();
         let file = {
             let guard = self.index.read();
             loading_guard!(guard);
@@ -6593,7 +6608,7 @@ impl SymForgeServer {
             file.language.clone(),
         );
         edit_hooks::after_commit(&hook_ctx, &resolved_path);
-        format!(
+        let mut out = format!(
             "{}\n{}",
             edit_format::format_edit_envelope(
                 edit_format::EditSafetyMode::StructuralEditSafe,
@@ -6607,7 +6622,12 @@ impl SymForgeServer {
                 &sym.kind.to_string(),
                 deleted_bytes,
             )
-        )
+        );
+        out.push_str(&edit_format::format_reroute_suffix(
+            working_directory_supplied,
+            &resolved_target,
+        ));
+        out
     }
 
     /// Find-and-replace scoped to a symbol's byte range — won't affect code outside it. The LLM
@@ -6650,10 +6670,12 @@ impl SymForgeServer {
                 .as_deref()
                 .map(std::path::Path::new),
         };
-        let resolved_path = match edit_hooks::resolve(&hook_ctx) {
-            Ok(p) => p,
+        let resolved_target = match edit_hooks::resolve(&hook_ctx) {
+            Ok(r) => r,
             Err(e) => return format!("Error: {e}"),
         };
+        let resolved_path = resolved_target.target_path.clone();
+        let working_directory_supplied = params.0.working_directory.is_some();
         let file = {
             let guard = self.index.read();
             loading_guard!(guard);
@@ -6815,7 +6837,7 @@ impl SymForgeServer {
             file.language.clone(),
         );
         edit_hooks::after_commit(&hook_ctx, &resolved_path);
-        format!(
+        let mut out = format!(
             "{}\n{}",
             edit_format::format_edit_envelope(
                 edit_format::EditSafetyMode::TextEditSafe,
@@ -6830,7 +6852,12 @@ impl SymForgeServer {
                 old_sym_bytes,
                 new_body.len(),
             )
-        )
+        );
+        out.push_str(&edit_format::format_reroute_suffix(
+            working_directory_supplied,
+            &resolved_target,
+        ));
+        out
     }
 
     // ── Tier 2: Batch edit tools ──────────────────────────────────────────

@@ -39,9 +39,6 @@ use tempfile::TempDir;
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
-/// Panic message used by placeholder tests. Coordinator / grep friendly.
-const PENDING_MSG: &str = "pending worktree-awareness implementation";
-
 /// The 7 edit tools listed in spec §2.1.
 const EDIT_TOOLS: &[&str] = &[
     "edit_within_symbol",
@@ -233,21 +230,108 @@ fn assert_not_contains(result: &str, needle: &str) {
 /// AC1: Every write tool listed in spec §2.1 accepts a `working_directory`
 /// parameter.
 ///
-/// Placeholder per todo item 1 wording ("todo!() or explicit
-/// panic!"). Per-tool reroute coverage is driven in implementation task 3
-/// — we enumerate the tool list here so the set is locked at the TDD
-/// surface and any new edit tool added without `working_directory` support
-/// is impossible to miss.
+/// Drives each tool through `dispatch_tool_for_tests` with a payload that
+/// includes `working_directory`, and asserts the dispatcher does not
+/// reject the param at the input-struct layer (`"invalid tool parameters"`
+/// would indicate missing `#[serde(default)] pub working_directory` on
+/// the tool's input struct).
 #[tokio::test]
 async fn ac1_all_seven_edit_tools_accept_working_directory_param() {
     enable_feature_flag();
     // Lock the tool set in one place; future edit tools must be added here
     // before the file is re-landed.
     assert_eq!(EDIT_TOOLS.len(), 7, "spec §2.1 lists exactly 7 write tools");
-    panic!(
-        "{PENDING_MSG}: AC1 — plumb `working_directory` through {:?}",
-        EDIT_TOOLS
+
+    let fx = WorktreeFixture::new(&[("src/lib.rs", HELLO_RS)]);
+    let wt_arg = fx.worktree_root.to_str().unwrap().to_string();
+
+    // Minimum payload per tool that (a) parses, (b) includes
+    // `working_directory`. Most tools will still return a downstream
+    // error because the dummy payloads skip real arguments, but that is
+    // fine — AC1 only asserts input-struct acceptance, not happy-path
+    // success.
+    let payloads: Vec<(&str, Value)> = vec![
+        (
+            "edit_within_symbol",
+            json!({
+                "path": "src/lib.rs",
+                "name": "hello",
+                "old_text": "hello",
+                "new_text": "HELLO",
+                "working_directory": wt_arg.clone(),
+            }),
+        ),
+        (
+            "replace_symbol_body",
+            json!({
+                "path": "src/lib.rs",
+                "name": "hello",
+                "new_body": "fn hello() {}",
+                "working_directory": wt_arg.clone(),
+            }),
+        ),
+        (
+            "insert_symbol",
+            json!({
+                "path": "src/lib.rs",
+                "name": "hello",
+                "content": "fn added() {}",
+                "working_directory": wt_arg.clone(),
+            }),
+        ),
+        (
+            "delete_symbol",
+            json!({
+                "path": "src/lib.rs",
+                "name": "hello",
+                "working_directory": wt_arg.clone(),
+            }),
+        ),
+        (
+            "batch_edit",
+            json!({
+                "edits": [],
+                "working_directory": wt_arg.clone(),
+            }),
+        ),
+        (
+            "batch_insert",
+            json!({
+                "content": "fn x() {}",
+                "position": "after",
+                "targets": [],
+                "working_directory": wt_arg.clone(),
+            }),
+        ),
+        (
+            "batch_rename",
+            json!({
+                "path": "src/lib.rs",
+                "name": "hello",
+                "new_name": "greet",
+                "working_directory": wt_arg.clone(),
+            }),
+        ),
+    ];
+
+    assert_eq!(
+        payloads.len(),
+        EDIT_TOOLS.len(),
+        "AC1 payload table must cover every tool in EDIT_TOOLS"
     );
+
+    for (tool, params) in payloads {
+        let result = call(&fx.server, tool, params).await;
+        assert!(
+            !result.contains("invalid tool parameters"),
+            "tool `{tool}` rejected the `working_directory` param; \
+             response was:\n{result}"
+        );
+        assert!(
+            !result.starts_with("dispatch_tool_for_tests: unknown tool"),
+            "tool `{tool}` is not wired into dispatch_tool_for_tests: {result}"
+        );
+    }
 }
 
 /// AC2: When `working_directory` is omitted, behavior is byte-identical to

@@ -79,6 +79,7 @@ impl SymForgeServer {
         repo_root: Option<PathBuf>,
         token_stats: Option<Arc<TokenStats>>,
     ) -> Self {
+        crate::worktree::register_if_feature_enabled();
         Self {
             index,
             tool_router: Self::tool_router(),
@@ -96,6 +97,7 @@ impl SymForgeServer {
     pub fn new_daemon_proxy(daemon_client: crate::daemon::DaemonSessionClient) -> Self {
         use crate::watcher::WatcherInfo;
 
+        crate::worktree::register_if_feature_enabled();
         let project_name = daemon_client.project_name().to_string();
         let repo_root = daemon_client.project_root().map(|p| p.to_path_buf());
         Self {

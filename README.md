@@ -5,7 +5,7 @@ A code-native MCP server that gives AI coding agents structured, symbol-aware na
 Works with MCP-compatible clients including Claude Code, Claude Desktop, Codex, Gemini CLI, VS Code MCP, Kilo Code, Roo Code, Cline, Continue, JetBrains plugins, and custom agents.
 
 > [!IMPORTANT]
-> **Rust-native** · **31 tools** · **19 source languages** · **5 config formats** · **6 prompts** · **Built-in resources**
+> **Rust-native** · **30 tools** · **19 source languages** · **5 config formats** · **6 prompts** · **Built-in resources**
 >
 > **Use SymForge first** for source-code reads, search, repo orientation, symbol tracing, and structural edits.
 > **Use raw file reads** for docs and config when exact wording is the point.
@@ -187,6 +187,17 @@ SymForge is organized around a tree-sitter index, a set of query layers over tha
 Two trait-based registries let feature code plug into the shared edit and ranker paths without amending the handlers themselves.
 
 **`EditHook`** wraps the per-edit lifecycle for the seven edit tools (`replace_symbol_body`, `edit_within_symbol`, `insert_symbol`, `delete_symbol`, `batch_edit`, `batch_insert`, `batch_rename`). Implementations register at startup; the handlers delegate to the registry to resolve the target path before writing and to run bookkeeping after the edit commits. For example, a worktree-aware feature registers a hook that rewrites a symbol's indexed path onto the active worktree before the write lands.
+
+Each of the seven edit tools accepts an optional `working_directory` parameter pointing at a `git worktree` sibling of the indexed repo. When supplied, SymForge reroutes the write into that worktree and includes `rerouted: true`, `wrote_to:`, and `indexed_path:` lines in the response so callers can verify the target. Set `SYMFORGE_WORKTREE_AWARE=1` to enable this routing. Example:
+
+```json
+{
+  "path": "src/lib.rs",
+  "name": "hello",
+  "new_body": "fn hello() { println!(\"hi\"); }",
+  "working_directory": "/abs/path/to/sibling/worktree"
+}
+```
 
 **`RankSignal`** wraps `search_files` scoring contributions. Each signal carries a name, a weight, and a `score()` function, and the ranker combines registered signals into a weighted sum. The current path-match and co-change signals ship as default registrations; additional signals — frecency, for example — register at startup and join the fusion without touching the handler or the other signals.
 

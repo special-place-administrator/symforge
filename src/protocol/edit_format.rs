@@ -160,6 +160,29 @@ pub(crate) fn format_stale_warnings(
     out
 }
 
+/// Format the worktree-routing suffix appended to edit responses when the
+/// caller supplied `working_directory`. Produces three lines
+/// (`rerouted: <bool>`, `wrote_to: <abs>`, `indexed_path: <abs>`) so agents
+/// can verify the actual write target; see
+/// `docs/decisions/0010-worktree-working-directory.md` and
+/// `tests/worktree_awareness.rs`. Returns an empty string when
+/// `working_directory` was omitted, preserving byte-identical output for
+/// today's callers.
+pub(crate) fn format_reroute_suffix(
+    working_directory_supplied: bool,
+    resolved: &crate::worktree::ResolvedTarget,
+) -> String {
+    if !working_directory_supplied {
+        return String::new();
+    }
+    format!(
+        "\nrerouted: {}\nwrote_to: {}\nindexed_path: {}",
+        resolved.rerouted,
+        resolved.target_path.display(),
+        resolved.indexed_path.display(),
+    )
+}
+
 /// Format a batch edit summary.
 pub(crate) fn format_batch_summary(results: &[String], file_count: usize) -> String {
     let mut out = format!("{} edit(s) across {} file(s):\n", results.len(), file_count);

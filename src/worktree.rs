@@ -18,7 +18,12 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 use std::time::Instant;
+
+use parking_lot::Mutex;
+
+use crate::protocol::edit_hooks::{EditContext, EditHook};
 
 /// A worktree known to be associated with the indexed root.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,10 +46,15 @@ pub struct ResolvedTarget {
 }
 
 /// Errors produced by worktree-aware resolution.
+///
+/// `Display` intentionally leads with the variant name so MCP tool output
+/// exposes a stable, grep-friendly error tag (see
+/// `tests/worktree_awareness.rs` AC4/AC6). Hints follow as plain prose so
+/// callers can act without looking up docs.
 #[derive(Debug, thiserror::Error)]
 pub enum WorktreeError {
     #[error(
-        "working_directory `{}` is not a recognized worktree of `{}` — {hint}",
+        "WorkingDirectoryNotARecognizedWorktree: working_directory `{}` is not a recognized worktree of `{}` — {hint}",
         cwd.display(), indexed_root.display()
     )]
     WorkingDirectoryNotARecognizedWorktree {
@@ -53,11 +63,11 @@ pub enum WorktreeError {
         hint: String,
     },
 
-    #[error("target file `{}` does not exist — {hint}", path.display())]
+    #[error("TargetFileMissing: target file `{}` does not exist — {hint}", path.display())]
     TargetFileMissing { path: PathBuf, hint: String },
 
     #[error(
-        "indexed path `{}` is not under the indexed root `{}`",
+        "PathOutsideIndexedRoot: indexed path `{}` is not under the indexed root `{}`",
         path.display(), indexed_root.display()
     )]
     PathOutsideIndexedRoot {
@@ -190,7 +200,22 @@ pub fn resolve_target_path(
         });
     };
 
-    let canonical_wd = canonicalize(raw_wd)?;
+    // Canonicalize fails with NotFound when the supplied working_directory
+    // doesn't exist on disk (e.g. a typo or a yet-to-be-created worktree
+    // path). Treat that as "not a recognized worktree" rather than a raw IO
+    // error — it's the same user-facing condition and the tests
+    // (`matrix_cache_refresh_newly_created_worktree_accepted`) assert this.
+    let canonical_wd = match canonicalize(raw_wd) {
+        Ok(p) => p,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(WorktreeError::WorkingDirectoryNotARecognizedWorktree {
+                cwd: raw_wd.to_path_buf(),
+                indexed_root: canonical_indexed_root,
+                hint: "pass a path that is the root of a `git worktree list` entry, or omit to write to the indexed root".to_string(),
+            });
+        }
+        Err(e) => return Err(WorktreeError::Io(e)),
+    };
     if canonical_wd == canonical_indexed_root {
         return Ok(ResolvedTarget {
             target_path: canonical_indexed_abs.clone(),
@@ -273,6 +298,56 @@ fn parse_porcelain(input: &str) -> Vec<PathBuf> {
         }
     }
     out
+}
+
+/// [`EditHook`] implementation that reroutes edits into a sibling `git
+/// worktree` when the caller supplies `working_directory`. Holds one
+/// shared [`WorktreeCache`] so repeated calls in the same session avoid
+/// re-shelling out to `git worktree list`.
+pub struct WorktreeAwareEditHook {
+    cache: Mutex<WorktreeCache>,
+}
+
+impl WorktreeAwareEditHook {
+    pub fn new() -> Self {
+        Self {
+            cache: Mutex::new(WorktreeCache::new()),
+        }
+    }
+}
+
+impl Default for WorktreeAwareEditHook {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl EditHook for WorktreeAwareEditHook {
+    fn resolve_target_path(&self, ctx: &EditContext) -> Result<ResolvedTarget, String> {
+        let mut cache = self.cache.lock();
+        resolve_target_path(
+            ctx.indexed_absolute_path,
+            ctx.repo_root,
+            ctx.working_directory,
+            &mut cache,
+        )
+        .map_err(|e| e.to_string())
+    }
+}
+
+/// Install [`WorktreeAwareEditHook`] on the process-wide edit-hook
+/// registry, exactly once. Gated by `SYMFORGE_WORKTREE_AWARE=1`; a
+/// missing or unset flag is a no-op so today's behaviour is preserved.
+///
+/// Safe to call repeatedly — the first caller registers the hook and
+/// every subsequent call short-circuits via the internal [`OnceLock`].
+pub fn register_if_feature_enabled() {
+    static REGISTERED: OnceLock<()> = OnceLock::new();
+    REGISTERED.get_or_init(|| {
+        if std::env::var("SYMFORGE_WORKTREE_AWARE").ok().as_deref() == Some("1") {
+            crate::protocol::edit_hooks::register(Box::new(WorktreeAwareEditHook::new()));
+        }
+    });
 }
 
 #[cfg(test)]
