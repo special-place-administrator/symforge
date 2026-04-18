@@ -6244,6 +6244,11 @@ impl SymForgeServer {
             relative_path: &params.0.path,
             indexed_absolute_path: &abs_path,
             repo_root: &repo_root,
+            working_directory: params
+                .0
+                .working_directory
+                .as_deref()
+                .map(std::path::Path::new),
         };
         let resolved_path = match edit_hooks::resolve(&hook_ctx) {
             Ok(p) => p,
@@ -6400,6 +6405,11 @@ impl SymForgeServer {
             relative_path: &params.0.path,
             indexed_absolute_path: &abs_path,
             repo_root: &repo_root,
+            working_directory: params
+                .0
+                .working_directory
+                .as_deref()
+                .map(std::path::Path::new),
         };
         let resolved_path = match edit_hooks::resolve(&hook_ctx) {
             Ok(p) => p,
@@ -6516,6 +6526,11 @@ impl SymForgeServer {
             relative_path: &params.0.path,
             indexed_absolute_path: &abs_path,
             repo_root: &repo_root,
+            working_directory: params
+                .0
+                .working_directory
+                .as_deref()
+                .map(std::path::Path::new),
         };
         let resolved_path = match edit_hooks::resolve(&hook_ctx) {
             Ok(p) => p,
@@ -6629,6 +6644,11 @@ impl SymForgeServer {
             relative_path: &params.0.path,
             indexed_absolute_path: &abs_path,
             repo_root: &repo_root,
+            working_directory: params
+                .0
+                .working_directory
+                .as_deref()
+                .map(std::path::Path::new),
         };
         let resolved_path = match edit_hooks::resolve(&hook_ctx) {
             Ok(p) => p,
@@ -6843,6 +6863,11 @@ impl SymForgeServer {
             &repo_root,
             &params.0.edits,
             params.0.dry_run.unwrap_or(false),
+            params
+                .0
+                .working_directory
+                .as_deref()
+                .map(std::path::Path::new),
         ) {
             Ok(summaries) => {
                 let file_count = params
@@ -12971,6 +12996,7 @@ mod tests {
             symbol_line: None,
             new_body: "fn hello() {\n    println!(\"HELLO\");\n}".to_string(),
             dry_run: None,
+            working_directory: None,
         };
         let result = server.replace_symbol_body(Parameters(input)).await;
         assert!(result.contains("replaced"), "result was: {result}");
@@ -13005,6 +13031,7 @@ mod tests {
             symbol_line: None,
             new_body: "fn inner() {\n    new_body();\n}".to_string(),
             dry_run: None,
+            working_directory: None,
         };
         let result = server.replace_symbol_body(Parameters(input)).await;
         assert!(result.contains("replaced"), "result: {result}");
@@ -13029,6 +13056,7 @@ mod tests {
             symbol_line: None,
             new_body: "fn foo() {}".to_string(),
             dry_run: None,
+            working_directory: None,
         };
         let result = server.replace_symbol_body(Parameters(input)).await;
         assert!(
@@ -13050,6 +13078,7 @@ mod tests {
             content: "fn world() {\n    println!(\"world\");\n}".to_string(),
             position: None, // defaults to "after"
             dry_run: None,
+            working_directory: None,
         };
         let result = server.insert_symbol(Parameters(input)).await;
         assert!(result.contains("inserted"), "result: {result}");
@@ -13080,6 +13109,7 @@ mod tests {
             content: "fn hello() {\n    println!(\"hello\");\n}".to_string(),
             position: Some("before".to_string()),
             dry_run: None,
+            working_directory: None,
         };
         let result = server.insert_symbol(Parameters(input)).await;
         assert!(result.contains("inserted"), "result: {result}");
@@ -13102,6 +13132,7 @@ mod tests {
             kind: None,
             symbol_line: None,
             dry_run: None,
+            working_directory: None,
         };
         let result = server.delete_symbol(Parameters(input)).await;
         assert!(result.contains("deleted"), "result: {result}");
@@ -13174,6 +13205,7 @@ mod tests {
             new_text: "\"HELLO\"".to_string(),
             replace_all: false,
             dry_run: None,
+            working_directory: None,
         };
         let result = server.edit_within_symbol(Parameters(input)).await;
         assert!(result.contains("edited within"), "result: {result}");
@@ -13212,6 +13244,7 @@ mod tests {
             symbol_line: None,
             new_body: "fn hello() {\n    println!(\"new body\");\n}".to_string(),
             dry_run: Some(true),
+            working_directory: None,
         };
         let result = server.replace_symbol_body(Parameters(input)).await;
         assert!(result.contains("Source authority: disk-refreshed"));
@@ -13238,6 +13271,7 @@ mod tests {
             new_text: "replacement".to_string(),
             replace_all: false,
             dry_run: None,
+            working_directory: None,
         };
         let result = server.edit_within_symbol(Parameters(input)).await;
         assert!(result.contains("not found within"), "result: {result}");
@@ -13256,6 +13290,7 @@ mod tests {
                 symbol_line: None,
                 new_body: "fn foo() { new }".to_string(),
                 dry_run: Some(true),
+                working_directory: None,
             }))
             .await;
 
@@ -13286,6 +13321,7 @@ mod tests {
                 content: "fn new_fn() {}".to_string(),
                 position: Some("after".to_string()),
                 dry_run: Some(true),
+                working_directory: None,
             }))
             .await;
 
@@ -13314,6 +13350,7 @@ mod tests {
                 kind: None,
                 symbol_line: None,
                 dry_run: Some(true),
+                working_directory: None,
             }))
             .await;
 
@@ -13345,6 +13382,7 @@ mod tests {
                 new_text: "new_text".to_string(),
                 replace_all: false,
                 dry_run: Some(true),
+                working_directory: None,
             }))
             .await;
 
@@ -13399,6 +13437,7 @@ mod tests {
                     operation: EditOperation::Replace {
                         new_body: "fn alpha() { new }".to_string(),
                     },
+                    working_directory: None,
                 },
                 SingleEdit {
                     path: "src/b.rs".to_string(),
@@ -13406,9 +13445,11 @@ mod tests {
                     kind: None,
                     symbol_line: None,
                     operation: EditOperation::Delete,
+                    working_directory: None,
                 },
             ],
             dry_run: Some(false),
+            working_directory: None,
         };
         let result = server.batch_edit(Parameters(input)).await;
         assert!(result.contains("2 edit(s)"), "result: {result}");
@@ -13458,8 +13499,10 @@ mod tests {
                 operation: EditOperation::Replace {
                     new_body: "fn alpha() { next }".to_string(),
                 },
+                working_directory: None,
             }],
             dry_run: Some(true),
+            working_directory: None,
         };
         let result = server.batch_edit(Parameters(input)).await;
         assert!(
@@ -13512,6 +13555,7 @@ mod tests {
             new_name: "new_name".to_string(),
             dry_run: None,
             code_only: None,
+            working_directory: None,
         };
         let result = server.batch_rename(Parameters(input)).await;
         assert!(result.contains("Renamed"), "result: {result}");
@@ -13566,6 +13610,7 @@ mod tests {
             new_name: "new_name".to_string(),
             dry_run: Some(true),
             code_only: None,
+            working_directory: None,
         };
         let result = server.batch_rename(Parameters(input)).await;
         assert!(
@@ -13622,6 +13667,7 @@ mod tests {
             new_name: "Gadget".to_string(),
             dry_run: None,
             code_only: None,
+            working_directory: None,
         };
         let result = server.batch_rename(Parameters(input)).await;
         assert!(result.contains("Renamed"), "result: {result}");
@@ -13677,6 +13723,7 @@ mod tests {
             new_name: "Gadget".to_string(),
             dry_run: None,
             code_only: None,
+            working_directory: None,
         };
         let _result = server.batch_rename(Parameters(input)).await;
 
@@ -13757,6 +13804,7 @@ mod tests {
             new_name: "NewType".to_string(),
             dry_run: None,
             code_only: None,
+            working_directory: None,
         };
         let result = server.batch_rename(Parameters(input)).await;
         assert!(result.contains("Renamed"), "result: {result}");
@@ -13810,6 +13858,7 @@ mod tests {
             new_name: "NewType".to_string(),
             dry_run: Some(true),
             code_only: None,
+            working_directory: None,
         };
         let result = server.batch_rename(Parameters(input)).await;
 
@@ -13863,6 +13912,7 @@ mod tests {
             new_name: "NewType".to_string(),
             dry_run: None,
             code_only: None,
+            working_directory: None,
         };
         let result = server.batch_rename(Parameters(input)).await;
         assert!(result.contains("Renamed"), "result: {result}");
@@ -13917,6 +13967,7 @@ mod tests {
             new_name: "Renamed".to_string(),
             dry_run: None,
             code_only: None,
+            working_directory: None,
         };
         let result = server.batch_rename(Parameters(input)).await;
         assert!(result.contains("Renamed"), "result: {result}");
@@ -13971,15 +14022,18 @@ mod tests {
                     name: "handler_a".to_string(),
                     kind: None,
                     symbol_line: None,
+                    working_directory: None,
                 },
                 InsertTarget {
                     path: "src/b.rs".to_string(),
                     name: "handler_b".to_string(),
                     kind: None,
                     symbol_line: None,
+                    working_directory: None,
                 },
             ],
             dry_run: Some(false),
+            working_directory: None,
         };
         let result = server.batch_insert(Parameters(input)).await;
         assert!(result.contains("2 edit(s)"), "result: {result}");
@@ -14028,8 +14082,10 @@ mod tests {
                 name: "handler_a".to_string(),
                 kind: None,
                 symbol_line: None,
+                working_directory: None,
             }],
             dry_run: Some(true),
+            working_directory: None,
         };
         let result = server.batch_insert(Parameters(input)).await;
         assert!(
@@ -14083,15 +14139,18 @@ mod tests {
                     name: "handler_a".to_string(),
                     kind: None,
                     symbol_line: None,
+                    working_directory: None,
                 },
                 InsertTarget {
                     path: "src/b.rs".to_string(),
                     name: "handler_b".to_string(),
                     kind: None,
                     symbol_line: None,
+                    working_directory: None,
                 },
             ],
             dry_run: Some(true),
+            working_directory: None,
         };
         let result = server.batch_insert(Parameters(input)).await;
         assert!(result.contains("[DRY RUN]"), "result: {result}");

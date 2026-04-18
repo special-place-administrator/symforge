@@ -744,6 +744,12 @@ pub struct ReplaceSymbolBodyInput {
     /// When true, validate and preview but skip the actual write.
     #[serde(default, deserialize_with = "super::tools::lenient_bool")]
     pub dry_run: Option<bool>,
+    /// Caller's working directory (absolute path). Consumed by the
+    /// `worktree-awareness` feature hook to redirect the write into the
+    /// matching git worktree. Omit to preserve today's behaviour (write to
+    /// the indexed copy).
+    #[serde(default)]
+    pub working_directory: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -765,6 +771,11 @@ pub struct InsertSymbolInput {
     /// When true, validate and preview but skip the actual write.
     #[serde(default, deserialize_with = "super::tools::lenient_bool")]
     pub dry_run: Option<bool>,
+    /// Caller's working directory (absolute path). Consumed by the
+    /// `worktree-awareness` feature hook to redirect the write into the
+    /// matching git worktree.
+    #[serde(default)]
+    pub working_directory: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -781,6 +792,11 @@ pub struct DeleteSymbolInput {
     /// When true, validate and preview but skip the actual write.
     #[serde(default, deserialize_with = "super::tools::lenient_bool")]
     pub dry_run: Option<bool>,
+    /// Caller's working directory (absolute path). Consumed by the
+    /// `worktree-awareness` feature hook to redirect the write into the
+    /// matching git worktree.
+    #[serde(default)]
+    pub working_directory: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -804,6 +820,11 @@ pub struct EditWithinSymbolInput {
     /// When true, validate and preview but skip the actual write.
     #[serde(default, deserialize_with = "super::tools::lenient_bool")]
     pub dry_run: Option<bool>,
+    /// Caller's working directory (absolute path). Consumed by the
+    /// `worktree-awareness` feature hook to redirect the write into the
+    /// matching git worktree.
+    #[serde(default)]
+    pub working_directory: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -820,6 +841,12 @@ pub struct BatchEditInput {
     /// Returns per-edit preview lines prefixed with `[DRY RUN]`.
     #[serde(default, deserialize_with = "super::tools::lenient_bool")]
     pub dry_run: Option<bool>,
+    /// Caller's working directory (absolute path). Applies to all edits in the
+    /// batch unless a per-edit override is set. Consumed by the
+    /// `worktree-awareness` feature hook to redirect writes into the matching
+    /// git worktree.
+    #[serde(default)]
+    pub working_directory: Option<String>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -835,6 +862,11 @@ pub struct SingleEdit {
     pub symbol_line: Option<u32>,
     /// The edit operation to perform.
     pub operation: EditOperation,
+    /// Per-edit caller working directory (absolute path). Overrides any
+    /// `working_directory` set on the enclosing `BatchEditInput`. Consumed by
+    /// the `worktree-awareness` feature hook.
+    #[serde(default)]
+    pub working_directory: Option<String>,
 }
 
 impl SingleEdit {
@@ -900,6 +932,7 @@ impl SingleEdit {
             kind: None,
             symbol_line: None,
             operation,
+            working_directory: None,
         })
     }
 }
@@ -922,6 +955,8 @@ impl<'de> serde::Deserialize<'de> for SingleEdit {
                 #[serde(default, deserialize_with = "super::tools::lenient_u32")]
                 symbol_line: Option<u32>,
                 operation: EditOperation,
+                #[serde(default)]
+                working_directory: Option<String>,
             },
             Str(String),
         }
@@ -933,12 +968,14 @@ impl<'de> serde::Deserialize<'de> for SingleEdit {
                 kind,
                 symbol_line,
                 operation,
+                working_directory,
             } => Ok(SingleEdit {
                 path,
                 name,
                 kind,
                 symbol_line,
                 operation,
+                working_directory,
             }),
             EditOrStr::Str(s) => {
                 // Try JSON parse first (stringified object)
@@ -970,6 +1007,10 @@ impl<'de> serde::Deserialize<'de> for SingleEdit {
                         .and_then(|op| {
                             serde_json::from_value(op.clone()).map_err(D::Error::custom)
                         })?;
+                    let working_directory = edit
+                        .get("working_directory")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
                     if path.is_empty() || name.is_empty() {
                         return Err(D::Error::custom(format!(
                             "SingleEdit stringified object must have non-empty path and name, got '{s}'"
@@ -981,6 +1022,7 @@ impl<'de> serde::Deserialize<'de> for SingleEdit {
                         kind,
                         symbol_line,
                         operation,
+                        working_directory,
                     });
                 }
 
@@ -1021,11 +1063,17 @@ pub enum EditOperation {
 /// Apply multiple symbol-addressed edits atomically.
 /// Validates all symbols first, rejects overlapping ranges, then applies in reverse-offset order.
 /// When `dry_run` is true, all validation runs identically but disk writes and index mutation are skipped.
+///
+/// `top_level_working_directory` carries `BatchEditInput.working_directory` so the
+/// `EditHook` chain can consult it for path resolution. When a per-edit
+/// `SingleEdit.working_directory` is also set, the per-edit value wins for that file
+/// (first non-`None` per file in iteration order).
 pub(crate) fn execute_batch_edit(
     index: &SharedIndex,
     repo_root: &Path,
     edits: &[SingleEdit],
     dry_run: bool,
+    top_level_working_directory: Option<&Path>,
 ) -> Result<Vec<String>, String> {
     struct ResolvedEdit {
         path: String,
@@ -1123,6 +1171,7 @@ pub(crate) fn execute_batch_edit(
         new_content: Vec<u8>,
         language: LanguageId,
         summaries: Vec<String>,
+        working_directory: Option<PathBuf>,
     }
 
     let mut staged: Vec<StagedFile> = Vec::with_capacity(by_file.len());
@@ -1241,10 +1290,19 @@ pub(crate) fn execute_batch_edit(
             Ok(p) => p,
             Err(e) => return Err(format!("Path containment error for '{path}': {e}")),
         };
+        // Per-edit override wins over the top-level batch value; first non-None
+        // per file decides (mixing per-edit values across the same file is
+        // undefined and accepted only because order is deterministic).
+        let per_file_working_directory: Option<PathBuf> = indices
+            .iter()
+            .find_map(|&ri| edits[resolved[ri].operation].working_directory.as_deref())
+            .map(PathBuf::from)
+            .or_else(|| top_level_working_directory.map(PathBuf::from));
         let hook_ctx = super::edit_hooks::EditContext {
             relative_path: path,
             indexed_absolute_path: &indexed_abs_path,
             repo_root,
+            working_directory: per_file_working_directory.as_deref(),
         };
         let abs_path = match super::edit_hooks::resolve(&hook_ctx) {
             Ok(p) => p,
@@ -1257,6 +1315,7 @@ pub(crate) fn execute_batch_edit(
             new_content: content,
             language,
             summaries: file_summaries,
+            working_directory: per_file_working_directory,
         });
     }
 
@@ -1341,6 +1400,7 @@ pub(crate) fn execute_batch_edit(
             relative_path: &staged_file.path,
             indexed_absolute_path: &staged_file.abs_path,
             repo_root,
+            working_directory: staged_file.working_directory.as_deref(),
         };
         super::edit_hooks::after_commit(&hook_ctx, &staged_file.abs_path);
         summaries.extend(staged_file.summaries.iter().cloned());
@@ -1373,6 +1433,11 @@ pub struct BatchRenameInput {
     /// Only files with a recognized programming language extension are included.
     #[serde(default, deserialize_with = "super::tools::lenient_bool")]
     pub code_only: Option<bool>,
+    /// Caller's working directory (absolute path). Applies to every file the
+    /// rename touches. Consumed by the `worktree-awareness` feature hook to
+    /// redirect writes into the matching git worktree.
+    #[serde(default)]
+    pub working_directory: Option<String>,
 }
 
 /// Validate rename ranges for a single file. Sorts descending, deduplicates exact matches,
@@ -1588,6 +1653,7 @@ pub(crate) fn execute_batch_rename(
         new_content: Vec<u8>,
         language: LanguageId,
         refs_count: usize,
+        working_directory: Option<std::path::PathBuf>,
     }
     let mut staged: Vec<StagedFile> = Vec::with_capacity(by_file.len());
     for (path, ranges) in &by_file {
@@ -1619,10 +1685,15 @@ pub(crate) fn execute_batch_rename(
             Ok(p) => p,
             Err(e) => return Err(format!("Path containment error for '{path}': {e}")),
         };
+        let working_directory: Option<std::path::PathBuf> = input
+            .working_directory
+            .as_deref()
+            .map(std::path::PathBuf::from);
         let hook_ctx = super::edit_hooks::EditContext {
             relative_path: path,
             indexed_absolute_path: &indexed_abs,
             repo_root,
+            working_directory: working_directory.as_deref(),
         };
         let abs = match super::edit_hooks::resolve(&hook_ctx) {
             Ok(p) => p,
@@ -1635,6 +1706,7 @@ pub(crate) fn execute_batch_rename(
             new_content,
             language: lang,
             refs_count: ranges.len(),
+            working_directory,
         });
     }
 
@@ -1712,6 +1784,7 @@ pub(crate) fn execute_batch_rename(
             relative_path: &sf.path,
             indexed_absolute_path: &sf.abs_path,
             repo_root,
+            working_directory: sf.working_directory.as_deref(),
         };
         super::edit_hooks::after_commit(&hook_ctx, &sf.abs_path);
         files_updated += 1;
@@ -1750,6 +1823,12 @@ pub struct BatchInsertInput {
     /// Returns per-target preview lines prefixed with `[DRY RUN]`.
     #[serde(default, deserialize_with = "super::tools::lenient_bool")]
     pub dry_run: Option<bool>,
+    /// Caller's working directory (absolute path). Applies to all targets in
+    /// the batch unless a per-target override is set. Consumed by the
+    /// `worktree-awareness` feature hook to redirect writes into the matching
+    /// git worktree.
+    #[serde(default)]
+    pub working_directory: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, JsonSchema)]
@@ -1770,6 +1849,11 @@ pub struct InsertTarget {
     /// Line number to disambiguate.
     #[serde(default, deserialize_with = "super::tools::lenient_u32")]
     pub symbol_line: Option<u32>,
+    /// Per-target caller working directory (absolute path). Overrides any
+    /// `working_directory` set on the enclosing `BatchInsertInput`. Consumed by
+    /// the `worktree-awareness` feature hook.
+    #[serde(default)]
+    pub working_directory: Option<String>,
 }
 
 /// Accept both structured `{"path":"...","name":"..."}` and shorthand `"path::name"` strings.
@@ -1789,6 +1873,8 @@ impl<'de> serde::Deserialize<'de> for InsertTarget {
                 kind: Option<String>,
                 #[serde(default, deserialize_with = "super::tools::lenient_u32")]
                 symbol_line: Option<u32>,
+                #[serde(default)]
+                working_directory: Option<String>,
             },
             Str(String),
         }
@@ -1799,11 +1885,13 @@ impl<'de> serde::Deserialize<'de> for InsertTarget {
                 name,
                 kind,
                 symbol_line,
+                working_directory,
             } => Ok(InsertTarget {
                 path,
                 name,
                 kind,
                 symbol_line,
+                working_directory,
             }),
             TargetOrStr::Str(s) => {
                 // Accept "path::name" or "path:name" shorthand
@@ -1827,6 +1915,7 @@ impl<'de> serde::Deserialize<'de> for InsertTarget {
                     name,
                     kind: None,
                     symbol_line: None,
+                    working_directory: None,
                 })
             }
         }
@@ -1909,6 +1998,7 @@ pub(crate) fn execute_batch_insert(
         new_content: Vec<u8>,
         language: LanguageId,
         summaries: Vec<String>,
+        working_directory: Option<PathBuf>,
     }
 
     let mut staged: Vec<StagedFile> = Vec::with_capacity(by_file.len());
@@ -1966,10 +2056,23 @@ pub(crate) fn execute_batch_insert(
             Ok(p) => p,
             Err(e) => return Err(format!("Target {path}: {e}")),
         };
+        // Per-target override wins over the top-level batch value; first non-None
+        // per file decides (mixing per-target values across the same file is
+        // undefined and accepted only because order is deterministic).
+        let per_file_working_directory: Option<PathBuf> = indices
+            .iter()
+            .find_map(|&ri| {
+                input.targets[resolved[ri].operation]
+                    .working_directory
+                    .as_deref()
+            })
+            .map(PathBuf::from)
+            .or_else(|| input.working_directory.as_deref().map(PathBuf::from));
         let hook_ctx = super::edit_hooks::EditContext {
             relative_path: &path,
             indexed_absolute_path: &indexed_abs_path,
             repo_root,
+            working_directory: per_file_working_directory.as_deref(),
         };
         let abs_path = match super::edit_hooks::resolve(&hook_ctx) {
             Ok(p) => p,
@@ -1982,6 +2085,7 @@ pub(crate) fn execute_batch_insert(
             new_content: content,
             language: resolved[indices[0]].language.clone(),
             summaries: file_summaries,
+            working_directory: per_file_working_directory,
         });
     }
 
@@ -2064,6 +2168,7 @@ pub(crate) fn execute_batch_insert(
             relative_path: &staged_file.path,
             indexed_absolute_path: &staged_file.abs_path,
             repo_root,
+            working_directory: staged_file.working_directory.as_deref(),
         };
         super::edit_hooks::after_commit(&hook_ctx, &staged_file.abs_path);
         summaries.extend(staged_file.summaries.iter().cloned());
@@ -3257,6 +3362,7 @@ mod tests {
                 operation: EditOperation::Replace {
                     new_body: "fn alpha() { new }".to_string(),
                 },
+                working_directory: None,
             },
             SingleEdit {
                 path: "src/b.rs".to_string(),
@@ -3264,10 +3370,11 @@ mod tests {
                 kind: None,
                 symbol_line: None,
                 operation: EditOperation::Delete,
+                working_directory: None,
             },
         ];
 
-        let summaries = execute_batch_edit(&handle, dir.path(), &edits, false).unwrap();
+        let summaries = execute_batch_edit(&handle, dir.path(), &edits, false, None).unwrap();
         assert_eq!(summaries.len(), 2);
 
         let a_content = std::fs::read_to_string(src.join("a.rs")).unwrap();
@@ -3299,6 +3406,7 @@ mod tests {
                 kind: None,
                 symbol_line: None,
                 operation: EditOperation::Delete,
+                working_directory: None,
             },
             SingleEdit {
                 path: "src/a.rs".to_string(),
@@ -3306,10 +3414,11 @@ mod tests {
                 kind: None,
                 symbol_line: None,
                 operation: EditOperation::Delete,
+                working_directory: None,
             },
         ];
 
-        let result = execute_batch_edit(&handle, dir.path(), &edits, false);
+        let result = execute_batch_edit(&handle, dir.path(), &edits, false, None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Overlapping"));
     }
@@ -3337,6 +3446,7 @@ mod tests {
                 operation: EditOperation::Replace {
                     new_body: "fn foo() { modified }".to_string(),
                 },
+                working_directory: None,
             },
             SingleEdit {
                 path: "src/a.rs".to_string(),
@@ -3344,10 +3454,11 @@ mod tests {
                 kind: None,
                 symbol_line: None,
                 operation: EditOperation::Delete,
+                working_directory: None,
             },
         ];
 
-        let result = execute_batch_edit(&handle, dir.path(), &edits, false);
+        let result = execute_batch_edit(&handle, dir.path(), &edits, false, None);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
@@ -3389,9 +3500,10 @@ mod tests {
             operation: EditOperation::Replace {
                 new_body: "fn alpha() { new }".to_string(),
             },
+            working_directory: None,
         }];
 
-        let summaries = execute_batch_edit(&handle, dir.path(), &edits, true).unwrap();
+        let summaries = execute_batch_edit(&handle, dir.path(), &edits, true, None).unwrap();
         assert_eq!(summaries.len(), 1, "expected one preview line");
         assert!(
             summaries[0].contains("[DRY RUN]"),
@@ -3430,10 +3542,11 @@ mod tests {
             kind: None,
             symbol_line: None,
             operation: EditOperation::Delete,
+            working_directory: None,
         }];
 
-        let real_err = execute_batch_edit(&handle, dir.path(), &edits, false).unwrap_err();
-        let dry_err = execute_batch_edit(&handle, dir.path(), &edits, true).unwrap_err();
+        let real_err = execute_batch_edit(&handle, dir.path(), &edits, false, None).unwrap_err();
+        let dry_err = execute_batch_edit(&handle, dir.path(), &edits, true, None).unwrap_err();
 
         assert_eq!(
             real_err, dry_err,
@@ -3470,15 +3583,18 @@ mod tests {
                     name: "handler_a".to_string(),
                     kind: None,
                     symbol_line: None,
+                    working_directory: None,
                 },
                 InsertTarget {
                     path: "src/b.rs".to_string(),
                     name: "handler_b".to_string(),
                     kind: None,
                     symbol_line: None,
+                    working_directory: None,
                 },
             ],
             dry_run: Some(false),
+            working_directory: None,
         };
 
         let summaries = execute_batch_insert(&handle, dir.path(), &input).unwrap();
@@ -3517,15 +3633,18 @@ mod tests {
                     name: "handler_a".to_string(),
                     kind: None,
                     symbol_line: None,
+                    working_directory: None,
                 },
                 InsertTarget {
                     path: "src/b.rs".to_string(),
                     name: "handler_b".to_string(),
                     kind: None,
                     symbol_line: None,
+                    working_directory: None,
                 },
             ],
             dry_run: Some(true),
+            working_directory: None,
         };
 
         let summaries = execute_batch_insert(&handle, dir.path(), &input).unwrap();
@@ -3587,21 +3706,25 @@ mod tests {
                     name: "handler_a".to_string(),
                     kind: None,
                     symbol_line: None,
+                    working_directory: None,
                 },
                 InsertTarget {
                     path: "src/sub/b.rs".to_string(),
                     name: "handler_b".to_string(),
                     kind: None,
                     symbol_line: None,
+                    working_directory: None,
                 },
                 InsertTarget {
                     path: "src/c.rs".to_string(),
                     name: "handler_c".to_string(),
                     kind: None,
                     symbol_line: None,
+                    working_directory: None,
                 },
             ],
             dry_run: Some(false),
+            working_directory: None,
         };
 
         let result = execute_batch_insert(&handle, dir.path(), &input);
@@ -3688,6 +3811,7 @@ mod tests {
                 operation: EditOperation::Replace {
                     new_body: "fn alpha() { new }".to_string(),
                 },
+                working_directory: None,
             },
             SingleEdit {
                 path: "src/sub/b.rs".to_string(),
@@ -3697,6 +3821,7 @@ mod tests {
                 operation: EditOperation::Replace {
                     new_body: "fn beta() { new }".to_string(),
                 },
+                working_directory: None,
             },
             SingleEdit {
                 path: "src/c.rs".to_string(),
@@ -3706,10 +3831,11 @@ mod tests {
                 operation: EditOperation::Replace {
                     new_body: "fn gamma() { new }".to_string(),
                 },
+                working_directory: None,
             },
         ];
 
-        let result = execute_batch_edit(&handle, dir.path(), &edits, false);
+        let result = execute_batch_edit(&handle, dir.path(), &edits, false, None);
 
         let err = result.unwrap_err();
         assert!(
@@ -3797,6 +3923,7 @@ mod tests {
             symbol_line: None,
             dry_run: Some(false),
             code_only: None,
+            working_directory: None,
         };
 
         let result = execute_batch_rename(&handle, dir.path(), &input);
@@ -4889,5 +5016,155 @@ fn uses_it() { Widget::default(); }
             err.contains("duplicate field"),
             "expected duplicate-field error, got: {err}"
         );
+    }
+
+    // ─── working_directory plumbing — round-trip tests ───────────────────
+    //
+    // The 7 edit tools and the 2 per-target sub-structs each accept an optional
+    // `working_directory` field. These tests pin the deserialization contract:
+    // (a) the field is OPTIONAL — payloads without it succeed and produce
+    //     `None`, preserving today's behaviour; and
+    // (b) when present, the value is preserved on the deserialized struct so
+    //     handlers and the `EditHook` chain can see it.
+
+    #[test]
+    fn test_replace_symbol_body_input_accepts_working_directory() {
+        let raw = r#"{
+            "path":"src/lib.rs",
+            "name":"foo",
+            "new_body":"fn foo() {}",
+            "working_directory":"/tmp/wt"
+        }"#;
+        let v: ReplaceSymbolBodyInput = serde_json::from_str(raw).unwrap();
+        assert_eq!(v.working_directory.as_deref(), Some("/tmp/wt"));
+    }
+
+    #[test]
+    fn test_replace_symbol_body_input_omitted_working_directory_is_none() {
+        let raw = r#"{"path":"src/lib.rs","name":"foo","new_body":"fn foo() {}"}"#;
+        let v: ReplaceSymbolBodyInput = serde_json::from_str(raw).unwrap();
+        assert!(v.working_directory.is_none());
+    }
+
+    #[test]
+    fn test_insert_symbol_input_accepts_working_directory() {
+        let raw = r#"{
+            "path":"src/lib.rs",
+            "name":"foo",
+            "content":"fn bar() {}",
+            "working_directory":"/tmp/wt"
+        }"#;
+        let v: InsertSymbolInput = serde_json::from_str(raw).unwrap();
+        assert_eq!(v.working_directory.as_deref(), Some("/tmp/wt"));
+    }
+
+    #[test]
+    fn test_delete_symbol_input_accepts_working_directory() {
+        let raw = r#"{"path":"src/lib.rs","name":"foo","working_directory":"/tmp/wt"}"#;
+        let v: DeleteSymbolInput = serde_json::from_str(raw).unwrap();
+        assert_eq!(v.working_directory.as_deref(), Some("/tmp/wt"));
+    }
+
+    #[test]
+    fn test_edit_within_symbol_input_accepts_working_directory() {
+        let raw = r#"{
+            "path":"src/lib.rs",
+            "name":"foo",
+            "old_text":"a",
+            "new_text":"b",
+            "working_directory":"/tmp/wt"
+        }"#;
+        let v: EditWithinSymbolInput = serde_json::from_str(raw).unwrap();
+        assert_eq!(v.working_directory.as_deref(), Some("/tmp/wt"));
+    }
+
+    #[test]
+    fn test_batch_edit_input_accepts_working_directory() {
+        let raw = r#"{
+            "edits":[{"path":"src/lib.rs","name":"foo","operation":{"type":"delete"}}],
+            "working_directory":"/tmp/wt"
+        }"#;
+        let v: BatchEditInput = serde_json::from_str(raw).unwrap();
+        assert_eq!(v.working_directory.as_deref(), Some("/tmp/wt"));
+        assert!(v.edits[0].working_directory.is_none());
+    }
+
+    #[test]
+    fn test_batch_insert_input_accepts_working_directory() {
+        let raw = r#"{
+            "content":"fn bar() {}",
+            "position":"after",
+            "targets":[{"path":"src/lib.rs","name":"foo"}],
+            "working_directory":"/tmp/wt"
+        }"#;
+        let v: BatchInsertInput = serde_json::from_str(raw).unwrap();
+        assert_eq!(v.working_directory.as_deref(), Some("/tmp/wt"));
+        assert!(v.targets[0].working_directory.is_none());
+    }
+
+    #[test]
+    fn test_batch_rename_input_accepts_working_directory() {
+        let raw = r#"{
+            "path":"src/lib.rs",
+            "name":"foo",
+            "new_name":"bar",
+            "working_directory":"/tmp/wt"
+        }"#;
+        let v: BatchRenameInput = serde_json::from_str(raw).unwrap();
+        assert_eq!(v.working_directory.as_deref(), Some("/tmp/wt"));
+    }
+
+    #[test]
+    fn test_single_edit_struct_accepts_working_directory() {
+        // SingleEdit has a custom Deserialize impl with a Struct branch — make
+        // sure the new field lives in that branch too.
+        let raw = r#"{
+            "path":"src/lib.rs",
+            "name":"foo",
+            "operation":{"type":"delete"},
+            "working_directory":"/tmp/wt-per-edit"
+        }"#;
+        let v: SingleEdit = serde_json::from_str(raw).unwrap();
+        assert_eq!(v.working_directory.as_deref(), Some("/tmp/wt-per-edit"));
+    }
+
+    #[test]
+    fn test_single_edit_stringified_object_accepts_working_directory() {
+        // The custom Deserialize also accepts a stringified JSON object — that
+        // branch hand-extracts fields, so it has its own pickup of the new one.
+        let raw = serde_json::Value::String(
+            r#"{"path":"src/lib.rs","name":"foo","operation":{"type":"delete"},"working_directory":"/tmp/wt-per-edit"}"#
+                .to_string(),
+        );
+        let v: SingleEdit = serde_json::from_value(raw).unwrap();
+        assert_eq!(v.working_directory.as_deref(), Some("/tmp/wt-per-edit"));
+    }
+
+    #[test]
+    fn test_single_edit_shorthand_leaves_working_directory_none() {
+        // The "path::name => operation body" shorthand has no syntax for
+        // per-edit working_directory — it must default to None so callers can
+        // mix shorthand entries into a batch with a top-level working_directory.
+        let raw = serde_json::Value::String("src/lib.rs::foo => delete".to_string());
+        let v: SingleEdit = serde_json::from_value(raw).unwrap();
+        assert!(v.working_directory.is_none());
+    }
+
+    #[test]
+    fn test_insert_target_struct_accepts_working_directory() {
+        let raw = serde_json::json!({
+            "path": "src/lib.rs",
+            "name": "foo",
+            "working_directory": "/tmp/wt-per-target"
+        });
+        let v: InsertTarget = serde_json::from_value(raw).unwrap();
+        assert_eq!(v.working_directory.as_deref(), Some("/tmp/wt-per-target"));
+    }
+
+    #[test]
+    fn test_insert_target_string_shorthand_leaves_working_directory_none() {
+        let raw = serde_json::Value::String("src/lib.rs::foo".to_string());
+        let v: InsertTarget = serde_json::from_value(raw).unwrap();
+        assert!(v.working_directory.is_none());
     }
 }
