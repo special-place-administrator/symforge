@@ -67,6 +67,11 @@ pub struct FrecencyStore {
 
 impl FrecencyStore {
     /// Open a file-backed store, creating the DB and parent directory if missing.
+    ///
+    /// Sets `busy_timeout = 5s` as a circuit-breaker for cross-process contention
+    /// (e.g. a parallel `symforge` subagent on the same workspace). Same-process
+    /// contention is handled at a higher layer by the cached store registry, so
+    /// in-process callers should never exercise this fallback.
     pub fn open(db_path: &Path) -> rusqlite::Result<Self> {
         if let Some(parent) = db_path.parent()
             && !parent.as_os_str().is_empty()
@@ -77,6 +82,7 @@ impl FrecencyStore {
         let conn = Connection::open(db_path)?;
         // Best-effort WAL; silently falls back on in-memory/read-only FS.
         let _ = conn.pragma_update(None, "journal_mode", "WAL");
+        let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
         let store = Self {
             conn: Mutex::new(conn),
         };
@@ -309,10 +315,11 @@ fn normalize_path(p: &Path) -> String {
 /// so the feature cannot break the tool it hooks into.
 ///
 /// `paths` is expected to already be deduplicated (batch tools collect into a
-/// `HashSet<PathBuf>` before calling). Each call opens the per-workspace
-/// SQLite store at `<repo_root>/.symforge/frecency.db`; SQLite open + a single
-/// upsert transaction is sub-millisecond, so on-demand open is fine for the
-/// non-hot bump-call path.
+/// `HashSet<PathBuf>` before calling). Looks up a process-cached
+/// [`FrecencyStore`] keyed by the per-workspace database path; same-process
+/// callers serialize through the store's internal connection mutex with no
+/// SQLite-level lock contention. Cross-process contention falls back to the
+/// 5-second `busy_timeout` set in [`FrecencyStore::open`].
 pub fn bump(repo_root: &Path, paths: &[PathBuf]) {
     if std::env::var(FRECENCY_FLAG_ENV).as_deref() != Ok("1") {
         return;
@@ -320,8 +327,7 @@ pub fn bump(repo_root: &Path, paths: &[PathBuf]) {
     if paths.is_empty() {
         return;
     }
-    let db_path = repo_root.join(crate::paths::SYMFORGE_FRECENCY_DB_PATH);
-    let Ok(store) = FrecencyStore::open(&db_path) else {
+    let Some(store) = cached_store_for(repo_root) else {
         return;
     };
     let now_ts = std::time::SystemTime::now()
@@ -329,6 +335,26 @@ pub fn bump(repo_root: &Path, paths: &[PathBuf]) {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
     let _ = store.bump(paths, now_ts);
+}
+
+/// Look up (or lazily create) the cached [`FrecencyStore`] for `repo_root`.
+///
+/// All same-process callers for a given workspace share the same `Arc` and
+/// thus the same connection mutex. Returns `None` if the store cannot be
+/// opened — bump is infallible at the call site, so we just drop the bump.
+fn cached_store_for(repo_root: &Path) -> Option<std::sync::Arc<FrecencyStore>> {
+    use std::collections::HashMap;
+    use std::sync::{Arc, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, Arc<FrecencyStore>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = repo_root.join(crate::paths::SYMFORGE_FRECENCY_DB_PATH);
+    let mut guard = cache.lock().ok()?;
+    if let Some(existing) = guard.get(&key) {
+        return Some(Arc::clone(existing));
+    }
+    let store = Arc::new(FrecencyStore::open(&key).ok()?);
+    guard.insert(key, Arc::clone(&store));
+    Some(store)
 }
 
 /// [`EditHook`] implementation that records a frecency bump after every
