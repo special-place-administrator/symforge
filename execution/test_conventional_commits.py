@@ -187,6 +187,41 @@ class ConventionalCommitTests(unittest.TestCase):
         subjects = conventional_commits.read_commit_subjects(root, "HEAD~1..HEAD")
         self.assertEqual(subjects, ["feat: second"])
 
+    def test_read_commit_subjects_skips_merge_commits(self) -> None:
+        """Merge commits with custom subjects (e.g. from parallel-agent workflows)
+        must not appear in the validation range. Locks in the `--no-merges` policy."""
+        root = self.make_repo()
+        self.git(root, "init", "-b", "main")
+        self.git(root, "config", "user.name", "Hermes")
+        self.git(root, "config", "user.email", "hermes@example.com")
+
+        (root / "README.md").write_text("base\n", encoding="utf-8")
+        self.git(root, "add", "README.md")
+        self.git(root, "commit", "-m", "fix: base")
+        base = self.git_stdout(root, "rev-parse", "HEAD")
+
+        self.git(root, "checkout", "-b", "topic")
+        (root / "topic.md").write_text("topic\n", encoding="utf-8")
+        self.git(root, "add", "topic.md")
+        self.git(root, "commit", "-m", "feat: topic work")
+
+        self.git(root, "checkout", "main")
+        self.git(
+            root,
+            "merge",
+            "--no-ff",
+            "-m",
+            "Merge swarm-1: parallel agent work",
+            "topic",
+        )
+
+        subjects = conventional_commits.read_commit_subjects(root, f"{base}..HEAD")
+        self.assertEqual(
+            subjects,
+            ["feat: topic work"],
+            "merge commit subject must be skipped; only the feat subject should remain",
+        )
+
     def test_resolve_push_range_uses_before_after_when_ancestor(self) -> None:
         root = self.make_repo()
         self.git(root, "init")

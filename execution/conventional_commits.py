@@ -77,8 +77,12 @@ def check_subjects(subjects: list[str]) -> list[str]:
 
 
 def read_commit_subjects(root: Path, rev_range: str) -> list[str]:
+    # `--no-merges` matches release-please's own behavior: merge commits are
+    # joins, not changes, so they are not bump inputs. This lets parallel-agent
+    # workflows that produce custom merge subjects (e.g. "Merge swarm-N: ...")
+    # pass validation without rewriting history.
     result = subprocess.run(
-        ["git", "log", "--format=%s", rev_range],
+        ["git", "log", "--no-merges", "--format=%s", rev_range],
         cwd=root,
         check=False,
         capture_output=True,
