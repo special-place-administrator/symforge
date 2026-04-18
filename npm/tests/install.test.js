@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const path = require("node:path");
 const winPath = path.win32;
+const posixPath = path.posix;
 
 const { createInstaller } = require("../scripts/install.js");
 
@@ -87,21 +88,27 @@ function createFs({
 function createInstallerForTest({
   fsOverrides,
   execFileSync,
+  execSync,
   sleep,
   installDir,
   env = {},
   download,
   packageVersion = "0.3.9",
+  platform = "win32",
+  arch = "x64",
+  pathMod = winPath,
+  homedir = "C:\\Users\\tester",
+  exit,
 }) {
   const logs = [];
   const errors = [];
   const processMock = {
-    platform: "win32",
-    arch: "x64",
+    platform,
+    arch,
     env,
-    exit(code) {
+    exit: exit || ((code) => {
       throw new Error(`unexpected exit ${code}`);
-    },
+    }),
   };
   const consoleMock = {
     log(message) {
@@ -114,13 +121,13 @@ function createInstallerForTest({
 
   const installer = createInstaller({
     fs: fsOverrides,
-    path: winPath,
-    os: { homedir: () => "C:\\Users\\tester" },
+    path: pathMod,
+    os: { homedir: () => homedir },
     process: processMock,
     console: consoleMock,
     packageJson: { version: packageVersion },
     installDir,
-    execSync: () => "symforge 0.3.8",
+    execSync: execSync || (() => "symforge 0.3.8"),
     execFileSync,
     sleep: sleep || (async () => {}),
     download: download || (async () => Buffer.from("new-binary")),
@@ -356,6 +363,188 @@ test("installer uses the symforge repo slug in release downloads and fallback in
   assert.match(downloadUrl, /github\.com\/special-place-administrator\/symforge\/releases\/download/);
   assert.match(errors.join("\n"), /git clone https:\/\/github\.com\/special-place-administrator\/symforge/);
   assert.match(errors.join("\n"), /cd symforge/);
+});
+
+const platformCases = [
+  {
+    label: "Windows x64",
+    platform: "win32",
+    arch: "x64",
+    artifact: "symforge-windows-x64.exe",
+    pathMod: winPath,
+    homedir: "C:\\Users\\tester",
+    home: "C:\\Users\\tester\\.symforge",
+    binName: "symforge.exe",
+    pendingName: "symforge.pending.exe",
+  },
+  {
+    label: "Linux x64",
+    platform: "linux",
+    arch: "x64",
+    artifact: "symforge-linux-x64",
+    pathMod: posixPath,
+    homedir: "/home/tester",
+    home: "/home/tester/.symforge",
+    binName: "symforge",
+    pendingName: "symforge.pending",
+  },
+  {
+    label: "macOS arm64",
+    platform: "darwin",
+    arch: "arm64",
+    artifact: "symforge-macos-arm64",
+    pathMod: posixPath,
+    homedir: "/Users/tester",
+    home: "/Users/tester/.symforge",
+    binName: "symforge",
+    pendingName: "symforge.pending",
+  },
+  {
+    label: "macOS x64",
+    platform: "darwin",
+    arch: "x64",
+    artifact: "symforge-macos-x64",
+    pathMod: posixPath,
+    homedir: "/Users/tester",
+    home: "/Users/tester/.symforge",
+    binName: "symforge",
+    pendingName: "symforge.pending",
+  },
+];
+
+for (const testCase of platformCases) {
+  test(`installer downloads ${testCase.artifact} for ${testCase.label}`, async () => {
+    const installDir = testCase.pathMod.join(testCase.home, "bin");
+    const binPath = testCase.pathMod.join(installDir, testCase.binName);
+    const pendingPath = testCase.pathMod.join(installDir, testCase.pendingName);
+    const versionPath = testCase.pathMod.join(installDir, "symforge.version");
+    const pendingVersionPath = testCase.pathMod.join(installDir, "symforge.pending.version");
+    const fsOverrides = createFs({
+      binPath,
+      pendingPath,
+      versionPath,
+      pendingVersionPath,
+      installDir,
+      hasBinary: false,
+    });
+    let downloadUrl = null;
+    const { installer } = createInstallerForTest({
+      platform: testCase.platform,
+      arch: testCase.arch,
+      pathMod: testCase.pathMod,
+      homedir: testCase.homedir,
+      fsOverrides,
+      installDir,
+      execFileSync() {
+        return "[]";
+      },
+      download: async (url) => {
+        downloadUrl = url;
+        return Buffer.from("new-binary");
+      },
+    });
+
+    await installer.main();
+
+    assert.ok(downloadUrl, "expected a download URL");
+    assert.ok(
+      downloadUrl.endsWith("/" + testCase.artifact),
+      `expected download URL to end with ${testCase.artifact}, got ${downloadUrl}`
+    );
+    assert.equal(installer.getBinaryPath(), binPath);
+    assert.equal(installer.getPendingPath(), pendingPath);
+    assert.equal(
+      fsOverrides.writes.some((entry) => entry.target === binPath),
+      true
+    );
+  });
+}
+
+test("installer uses pkill (not powershell) to stop processes on POSIX", async () => {
+  const homedir = "/home/tester";
+  const installDir = posixPath.join(homedir, ".symforge", "bin");
+  const binPath = posixPath.join(installDir, "symforge");
+  const pendingPath = posixPath.join(installDir, "symforge.pending");
+  const versionPath = posixPath.join(installDir, "symforge.version");
+  const pendingVersionPath = posixPath.join(installDir, "symforge.pending.version");
+  const fsOverrides = createFs({
+    binPath,
+    pendingPath,
+    versionPath,
+    pendingVersionPath,
+    installDir,
+    hasBinary: false,
+  });
+
+  const execSyncCalls = [];
+  const execFileSyncCalls = [];
+  const { installer } = createInstallerForTest({
+    platform: "linux",
+    arch: "x64",
+    pathMod: posixPath,
+    homedir,
+    fsOverrides,
+    installDir,
+    execSync(command) {
+      execSyncCalls.push(command);
+      return "";
+    },
+    execFileSync(command, args) {
+      execFileSyncCalls.push({ command, args });
+      return "";
+    },
+  });
+
+  await installer.main();
+
+  assert.ok(
+    execSyncCalls.some((cmd) => /pkill\s+-x\s+symforge/.test(cmd)),
+    `expected pkill invocation via execSync; got: ${JSON.stringify(execSyncCalls)}`
+  );
+  assert.equal(
+    execFileSyncCalls.some((call) => call.command === "powershell.exe"),
+    false,
+    "POSIX install must not invoke powershell.exe"
+  );
+});
+
+test("installer exits with a helpful error on unsupported platform", async () => {
+  const homedir = "/home/tester";
+  const installDir = posixPath.join(homedir, ".symforge", "bin");
+  const binPath = posixPath.join(installDir, "symforge");
+  const pendingPath = posixPath.join(installDir, "symforge.pending");
+  const versionPath = posixPath.join(installDir, "symforge.version");
+  const pendingVersionPath = posixPath.join(installDir, "symforge.pending.version");
+  const fsOverrides = createFs({
+    binPath,
+    pendingPath,
+    versionPath,
+    pendingVersionPath,
+    installDir,
+    hasBinary: false,
+  });
+  const exitCodes = [];
+  const { installer, errors } = createInstallerForTest({
+    platform: "freebsd",
+    arch: "x64",
+    pathMod: posixPath,
+    homedir,
+    fsOverrides,
+    installDir,
+    execFileSync() {
+      return "";
+    },
+    exit(code) {
+      exitCodes.push(code);
+      throw new Error(`exit_${code}`);
+    },
+  });
+
+  await assert.rejects(() => installer.main(), /exit_1/);
+  assert.deepEqual(exitCodes, [1]);
+  const errorText = errors.join("\n");
+  assert.match(errorText, /Unsupported platform: freebsd-x64/);
+  assert.match(errorText, /Build from source/);
 });
 
 test("installer skips auto-init when no home-scoped clients are detected", async () => {
