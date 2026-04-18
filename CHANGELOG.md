@@ -1,5 +1,12 @@
 # Changelog
 
+## [7.5.1](https://github.com/special-place-administrator/symforge/compare/v7.5.0...v7.5.1) (2026-04-18)
+
+
+### Bug Fixes
+
+* **live-index:** gate Windows-only indexing stack constant to #[cfg(windows)] ([fc23632](https://github.com/special-place-administrator/symforge/commit/fc23632eb4a03643f00a295abd2cf61187686be5))
+
 ## [7.5.0](https://github.com/special-place-administrator/symforge/compare/v7.4.6...v7.5.0) (2026-04-18)
 
 
