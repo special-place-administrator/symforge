@@ -2518,6 +2518,23 @@ impl SymForgeServer {
                     .collect::<Vec<_>>()
             };
 
+            // Frecency bump — batch commitment path. Collect the file path
+            // for every resolved entry (skip FileNotFound since we did not
+            // actually touch them), dedup, and emit one bump call at the end
+            // per Implementation Notes §"Bump dedup per tool invocation".
+            // No-op unless SYMFORGE_FRECENCY=1.
+            let bump_paths: Vec<PathBuf> = captured
+                .iter()
+                .filter_map(|entry| match entry {
+                    CapturedGetSymbolsEntry::SymbolLookup { file, .. }
+                    | CapturedGetSymbolsEntry::CodeSlice { file, .. } => {
+                        Some(PathBuf::from(&file.relative_path))
+                    }
+                    CapturedGetSymbolsEntry::FileNotFound { .. } => None,
+                })
+                .collect::<std::collections::HashSet<_>>()
+                .into_iter()
+                .collect();
             let output = captured
                 .into_iter()
                 .map(|entry| match entry {
@@ -2556,6 +2573,7 @@ impl SymForgeServer {
                 (output.len() * 5 / 4) as u64,
                 (output.len() / 4) as u64,
             );
+            crate::live_index::frecency::bump(&bump_paths);
             return output;
         }
 
@@ -2611,6 +2629,10 @@ impl SymForgeServer {
                     &params.0.name,
                     (output.len() / 4) as u32,
                 );
+                // Frecency bump — commitment tool, single-symbol happy path.
+                // No-op unless SYMFORGE_FRECENCY=1. See wiki
+                // `[[SymForge Frecency-Weighted File Ranking]]` §"Bump hooks".
+                crate::live_index::frecency::bump(&[PathBuf::from(&params.0.path)]);
                 output
             }
             None => {
@@ -2852,6 +2874,11 @@ impl SymForgeServer {
                 let output = format!("{body}{footer}");
                 self.session_context
                     .record_listed_file(&params.0.path, (output.len() / 4) as u32);
+                // Frecency bump — commitment tool. Reached only on the happy
+                // path after a successful outline fetch; no-op unless
+                // SYMFORGE_FRECENCY=1. See wiki `[[SymForge Frecency-Weighted
+                // File Ranking]]` §"Bump hooks".
+                crate::live_index::frecency::bump(&[PathBuf::from(&params.0.path)]);
                 output
             }
             Err(StatusCode::NOT_FOUND) => format::not_found_file(&params.0.path),
@@ -2973,6 +3000,9 @@ impl SymForgeServer {
             let output = format!("{result}{footer}");
             self.session_context
                 .record_symbol(&path, &params.0.name, (output.len() / 4) as u32);
+            // Frecency bump — commitment tool, bundle-mode happy path.
+            // No-op unless SYMFORGE_FRECENCY=1.
+            crate::live_index::frecency::bump(&[PathBuf::from(&path)]);
             return output;
         }
 
@@ -3006,6 +3036,9 @@ impl SymForgeServer {
                 &params.0.name,
                 (trace_result.len() / 4) as u32,
             );
+            // Frecency bump — commitment tool, trace-mode happy path.
+            // No-op unless SYMFORGE_FRECENCY=1.
+            crate::live_index::frecency::bump(&[PathBuf::from(&path)]);
             return format::enforce_token_budget(trace_result, params.0.max_tokens);
         }
 
@@ -3119,6 +3152,20 @@ impl SymForgeServer {
                 let saved = raw_chars.saturating_sub(output.len());
                 let footer = format::compact_savings_footer(output.len(), raw_chars);
                 self.record_read_savings((saved / 4) as u64);
+                // Frecency bump — commitment tool, default-mode happy path.
+                // Resolve the bump path the same way the output did:
+                // explicit params first, auto-resolved path as fallback.
+                // No-op unless SYMFORGE_FRECENCY=1.
+                if let Some(bump_path) = params
+                    .0
+                    .path
+                    .as_deref()
+                    .or(params.0.file.as_deref())
+                    .map(PathBuf::from)
+                    .or_else(|| resolved_path.as_deref().map(PathBuf::from))
+                {
+                    crate::live_index::frecency::bump(&[bump_path]);
+                }
                 format::enforce_token_budget(format!("{output}{footer}"), max_tokens)
             }
             Err(_) => {
@@ -3152,6 +3199,20 @@ impl SymForgeServer {
                             &params.0.name,
                             (output.len() / 4) as u32,
                         );
+                    }
+                    // Frecency bump — commitment tool, fallback-definition
+                    // branch (sidecar unavailable but we still returned a
+                    // useful symbol body to the caller). No-op unless
+                    // SYMFORGE_FRECENCY=1.
+                    if let Some(bump_path) = params
+                        .0
+                        .path
+                        .as_deref()
+                        .or(params.0.file.as_deref())
+                        .map(PathBuf::from)
+                        .or_else(|| resolved_path.as_deref().map(PathBuf::from))
+                    {
+                        crate::live_index::frecency::bump(&[bump_path]);
                     }
                     format::enforce_token_budget(output, max_tokens)
                 } else {
@@ -3359,6 +3420,10 @@ impl SymForgeServer {
             self.session_context
                 .record_listed_symbol(&hit.path, &hit.name);
         }
+        // Intentionally NO frecency bump here — search_symbols is a discovery
+        // tool. See wiki `[[SymForge Frecency-Weighted File Ranking]]`
+        // §"Search tools deliberately do NOT bump" for the positive-feedback-
+        // loop rationale.
         format::enforce_token_budget(output, params.0.max_tokens)
     }
 
@@ -3576,6 +3641,11 @@ impl SymForgeServer {
             "search_text",
             (result.len() / 4).min(u32::MAX as usize) as u32,
         );
+        // Intentionally NO frecency bump here — search_text is a discovery
+        // tool. Bumping on discovery would create a positive feedback loop
+        // (hot files get searched more, which would bump them more, which
+        // would rank them higher still). See wiki `[[SymForge Frecency-
+        // Weighted File Ranking]]` §"Search tools deliberately do NOT bump".
         format::enforce_token_budget(result, params.0.max_tokens)
     }
 
@@ -3953,6 +4023,13 @@ impl SymForgeServer {
             "search_files",
             (result.len() / 4).min(u32::MAX as usize) as u32,
         );
+        // Intentionally NO frecency bump here — search_files is a discovery
+        // tool, and bumping on discovery creates a positive feedback loop
+        // where files that rank high are searched more, which makes them
+        // rank even higher. Bumps fire only on commitment (get_file_context,
+        // get_file_content, get_symbol, get_symbol_context, and the 7 edit
+        // tools via EditHook). See wiki `[[SymForge Frecency-Weighted File
+        // Ranking]]` §"Search tools deliberately do NOT bump".
         result
     }
 
@@ -4422,6 +4499,10 @@ impl SymForgeServer {
                 );
                 self.session_context
                     .record_file(&input.path, (output.len() / 4) as u32);
+                // Frecency bump — commitment tool. Indexed-file branch;
+                // no-op unless SYMFORGE_FRECENCY=1. See wiki
+                // `[[SymForge Frecency-Weighted File Ranking]]` §"Bump hooks".
+                crate::live_index::frecency::bump(&[PathBuf::from(&input.path)]);
                 format!("{}{}", mode_annotation, output)
             }
             None => {
@@ -4440,6 +4521,10 @@ impl SymForgeServer {
                                     &content,
                                     options.content_context,
                                 );
+                                // Frecency bump — commitment tool. Raw-disk
+                                // fallback branch (non-indexed source files);
+                                // no-op unless SYMFORGE_FRECENCY=1.
+                                crate::live_index::frecency::bump(&[PathBuf::from(&input.path)]);
                                 return format!("{}{}", mode_annotation, body);
                             }
                             Err(e) => {
@@ -14861,6 +14946,322 @@ mod tests {
         assert!(
             result.contains("Scope: git diff `HEAD~1`...`HEAD`; compact output"),
             "diff_symbols should report scope: {result}"
+        );
+    }
+
+    // ── Frecency bump wiring ──────────────────────────────────────────────────
+    // These tests verify the bump/no-bump contract from
+    // `[[SymForge Frecency-Weighted File Ranking]]`. The flag `SYMFORGE_FRECENCY=1`
+    // enables recording; commitment tools (get_file_context / get_file_content /
+    // get_symbol / get_symbol_context) must bump on their happy paths, and
+    // discovery tools (search_files / search_text / search_symbols) must NEVER
+    // bump regardless of the flag — that's the positive-feedback-loop guard.
+
+    fn frecency_enabled_guard() -> EnvVarGuard {
+        EnvVarGuard::set_path("SYMFORGE_FRECENCY", Path::new("1"))
+    }
+
+    fn frecency_disabled_guard() -> EnvVarGuard {
+        // Explicitly unset (set to "0") to override any ambient value leaked
+        // from previous tests. Drop restores the pre-test value.
+        EnvVarGuard::set_path("SYMFORGE_FRECENCY", Path::new("0"))
+    }
+
+    #[tokio::test]
+    async fn test_get_file_context_bumps_when_flag_on() {
+        let sym = make_symbol("main", SymbolKind::Function, 1, 5);
+        let (key, file) = make_file("src/main.rs", b"fn main() {}", vec![sym]);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let _env = frecency_enabled_guard();
+        crate::live_index::frecency::clear_test_bumps();
+
+        let _ = server
+            .get_file_context(Parameters(super::GetFileContextInput {
+                path: "src/main.rs".to_string(),
+                max_tokens: None,
+                sections: Some(vec!["outline".to_string()]),
+                estimate: None,
+            }))
+            .await;
+
+        let bumps = crate::live_index::frecency::drain_test_bumps();
+        assert!(
+            bumps.contains(&PathBuf::from("src/main.rs")),
+            "get_file_context should bump the accessed path when flag=1, got {bumps:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_file_context_does_not_bump_when_flag_off() {
+        let sym = make_symbol("main", SymbolKind::Function, 1, 5);
+        let (key, file) = make_file("src/main.rs", b"fn main() {}", vec![sym]);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let _env = frecency_disabled_guard();
+        crate::live_index::frecency::clear_test_bumps();
+
+        let _ = server
+            .get_file_context(Parameters(super::GetFileContextInput {
+                path: "src/main.rs".to_string(),
+                max_tokens: None,
+                sections: Some(vec!["outline".to_string()]),
+                estimate: None,
+            }))
+            .await;
+
+        let bumps = crate::live_index::frecency::drain_test_bumps();
+        assert!(
+            bumps.is_empty(),
+            "get_file_context must not bump when flag is off, got {bumps:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_file_content_bumps_when_flag_on() {
+        let (key, file) = make_file("src/lib.rs", b"fn foo() {}\n", vec![]);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let _env = frecency_enabled_guard();
+        crate::live_index::frecency::clear_test_bumps();
+
+        let _ = server
+            .get_file_content(Parameters(super::GetFileContentInput {
+                path: "src/lib.rs".to_string(),
+                mode: None,
+                start_line: None,
+                end_line: None,
+                chunk_index: None,
+                max_lines: None,
+                around_line: None,
+                around_match: None,
+                match_occurrence: None,
+                around_symbol: None,
+                symbol_line: None,
+                context_lines: None,
+                show_line_numbers: None,
+                header: None,
+                estimate: None,
+            }))
+            .await;
+
+        let bumps = crate::live_index::frecency::drain_test_bumps();
+        assert!(
+            bumps.contains(&PathBuf::from("src/lib.rs")),
+            "get_file_content should bump indexed-file branch when flag=1, got {bumps:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_symbol_single_mode_bumps_when_flag_on() {
+        let sym = make_symbol("foo", SymbolKind::Function, 1, 3);
+        let (key, file) = make_file("src/lib.rs", b"fn foo() {}", vec![sym]);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let _env = frecency_enabled_guard();
+        crate::live_index::frecency::clear_test_bumps();
+
+        let _ = server
+            .get_symbol(Parameters(super::GetSymbolInput {
+                path: "src/lib.rs".to_string(),
+                name: "foo".to_string(),
+                kind: None,
+                symbol_line: None,
+                targets: None,
+                estimate: None,
+            }))
+            .await;
+
+        let bumps = crate::live_index::frecency::drain_test_bumps();
+        assert!(
+            bumps.contains(&PathBuf::from("src/lib.rs")),
+            "get_symbol single-mode should bump path when flag=1, got {bumps:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_symbol_single_mode_does_not_bump_on_not_found() {
+        let sym = make_symbol("foo", SymbolKind::Function, 1, 3);
+        let (key, file) = make_file("src/lib.rs", b"fn foo() {}", vec![sym]);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let _env = frecency_enabled_guard();
+        crate::live_index::frecency::clear_test_bumps();
+
+        let _ = server
+            .get_symbol(Parameters(super::GetSymbolInput {
+                path: "src/missing.rs".to_string(),
+                name: "foo".to_string(),
+                kind: None,
+                symbol_line: None,
+                targets: None,
+                estimate: None,
+            }))
+            .await;
+
+        let bumps = crate::live_index::frecency::drain_test_bumps();
+        assert!(
+            bumps.is_empty(),
+            "get_symbol must not bump when the file is not in the index, got {bumps:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_symbol_batch_mode_deduplicates_bumps() {
+        let sym1 = make_symbol("foo", SymbolKind::Function, 1, 3);
+        let sym2 = make_symbol("bar", SymbolKind::Function, 5, 7);
+        let (key1, file1) = make_file("src/a.rs", b"fn foo() {}\nfn bar() {}", vec![sym1, sym2]);
+        let (key2, file2) = make_file(
+            "src/b.rs",
+            b"fn baz() {}",
+            vec![make_symbol("baz", SymbolKind::Function, 1, 3)],
+        );
+        let server = make_server(make_live_index_ready(vec![(key1, file1), (key2, file2)]));
+        let _env = frecency_enabled_guard();
+        crate::live_index::frecency::clear_test_bumps();
+
+        let _ = server
+            .get_symbol(Parameters(super::GetSymbolInput {
+                path: String::new(),
+                name: String::new(),
+                kind: None,
+                symbol_line: None,
+                targets: Some(vec![
+                    super::SymbolTarget {
+                        path: "src/a.rs".to_string(),
+                        name: Some("foo".to_string()),
+                        kind: None,
+                        symbol_line: None,
+                        start_byte: None,
+                        end_byte: None,
+                    },
+                    super::SymbolTarget {
+                        path: "src/a.rs".to_string(),
+                        name: Some("bar".to_string()),
+                        kind: None,
+                        symbol_line: None,
+                        start_byte: None,
+                        end_byte: None,
+                    },
+                    super::SymbolTarget {
+                        path: "src/b.rs".to_string(),
+                        name: Some("baz".to_string()),
+                        kind: None,
+                        symbol_line: None,
+                        start_byte: None,
+                        end_byte: None,
+                    },
+                    super::SymbolTarget {
+                        path: "src/missing.rs".to_string(),
+                        name: Some("nothing".to_string()),
+                        kind: None,
+                        symbol_line: None,
+                        start_byte: None,
+                        end_byte: None,
+                    },
+                ]),
+                estimate: None,
+            }))
+            .await;
+
+        let mut bumps = crate::live_index::frecency::drain_test_bumps();
+        bumps.sort();
+        assert_eq!(
+            bumps,
+            vec![PathBuf::from("src/a.rs"), PathBuf::from("src/b.rs")],
+            "batch mode should emit one bump per unique resolved path, dropping not-found entries"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_files_never_bumps_even_when_flag_on() {
+        let server = make_server(make_live_index_ready(vec![
+            make_file("src/protocol/tools.rs", b"fn a() {}", vec![]),
+            make_file("src/sidecar/tools.rs", b"fn b() {}", vec![]),
+        ]));
+        let _env = frecency_enabled_guard();
+        crate::live_index::frecency::clear_test_bumps();
+
+        let _ = server
+            .search_files(Parameters(super::SearchFilesInput {
+                query: "tools.rs".to_string(),
+                limit: Some(20),
+                current_file: None,
+                changed_with: None,
+                resolve: None,
+                estimate: None,
+                max_tokens: None,
+            }))
+            .await;
+
+        let bumps = crate::live_index::frecency::drain_test_bumps();
+        assert!(
+            bumps.is_empty(),
+            "search_files is a discovery tool and MUST NOT bump even with flag=1, got {bumps:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_text_never_bumps_even_when_flag_on() {
+        let (key, file) = make_file("src/lib.rs", b"fn find_user() {}", vec![]);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let _env = frecency_enabled_guard();
+        crate::live_index::frecency::clear_test_bumps();
+
+        let _ = server
+            .search_text(Parameters(super::SearchTextInput {
+                query: Some("find".to_string()),
+                terms: None,
+                regex: None,
+                path_prefix: None,
+                language: None,
+                limit: None,
+                max_per_file: None,
+                include_generated: None,
+                include_tests: None,
+                glob: None,
+                exclude_glob: None,
+                context: None,
+                case_sensitive: None,
+                whole_word: None,
+                group_by: None,
+                follow_refs: None,
+                follow_refs_limit: None,
+                ranked: None,
+                estimate: None,
+                max_tokens: None,
+                structural: None,
+            }))
+            .await;
+
+        let bumps = crate::live_index::frecency::drain_test_bumps();
+        assert!(
+            bumps.is_empty(),
+            "search_text is a discovery tool and MUST NOT bump even with flag=1, got {bumps:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_symbols_never_bumps_even_when_flag_on() {
+        let sym = make_symbol("find_user", SymbolKind::Function, 1, 5);
+        let (key, file) = make_file("src/lib.rs", b"fn find_user() {}", vec![sym]);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let _env = frecency_enabled_guard();
+        crate::live_index::frecency::clear_test_bumps();
+
+        let _ = server
+            .search_symbols(Parameters(super::SearchSymbolsInput {
+                query: Some("find".to_string()),
+                kind: None,
+                path_prefix: None,
+                language: None,
+                limit: None,
+                include_generated: None,
+                include_tests: None,
+                estimate: None,
+                max_tokens: None,
+            }))
+            .await;
+
+        let bumps = crate::live_index::frecency::drain_test_bumps();
+        assert!(
+            bumps.is_empty(),
+            "search_symbols is a discovery tool and MUST NOT bump even with flag=1, got {bumps:?}"
         );
     }
 }
