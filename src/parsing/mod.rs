@@ -151,7 +151,16 @@ fn collect_first_error_node(root: &Node, source: &str) -> Option<(String, u32, u
         if node.is_error() || node.is_missing() {
             let start = node.start_position();
             let snippet_start = node.start_byte();
-            let snippet_end = node.end_byte().min(snippet_start + 40);
+            // Clamp the 40-byte snippet window down to the nearest UTF-8 char
+            // boundary — tree-sitter reports byte offsets, and `snippet_start +
+            // 40` can land mid-multibyte-char, which would panic str slicing.
+            let mut snippet_end = node
+                .end_byte()
+                .min(snippet_start + 40)
+                .min(source.len());
+            while snippet_end > snippet_start && !source.is_char_boundary(snippet_end) {
+                snippet_end -= 1;
+            }
             let snippet = &source[snippet_start..snippet_end];
             let kind = if node.is_missing() {
                 "missing"
@@ -357,6 +366,94 @@ mod tests {
     }
 
     #[test]
+    fn test_process_file_partial_parse_diagnostic_pins_location() {
+        // Tightens the ParseDiagnostic contract that validate_file_syntax relies on:
+        // a partial parse must pinpoint the actually-broken line, not just return
+        // Some(1) for everything. The source below has two clean lines followed
+        // by a broken one, so a regression that loses multi-line tracking or
+        // hardcodes line 1 would slip past the existing is_some()-only test but
+        // fail here.
+        let source = b"fn foo() {}\nfn bar() {}\nfn broken( { }";
+        let result = process_file("multi.rs", source, LanguageId::Rust);
+
+        assert!(
+            matches!(result.outcome, FileOutcome::PartialParse { .. }),
+            "source with a line-3 syntax error should be partial-parsed; got {:?}",
+            result.outcome
+        );
+
+        let diag = result
+            .parse_diagnostic
+            .expect("partial parse must attach a ParseDiagnostic");
+
+        assert_eq!(diag.parser, "tree-sitter");
+        assert!(
+            !diag.fallback_used,
+            "tree-sitter parses must not set fallback_used; that flag is reserved \
+             for config extractors that recover via a secondary parser"
+        );
+
+        // Line is 1-based and must track the actual error row. Line 3 is where
+        // `fn broken( { }` lives (bytes 24..).
+        let line = diag.line.expect("diagnostic must carry a line number");
+        assert!(
+            line >= 3,
+            "error is on line 3 of the source; diagnostic reported line {line}"
+        );
+
+        let column = diag.column.expect("diagnostic must carry a column number");
+        assert!(column >= 1, "columns are 1-based; got {column}");
+
+        // Byte span must be ordered and inside the source, and must land on
+        // line 3 (which starts at byte 24: "fn foo() {}\n" + "fn bar() {}\n").
+        // Note: tree-sitter MISSING nodes are zero-width (start == end), so we
+        // allow span_start == span_end but require start <= end.
+        let (span_start, span_end) = diag
+            .byte_span
+            .expect("diagnostic must carry a byte span for downstream editors");
+        assert!(
+            span_start <= span_end,
+            "byte_span must be ordered; got {span_start}..{span_end}"
+        );
+        assert!(
+            (span_end as usize) <= source.len(),
+            "byte_span must fit inside source (len {}); got end {span_end}",
+            source.len()
+        );
+        assert!(
+            span_start >= 24,
+            "byte_span should point at line 3 content (starts at byte 24); got {span_start}"
+        );
+
+        // location_display is what validate_file_syntax / get_file_context use
+        // to render "(line X, column Y)" in tool output. Both must flow through.
+        let loc = diag
+            .location_display()
+            .expect("location_display must render when both line and column are present");
+        assert!(
+            loc.contains(&format!("line {line}")),
+            "location_display must include the line; got {loc}"
+        );
+        assert!(
+            loc.contains(&format!("column {column}")),
+            "location_display must include the column; got {loc}"
+        );
+
+        // summary() is what feeds into FileOutcome::PartialParse { warning } —
+        // pin that the warning carries the structured location, not just the bare
+        // message, so the index-health "partial files" path shows actionable info.
+        let summary = diag.summary();
+        assert!(
+            summary.contains("tree-sitter:"),
+            "summary should prefix with parser name; got {summary}"
+        );
+        assert!(
+            summary.contains(&format!("line {line}")),
+            "summary should include location for downstream display; got {summary}"
+        );
+    }
+
+    #[test]
     fn test_process_file_computes_content_hash() {
         let source = b"fn foo() {}";
         let result = process_file("hash_test.rs", source, LanguageId::Rust);
@@ -411,5 +508,165 @@ mod tests {
             !result.symbols.is_empty(),
             "should have symbols for Ruby source"
         );
+    }
+
+    #[test]
+    fn test_process_file_is_idempotent_across_re_parses() {
+        // Incremental re-indexing in src/watcher/ assumes `process_file` is
+        // idempotent: identical bytes must yield an identical
+        // `FileProcessingResult`. A subtle non-determinism (e.g. HashMap
+        // iteration order leaking into the symbol/reference Vec ordering)
+        // would cause phantom xref churn on every touch of an unchanged file.
+        //
+        // Exercises multiple languages plus a partial-parse case so both the
+        // normal extractor path and the `collect_first_error_node` diagnostic
+        // path are pinned.
+        let rust_src: &[u8] = b"use std::collections::HashMap;\n\
+            use std::fmt::Display;\n\
+            \n\
+            pub struct Cache<K, V> {\n\
+                store: HashMap<K, V>,\n\
+            }\n\
+            \n\
+            impl<K: std::hash::Hash + Eq, V> Cache<K, V> {\n\
+                pub fn new() -> Self { Self { store: HashMap::new() } }\n\
+                pub fn insert(&mut self, k: K, v: V) -> Option<V> { self.store.insert(k, v) }\n\
+            }\n\
+            \n\
+            pub fn make() -> Cache<String, u32> { Cache::new() }\n";
+
+        let python_src: &[u8] = b"import os\n\
+            import sys\n\
+            \n\
+            class Greeter:\n\
+                def __init__(self, name):\n\
+                    self.name = name\n\
+            \n\
+                def greet(self):\n\
+                    return f\"hello {self.name}\"\n\
+            \n\
+            def main():\n\
+                Greeter(\"world\").greet()\n";
+
+        let ts_src: &[u8] = b"interface Greeter { greet(): string; }\n\
+            export class Hello implements Greeter {\n\
+                constructor(private name: string) {}\n\
+                greet() { return `hi ${this.name}`; }\n\
+            }\n";
+
+        // Syntactically broken Rust — exercises the partial-parse path so the
+        // diagnostic (line/column/byte_span) must also be deterministic.
+        let broken_src: &[u8] = b"fn broken( { }";
+
+        let cases: &[(&[u8], &str, LanguageId)] = &[
+            (rust_src, "cache.rs", LanguageId::Rust),
+            (python_src, "greet.py", LanguageId::Python),
+            (ts_src, "hello.ts", LanguageId::TypeScript),
+            (broken_src, "broken.rs", LanguageId::Rust),
+        ];
+
+        for &(source, path, ref lang) in cases {
+            let first = process_file(path, source, lang.clone());
+            let second = process_file(path, source, lang.clone());
+            let third = process_file(path, source, lang.clone());
+            assert_eq!(
+                first, second,
+                "{path}: identical bytes must yield identical FileProcessingResult (run 1 vs 2)"
+            );
+            assert_eq!(
+                second, third,
+                "{path}: identical bytes must yield identical FileProcessingResult (run 2 vs 3)"
+            );
+        }
+    }
+
+    // --- Parser resilience audit (parse_source / collect_first_error_node) ---
+    //
+    // The adversarial `process_file` test above proves the `catch_unwind` safety
+    // net holds end-to-end. The tests below probe `parse_source` directly (no
+    // catch_unwind wrapper) so a panic in the parse path fails the test instead
+    // of being silently downgraded to a `Failed` outcome.
+
+    #[test]
+    fn test_parse_source_zero_bytes() {
+        let result = parse_source("", &LanguageId::Rust)
+            .expect("parse_source must handle empty input without error");
+        let (symbols, _has_error, _diagnostic, references, alias_map) = result;
+        assert!(symbols.is_empty(), "empty source has no symbols");
+        assert!(references.is_empty(), "empty source has no references");
+        assert!(alias_map.is_empty(), "empty source has no aliases");
+    }
+
+    #[test]
+    fn test_parse_source_null_bytes_only() {
+        // 4 KiB of NUL: valid UTF-8, no valid tokens in any grammar.
+        // Exercises parse_source + collect_first_error_node (if has_error) on a
+        // file that tree-sitter must reject-as-syntax-error rather than crash.
+        let source: String = "\0".repeat(4096);
+        let result = parse_source(&source, &LanguageId::Rust)
+            .expect("parse_source must handle null-byte input without error");
+        let (_symbols, _has_error, _diagnostic, _references, _aliases) = result;
+    }
+
+    #[test]
+    fn test_parse_source_wide_multibyte_error_region_no_panic() {
+        // Regression probe for collect_first_error_node:
+        //   let snippet_end = node.end_byte().min(snippet_start + 40);
+        //   let snippet = &source[snippet_start..snippet_end];
+        //
+        // If a multi-byte UTF-8 char straddles byte `snippet_start + 40`, naive
+        // slicing panics ("byte index is not a char boundary"). 100 × '€'
+        // (3 bytes each = 300 bytes, all non-ASCII) is not a valid Rust token
+        // stream, so tree-sitter must produce one or more ERROR nodes that
+        // could span > 40 bytes of multi-byte content.
+        let source: String = "€".repeat(100);
+        parse_source(&source, &LanguageId::Rust)
+            .expect("parse_source must not panic on wide multi-byte error region");
+    }
+
+    #[test]
+    fn test_parse_source_mixed_multibyte_error_boundary_no_panic() {
+        // Similar char-boundary probe but with a grammar-level syntax error
+        // interleaved with multi-byte text — guarantees an ERROR node whose
+        // [start, start+40) window crosses a UTF-8 char boundary.
+        let mut source = String::new();
+        source.push_str("struct S { ");
+        for _ in 0..14 {
+            source.push('€');
+        }
+        source.push(' ');
+        parse_source(&source, &LanguageId::Rust)
+            .expect("parse_source must not panic when error snippet spans multi-byte chars");
+    }
+
+    #[test]
+    fn test_process_file_deeply_nested_expression_no_stack_blow() {
+        // Stack-blow probe: 10 000 nested parens. Per-language extractors walk
+        // the AST recursively (see `walk_node` → `walk_children` → `walk_node`
+        // in src/parsing/languages/rust.rs L19-50). Default Rust test-thread
+        // stacks (~2 MiB) overflow around ~6 k frames, so the probe runs on a
+        // dedicated thread with a 16 MiB stack to verify the parse logic itself
+        // terminates. A real stack-blow on this depth would abort the test
+        // process; we want to observe it here rather than in production.
+        const DEPTH: usize = 10_000;
+        let handle = std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let mut source = String::with_capacity(DEPTH * 2 + 32);
+                source.push_str("fn f() -> i32 { ");
+                for _ in 0..DEPTH {
+                    source.push('(');
+                }
+                source.push('1');
+                for _ in 0..DEPTH {
+                    source.push(')');
+                }
+                source.push_str(" }");
+                let result = process_file("deep.rs", source.as_bytes(), LanguageId::Rust);
+                assert_eq!(result.byte_len, source.len() as u64);
+                assert!(!result.content_hash.is_empty());
+            })
+            .expect("spawn stack-blow probe thread");
+        handle.join().expect("deep-nesting probe must not panic");
     }
 }
