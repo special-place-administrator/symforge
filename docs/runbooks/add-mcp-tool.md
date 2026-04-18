@@ -13,7 +13,7 @@ Add a new tool to the SymForge MCP surface. The procedure touches five files in 
 Before starting, pin these decisions — they determine which files you touch and what the tests should assert.
 
 - [ ] **Tool name** chosen. Snake_case, no `symforge_` prefix (the MCP layer adds `mcp__symforge__`). Check it is not already present in `SYMFORGE_TOOL_NAMES` (`src/cli/init.rs:262-294`).
-- [ ] **Input struct fields** defined: name, type, and whether each is required or `#[serde(default)]`. Use `lenient_bool` / `lenient_u32` / `lenient_option_vec` deserializers for numeric and boolean fields that clients may pass as strings (see existing structs in `src/protocol/tools.rs` starting at L228).
+- [ ] **Input struct fields** defined: name, type, and whether each is required or `#[serde(default)]`. Use `lenient_bool` / `lenient_u32` / `lenient_option_vec` deserializers for numeric and boolean fields that clients may pass as strings (see existing structs in `src/protocol/tools.rs` starting at L229).
 - [ ] **Read vs edit classification** decided. Read tools set `annotations(read_only_hint = true, open_world_hint = false)` on `#[tool(...)]`. Edit tools do not; they also participate in post-edit bookkeeping via the `EditHook` trait.
 - [ ] **Output shape** decided. If the output is a plain string with fixed sections, inline formatting in the handler. If it has reusable structure (multi-section summaries, token accounting, tables), add a formatter in `src/protocol/format.rs` alongside peers like `format_token_savings` (`src/protocol/format.rs:3330`).
 - [ ] **Backward-compat requirement** verified: you are adding, not replacing. If this tool ships alongside the removal of an older tool with overlapping scope, stop and follow `consolidate-mcp-tool.md` instead.
@@ -24,7 +24,7 @@ Perform all six steps in one working branch. Do not commit between steps — run
 
 ### 1. Add the input struct in `src/protocol/tools.rs`
 
-Add the struct to the "Input parameter structs" block (starts at L228). Follow the shape of `GetSymbolInput` (`src/protocol/tools.rs:232-254`):
+Add the struct to the "Input parameter structs" block (starts at L229). Follow the shape of `GetSymbolInput` (`src/protocol/tools.rs:233-255`):
 
 - `#[derive(Deserialize, Serialize, JsonSchema)]`
 - `pub struct NewToolInput { ... }`
@@ -35,7 +35,7 @@ Verify: `cargo check`.
 
 ### 2. Add the handler on `impl SymForgeServer`
 
-Add the handler inside the `#[tool_router(vis = "pub(crate)")]` impl block at `src/protocol/tools.rs:2464`. Follow the shape of `get_symbol` at L2474-2478:
+Add the handler inside the `#[tool_router(vis = "pub(crate)")]` impl block at `src/protocol/tools.rs:2465`. Follow the shape of `get_symbol` at L2475-2479:
 
 ```rust
 #[tool(
@@ -82,7 +82,7 @@ Verify: `cargo check`.
 
 ### 6. Add at least one test in `mod tests` inside `src/protocol/tools.rs`
 
-Append a `#[test]` or `#[tokio::test]` to the `mod tests` block at `src/protocol/tools.rs:6931`. Use the existing test helpers in that module (`make_symbol`, `make_symbol_with_bytes`, the `TempDir` fixtures). Assert at minimum:
+Append a `#[test]` or `#[tokio::test]` to the `mod tests` block at `src/protocol/tools.rs:7065`. Use the existing test helpers in that module (`make_symbol`, `make_symbol_with_bytes`, the `TempDir` fixtures). Assert at minimum:
 
 - The handler returns a non-empty string for a well-formed input.
 - It returns a well-formed error string (not a panic) for the one most likely malformed input — missing required field, unknown path, empty query.
