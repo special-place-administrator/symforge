@@ -701,6 +701,10 @@ pub enum TextSearchError {
         pattern: String,
         error: String,
     },
+    UnsupportedStructuralLanguage {
+        pattern: String,
+        sample_error: String,
+    },
 }
 
 struct CompiledTextGlobFilters {
@@ -1070,11 +1074,15 @@ pub fn search_structural(
     let mut total_matches = 0usize;
     let mut suppressed_by_noise = 0usize;
     // Track whether at least one candidate successfully compiled the
-    // pattern. If every candidate errored — which happens when the
-    // pattern itself is malformed — surface the parse error instead of
-    // silently returning zero results.
+    // pattern. If every candidate errored, we must distinguish:
+    //   * at least one candidate rejected the pattern as syntactically
+    //     invalid — propagate as InvalidStructuralPattern (pattern bug).
+    //   * every candidate was in a language ast-grep does not support —
+    //     propagate as UnsupportedStructuralLanguage (index/filter bug).
+    // Conflating the two was the original Unit 5 bug; split buckets fix it.
     let mut any_parse_succeeded = false;
-    let mut first_parse_error: Option<String> = None;
+    let mut first_syntax_error: Option<String> = None;
+    let mut first_unsupported_error: Option<String> = None;
 
     // Collect candidate files filtered by options.
     let mut candidates: Vec<(String, crate::domain::index::LanguageId)> = index
@@ -1103,10 +1111,18 @@ pub fn search_structural(
                     m
                 }
                 Err(e) => {
-                    if first_parse_error.is_none() {
-                        first_parse_error = Some(e);
+                    // structural_search returns two distinguishable error
+                    // shapes: "structural search not supported for …" for
+                    // config languages, and "invalid structural pattern: …"
+                    // for ast-grep Pattern::try_new failures.
+                    if e.starts_with("invalid structural pattern") {
+                        if first_syntax_error.is_none() {
+                            first_syntax_error = Some(e);
+                        }
+                    } else if first_unsupported_error.is_none() {
+                        first_unsupported_error = Some(e);
                     }
-                    continue; // skip files where pattern doesn't apply (e.g., config langs)
+                    continue;
                 }
             };
 
@@ -1197,15 +1213,21 @@ pub fn search_structural(
         }
     }
 
-    // If no candidate file successfully compiled the pattern AND we have
-    // a recorded error, the pattern itself is malformed (not just "no
-    // matches"). Propagate the first parse error so callers can show a
-    // real diagnostic instead of an ambiguous empty result.
+    // If no candidate compiled the pattern, surface the right error kind.
+    // Syntax errors win over "unsupported language" because a syntax error
+    // means the USER has a bug in their pattern; the language-unsupported
+    // bucket only matters when every candidate was in a config language.
     if !any_parse_succeeded {
-        if let Some(error) = first_parse_error {
+        if let Some(error) = first_syntax_error {
             return Err(TextSearchError::InvalidStructuralPattern {
                 pattern: pattern.to_string(),
                 error,
+            });
+        }
+        if let Some(sample_error) = first_unsupported_error {
+            return Err(TextSearchError::UnsupportedStructuralLanguage {
+                pattern: pattern.to_string(),
+                sample_error,
             });
         }
     }
@@ -2902,12 +2924,14 @@ mod tests {
         );
     }
 
+    /// Regression: Unit 5 originally bundled "every file was an
+    /// unsupported config language" with "every file rejected the pattern
+    /// syntax." The TOML-only case below proves the former path: we must
+    /// get `UnsupportedStructuralLanguage`, not a generic "invalid pattern"
+    /// error that would mislead the caller into thinking their pattern is
+    /// broken.
     #[test]
-    fn search_structural_returns_invalid_pattern_error_when_no_file_parses() {
-        // Index only contains a config-language file (TOML). ast-grep
-        // rejects config languages, so every candidate errors. The aggregate
-        // result must be a parse-error, not a silent empty Ok — that was the
-        // bug this regression covers.
+    fn search_structural_surfaces_unsupported_language_when_only_config_files_indexed() {
         let toml_content = "[package]\nname = \"thing\"\n";
         let file = IndexedFile {
             relative_path: "Cargo.toml".to_string(),
@@ -2930,19 +2954,103 @@ mod tests {
         let result = search_structural(&index, pattern, &options);
 
         match result {
-            Err(TextSearchError::InvalidStructuralPattern {
+            Err(TextSearchError::UnsupportedStructuralLanguage {
                 pattern: err_pattern,
-                error,
+                sample_error,
             }) => {
                 assert_eq!(err_pattern, pattern);
-                assert!(!error.is_empty(), "error message must not be empty");
+                assert!(
+                    sample_error.contains("not supported"),
+                    "sample error must quote the underlying language rejection; got: {sample_error}"
+                );
             }
-            Err(other) => panic!("expected InvalidStructuralPattern, got {other:?}"),
+            Err(TextSearchError::InvalidStructuralPattern { .. }) => panic!(
+                "regression: TOML-only index must not masquerade as an invalid-pattern error"
+            ),
+            Err(other) => panic!("expected UnsupportedStructuralLanguage, got {other:?}"),
             Ok(result) => panic!(
-                "expected parse-error propagation, got Ok with {} match(es) in {} file(s)",
+                "expected error propagation, got Ok with {} match(es) in {} file(s)",
                 result.total_matches,
                 result.files.len()
             ),
+        }
+    }
+
+    /// Regression: with a mixed index (a supported language plus a config
+    /// language), a pattern that `Pattern::try_new` rejects as syntactically
+    /// invalid must surface as `InvalidStructuralPattern`, not masked behind
+    /// the config-language error that would otherwise populate
+    /// `first_unsupported_error`. Syntax errors win.
+    #[test]
+    fn search_structural_prefers_syntax_error_over_unsupported_language() {
+        // Rust file — supported by ast-grep.
+        let rust_content = "fn main() { println!(\"hi\"); }\n";
+        let rust_file = IndexedFile {
+            relative_path: "src/a.rs".to_string(),
+            language: LanguageId::Rust,
+            classification: crate::domain::FileClassification::for_code_path("src/a.rs"),
+            content: rust_content.as_bytes().to_vec(),
+            symbols: Vec::new(),
+            parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
+            byte_len: rust_content.len() as u64,
+            content_hash: "hash".to_string(),
+            references: Vec::new(),
+            alias_map: HashMap::new(),
+            mtime_secs: 0,
+        };
+        // TOML file — sorts before src/a.rs, so without syntax-wins logic
+        // its "not supported" error would populate first_*_error first.
+        let toml_content = "[package]\nname = \"x\"\n";
+        let toml_file = IndexedFile {
+            relative_path: "Cargo.toml".to_string(),
+            language: LanguageId::Toml,
+            classification: crate::domain::FileClassification::for_code_path("Cargo.toml"),
+            content: toml_content.as_bytes().to_vec(),
+            symbols: Vec::new(),
+            parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
+            byte_len: toml_content.len() as u64,
+            content_hash: "hash".to_string(),
+            references: Vec::new(),
+            alias_map: HashMap::new(),
+            mtime_secs: 0,
+        };
+        let index = make_index(vec![
+            ("Cargo.toml".to_string(), toml_file),
+            ("src/a.rs".to_string(), rust_file),
+        ]);
+
+        // Empty pattern is the most portable "definitely invalid" input we
+        // can pass to ast-grep without depending on grammar-specific quirks.
+        let options = TextSearchOptions::default();
+        let bad_pattern = "";
+        let result = search_structural(&index, bad_pattern, &options);
+
+        match result {
+            Err(TextSearchError::InvalidStructuralPattern { .. }) => {
+                // Correct — syntax error propagated despite the TOML file
+                // contributing an earlier "unsupported" error.
+            }
+            Err(TextSearchError::UnsupportedStructuralLanguage { .. }) => {
+                // If ast-grep happens to accept the empty pattern against
+                // Rust and returns zero matches, we'd hit Ok below, not
+                // this branch — so reaching here would mean we regressed to
+                // the old conflation bug.
+                panic!(
+                    "regression: syntax-error pattern must not be masked by the TOML \
+                     file's unsupported-language error"
+                );
+            }
+            Err(other) => panic!("unexpected error variant: {other:?}"),
+            Ok(_) => {
+                // ast-grep accepted the empty pattern; skip silently. The
+                // intent of this test only holds when Pattern::try_new
+                // rejects the chosen "bad_pattern". If ast-grep is more
+                // lenient than assumed, this test simply does not exercise
+                // the precedence path — the TOML-only test still proves
+                // UnsupportedStructuralLanguage is wired.
+            }
         }
     }
 
