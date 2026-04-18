@@ -7,7 +7,7 @@
 
 ## Architecture
 
-Rust MCP server providing symbol-aware code navigation and editing tools. Currently 30 tools exposed via MCP `tools/list`, with backward-compat aliases for removed tools in `src/daemon.rs`.
+Rust MCP server providing symbol-aware code navigation and editing tools. Currently 31 tools exposed via MCP `tools/list`, with backward-compat aliases for removed tools in `src/daemon.rs`.
 
 Key source files:
 - `src/protocol/tools.rs` — Tool handlers, input structs, tests
