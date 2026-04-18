@@ -19,7 +19,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
-use std::time::Instant;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 
@@ -335,6 +336,13 @@ impl EditHook for WorktreeAwareEditHook {
     }
 }
 
+/// Returns `true` when the `SYMFORGE_WORKTREE_AWARE=1` feature flag is
+/// set. Reads the process environment on every call; callers should
+/// cache the result when hot-path sensitive.
+pub fn feature_flag_enabled() -> bool {
+    std::env::var("SYMFORGE_WORKTREE_AWARE").ok().as_deref() == Some("1")
+}
+
 /// Install [`WorktreeAwareEditHook`] on the process-wide edit-hook
 /// registry, exactly once. Gated by `SYMFORGE_WORKTREE_AWARE=1`; a
 /// missing or unset flag is a no-op so today's behaviour is preserved.
@@ -344,10 +352,62 @@ impl EditHook for WorktreeAwareEditHook {
 pub fn register_if_feature_enabled() {
     static REGISTERED: OnceLock<()> = OnceLock::new();
     REGISTERED.get_or_init(|| {
-        if std::env::var("SYMFORGE_WORKTREE_AWARE").ok().as_deref() == Some("1") {
+        if feature_flag_enabled() {
             crate::protocol::edit_hooks::register(Box::new(WorktreeAwareEditHook::new()));
         }
     });
+}
+
+/// Length of the `health`-visible misuse window.
+const MISUSE_WINDOW: Duration = Duration::from_secs(3600);
+
+/// Counts edit-tool calls that omitted `working_directory` while the
+/// `SYMFORGE_WORKTREE_AWARE` feature flag was on. Exposed through the
+/// `health` tool as a rolling "last hour" signal so regressions stay
+/// visible after the feature ships.
+///
+/// The window rolls lazily: [`record_missing_working_directory`] and
+/// [`current_window_count`] both reset the counter when the previous
+/// window has elapsed before reading or incrementing it.
+#[derive(Debug)]
+pub struct WorktreeMisuseCounter {
+    count: AtomicU64,
+    window_start: Mutex<Instant>,
+}
+
+impl WorktreeMisuseCounter {
+    pub fn new() -> Self {
+        Self {
+            count: AtomicU64::new(0),
+            window_start: Mutex::new(Instant::now()),
+        }
+    }
+
+    /// Bump the counter, rolling the window first if it has elapsed.
+    pub fn record_missing_working_directory(&self) {
+        self.maybe_reset_window();
+        self.count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Read the current window's count, rolling first if it has elapsed.
+    pub fn current_window_count(&self) -> u64 {
+        self.maybe_reset_window();
+        self.count.load(Ordering::Relaxed)
+    }
+
+    fn maybe_reset_window(&self) {
+        let mut start = self.window_start.lock();
+        if start.elapsed() >= MISUSE_WINDOW {
+            *start = Instant::now();
+            self.count.store(0, Ordering::Relaxed);
+        }
+    }
+}
+
+impl Default for WorktreeMisuseCounter {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]

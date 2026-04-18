@@ -735,3 +735,101 @@ async fn matrix_cache_refresh_newly_created_worktree_accepted() {
     .await;
     assert_contains(&post, "rerouted: true");
 }
+
+// ─── Item 4: health misuse counter + conventions answer ─────────────────────
+
+/// `health` surfaces a rolling "last hour" misuse counter whose value bumps
+/// each time an edit tool is called without `working_directory` while
+/// `SYMFORGE_WORKTREE_AWARE=1` is set.
+#[tokio::test]
+async fn health_surfaces_worktree_misuse_counter() {
+    enable_feature_flag();
+    let fx = IndexedOnlyFixture::new(&[("src/lib.rs", HELLO_RS)]);
+
+    // Baseline: before any edit calls, counter reads 0.
+    let baseline = call(&fx.server, "health", json!({})).await;
+    assert_contains(&baseline, "Worktree-awareness misuse");
+    assert_contains(
+        &baseline,
+        "edit tool calls without working_directory (last hour): 0",
+    );
+
+    // One edit call without `working_directory` should bump the counter.
+    let _ = call(
+        &fx.server,
+        "replace_symbol_body",
+        json!({
+            "path": "src/lib.rs",
+            "name": "hello",
+            "new_body": "fn hello() {\n    println!(\"bump\");\n}",
+        }),
+    )
+    .await;
+    let after_one = call(&fx.server, "health", json!({})).await;
+    assert_contains(
+        &after_one,
+        "edit tool calls without working_directory (last hour): 1",
+    );
+
+    // A second call using a DIFFERENT edit tool must also increment.
+    let _ = call(
+        &fx.server,
+        "edit_within_symbol",
+        json!({
+            "path": "src/lib.rs",
+            "name": "hello",
+            "old_text": "bump",
+            "new_text": "bumped",
+        }),
+    )
+    .await;
+    let after_two = call(&fx.server, "health", json!({})).await;
+    assert_contains(
+        &after_two,
+        "edit tool calls without working_directory (last hour): 2",
+    );
+}
+
+/// When `working_directory` is supplied, the misuse counter must NOT
+/// increment — the caller did the right thing.
+#[tokio::test]
+async fn health_misuse_counter_does_not_increment_when_working_directory_supplied() {
+    enable_feature_flag();
+    let fx = WorktreeFixture::new(&[("src/lib.rs", HELLO_RS)]);
+    let wt_arg = fx.worktree_root.to_str().unwrap().to_string();
+
+    // Call an edit tool WITH `working_directory`.
+    let _ = call(
+        &fx.server,
+        "replace_symbol_body",
+        json!({
+            "path": "src/lib.rs",
+            "name": "hello",
+            "new_body": "fn hello() { }",
+            "working_directory": wt_arg,
+        }),
+    )
+    .await;
+
+    let after = call(&fx.server, "health", json!({})).await;
+    assert_contains(
+        &after,
+        "edit tool calls without working_directory (last hour): 0",
+    );
+}
+
+/// `conventions` output documents the `working_directory` parameter,
+/// `SYMFORGE_WORKTREE_AWARE` flag, and points at the README — so agents
+/// that query project conventions learn how to call edit tools from
+/// inside a worktree.
+#[tokio::test]
+async fn conventions_surfaces_worktree_awareness_guidance() {
+    let fx = IndexedOnlyFixture::new(&[("src/lib.rs", HELLO_RS)]);
+
+    let output = call(&fx.server, "conventions", json!({})).await;
+
+    assert_contains(&output, "Worktree awareness");
+    assert_contains(&output, "working_directory");
+    assert_contains(&output, "SYMFORGE_WORKTREE_AWARE");
+    assert_contains(&output, "README");
+}
