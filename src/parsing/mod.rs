@@ -412,4 +412,74 @@ mod tests {
             "should have symbols for Ruby source"
         );
     }
+
+    #[test]
+    fn test_process_file_is_idempotent_across_re_parses() {
+        // Incremental re-indexing in src/watcher/ assumes `process_file` is
+        // idempotent: identical bytes must yield an identical
+        // `FileProcessingResult`. A subtle non-determinism (e.g. HashMap
+        // iteration order leaking into the symbol/reference Vec ordering)
+        // would cause phantom xref churn on every touch of an unchanged file.
+        //
+        // Exercises multiple languages plus a partial-parse case so both the
+        // normal extractor path and the `collect_first_error_node` diagnostic
+        // path are pinned.
+        let rust_src: &[u8] = b"use std::collections::HashMap;\n\
+            use std::fmt::Display;\n\
+            \n\
+            pub struct Cache<K, V> {\n\
+                store: HashMap<K, V>,\n\
+            }\n\
+            \n\
+            impl<K: std::hash::Hash + Eq, V> Cache<K, V> {\n\
+                pub fn new() -> Self { Self { store: HashMap::new() } }\n\
+                pub fn insert(&mut self, k: K, v: V) -> Option<V> { self.store.insert(k, v) }\n\
+            }\n\
+            \n\
+            pub fn make() -> Cache<String, u32> { Cache::new() }\n";
+
+        let python_src: &[u8] = b"import os\n\
+            import sys\n\
+            \n\
+            class Greeter:\n\
+                def __init__(self, name):\n\
+                    self.name = name\n\
+            \n\
+                def greet(self):\n\
+                    return f\"hello {self.name}\"\n\
+            \n\
+            def main():\n\
+                Greeter(\"world\").greet()\n";
+
+        let ts_src: &[u8] = b"interface Greeter { greet(): string; }\n\
+            export class Hello implements Greeter {\n\
+                constructor(private name: string) {}\n\
+                greet() { return `hi ${this.name}`; }\n\
+            }\n";
+
+        // Syntactically broken Rust — exercises the partial-parse path so the
+        // diagnostic (line/column/byte_span) must also be deterministic.
+        let broken_src: &[u8] = b"fn broken( { }";
+
+        let cases: &[(&[u8], &str, LanguageId)] = &[
+            (rust_src, "cache.rs", LanguageId::Rust),
+            (python_src, "greet.py", LanguageId::Python),
+            (ts_src, "hello.ts", LanguageId::TypeScript),
+            (broken_src, "broken.rs", LanguageId::Rust),
+        ];
+
+        for &(source, path, ref lang) in cases {
+            let first = process_file(path, source, lang.clone());
+            let second = process_file(path, source, lang.clone());
+            let third = process_file(path, source, lang.clone());
+            assert_eq!(
+                first, second,
+                "{path}: identical bytes must yield identical FileProcessingResult (run 1 vs 2)"
+            );
+            assert_eq!(
+                second, third,
+                "{path}: identical bytes must yield identical FileProcessingResult (run 2 vs 3)"
+            );
+        }
+    }
 }
