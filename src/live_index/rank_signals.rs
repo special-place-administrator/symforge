@@ -3,13 +3,34 @@
 //! Feature tentacles register additional [`RankSignal`] impls to contribute to
 //! the weighted sum computed by [`combine`]. This layer has no knowledge of
 //! specific features — see ADR 0012 for the pattern. The two default signals
-//! (`PathMatchSignal`, `CoChangeSignal`) wrap today's path-match and
-//! git-temporal co-change inputs with no-op scoring; the search layer still
-//! uses its existing comparator-based path ordering until the fusion is
-//! migrated over (see todo #4, second bullet).
+//! (`PathMatchSignal`, `CoChangeSignal`) score a candidate path against the
+//! shared [`RankCtx`]; `capture_search_files_view` uses [`combine`] as its
+//! primary sort key while preserving tier labels for the formatter.
+//!
+//! `PathMatchSignal` returns one of a small set of tier weights
+//! (strong / basename / prefix / loose / none) that reproduce the previous
+//! tier-bucket concatenation ordering: `Strong > Basename > Prefix > Loose`.
+//! `CoChangeSignal` multiplies a caller-reported co-change count; the live
+//! search path does not populate that input today, so it defaults to `0.0`.
 
 use std::path::Path;
 use std::sync::{OnceLock, RwLock};
+
+use super::query::path_has_component;
+
+/// Weight applied to paths that the caller treats as a strong path match
+/// (exact path, suffix with path context, or basename match whose component
+/// tokens are all present in the candidate path).
+pub const STRONG_PATH_SCORE: f32 = 1000.0;
+/// Weight applied to paths whose basename matches but whose non-basename
+/// component tokens are absent (or unspecified).
+pub const BASENAME_SCORE: f32 = 100.0;
+/// Weight applied to paths whose basename stem starts with the query's
+/// basename token (prefix match). Ranks below basename, above loose.
+pub const PREFIX_SCORE: f32 = 50.0;
+/// Weight applied to paths that contain every query token as a case-insensitive
+/// substring — the weakest path-relevance match the live ranker surfaces.
+pub const LOOSE_PATH_SCORE: f32 = 10.0;
 
 /// Contextual inputs shared by every registered `RankSignal` when scoring a
 /// candidate path. Fields are borrowed from the caller for the duration of a
@@ -61,9 +82,10 @@ pub trait RankSignal: Send + Sync {
     fn score(&self, path: &Path, ctx: &RankCtx<'_>) -> f32;
 }
 
-/// Path-match signal — reserves the slot for today's lexical path-match
-/// contribution. The default impl returns `0.0`; the search layer continues
-/// to rely on its tier-based comparator until the fusion is migrated over.
+/// Path-match signal — classifies a candidate path against the query tokens
+/// and returns one of the tier weights (`STRONG_PATH_SCORE`, `BASENAME_SCORE`,
+/// `PREFIX_SCORE`, `LOOSE_PATH_SCORE`) or `0.0` for no match. The classification
+/// mirrors the bucket logic previously inlined in `capture_search_files_view`.
 pub struct PathMatchSignal;
 
 impl RankSignal for PathMatchSignal {
@@ -75,14 +97,68 @@ impl RankSignal for PathMatchSignal {
         1.0
     }
 
-    fn score(&self, _path: &Path, _ctx: &RankCtx<'_>) -> f32 {
+    fn score(&self, path: &Path, ctx: &RankCtx<'_>) -> f32 {
+        if ctx.tokens.is_empty() {
+            return 0.0;
+        }
+
+        let path_str = path.to_string_lossy();
+        let path_lower = path_str.to_ascii_lowercase();
+        let query_lower = ctx.query.to_ascii_lowercase();
+        let has_path_context = ctx.query.contains('/');
+
+        let is_exact = !query_lower.is_empty() && path_lower == query_lower;
+        let is_suffix = has_path_context
+            && !query_lower.is_empty()
+            && path_lower.ends_with(&query_lower);
+
+        let basename_token = ctx.tokens.last().map(String::as_str).unwrap_or("");
+        let component_tokens: &[String] = if ctx.tokens.len() > 1 {
+            &ctx.tokens[..ctx.tokens.len() - 1]
+        } else {
+            &[]
+        };
+
+        let file_basename = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let file_stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+
+        let has_basename_match =
+            !basename_token.is_empty() && file_basename == basename_token;
+        let has_all_components = !component_tokens.is_empty()
+            && component_tokens
+                .iter()
+                .all(|component| path_has_component(&path_str, component));
+
+        if is_exact || is_suffix || (has_basename_match && has_all_components) {
+            return STRONG_PATH_SCORE;
+        }
+        if has_basename_match {
+            return BASENAME_SCORE;
+        }
+        if basename_token.len() >= 3 && file_stem.starts_with(basename_token) {
+            return PREFIX_SCORE;
+        }
+        if ctx.tokens.iter().all(|token| path_lower.contains(token)) {
+            return LOOSE_PATH_SCORE;
+        }
+
         0.0
     }
 }
 
-/// Co-change signal — reserves the slot for today's git-temporal coupling
-/// contribution. The default impl returns `0.0`; feature tentacles can
-/// register their own impl to augment or replace it.
+/// Co-change signal — multiplies the caller-reported coupling count by the
+/// signal's weight. The live `search_files` path does not populate co-change
+/// inputs via `RankCtx` today, so the signal contributes `0.0` there; the
+/// CoChange tier is assigned directly by `changed_with=` callers in
+/// `protocol::tools`.
 pub struct CoChangeSignal;
 
 impl RankSignal for CoChangeSignal {
@@ -224,5 +300,131 @@ mod tests {
         assert_eq!(default.tokens.len(), empty.tokens.len());
         assert_eq!(default.current_file, empty.current_file);
         assert_eq!(default.target_path, empty.target_path);
+    }
+
+    fn ctx_with<'a>(query: &'a str, tokens: &'a [String]) -> RankCtx<'a> {
+        RankCtx {
+            query,
+            tokens,
+            current_file: None,
+            target_path: None,
+        }
+    }
+
+    #[test]
+    fn path_match_strong_on_exact_path() {
+        let tokens = vec![
+            "src".to_string(),
+            "protocol".to_string(),
+            "tools.rs".to_string(),
+        ];
+        let ctx = ctx_with("src/protocol/tools.rs", &tokens);
+        assert_eq!(
+            PathMatchSignal.score(Path::new("src/protocol/tools.rs"), &ctx),
+            STRONG_PATH_SCORE
+        );
+    }
+
+    #[test]
+    fn path_match_strong_on_suffix_with_path_context() {
+        let tokens = vec!["live_index".to_string(), "search.rs".to_string()];
+        let ctx = ctx_with("live_index/search.rs", &tokens);
+        assert_eq!(
+            PathMatchSignal.score(Path::new("src/live_index/search.rs"), &ctx),
+            STRONG_PATH_SCORE
+        );
+    }
+
+    #[test]
+    fn path_match_strong_on_basename_plus_component_tokens() {
+        let tokens = vec!["protocol".to_string(), "tools.rs".to_string()];
+        let ctx = ctx_with("protocol/tools.rs", &tokens);
+        // `src/protocol/tools.rs` is a suffix match, so also Strong.
+        assert_eq!(
+            PathMatchSignal.score(Path::new("src/protocol/tools.rs"), &ctx),
+            STRONG_PATH_SCORE
+        );
+        // `src/sidecar/tools.rs` has the basename but lacks the `protocol`
+        // component — demotes to Basename tier.
+        assert_eq!(
+            PathMatchSignal.score(Path::new("src/sidecar/tools.rs"), &ctx),
+            BASENAME_SCORE
+        );
+    }
+
+    #[test]
+    fn path_match_basename_only_without_component_tokens() {
+        let tokens = vec!["tools.rs".to_string()];
+        let ctx = ctx_with("tools.rs", &tokens);
+        assert_eq!(
+            PathMatchSignal.score(Path::new("src/protocol/tools.rs"), &ctx),
+            BASENAME_SCORE
+        );
+    }
+
+    #[test]
+    fn path_match_prefix_on_basename_stem() {
+        let tokens = vec!["orchestrat".to_string()];
+        let ctx = ctx_with("orchestrat", &tokens);
+        assert_eq!(
+            PathMatchSignal.score(Path::new("src/orchestrator.rs"), &ctx),
+            PREFIX_SCORE
+        );
+        assert_eq!(
+            PathMatchSignal.score(Path::new("src/orchestration.rs"), &ctx),
+            PREFIX_SCORE
+        );
+    }
+
+    #[test]
+    fn path_match_prefix_requires_minimum_token_length() {
+        let tokens = vec!["or".to_string()];
+        let ctx = ctx_with("or", &tokens);
+        // Too short for prefix, but `or` appears in `orchestrator.rs` path → Loose.
+        assert_eq!(
+            PathMatchSignal.score(Path::new("src/orchestrator.rs"), &ctx),
+            LOOSE_PATH_SCORE
+        );
+    }
+
+    #[test]
+    fn path_match_loose_when_all_tokens_contained() {
+        let tokens = vec!["protocol".to_string()];
+        let ctx = ctx_with("protocol", &tokens);
+        assert_eq!(
+            PathMatchSignal.score(Path::new("src/protocol/tools.rs"), &ctx),
+            LOOSE_PATH_SCORE
+        );
+    }
+
+    #[test]
+    fn path_match_zero_when_no_token_matches() {
+        let tokens = vec!["definitely_not_in_fixture".to_string()];
+        let ctx = ctx_with("definitely_not_in_fixture", &tokens);
+        assert_eq!(
+            PathMatchSignal.score(Path::new("src/protocol/tools.rs"), &ctx),
+            0.0
+        );
+    }
+
+    #[test]
+    fn path_match_tier_ordering_preserved_by_score() {
+        // The migration's invariant: combine() yields Strong > Basename >
+        // Prefix > Loose > no-match. This lock-in test fails loudly if a
+        // future weight tweak re-orders tiers.
+        assert!(STRONG_PATH_SCORE > BASENAME_SCORE);
+        assert!(BASENAME_SCORE > PREFIX_SCORE);
+        assert!(PREFIX_SCORE > LOOSE_PATH_SCORE);
+        assert!(LOOSE_PATH_SCORE > 0.0);
+    }
+
+    #[test]
+    fn path_match_case_insensitive() {
+        let tokens = vec!["tools.rs".to_string()];
+        let ctx = ctx_with("tools.rs", &tokens);
+        assert_eq!(
+            PathMatchSignal.score(Path::new("SRC/Protocol/Tools.RS"), &ctx),
+            BASENAME_SCORE
+        );
     }
 }
