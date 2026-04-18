@@ -1237,9 +1237,18 @@ pub(crate) fn execute_batch_edit(
             }
         }
 
-        let abs_path = match safe_repo_path(repo_root, path) {
+        let indexed_abs_path = match safe_repo_path(repo_root, path) {
             Ok(p) => p,
             Err(e) => return Err(format!("Path containment error for '{path}': {e}")),
+        };
+        let hook_ctx = super::edit_hooks::EditContext {
+            relative_path: path,
+            indexed_absolute_path: &indexed_abs_path,
+            repo_root,
+        };
+        let abs_path = match super::edit_hooks::resolve(&hook_ctx) {
+            Ok(p) => p,
+            Err(e) => return Err(format!("Path resolution error for '{path}': {e}")),
         };
         staged.push(StagedFile {
             path: path.clone(),
@@ -1328,6 +1337,12 @@ pub(crate) fn execute_batch_edit(
             &staged_file.new_content,
             staged_file.language.clone(),
         );
+        let hook_ctx = super::edit_hooks::EditContext {
+            relative_path: &staged_file.path,
+            indexed_absolute_path: &staged_file.abs_path,
+            repo_root,
+        };
+        super::edit_hooks::after_commit(&hook_ctx, &staged_file.abs_path);
         summaries.extend(staged_file.summaries.iter().cloned());
     }
 
@@ -1600,9 +1615,18 @@ pub(crate) fn execute_batch_rename(
         } else {
             file.language.clone()
         };
-        let abs = match safe_repo_path(repo_root, path) {
+        let indexed_abs = match safe_repo_path(repo_root, path) {
             Ok(p) => p,
             Err(e) => return Err(format!("Path containment error for '{path}': {e}")),
+        };
+        let hook_ctx = super::edit_hooks::EditContext {
+            relative_path: path,
+            indexed_absolute_path: &indexed_abs,
+            repo_root,
+        };
+        let abs = match super::edit_hooks::resolve(&hook_ctx) {
+            Ok(p) => p,
+            Err(e) => return Err(format!("Path resolution error for '{path}': {e}")),
         };
         staged.push(StagedFile {
             path: path.clone(),
@@ -1684,6 +1708,12 @@ pub(crate) fn execute_batch_rename(
             &sf.new_content,
             sf.language.clone(),
         );
+        let hook_ctx = super::edit_hooks::EditContext {
+            relative_path: &sf.path,
+            indexed_absolute_path: &sf.abs_path,
+            repo_root,
+        };
+        super::edit_hooks::after_commit(&hook_ctx, &sf.abs_path);
         files_updated += 1;
         refs_updated += sf.refs_count;
     }
@@ -1932,9 +1962,18 @@ pub(crate) fn execute_batch_insert(
             ));
         }
 
-        let abs_path = match safe_repo_path(repo_root, &path) {
+        let indexed_abs_path = match safe_repo_path(repo_root, &path) {
             Ok(p) => p,
             Err(e) => return Err(format!("Target {path}: {e}")),
+        };
+        let hook_ctx = super::edit_hooks::EditContext {
+            relative_path: &path,
+            indexed_absolute_path: &indexed_abs_path,
+            repo_root,
+        };
+        let abs_path = match super::edit_hooks::resolve(&hook_ctx) {
+            Ok(p) => p,
+            Err(e) => return Err(format!("Target {path}: path resolution error: {e}")),
         };
         staged.push(StagedFile {
             path: path.clone(),
@@ -2021,6 +2060,12 @@ pub(crate) fn execute_batch_insert(
             &staged_file.new_content,
             staged_file.language.clone(),
         );
+        let hook_ctx = super::edit_hooks::EditContext {
+            relative_path: &staged_file.path,
+            indexed_absolute_path: &staged_file.abs_path,
+            repo_root,
+        };
+        super::edit_hooks::after_commit(&hook_ctx, &staged_file.abs_path);
         summaries.extend(staged_file.summaries.iter().cloned());
     }
 
