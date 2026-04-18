@@ -454,26 +454,136 @@ async fn recent_single_bump_outranks_old_ten_bumps() {
 //
 // Implementation Notes §"Reset-on-HEAD-change: graduated, not binary":
 // `<50` commits no-op, `50-500` halve scores, `>500` or branch change zero.
+//
+// These tests exercise the end-to-end boot wiring: seed a real git repo,
+// bump the frecency store, advance HEAD, then run `init_frecency_store` with
+// `SYMFORGE_FRECENCY=1` and assert the policy landed. Unit-level policy
+// coverage lives in `src/live_index/frecency.rs::tests` and
+// `src/live_index/persist.rs::tests` — these two tests guard the wiring.
 
-#[tokio::test]
-#[ignore = "pending frecency graduation: see panic! body for specific behavior"]
-async fn head_change_halves_scores_at_100_commits() {
-    panic!(
-        "pending frecency implementation: expected all frecency scores halved \
-         after reset_or_halve_on_head_change(prev, curr, commit_distance=100); \
-         requires FrecencyStore::reset_or_halve_on_head_change + git test \
-         repo helper"
+use symforge::live_index::frecency::FrecencyStore;
+use symforge::live_index::persist::init_frecency_store;
+use symforge::paths::SYMFORGE_FRECENCY_DB_PATH;
+
+// Serialize tests that mutate SYMFORGE_FRECENCY. `--test-threads=1` is the
+// project default; this lock is belt-and-suspenders against a future runner
+// and guards against a sibling test forgetting to clear.
+static HEAD_CHANGE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Initialize a repo at `root` with one root commit; return the root SHA.
+fn init_repo_with_root_commit(root: &std::path::Path) -> String {
+    let repo = git2::Repository::init(root).expect("git init");
+    let sig = git2::Signature::now("t", "t@x").expect("sig");
+    let tree_id = {
+        let mut idx = repo.index().expect("index");
+        idx.write_tree().expect("write tree")
+    };
+    let tree = repo.find_tree(tree_id).expect("find tree");
+    let oid = repo
+        .commit(Some("HEAD"), &sig, &sig, "root", &tree, &[])
+        .expect("root commit");
+    oid.to_string()
+}
+
+/// Add `count` empty-tree commits parented on HEAD.
+fn advance_head(root: &std::path::Path, count: usize) {
+    let repo = git2::Repository::open(root).expect("open repo");
+    let sig = git2::Signature::now("t", "t@x").expect("sig");
+    let tree_id = {
+        let mut idx = repo.index().expect("index");
+        idx.write_tree().expect("write tree")
+    };
+    let tree = repo.find_tree(tree_id).expect("find tree");
+    let mut head = repo
+        .head()
+        .expect("head ref")
+        .peel_to_commit()
+        .expect("peel head");
+    for i in 0..count {
+        let oid = repo
+            .commit(
+                Some("HEAD"),
+                &sig,
+                &sig,
+                &format!("c{i}"),
+                &tree,
+                &[&head],
+            )
+            .expect("commit");
+        head = repo.find_commit(oid).expect("find commit");
+    }
+}
+
+#[test]
+fn head_change_halves_scores_at_100_commits() {
+    let _g = HEAD_CHANGE_ENV_LOCK.lock().unwrap();
+    let tmp = TempDir::new().expect("tempdir");
+    let first = init_repo_with_root_commit(tmp.path());
+    let db_path = tmp.path().join(SYMFORGE_FRECENCY_DB_PATH);
+
+    // Seed: 10 bumps on one path, stored HEAD = first commit.
+    {
+        let store = FrecencyStore::open(&db_path).unwrap();
+        for _ in 0..10 {
+            store
+                .bump(&[std::path::PathBuf::from("src/a.rs")], 0)
+                .unwrap();
+        }
+        store
+            .reset_or_halve_on_head_change(None, &first, None)
+            .unwrap();
+    }
+
+    // Advance HEAD by 100 commits — lands in the 50..=500 halve band.
+    advance_head(tmp.path(), 100);
+
+    // SAFETY: test holds HEAD_CHANGE_ENV_LOCK; runner is --test-threads=1.
+    unsafe { std::env::set_var("SYMFORGE_FRECENCY", "1") };
+    init_frecency_store(tmp.path());
+    // SAFETY: see above.
+    unsafe { std::env::remove_var("SYMFORGE_FRECENCY") };
+
+    let store = FrecencyStore::open(&db_path).unwrap();
+    assert_eq!(
+        store.score(std::path::Path::new("src/a.rs"), 0).unwrap(),
+        5.0,
+        "100 commits between stored and current HEAD must halve hit counts"
     );
 }
 
-#[tokio::test]
-#[ignore = "pending frecency graduation: see panic! body for specific behavior"]
-async fn head_change_resets_scores_at_1000_commits() {
-    panic!(
-        "pending frecency implementation: expected all frecency scores zeroed \
-         after reset_or_halve_on_head_change(prev, curr, commit_distance=1000); \
-         requires FrecencyStore::reset_or_halve_on_head_change + git test \
-         repo helper"
+#[test]
+fn head_change_resets_scores_at_1000_commits() {
+    let _g = HEAD_CHANGE_ENV_LOCK.lock().unwrap();
+    let tmp = TempDir::new().expect("tempdir");
+    let first = init_repo_with_root_commit(tmp.path());
+    let db_path = tmp.path().join(SYMFORGE_FRECENCY_DB_PATH);
+
+    {
+        let store = FrecencyStore::open(&db_path).unwrap();
+        for _ in 0..10 {
+            store
+                .bump(&[std::path::PathBuf::from("src/a.rs")], 0)
+                .unwrap();
+        }
+        store
+            .reset_or_halve_on_head_change(None, &first, None)
+            .unwrap();
+    }
+
+    // Advance HEAD by 1000 commits — past the 500 threshold, must zero.
+    advance_head(tmp.path(), 1000);
+
+    // SAFETY: test holds HEAD_CHANGE_ENV_LOCK; runner is --test-threads=1.
+    unsafe { std::env::set_var("SYMFORGE_FRECENCY", "1") };
+    init_frecency_store(tmp.path());
+    // SAFETY: see above.
+    unsafe { std::env::remove_var("SYMFORGE_FRECENCY") };
+
+    let store = FrecencyStore::open(&db_path).unwrap();
+    assert_eq!(
+        store.score(std::path::Path::new("src/a.rs"), 0).unwrap(),
+        0.0,
+        ">500 commits between stored and current HEAD must zero hit counts"
     );
 }
 
