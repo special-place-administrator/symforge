@@ -697,6 +697,10 @@ pub enum TextSearchError {
         error: String,
     },
     UnsupportedWholeWordRegex,
+    InvalidStructuralPattern {
+        pattern: String,
+        error: String,
+    },
 }
 
 struct CompiledTextGlobFilters {
@@ -1065,6 +1069,12 @@ pub fn search_structural(
     let mut files: Vec<TextFileMatches> = Vec::new();
     let mut total_matches = 0usize;
     let mut suppressed_by_noise = 0usize;
+    // Track whether at least one candidate successfully compiled the
+    // pattern. If every candidate errored — which happens when the
+    // pattern itself is malformed — surface the parse error instead of
+    // silently returning zero results.
+    let mut any_parse_succeeded = false;
+    let mut first_parse_error: Option<String> = None;
 
     // Collect candidate files filtered by options.
     let mut candidates: Vec<(String, crate::domain::index::LanguageId)> = index
@@ -1088,8 +1098,16 @@ pub fn search_structural(
 
         let structural_matches =
             match crate::parsing::ast_grep::structural_search(&content_str, pattern, lang) {
-                Ok(m) => m,
-                Err(_) => continue, // skip files where pattern doesn't apply (e.g., config langs)
+                Ok(m) => {
+                    any_parse_succeeded = true;
+                    m
+                }
+                Err(e) => {
+                    if first_parse_error.is_none() {
+                        first_parse_error = Some(e);
+                    }
+                    continue; // skip files where pattern doesn't apply (e.g., config langs)
+                }
             };
 
         if structural_matches.is_empty() {
@@ -1175,6 +1193,19 @@ pub fn search_structural(
                 matches,
                 rendered_lines,
                 callers: None,
+            });
+        }
+    }
+
+    // If no candidate file successfully compiled the pattern AND we have
+    // a recorded error, the pattern itself is malformed (not just "no
+    // matches"). Propagate the first parse error so callers can show a
+    // real diagnostic instead of an ambiguous empty result.
+    if !any_parse_succeeded {
+        if let Some(error) = first_parse_error {
+            return Err(TextSearchError::InvalidStructuralPattern {
+                pattern: pattern.to_string(),
+                error,
             });
         }
     }
@@ -2868,6 +2899,75 @@ mod tests {
         assert_eq!(
             reordered[0].path, "src/file_b.rs",
             "recent single bump must outrank old 10x bumps"
+        );
+    }
+
+    #[test]
+    fn search_structural_returns_invalid_pattern_error_when_no_file_parses() {
+        // Index only contains a config-language file (TOML). ast-grep
+        // rejects config languages, so every candidate errors. The aggregate
+        // result must be a parse-error, not a silent empty Ok — that was the
+        // bug this regression covers.
+        let toml_content = "[package]\nname = \"thing\"\n";
+        let file = IndexedFile {
+            relative_path: "Cargo.toml".to_string(),
+            language: LanguageId::Toml,
+            classification: crate::domain::FileClassification::for_code_path("Cargo.toml"),
+            content: toml_content.as_bytes().to_vec(),
+            symbols: Vec::new(),
+            parse_status: ParseStatus::Parsed,
+            parse_diagnostic: None,
+            byte_len: toml_content.len() as u64,
+            content_hash: "hash".to_string(),
+            references: Vec::new(),
+            alias_map: HashMap::new(),
+            mtime_secs: 0,
+        };
+        let index = make_index(vec![("Cargo.toml".to_string(), file)]);
+
+        let options = TextSearchOptions::default();
+        let pattern = "fn $NAME($$$) { $$$ }";
+        let result = search_structural(&index, pattern, &options);
+
+        match result {
+            Err(TextSearchError::InvalidStructuralPattern {
+                pattern: err_pattern,
+                error,
+            }) => {
+                assert_eq!(err_pattern, pattern);
+                assert!(!error.is_empty(), "error message must not be empty");
+            }
+            Err(other) => panic!("expected InvalidStructuralPattern, got {other:?}"),
+            Ok(result) => panic!(
+                "expected parse-error propagation, got Ok with {} match(es) in {} file(s)",
+                result.total_matches,
+                result.files.len()
+            ),
+        }
+    }
+
+    #[test]
+    fn search_structural_zero_match_result_surfaces_structural_label() {
+        // Valid pattern, but nothing matches in the indexed content.
+        // Result should be Ok with empty files, and label must identify it
+        // as structural so the renderer can give a structural-aware hint.
+        let (path, file) = make_file(
+            "src/a.rs",
+            "fn main() { println!(\"hi\"); }\n",
+            vec![make_symbol("main", SymbolKind::Function, 1)],
+        );
+        let index = make_index(vec![(path, file)]);
+
+        let options = TextSearchOptions::default();
+        // Rust-specific pattern that won't match the `fn main` body above.
+        let result = search_structural(&index, "struct $NAME { $$$ }", &options)
+            .expect("valid pattern must not error");
+        assert_eq!(result.total_matches, 0);
+        assert!(result.files.is_empty());
+        assert!(
+            result.label.starts_with("structural "),
+            "label must start with `structural ` so the renderer can detect structural searches; got: {}",
+            result.label
         );
     }
 }

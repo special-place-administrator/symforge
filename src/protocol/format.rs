@@ -394,6 +394,16 @@ pub fn search_text_result_view(
         Err(search::TextSearchError::UnsupportedWholeWordRegex) => {
             return "whole_word is not supported when `regex=true`.".to_string();
         }
+        Err(search::TextSearchError::InvalidStructuralPattern { pattern, error }) => {
+            return format!(
+                "Error: structural pattern failed to parse for every searchable file.\n\
+                 Pattern: {pattern}\n\
+                 First parse error: {error}\n\
+                 Hint: ast-grep patterns use $VAR for single-node metavariables \
+                 and $$$ for multi-node wildcards (e.g., `fn $NAME($$$) {{ $$$ }}`). \
+                 Narrow `language` to target a specific grammar if needed."
+            );
+        }
     };
 
     let annotate_term = |line: &str| -> String {
@@ -416,6 +426,18 @@ pub fn search_text_result_view(
             return format!(
                 "No matches for {} in source code. {} match(es) found in test modules — set include_tests=true to include them.",
                 result.label, result.suppressed_by_noise
+            );
+        }
+        // Structural searches reach this branch only when the pattern
+        // did parse against at least one language (otherwise we would
+        // have returned InvalidStructuralPattern earlier). Say so plainly
+        // so the caller does not confuse "0 matches" with "invalid pattern".
+        if result.label.starts_with("structural ") {
+            return format!(
+                "No AST matches for {}. Pattern parsed OK against at least one language; \
+                 0 structural matches across searchable files. Consider broadening \
+                 (include_tests=true / include_generated=true) or simplifying the pattern.",
+                result.label
             );
         }
         return format!(
