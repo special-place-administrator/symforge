@@ -178,6 +178,20 @@ If your AI agent still falls back to built-in file reads, grep, or text-based ed
 
 This prompt detects installed clients, configures SymForge for each, updates instruction files, and validates the setup.
 
+## Architecture
+
+SymForge is organized around a tree-sitter index, a set of query layers over that index, and the MCP tool surface. For the full runtime and module map, see [Architecture and How It Works](https://github.com/special-place-administrator/symforge/wiki/Architecture-and-How-It-Works) in the wiki.
+
+### Extension points
+
+Two trait-based registries let feature code plug into the shared edit and ranker paths without amending the handlers themselves.
+
+**`EditHook`** wraps the per-edit lifecycle for the seven edit tools (`replace_symbol_body`, `edit_within_symbol`, `insert_symbol`, `delete_symbol`, `batch_edit`, `batch_insert`, `batch_rename`). Implementations register at startup; the handlers delegate to the registry to resolve the target path before writing and to run bookkeeping after the edit commits. For example, a worktree-aware feature registers a hook that rewrites a symbol's indexed path onto the active worktree before the write lands.
+
+**`RankSignal`** wraps `search_files` scoring contributions. Each signal carries a name, a weight, and a `score()` function, and the ranker combines registered signals into a weighted sum. The current path-match and co-change signals ship as default registrations; additional signals — frecency, for example — register at startup and join the fusion without touching the handler or the other signals.
+
+See [ADR 0012](docs/decisions/0012-edit-and-ranker-hook-architecture.md) for the rationale and the feature plug-in pattern.
+
 ## Operational notes
 
 - `symforge daemon` is optional if you want a shared index across multiple terminal sessions.
