@@ -20,6 +20,7 @@ use crate::domain::{
 };
 use crate::{discovery, parsing};
 
+#[cfg(windows)]
 const INDEXING_THREAD_STACK_SIZE_ENV: &str = "SYMFORGE_INDEXING_THREAD_STACK_BYTES";
 #[cfg(windows)]
 const DEFAULT_INDEXING_THREAD_STACK_BYTES: usize = 4 * 1024 * 1024;
