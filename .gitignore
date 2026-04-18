@@ -17,3 +17,5 @@ __pycache__/
 
 # Windows NUL device name — some tools accidentally create a tracked 'nul' file
 nul
+
+.octogent
