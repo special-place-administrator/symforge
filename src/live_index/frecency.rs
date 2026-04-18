@@ -7,9 +7,11 @@
 //!    Decays on a 7-day half-life. This is the storage + scoring layer.
 //! 2. [`bump`] — the call-site façade that commitment tools
 //!    (`get_file_context`, `get_file_content`, `get_symbol`,
-//!    `get_symbol_context`) invoke at the end of their happy path. Currently
-//!    a test-observability sink gated by `SYMFORGE_FRECENCY="1"`; a follow-up
-//!    todo wires it to dispatch into the process-wide [`FrecencyStore`].
+//!    `get_symbol_context`, the seven edit tools) invoke at the end of their
+//!    happy path. Gated by `SYMFORGE_FRECENCY="1"`; opens the per-workspace
+//!    SQLite store on demand and writes through to the underlying
+//!    [`FrecencyStore`]. Infallible — every error is silently dropped so the
+//!    feature cannot break the tools it hooks into.
 //!
 //! Discovery tools (`search_files`, `search_text`, `search_symbols`)
 //! deliberately never call [`bump`] — see the spec §"Search tools deliberately
@@ -20,7 +22,7 @@
 use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 
 /// Half-life for frecency decay, in seconds. 7 days.
 pub const HALF_LIFE_SECS: i64 = 7 * 24 * 60 * 60;
@@ -292,19 +294,13 @@ fn normalize_path(p: &Path) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Call-site bump façade (owned by todo #3 — wire bump hooks on commitment tools)
+// Call-site bump façade
 // ---------------------------------------------------------------------------
 //
-// `bump(paths)` below is the stable surface commitment-tool handlers call at
-// the end of their happy path. Today its body is a test-observability sink
-// so wiring tests can assert that handlers actually invoke it. A follow-up
-// todo replaces the body with a dispatch into a process-wide [`FrecencyStore`]
-// instance; the signature is the contract and stays put.
-
-fn sink() -> &'static Mutex<Vec<PathBuf>> {
-    static SINK: OnceLock<Mutex<Vec<PathBuf>>> = OnceLock::new();
-    SINK.get_or_init(|| Mutex::new(Vec::new()))
-}
+// `bump(repo_root, paths)` is the stable surface commitment-tool handlers call
+// at the end of their happy path. It opens the per-workspace SQLite store on
+// demand and writes the bumps through. SQLite open + a single upsert is sub-ms
+// in WAL mode; the call sites are not hot paths.
 
 /// Record that the given paths were accessed by a commitment tool.
 ///
@@ -313,17 +309,54 @@ fn sink() -> &'static Mutex<Vec<PathBuf>> {
 /// so the feature cannot break the tool it hooks into.
 ///
 /// `paths` is expected to already be deduplicated (batch tools collect into a
-/// `HashSet<PathBuf>` before calling).
-pub fn bump(paths: &[PathBuf]) {
+/// `HashSet<PathBuf>` before calling). Each call opens the per-workspace
+/// SQLite store at `<repo_root>/.symforge/frecency.db`; SQLite open + a single
+/// upsert transaction is sub-millisecond, so on-demand open is fine for the
+/// non-hot bump-call path.
+pub fn bump(repo_root: &Path, paths: &[PathBuf]) {
     if std::env::var(FRECENCY_FLAG_ENV).as_deref() != Ok("1") {
         return;
     }
     if paths.is_empty() {
         return;
     }
-    if let Ok(mut guard) = sink().lock() {
-        guard.extend(paths.iter().cloned());
+    let db_path = repo_root.join(crate::paths::SYMFORGE_FRECENCY_DB_PATH);
+    let Ok(store) = FrecencyStore::open(&db_path) else {
+        return;
+    };
+    let now_ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let _ = store.bump(paths, now_ts);
+}
+
+/// [`EditHook`] implementation that records a frecency bump after every
+/// successful edit commit. Delegates to [`bump`], so the
+/// `SYMFORGE_FRECENCY` flag check happens there — registering the hook is
+/// itself unconditional.
+pub struct FrecencyBumpHook;
+
+impl crate::protocol::edit_hooks::EditHook for FrecencyBumpHook {
+    fn after_edit_committed(
+        &self,
+        ctx: &crate::protocol::edit_hooks::EditContext,
+        _resolved_path: &Path,
+    ) {
+        bump(ctx.repo_root, &[PathBuf::from(ctx.relative_path)]);
     }
+}
+
+/// Register [`FrecencyBumpHook`] on the process-wide edit-hook registry exactly
+/// once. Safe to call from every `LiveIndex::load` — the inner [`OnceLock`]
+/// dedupes. The hook body itself gates on `SYMFORGE_FRECENCY=1`, so registering
+/// unconditionally costs nothing when the flag is off.
+pub fn ensure_bump_hook_registered() {
+    use std::sync::OnceLock;
+    static REGISTERED: OnceLock<()> = OnceLock::new();
+    REGISTERED.get_or_init(|| {
+        crate::protocol::edit_hooks::register(Box::new(FrecencyBumpHook));
+    });
 }
 
 /// Drain and return every path recorded by [`bump`] since the last drain/clear.
@@ -333,21 +366,8 @@ pub fn bump(paths: &[PathBuf]) {
 /// integration-test crate lives outside the library crate and cannot use
 /// `#[cfg(test)]`-gated items.
 #[doc(hidden)]
-pub fn drain_test_bumps() -> Vec<PathBuf> {
-    match sink().lock() {
-        Ok(mut guard) => std::mem::take(&mut *guard),
-        Err(_) => Vec::new(),
-    }
-}
-
 /// Clear the test-observability sink without returning its contents.
 #[doc(hidden)]
-pub fn clear_test_bumps() {
-    if let Ok(mut guard) = sink().lock() {
-        guard.clear();
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -683,12 +703,14 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // Call-site bump() façade tests (from swarm-2)
+    // Call-site bump() façade tests
+    //
+    // The façade now opens the per-workspace SQLite store on demand and
+    // writes directly. Verifying behavior means querying the store after
+    // the call rather than draining a sink. Tests serialize on ENV_LOCK
+    // because they mutate `SYMFORGE_FRECENCY`.
     // -----------------------------------------------------------------
 
-    // Serialize tests that mutate the shared env var + sink. Tests run
-    // single-threaded per CLAUDE.md; this lock is belt-and-suspenders so
-    // any future parallel runner does not interleave env mutations.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn set_flag_on() {
@@ -702,15 +724,20 @@ mod tests {
         unsafe { std::env::remove_var(FRECENCY_FLAG_ENV) };
     }
 
+    fn db_path_for(root: &Path) -> PathBuf {
+        root.join(crate::paths::SYMFORGE_FRECENCY_DB_PATH)
+    }
+
     #[test]
     fn module_bump_is_noop_when_flag_unset() {
         let _g = ENV_LOCK.lock().unwrap();
         clear_flag();
-        clear_test_bumps();
-        super::bump(&[PathBuf::from("src/lib.rs")]);
+        let tmp = tempfile::tempdir().expect("tempdir");
+        super::bump(tmp.path(), &[PathBuf::from("src/lib.rs")]);
+        // Flag off: the database file must not even be created.
         assert!(
-            drain_test_bumps().is_empty(),
-            "bump with flag unset must not record"
+            !db_path_for(tmp.path()).exists(),
+            "bump with flag unset must not touch disk"
         );
     }
 
@@ -719,13 +746,12 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap();
         // SAFETY: see set_flag_on.
         unsafe { std::env::set_var(FRECENCY_FLAG_ENV, "0") };
-        clear_test_bumps();
-        super::bump(&[PathBuf::from("src/lib.rs")]);
-        let recorded = drain_test_bumps();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        super::bump(tmp.path(), &[PathBuf::from("src/lib.rs")]);
         clear_flag();
         assert!(
-            recorded.is_empty(),
-            "bump with flag != 1 must not record, got {recorded:?}"
+            !db_path_for(tmp.path()).exists(),
+            "bump with flag != 1 must not touch disk"
         );
     }
 
@@ -733,14 +759,20 @@ mod tests {
     fn module_bump_records_paths_when_flag_on() {
         let _g = ENV_LOCK.lock().unwrap();
         set_flag_on();
-        clear_test_bumps();
-        super::bump(&[PathBuf::from("src/a.rs"), PathBuf::from("src/b.rs")]);
-        let recorded = drain_test_bumps();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        super::bump(
+            tmp.path(),
+            &[PathBuf::from("src/a.rs"), PathBuf::from("src/b.rs")],
+        );
         clear_flag();
+        let store = FrecencyStore::open(&db_path_for(tmp.path())).unwrap();
+        let entries = store.last_10_bumps().unwrap();
+        let mut paths: Vec<PathBuf> = entries.iter().map(|e| e.path.clone()).collect();
+        paths.sort();
         assert_eq!(
-            recorded,
+            paths,
             vec![PathBuf::from("src/a.rs"), PathBuf::from("src/b.rs")],
-            "bump with flag on must record every supplied path in order"
+            "bump with flag on must persist every supplied path"
         );
     }
 
@@ -748,26 +780,27 @@ mod tests {
     fn module_bump_empty_slice_is_noop_when_flag_on() {
         let _g = ENV_LOCK.lock().unwrap();
         set_flag_on();
-        clear_test_bumps();
-        super::bump(&[]);
-        let recorded = drain_test_bumps();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        super::bump(tmp.path(), &[]);
         clear_flag();
+        // Empty slice: short-circuit before opening the store.
         assert!(
-            recorded.is_empty(),
-            "empty bump must not record even with flag on"
+            !db_path_for(tmp.path()).exists(),
+            "empty bump must not touch disk even with flag on"
         );
     }
 
     #[test]
-    fn drain_is_idempotent() {
+    fn module_bump_increments_existing_path() {
         let _g = ENV_LOCK.lock().unwrap();
         set_flag_on();
-        clear_test_bumps();
-        super::bump(&[PathBuf::from("src/lib.rs")]);
-        let first = drain_test_bumps();
-        let second = drain_test_bumps();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        super::bump(tmp.path(), &[PathBuf::from("src/lib.rs")]);
+        super::bump(tmp.path(), &[PathBuf::from("src/lib.rs")]);
         clear_flag();
-        assert_eq!(first.len(), 1, "first drain returns recorded bump");
-        assert!(second.is_empty(), "second drain returns nothing");
+        let store = FrecencyStore::open(&db_path_for(tmp.path())).unwrap();
+        let entries = store.last_10_bumps().unwrap();
+        assert_eq!(entries.len(), 1, "single path collapses into one row");
+        assert_eq!(entries[0].hit_count, 2);
     }
 }

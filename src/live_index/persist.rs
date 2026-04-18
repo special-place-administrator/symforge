@@ -368,6 +368,10 @@ fn spot_verify_sample_from_view(
 /// Spec: §"Reset-on-HEAD-change: graduated, not binary" on
 /// `[[SymForge Frecency-Weighted File Ranking]]`.
 pub fn init_frecency_store(project_root: &Path) {
+    // Hook registration is unconditional — the hook body gates on the flag at
+    // call time, so a test that flips `SYMFORGE_FRECENCY` on AFTER boot still
+    // sees its edits land in the per-workspace store.
+    crate::live_index::frecency::ensure_bump_hook_registered();
     if std::env::var(crate::live_index::frecency::FRECENCY_FLAG_ENV).as_deref() != Ok("1") {
         return;
     }
