@@ -135,6 +135,20 @@ After setup, confirm in your client that the SymForge MCP server is connected or
 | `batch_insert` | Insert code before/after multiple symbols across files |
 | `batch_rename` | Rename a symbol and update all references project-wide |
 
+### Worktree awareness
+
+All seven edit tools accept an optional `working_directory` parameter pointing at a sibling `git worktree` of the indexed repo. With `SYMFORGE_WORKTREE_AWARE=1` set, SymForge re-roots the symbol's indexed path onto the supplied worktree before writing — so an agent running inside `../my-feature-worktree` can call an edit tool without silently writing to the indexed copy. Reads still come from the indexed path; only writes reroute. Responses include `wrote_to`, `indexed_path`, and `rerouted` so callers can verify the target. Omit the parameter (or leave the flag unset) for byte-identical pre-flag behavior. See [ADR 0010](docs/decisions/0010-worktree-working-directory.md).
+
+```json
+{
+  "path": "src/lib.rs",
+  "name": "hello",
+  "find": "println!(\"hi\")",
+  "replace": "println!(\"hi, world\")",
+  "working_directory": "/abs/path/to/sibling/worktree"
+}
+```
+
 ### Validation and indexing
 
 | Tool | Purpose |
