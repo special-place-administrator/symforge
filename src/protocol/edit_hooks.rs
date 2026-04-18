@@ -33,6 +33,11 @@ pub struct EditContext<'a> {
     pub indexed_absolute_path: &'a Path,
     /// Repository root currently bound to the server.
     pub repo_root: &'a Path,
+    /// Optional caller-supplied working directory. Feature hooks (e.g.
+    /// `worktree-awareness`) consume this to redirect writes into the matching
+    /// git worktree. `None` means the caller did not supply one and the hook
+    /// should fall back to its no-op default.
+    pub working_directory: Option<&'a Path>,
 }
 
 /// Extension point for feature tentacles.
@@ -115,6 +120,7 @@ mod tests {
             relative_path: "src/lib.rs",
             indexed_absolute_path: &abs,
             repo_root: &repo_root,
+            working_directory: None,
         };
         let resolved = DefaultEditHook.resolve_target_path(&ctx).expect("resolves");
         assert_eq!(resolved, abs);
@@ -128,6 +134,7 @@ mod tests {
             relative_path: "src/lib.rs",
             indexed_absolute_path: &abs,
             repo_root: &repo_root,
+            working_directory: None,
         };
         // Should not panic or mutate anything observable.
         DefaultEditHook.after_edit_committed(&ctx, &abs);
@@ -144,8 +151,29 @@ mod tests {
             relative_path: "src/lib.rs",
             indexed_absolute_path: &abs,
             repo_root: &repo_root,
+            working_directory: None,
         };
         let resolved = resolve(&ctx).expect("resolves");
+        assert_eq!(resolved, abs);
+    }
+
+    #[test]
+    fn default_hook_ignores_working_directory() {
+        // Default hook is feature-agnostic: a supplied `working_directory` does
+        // not change resolution. Feature hooks (e.g. `worktree-awareness`) are
+        // the only consumers; the default impl always returns
+        // `indexed_absolute_path` unchanged so backward compat holds even when
+        // callers supply the new field.
+        let repo_root = PathBuf::from("/tmp/repo");
+        let abs = repo_root.join("src/lib.rs");
+        let cwd = PathBuf::from("/tmp/some/worktree");
+        let ctx = EditContext {
+            relative_path: "src/lib.rs",
+            indexed_absolute_path: &abs,
+            repo_root: &repo_root,
+            working_directory: Some(&cwd),
+        };
+        let resolved = DefaultEditHook.resolve_target_path(&ctx).expect("resolves");
         assert_eq!(resolved, abs);
     }
 }
