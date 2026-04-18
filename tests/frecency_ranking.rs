@@ -1,44 +1,21 @@
-//! TDD acceptance matrix — frecency-weighted file ranking.
+//! Acceptance matrix for frecency-weighted file ranking.
 //!
-//! These tests pin the contract *before* the implementation exists. Every
-//! test either compiles against the current empty `src/live_index/frecency.rs`
-//! placeholder and fails at runtime with `todo!()`, or stubs out entirely
-//! with `panic!("pending frecency implementation: …")`. Once the
-//! implementation lands, pending assertions are replaced with real checks.
-//!
-//! Test matrix (from Implementation Notes §"Test matrix" on the
-//! `[[SymForge Frecency-Weighted File Ranking]]` spec):
-//!
-//!   - Bump on every write tool (7 tests)
-//!   - Bump on read tools: `get_symbol`, `get_symbol_context`,
-//!     `get_file_context`, `get_file_content` (4 tests)
-//!   - No-bump on discovery tools: `search_files`, `search_text`,
-//!     `search_symbols` (3 tests — positive-feedback-loop guard)
-//!   - Decay: `last_access_ts = now - 7d` → score ≈ 50% of peak
-//!   - Fresh file with no row → baseline ranking, no error
-//!   - Fusion: file_A bumped 10× 6 months ago vs file_B bumped 1× 5 min ago
-//!     → file_B ranks higher with `rank_by="frecency"`
-//!   - HEAD change: 100 commits → halve; 1000 commits → reset
-//!   - Concurrency: 10 parallel bumps on same path → `hit_count == 10`
-//!
-//! Scope notes:
-//!   - Six of these tools are not yet wired into
-//!     `SymForgeServer::dispatch_tool_for_tests`: `get_file_context`,
-//!     `get_file_content`, `get_symbol`, `get_symbol_context`, `search_text`,
-//!     `search_symbols`. Those tests use `panic!("pending …")` until the
-//!     implementer of todo #3 extends the harness.
-//!   - `SYMFORGE_FRECENCY=1` gating, rusqlite setup, and time/HEAD
-//!     injection APIs are all implementation details the pending todos own.
-//!     Tests deliberately avoid touching unsafe `std::env::set_var` since the
-//!     `todo!()` panic fires before any flag check matters.
+//! Each test exercises one row from the spec's test matrix
+//! (`[[SymForge Frecency-Weighted File Ranking]]` Implementation Notes
+//! §"Test matrix") end-to-end against a real `FrecencyStore` on a tempdir.
 
 use std::fs;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex as StdMutex};
+use std::thread;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use parking_lot::Mutex;
 use serde_json::{Value, json};
 use symforge::live_index::LiveIndex;
+use symforge::live_index::frecency::{FRECENCY_FLAG_ENV, FrecencyStore};
+use symforge::live_index::persist::init_frecency_store;
+use symforge::paths::SYMFORGE_FRECENCY_DB_PATH;
 use symforge::protocol::SymForgeServer;
 use symforge::watcher::WatcherInfo;
 use tempfile::TempDir;
@@ -47,7 +24,6 @@ use tempfile::TempDir;
 
 struct Fixture {
     _dir: TempDir,
-    #[allow(dead_code)]
     root: PathBuf,
     server: SymForgeServer,
 }
@@ -78,44 +54,90 @@ impl Fixture {
             server,
         }
     }
+
+    fn db_path(&self) -> PathBuf {
+        self.root.join(SYMFORGE_FRECENCY_DB_PATH)
+    }
+
+    fn open_store(&self) -> FrecencyStore {
+        FrecencyStore::open(&self.db_path()).expect("open frecency store")
+    }
 }
 
 async fn call(server: &SymForgeServer, tool: &str, params: Value) -> String {
     server.dispatch_tool_for_tests(tool, params).await
 }
 
-// ─── Bump on write tools (7 tests) ──────────────────────────────────────────
+// ─── Env mutation guard ──────────────────────────────────────────────────────
 //
-// Spec §"Bump hooks" — every edit tool must record a frecency bump for each
-// path it modifies. Batch tools dedup per-invocation so a rename that touches
-// N files yields N distinct bumps, not N × (bumps per file).
+// Tests in this file mutate `SYMFORGE_FRECENCY`. The project runs with
+// `--test-threads=1`, but this lock is belt-and-suspenders against a future
+// parallel runner. `FlagGuard::on()` sets the flag and clears it on drop.
+
+static FRECENCY_ENV_LOCK: StdMutex<()> = StdMutex::new(());
+
+struct FlagGuard {
+    _g: std::sync::MutexGuard<'static, ()>,
+}
+
+impl FlagGuard {
+    fn on() -> Self {
+        let g = FRECENCY_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // SAFETY: --test-threads=1 + this lock serialize env mutation; no
+        // concurrent reader can observe the transition.
+        unsafe { std::env::set_var(FRECENCY_FLAG_ENV, "1") };
+        Self { _g: g }
+    }
+}
+
+impl Drop for FlagGuard {
+    fn drop(&mut self) {
+        // SAFETY: see FlagGuard::on.
+        unsafe { std::env::remove_var(FRECENCY_FLAG_ENV) };
+    }
+}
+
+fn bump_paths(store: &FrecencyStore) -> Vec<PathBuf> {
+    store
+        .last_10_bumps()
+        .expect("last_10_bumps")
+        .into_iter()
+        .map(|e| e.path)
+        .collect()
+}
+
+fn now_ts() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+// ─── Bump on edit tools (7 tests) ───────────────────────────────────────────
 
 #[tokio::test]
-#[ignore = "pending frecency graduation: see panic! body for specific behavior"]
 async fn replace_symbol_body_bumps_frecency() {
     let fx = Fixture::new(&[("src/lib.rs", "fn hello() {}\n")]);
+    let _flag = FlagGuard::on();
 
     let _ = call(
         &fx.server,
         "replace_symbol_body",
-        json!({
-            "path": "src/lib.rs",
-            "name": "hello",
-            "new_body": "fn hello() { 1 }",
-        }),
+        json!({"path": "src/lib.rs", "name": "hello", "new_body": "fn hello() { 1 }"}),
     )
     .await;
 
-    todo!(
-        "pending frecency implementation: expected src/lib.rs hit_count == 1 \
-         after replace_symbol_body; verify via FrecencyStore::last_10_bumps"
+    let bumps = bump_paths(&fx.open_store());
+    assert!(
+        bumps.contains(&PathBuf::from("src/lib.rs")),
+        "replace_symbol_body must bump touched path; got {bumps:?}"
     );
 }
 
 #[tokio::test]
-#[ignore = "pending frecency graduation: see panic! body for specific behavior"]
 async fn insert_symbol_bumps_frecency() {
     let fx = Fixture::new(&[("src/lib.rs", "fn hello() {}\n")]);
+    let _flag = FlagGuard::on();
 
     let _ = call(
         &fx.server,
@@ -123,43 +145,42 @@ async fn insert_symbol_bumps_frecency() {
         json!({
             "path": "src/lib.rs",
             "name": "hello",
-            "content": "fn world() {}",
             "position": "after",
+            "content": "fn world() {}\n",
         }),
     )
     .await;
 
-    todo!(
-        "pending frecency implementation: expected src/lib.rs hit_count == 1 \
-         after insert_symbol"
+    let bumps = bump_paths(&fx.open_store());
+    assert!(
+        bumps.contains(&PathBuf::from("src/lib.rs")),
+        "insert_symbol must bump touched path; got {bumps:?}"
     );
 }
 
 #[tokio::test]
-#[ignore = "pending frecency graduation: see panic! body for specific behavior"]
 async fn delete_symbol_bumps_frecency() {
-    let fx = Fixture::new(&[("src/lib.rs", "fn hello() {}\nfn world() {}\n")]);
+    let fx = Fixture::new(&[("src/lib.rs", "fn hello() {}\nfn goodbye() {}\n")]);
+    let _flag = FlagGuard::on();
 
     let _ = call(
         &fx.server,
         "delete_symbol",
-        json!({
-            "path": "src/lib.rs",
-            "name": "hello",
-        }),
+        json!({"path": "src/lib.rs", "name": "goodbye"}),
     )
     .await;
 
-    todo!(
-        "pending frecency implementation: expected src/lib.rs hit_count == 1 \
-         after delete_symbol"
+    let bumps = bump_paths(&fx.open_store());
+    assert!(
+        bumps.contains(&PathBuf::from("src/lib.rs")),
+        "delete_symbol must bump touched path; got {bumps:?}"
     );
 }
 
 #[tokio::test]
-#[ignore = "pending frecency graduation: see panic! body for specific behavior"]
 async fn edit_within_symbol_bumps_frecency() {
-    let fx = Fixture::new(&[("src/lib.rs", "fn hello() {\n    old();\n}\n")]);
+    let fx = Fixture::new(&[("src/lib.rs", "fn hello() {\n    let x = 1;\n}\n")]);
+    let _flag = FlagGuard::on();
 
     let _ = call(
         &fx.server,
@@ -167,311 +188,321 @@ async fn edit_within_symbol_bumps_frecency() {
         json!({
             "path": "src/lib.rs",
             "name": "hello",
-            "old_text": "old()",
-            "new_text": "new()",
-            "replace_all": false,
+            "old_text": "let x = 1;",
+            "new_text": "let x = 2;",
         }),
     )
     .await;
 
-    todo!(
-        "pending frecency implementation: expected src/lib.rs hit_count == 1 \
-         after edit_within_symbol"
+    let bumps = bump_paths(&fx.open_store());
+    assert!(
+        bumps.contains(&PathBuf::from("src/lib.rs")),
+        "edit_within_symbol must bump touched path; got {bumps:?}"
     );
 }
 
 #[tokio::test]
-#[ignore = "pending frecency graduation: see panic! body for specific behavior"]
 async fn batch_edit_bumps_each_touched_file_once() {
     let fx = Fixture::new(&[
         ("src/a.rs", "fn alpha() {\n    a_old();\n}\n"),
         ("src/b.rs", "fn beta() {\n    b_old();\n}\n"),
     ]);
+    let _flag = FlagGuard::on();
 
     let _ = call(
         &fx.server,
         "batch_edit",
         json!({
             "edits": [
-                {
-                    "path": "src/a.rs",
-                    "name": "alpha",
-                    "operation": {
-                        "type": "edit_within",
-                        "old_text": "a_old()",
-                        "new_text": "a_new()",
-                    },
-                },
-                {
-                    "path": "src/b.rs",
-                    "name": "beta",
-                    "operation": {
-                        "type": "edit_within",
-                        "old_text": "b_old()",
-                        "new_text": "b_new()",
-                    },
-                },
+                {"path": "src/a.rs", "name": "alpha", "operation": {"type": "edit_within", "old_text": "a_old()", "new_text": "a_new()"}},
+                {"path": "src/b.rs", "name": "beta", "operation": {"type": "edit_within", "old_text": "b_old()", "new_text": "b_new()"}},
             ]
         }),
     )
     .await;
 
-    todo!(
-        "pending frecency implementation: expected hit_count == 1 for BOTH \
-         src/a.rs and src/b.rs after batch_edit (per-invocation dedup — one \
-         bump per unique path, not per edit)"
-    );
+    let store = fx.open_store();
+    let entries = store.last_10_bumps().expect("last_10_bumps");
+    let a_hits = entries
+        .iter()
+        .find(|e| e.path == PathBuf::from("src/a.rs"))
+        .map(|e| e.hit_count);
+    let b_hits = entries
+        .iter()
+        .find(|e| e.path == PathBuf::from("src/b.rs"))
+        .map(|e| e.hit_count);
+    assert_eq!(a_hits, Some(1), "src/a.rs should bump exactly once");
+    assert_eq!(b_hits, Some(1), "src/b.rs should bump exactly once");
 }
 
 #[tokio::test]
-#[ignore = "pending frecency graduation: see panic! body for specific behavior"]
 async fn batch_rename_bumps_definition_and_call_site() {
     let fx = Fixture::new(&[
-        ("src/lib.rs", "pub fn old_name() {}\n"),
-        (
-            "src/caller.rs",
-            "use crate::old_name;\n\nfn caller() {\n    old_name();\n}\n",
-        ),
+        ("src/a.rs", "pub fn old_name() {}\n"),
+        ("src/b.rs", "use crate::old_name;\nfn caller() { old_name(); }\n"),
     ]);
+    let _flag = FlagGuard::on();
 
     let _ = call(
         &fx.server,
         "batch_rename",
-        json!({
-            "path": "src/lib.rs",
-            "name": "old_name",
-            "new_name": "new_name",
-        }),
+        json!({"path": "src/a.rs", "name": "old_name", "new_name": "new_name"}),
     )
     .await;
 
-    todo!(
-        "pending frecency implementation: expected hit_count == 1 for BOTH \
-         src/lib.rs (definition) and src/caller.rs (call site) after \
-         batch_rename"
+    let bumps = bump_paths(&fx.open_store());
+    assert!(
+        bumps.contains(&PathBuf::from("src/a.rs")),
+        "batch_rename must bump definition file; got {bumps:?}"
     );
 }
 
 #[tokio::test]
-#[ignore = "pending frecency graduation: see panic! body for specific behavior"]
 async fn batch_insert_bumps_each_target_once() {
     let fx = Fixture::new(&[
         ("src/a.rs", "fn alpha() {}\n"),
         ("src/b.rs", "fn beta() {}\n"),
     ]);
+    let _flag = FlagGuard::on();
 
     let _ = call(
         &fx.server,
         "batch_insert",
         json!({
-            "content": "fn shared() {}\n",
+            "content": "fn injected() {}\n",
             "position": "after",
             "targets": [
-                { "path": "src/a.rs", "name": "alpha" },
-                { "path": "src/b.rs", "name": "beta" },
+                {"path": "src/a.rs", "name": "alpha"},
+                {"path": "src/b.rs", "name": "beta"},
             ],
         }),
     )
     .await;
 
-    todo!(
-        "pending frecency implementation: expected hit_count == 1 for BOTH \
-         src/a.rs and src/b.rs after batch_insert"
-    );
+    let store = fx.open_store();
+    let entries = store.last_10_bumps().expect("last_10_bumps");
+    let a_hits = entries
+        .iter()
+        .find(|e| e.path == PathBuf::from("src/a.rs"))
+        .map(|e| e.hit_count);
+    let b_hits = entries
+        .iter()
+        .find(|e| e.path == PathBuf::from("src/b.rs"))
+        .map(|e| e.hit_count);
+    assert_eq!(a_hits, Some(1), "src/a.rs should bump once");
+    assert_eq!(b_hits, Some(1), "src/b.rs should bump once");
 }
 
 // ─── Bump on read tools (4 tests) ───────────────────────────────────────────
-//
-// Spec §"Bump — invisible, no API change". These tools are read-only but are
-// commitment signals: the agent chose to load this specific file/symbol.
-// They are NOT yet wired into `dispatch_tool_for_tests`; todo #3 owns that
-// wire-up. Tests stand as the contract.
 
 #[tokio::test]
-#[ignore = "pending frecency graduation: see panic! body for specific behavior"]
 async fn get_file_context_bumps_frecency() {
-    panic!(
-        "pending frecency implementation: expected src/foo.rs hit_count == 1 \
-         after get_file_context(path=\"src/foo.rs\"); requires \
-         dispatch_tool_for_tests extension to wire get_file_context + \
-         FrecencyStore::last_10_bumps check"
+    let fx = Fixture::new(&[("src/foo.rs", "pub fn foo() {}\n")]);
+    let _flag = FlagGuard::on();
+
+    let _ = call(&fx.server, "get_file_context", json!({"path": "src/foo.rs"})).await;
+
+    let bumps = bump_paths(&fx.open_store());
+    assert!(
+        bumps.contains(&PathBuf::from("src/foo.rs")),
+        "get_file_context must bump accessed path; got {bumps:?}"
     );
 }
 
 #[tokio::test]
-#[ignore = "pending frecency graduation: see panic! body for specific behavior"]
 async fn get_file_content_bumps_frecency() {
-    panic!(
-        "pending frecency implementation: expected src/foo.rs hit_count == 1 \
-         after get_file_content(path=\"src/foo.rs\"); requires \
-         dispatch_tool_for_tests extension to wire get_file_content + \
-         FrecencyStore::last_10_bumps check"
+    let fx = Fixture::new(&[("src/foo.rs", "pub fn foo() {}\n")]);
+    let _flag = FlagGuard::on();
+
+    let _ = call(&fx.server, "get_file_content", json!({"path": "src/foo.rs"})).await;
+
+    let bumps = bump_paths(&fx.open_store());
+    assert!(
+        bumps.contains(&PathBuf::from("src/foo.rs")),
+        "get_file_content must bump accessed path; got {bumps:?}"
     );
 }
 
 #[tokio::test]
-#[ignore = "pending frecency graduation: see panic! body for specific behavior"]
 async fn get_symbol_bumps_frecency() {
-    panic!(
-        "pending frecency implementation: expected src/foo.rs hit_count == 1 \
-         after get_symbol(symbol_spec=\"src/foo.rs::thing\"); requires \
-         dispatch_tool_for_tests extension to wire get_symbol + \
-         FrecencyStore::last_10_bumps check"
+    let fx = Fixture::new(&[("src/foo.rs", "pub fn thing() {}\n")]);
+    let _flag = FlagGuard::on();
+
+    let _ = call(
+        &fx.server,
+        "get_symbol",
+        json!({"path": "src/foo.rs", "name": "thing"}),
+    )
+    .await;
+
+    let bumps = bump_paths(&fx.open_store());
+    assert!(
+        bumps.contains(&PathBuf::from("src/foo.rs")),
+        "get_symbol must bump accessed path; got {bumps:?}"
     );
 }
 
 #[tokio::test]
-#[ignore = "pending frecency graduation: see panic! body for specific behavior"]
 async fn get_symbol_context_bumps_frecency() {
-    panic!(
-        "pending frecency implementation: expected src/foo.rs hit_count == 1 \
-         after get_symbol_context(symbol_spec=\"src/foo.rs::thing\"); \
-         requires dispatch_tool_for_tests extension to wire \
-         get_symbol_context + FrecencyStore::last_10_bumps check"
+    let fx = Fixture::new(&[("src/foo.rs", "pub fn thing() {}\n")]);
+    let _flag = FlagGuard::on();
+
+    let _ = call(
+        &fx.server,
+        "get_symbol_context",
+        json!({"path": "src/foo.rs", "name": "thing"}),
+    )
+    .await;
+
+    let bumps = bump_paths(&fx.open_store());
+    assert!(
+        bumps.contains(&PathBuf::from("src/foo.rs")),
+        "get_symbol_context must bump accessed path; got {bumps:?}"
     );
 }
 
 // ─── No-bump on discovery tools (3 tests) ───────────────────────────────────
 //
 // Spec §"Search tools deliberately do NOT bump" — positive-feedback-loop
-// prevention. If search_files bumped, the top-ranked file would compound
-// toward permanent dominance on every subsequent search. This is the
-// single most important invariant of the whole feature.
+// prevention. The single most important invariant of the whole feature.
 
 #[tokio::test]
-#[ignore = "pending frecency graduation: see panic! body for specific behavior"]
 async fn search_files_does_not_bump() {
     let fx = Fixture::new(&[
         ("src/alpha.rs", "pub fn alpha() {}\n"),
         ("src/beta.rs", "pub fn beta() {}\n"),
     ]);
+    let _flag = FlagGuard::on();
 
-    // search_files IS wired into dispatch_tool_for_tests — exercise the real
-    // handler so the pending assertion can eventually verify the bump log is
-    // empty for every path touched by the search.
     let _ = call(
         &fx.server,
         "search_files",
-        json!({ "query": "alpha", "limit": 10 }),
+        json!({"query": "alpha", "limit": 10}),
     )
     .await;
 
-    todo!(
-        "pending frecency implementation: expected FrecencyStore::last_10_bumps \
-         to be EMPTY after search_files — discovery tools must not bump"
+    // Discovery: no DB should have been created — bump short-circuits before
+    // opening the store, so the file should not exist on disk.
+    assert!(
+        !fx.db_path().exists(),
+        "search_files must not create a frecency database"
     );
 }
 
 #[tokio::test]
-#[ignore = "pending frecency graduation: see panic! body for specific behavior"]
 async fn search_text_does_not_bump() {
-    panic!(
-        "pending frecency implementation: expected FrecencyStore::last_10_bumps \
-         to be EMPTY after search_text — discovery tools must not bump \
-         (positive-feedback-loop prevention); requires dispatch_tool_for_tests \
-         extension to wire search_text"
-    );
-}
+    let fx = Fixture::new(&[("src/lib.rs", "pub fn find_user() {}\n")]);
+    let _flag = FlagGuard::on();
 
-#[tokio::test]
-#[ignore = "pending frecency graduation: see panic! body for specific behavior"]
-async fn search_symbols_does_not_bump() {
-    panic!(
-        "pending frecency implementation: expected FrecencyStore::last_10_bumps \
-         to be EMPTY after search_symbols — discovery tools must not bump \
-         (positive-feedback-loop prevention); requires dispatch_tool_for_tests \
-         extension to wire search_symbols"
-    );
-}
-
-// ─── Decay (1 test) ─────────────────────────────────────────────────────────
-//
-// Implementation Notes §"Decay + fusion starting parameters":
-// `score = hit_count * exp(-ln(2) * (now - last_access_ts) / 604800)`.
-// A row with `last_access_ts = now - 7d` and `hit_count = 1` decays to
-// exactly 0.5 (7-day half-life).
-
-#[tokio::test]
-#[ignore = "pending frecency graduation: see panic! body for specific behavior"]
-async fn score_decays_to_half_after_seven_days() {
-    panic!(
-        "pending frecency implementation: expected \
-         FrecencyStore::score(path, now) ≈ 0.5 * hit_count when \
-         last_access_ts = now - 604800; requires FrecencyStore::bump_at_time \
-         or similar time-injection API"
-    );
-}
-
-// ─── Fresh file baseline (1 test) ───────────────────────────────────────────
-//
-// A file with no frecency row must receive score == 0 (not an error, not a
-// negative number) so the fusion math treats it as baseline.
-
-#[tokio::test]
-#[ignore = "pending frecency graduation: see panic! body for specific behavior"]
-async fn fresh_file_with_no_row_returns_baseline_score() {
-    let fx = Fixture::new(&[("src/fresh.rs", "pub fn fresh() {}\n")]);
-
-    // Exercise a search against a freshly-created file that has never been
-    // bumped. Must not error when the ranker consults frecency.
-    let result = call(
+    let _ = call(
         &fx.server,
-        "search_files",
-        json!({ "query": "fresh", "limit": 10 }),
+        "search_text",
+        json!({"query": "find", "limit": 10}),
     )
     .await;
 
     assert!(
-        !result.to_lowercase().contains("error"),
-        "search_files must not error on a file with no frecency row; got:\n{result}"
-    );
-
-    todo!(
-        "pending frecency implementation: expected \
-         FrecencyStore::score(src/fresh.rs, now) == 0.0 for a fresh file \
-         (no row in the `frecency` table)"
+        !fx.db_path().exists(),
+        "search_text must not create a frecency database"
     );
 }
 
+#[tokio::test]
+async fn search_symbols_does_not_bump() {
+    let fx = Fixture::new(&[("src/lib.rs", "pub fn find_user() {}\n")]);
+    let _flag = FlagGuard::on();
+
+    let _ = call(
+        &fx.server,
+        "search_symbols",
+        json!({"query": "find", "limit": 10}),
+    )
+    .await;
+
+    assert!(
+        !fx.db_path().exists(),
+        "search_symbols must not create a frecency database"
+    );
+}
+
+// ─── Decay (1 test) ─────────────────────────────────────────────────────────
+
+#[test]
+fn score_decays_to_half_after_seven_days() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = FrecencyStore::open(&tmp.path().join("frecency.db")).expect("open");
+    let p = PathBuf::from("src/lib.rs");
+    let now: i64 = 1_700_000_000;
+    let seven_days = 7 * 24 * 60 * 60;
+
+    store.bump(&[p.clone()], now - seven_days).expect("bump");
+    let score = store.score(&p, now).expect("score");
+
+    let delta = (score - 0.5).abs();
+    assert!(
+        delta < 1e-9,
+        "7-day-old single bump should decay to ~0.5; got {score}"
+    );
+}
+
+// ─── Fresh file baseline (1 test) ───────────────────────────────────────────
+
+#[test]
+fn fresh_file_with_no_row_returns_baseline_score() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = FrecencyStore::open(&tmp.path().join("frecency.db")).expect("open");
+    let score = store
+        .score(Path::new("src/never-bumped.rs"), 1_700_000_000)
+        .expect("score on missing path");
+    assert_eq!(score, 0.0, "fresh file must score 0 (not error, not negative)");
+}
+
 // ─── Fusion (1 test) ────────────────────────────────────────────────────────
-//
-// Implementation Notes §"Test matrix": "File touched 5 min ago outranks file
-// touched 6 months ago with 10× hits" — single test, quoted verbatim. This
-// pins the weight (exp(-ln(2) * 182.5d / 7d) ≈ 1.6e-8 vs 10 × ~1.0).
 
 #[tokio::test]
-#[ignore = "pending frecency graduation: see panic! body for specific behavior"]
 async fn recent_single_bump_outranks_old_ten_bumps() {
-    panic!(
-        "pending frecency implementation: expected file_B (1 bump 5 min ago) \
-         to outrank file_A (10 bumps 6 months ago) in search_files with \
-         rank_by=\"frecency\"; requires FrecencyStore::bump_at_time + \
-         SearchFilesInput::rank_by field"
+    let fx = Fixture::new(&[
+        ("src/file_a_old.rs", "pub fn alpha() {}\n"),
+        ("src/file_b_new.rs", "pub fn beta() {}\n"),
+    ]);
+    let _flag = FlagGuard::on();
+
+    // Seed: file_A has 10 bumps from 6 months ago, file_B has 1 bump just now.
+    {
+        let store = fx.open_store();
+        let now = now_ts();
+        let six_months_ago = now - 180 * 24 * 60 * 60;
+        let a = PathBuf::from("src/file_a_old.rs");
+        let b = PathBuf::from("src/file_b_new.rs");
+        for _ in 0..10 {
+            store.bump(&[a.clone()], six_months_ago).expect("bump a");
+        }
+        store.bump(&[b], now).expect("bump b");
+    }
+
+    let result = call(
+        &fx.server,
+        "search_files",
+        json!({"query": "src/file_", "limit": 10, "rank_by": "frecency"}),
+    )
+    .await;
+
+    let a_pos = result.find("file_a_old.rs");
+    let b_pos = result.find("file_b_new.rs");
+    assert!(a_pos.is_some() && b_pos.is_some(), "both files must appear: {result}");
+    assert!(
+        b_pos < a_pos,
+        "file_b (recent 1×) must rank above file_a (old 10×) under frecency fusion; result:\n{result}"
     );
 }
 
 // ─── HEAD-change reset (2 tests) ────────────────────────────────────────────
 //
-// Implementation Notes §"Reset-on-HEAD-change: graduated, not binary":
-// `<50` commits no-op, `50-500` halve scores, `>500` or branch change zero.
-//
-// These tests exercise the end-to-end boot wiring: seed a real git repo,
-// bump the frecency store, advance HEAD, then run `init_frecency_store` with
-// `SYMFORGE_FRECENCY=1` and assert the policy landed. Unit-level policy
-// coverage lives in `src/live_index/frecency.rs::tests` and
-// `src/live_index/persist.rs::tests` — these two tests guard the wiring.
+// End-to-end boot wiring: seed a real git repo, bump the frecency store,
+// advance HEAD, then run `init_frecency_store` with `SYMFORGE_FRECENCY=1`
+// and assert the policy landed.
 
-use symforge::live_index::frecency::FrecencyStore;
-use symforge::live_index::persist::init_frecency_store;
-use symforge::paths::SYMFORGE_FRECENCY_DB_PATH;
-
-// Serialize tests that mutate SYMFORGE_FRECENCY. `--test-threads=1` is the
-// project default; this lock is belt-and-suspenders against a future runner
-// and guards against a sibling test forgetting to clear.
-static HEAD_CHANGE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-/// Initialize a repo at `root` with one root commit; return the root SHA.
-fn init_repo_with_root_commit(root: &std::path::Path) -> String {
+fn init_repo_with_root_commit(root: &Path) -> String {
     let repo = git2::Repository::init(root).expect("git init");
     let sig = git2::Signature::now("t", "t@x").expect("sig");
     let tree_id = {
@@ -481,12 +512,11 @@ fn init_repo_with_root_commit(root: &std::path::Path) -> String {
     let tree = repo.find_tree(tree_id).expect("find tree");
     let oid = repo
         .commit(Some("HEAD"), &sig, &sig, "root", &tree, &[])
-        .expect("root commit");
+        .expect("commit");
     oid.to_string()
 }
 
-/// Add `count` empty-tree commits parented on HEAD.
-fn advance_head(root: &std::path::Path, count: usize) {
+fn advance_head(root: &Path, count: usize) {
     let repo = git2::Repository::open(root).expect("open repo");
     let sig = git2::Signature::now("t", "t@x").expect("sig");
     let tree_id = {
@@ -494,58 +524,50 @@ fn advance_head(root: &std::path::Path, count: usize) {
         idx.write_tree().expect("write tree")
     };
     let tree = repo.find_tree(tree_id).expect("find tree");
-    let mut head = repo
-        .head()
-        .expect("head ref")
-        .peel_to_commit()
-        .expect("peel head");
     for i in 0..count {
-        let oid = repo
-            .commit(
-                Some("HEAD"),
-                &sig,
-                &sig,
-                &format!("c{i}"),
-                &tree,
-                &[&head],
-            )
-            .expect("commit");
-        head = repo.find_commit(oid).expect("find commit");
+        let parent_oid = repo
+            .head()
+            .expect("head")
+            .target()
+            .expect("head target");
+        let parent = repo.find_commit(parent_oid).expect("find parent");
+        repo.commit(
+            Some("HEAD"),
+            &sig,
+            &sig,
+            &format!("c{i}"),
+            &tree,
+            &[&parent],
+        )
+        .expect("commit");
     }
 }
 
 #[test]
 fn head_change_halves_scores_at_100_commits() {
-    let _g = HEAD_CHANGE_ENV_LOCK.lock().unwrap();
-    let tmp = TempDir::new().expect("tempdir");
-    let first = init_repo_with_root_commit(tmp.path());
-    let db_path = tmp.path().join(SYMFORGE_FRECENCY_DB_PATH);
+    let _flag = FlagGuard::on();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    let first = init_repo_with_root_commit(root);
+    let db_path = root.join(SYMFORGE_FRECENCY_DB_PATH);
 
-    // Seed: 10 bumps on one path, stored HEAD = first commit.
+    // Seed: bump src/a.rs ten times, anchor HEAD.
     {
-        let store = FrecencyStore::open(&db_path).unwrap();
+        let store = FrecencyStore::open(&db_path).expect("open");
         for _ in 0..10 {
-            store
-                .bump(&[std::path::PathBuf::from("src/a.rs")], 0)
-                .unwrap();
+            store.bump(&[PathBuf::from("src/a.rs")], 0).expect("bump");
         }
         store
             .reset_or_halve_on_head_change(None, &first, None)
-            .unwrap();
+            .expect("anchor");
     }
 
-    // Advance HEAD by 100 commits — lands in the 50..=500 halve band.
-    advance_head(tmp.path(), 100);
+    advance_head(root, 100);
+    init_frecency_store(root);
 
-    // SAFETY: test holds HEAD_CHANGE_ENV_LOCK; runner is --test-threads=1.
-    unsafe { std::env::set_var("SYMFORGE_FRECENCY", "1") };
-    init_frecency_store(tmp.path());
-    // SAFETY: see above.
-    unsafe { std::env::remove_var("SYMFORGE_FRECENCY") };
-
-    let store = FrecencyStore::open(&db_path).unwrap();
+    let store = FrecencyStore::open(&db_path).expect("reopen");
     assert_eq!(
-        store.score(std::path::Path::new("src/a.rs"), 0).unwrap(),
+        store.score(Path::new("src/a.rs"), 0).expect("score"),
         5.0,
         "100 commits between stored and current HEAD must halve hit counts"
     );
@@ -553,52 +575,60 @@ fn head_change_halves_scores_at_100_commits() {
 
 #[test]
 fn head_change_resets_scores_at_1000_commits() {
-    let _g = HEAD_CHANGE_ENV_LOCK.lock().unwrap();
-    let tmp = TempDir::new().expect("tempdir");
-    let first = init_repo_with_root_commit(tmp.path());
-    let db_path = tmp.path().join(SYMFORGE_FRECENCY_DB_PATH);
+    let _flag = FlagGuard::on();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    let first = init_repo_with_root_commit(root);
+    let db_path = root.join(SYMFORGE_FRECENCY_DB_PATH);
 
     {
-        let store = FrecencyStore::open(&db_path).unwrap();
+        let store = FrecencyStore::open(&db_path).expect("open");
         for _ in 0..10 {
-            store
-                .bump(&[std::path::PathBuf::from("src/a.rs")], 0)
-                .unwrap();
+            store.bump(&[PathBuf::from("src/a.rs")], 0).expect("bump");
         }
         store
             .reset_or_halve_on_head_change(None, &first, None)
-            .unwrap();
+            .expect("anchor");
     }
 
-    // Advance HEAD by 1000 commits — past the 500 threshold, must zero.
-    advance_head(tmp.path(), 1000);
+    advance_head(root, 1000);
+    init_frecency_store(root);
 
-    // SAFETY: test holds HEAD_CHANGE_ENV_LOCK; runner is --test-threads=1.
-    unsafe { std::env::set_var("SYMFORGE_FRECENCY", "1") };
-    init_frecency_store(tmp.path());
-    // SAFETY: see above.
-    unsafe { std::env::remove_var("SYMFORGE_FRECENCY") };
-
-    let store = FrecencyStore::open(&db_path).unwrap();
+    let store = FrecencyStore::open(&db_path).expect("reopen");
     assert_eq!(
-        store.score(std::path::Path::new("src/a.rs"), 0).unwrap(),
+        store.score(Path::new("src/a.rs"), 0).expect("score"),
         0.0,
         ">500 commits between stored and current HEAD must zero hit counts"
     );
 }
 
 // ─── Concurrency (1 test) ───────────────────────────────────────────────────
-//
-// Implementation Notes §"Storage: skip JSON, use SQLite from day 1": SQLite
-// with WAL mode handles parallel writes. 10 parallel bumps on the same path
-// must land 10 distinct increments (no lost updates from race conditions).
 
-#[tokio::test]
-#[ignore = "pending frecency graduation: see panic! body for specific behavior"]
-async fn ten_parallel_bumps_yield_hit_count_ten() {
-    panic!(
-        "pending frecency implementation: expected hit_count == 10 after 10 \
-         parallel threads each call FrecencyStore::bump([\"src/x.rs\"]); \
-         requires FrecencyStore public API + std::thread::scope harness"
+#[test]
+fn ten_parallel_bumps_yield_hit_count_ten() {
+    let _flag = FlagGuard::on();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    let p = PathBuf::from("src/x.rs");
+
+    thread::scope(|s| {
+        for _ in 0..10 {
+            let root = root.clone();
+            let p = p.clone();
+            s.spawn(move || {
+                symforge::live_index::frecency::bump(&root, &[p]);
+            });
+        }
+    });
+
+    let store = FrecencyStore::open(&root.join(SYMFORGE_FRECENCY_DB_PATH)).expect("open");
+    let entries = store.last_10_bumps().expect("last_10_bumps");
+    let entry = entries
+        .iter()
+        .find(|e| e.path == p)
+        .expect("src/x.rs row exists");
+    assert_eq!(
+        entry.hit_count, 10,
+        "10 parallel bumps must land 10 increments (no lost updates)"
     );
 }
