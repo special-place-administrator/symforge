@@ -1,6 +1,33 @@
 #!/usr/bin/env node
 "use strict";
 
+/**
+ * symforge npm postinstall.
+ *
+ * Install policy (runs on every `npm install`/`npm install -g`):
+ *
+ *   1. No binary at target path → download and install.
+ *   2. Binary exists:
+ *      a. Read the recorded version from `symforge.version` (sibling file).
+ *         If missing or unparseable, probe the binary via `--version`.
+ *      b. Recorded version matches this package → SKIP download. Auto-init
+ *         still runs so client configs stay up to date, and any stale
+ *         `symforge.pending.*` files are cleaned up.
+ *      c. Recorded version differs, is missing, OR the probe fails (dummy
+ *         file, permission denied, truncated binary, non-executable) →
+ *         RE-DOWNLOAD and overwrite.
+ *
+ * Corruption safety: `symforge.version` is written ONLY after the binary
+ * is fully written and chmod'd (`writeInstalledBinary`). An interrupted
+ * install therefore leaves the version file stale or absent, which forces
+ * re-download on the next run — a truncated or dummy file at the target
+ * path never counts as "already installed", even if it happens to exist.
+ *
+ * Windows lock handling: when the binary is locked by a running MCP server,
+ * the new version is staged at `symforge.pending.exe` and applied by the
+ * launcher on next start. See `installDownloadedBinary` for details.
+ */
+
 const childProcess = require("child_process");
 const fs = require("fs");
 const path = require("path");
