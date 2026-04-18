@@ -1,9 +1,11 @@
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use globset::{GlobBuilder, GlobMatcher};
 
 use crate::domain::{FileClass, FileClassification, LanguageId, SymbolKind};
 use crate::live_index::LiveIndex;
+use crate::live_index::query::{SearchFilesHit, SearchFilesTier};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SymbolMatchTier {
@@ -1558,6 +1560,99 @@ fn build_context_rendered_lines(
     rendered
 }
 
+// ── File-search frecency fusion ────────────────────────────────────────────
+//
+// Opt-in rerank used by `search_files` when `rank_by="frecency"` is set AND
+// the `SYMFORGE_FRECENCY=1` feature flag is on. Default callers keep the
+// existing tier-based comparator in `query::capture_search_files_view`.
+//
+// Contract: `combined = 0.6 * path_match + 0.3 * co_change + 0.1 * frecency_norm`
+// with frecency normalized against the max raw score in the candidate set so
+// every contribution sits on the same `[0, 1]` scale. Anchors the fusion
+// weights from the spec's Implementation Notes §"Decay + fusion starting
+// parameters".
+
+/// Path-match signal contribution derived from the candidate's tier. Strong
+/// (exact or suffix) paths earn the full `1.0`; basenames a solid `0.6`;
+/// loose-component and prefix hits `0.3`. Co-change hits don't participate
+/// in path-match (they flow through the co-change signal instead).
+pub fn tier_path_match_score(tier: SearchFilesTier) -> f64 {
+    match tier {
+        SearchFilesTier::StrongPath => 1.0,
+        SearchFilesTier::Basename => 0.6,
+        SearchFilesTier::LoosePath => 0.3,
+        SearchFilesTier::CoChange => 0.0,
+    }
+}
+
+/// Per-hit fused score. Returned alongside the re-ranked hits so callers
+/// rendering `SYMFORGE_DEBUG_RANKING=1` can show the breakdown without
+/// re-deriving anything.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FrecencyFusionBreakdown {
+    pub path_match: f64,
+    pub co_change: f64,
+    pub frecency_normalized: f64,
+    pub combined: f64,
+}
+
+/// Re-rank a candidate set by the frecency fusion policy. The returned
+/// vector preserves one-to-one correspondence with the input `hits`: each
+/// hit keeps its position in the result vec, and the parallel
+/// `breakdowns` vec reports the per-hit scores. Callers can then sort or
+/// filter however they need; the `reorder_by_combined` helper is the
+/// common case.
+pub fn score_hits_by_frecency_fusion(
+    hits: &[SearchFilesHit],
+    frecency_scores: &HashMap<PathBuf, f64>,
+) -> Vec<FrecencyFusionBreakdown> {
+    let max_frecency = frecency_scores
+        .values()
+        .copied()
+        .fold(0.0_f64, f64::max);
+    hits.iter()
+        .map(|hit| {
+            let path_match = tier_path_match_score(hit.tier);
+            let co_change = hit.coupling_score.map(f64::from).unwrap_or(0.0);
+            let raw = frecency_scores
+                .get(Path::new(hit.path.as_str()))
+                .copied()
+                .unwrap_or(0.0);
+            let frecency_normalized = if max_frecency > 0.0 {
+                (raw / max_frecency).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let combined = 0.6 * path_match + 0.3 * co_change + 0.1 * frecency_normalized;
+            FrecencyFusionBreakdown {
+                path_match,
+                co_change,
+                frecency_normalized,
+                combined,
+            }
+        })
+        .collect()
+}
+
+/// Re-sort `hits` by descending combined score using the provided
+/// `breakdowns` (must be parallel to `hits`). Ties break stably by path so
+/// ordering is deterministic across runs.
+pub fn reorder_hits_by_frecency_fusion(
+    mut hits: Vec<SearchFilesHit>,
+    breakdowns: &[FrecencyFusionBreakdown],
+) -> Vec<SearchFilesHit> {
+    debug_assert_eq!(hits.len(), breakdowns.len());
+    let mut indexed: Vec<(usize, SearchFilesHit)> = hits.drain(..).enumerate().collect();
+    indexed.sort_by(|a, b| {
+        let sa = breakdowns[a.0].combined;
+        let sb = breakdowns[b.0].combined;
+        sb.partial_cmp(&sa)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.1.path.cmp(&b.1.path))
+    });
+    indexed.into_iter().map(|(_, hit)| hit).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -2640,6 +2735,139 @@ mod tests {
             "Expected high churn score ({}) > no churn score ({})",
             score_high_churn,
             score_no_churn,
+        );
+    }
+
+    // ── Frecency fusion ────────────────────────────────────────────────────
+
+    fn make_file_hit(path: &str, tier: SearchFilesTier) -> SearchFilesHit {
+        SearchFilesHit {
+            tier,
+            path: path.to_string(),
+            coupling_score: None,
+            shared_commits: None,
+        }
+    }
+
+    #[test]
+    fn tier_path_match_score_maps_tiers_to_expected_weights() {
+        assert_eq!(tier_path_match_score(SearchFilesTier::StrongPath), 1.0);
+        assert_eq!(tier_path_match_score(SearchFilesTier::Basename), 0.6);
+        assert_eq!(tier_path_match_score(SearchFilesTier::LoosePath), 0.3);
+        assert_eq!(tier_path_match_score(SearchFilesTier::CoChange), 0.0);
+    }
+
+    #[test]
+    fn score_hits_by_frecency_fusion_returns_zero_frecency_when_store_empty() {
+        let hits = vec![
+            make_file_hit("src/a.rs", SearchFilesTier::StrongPath),
+            make_file_hit("src/b.rs", SearchFilesTier::Basename),
+        ];
+        let scores: HashMap<PathBuf, f64> = HashMap::new();
+        let breakdowns = score_hits_by_frecency_fusion(&hits, &scores);
+        assert_eq!(breakdowns.len(), 2);
+        for b in &breakdowns {
+            assert_eq!(b.frecency_normalized, 0.0);
+        }
+        // combined = 0.6 * path_match (co_change and frecency both 0)
+        assert!((breakdowns[0].combined - 0.6).abs() < f64::EPSILON);
+        assert!((breakdowns[1].combined - 0.36).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn score_hits_by_frecency_fusion_normalizes_against_max_in_set() {
+        let hits = vec![
+            make_file_hit("src/peak.rs", SearchFilesTier::LoosePath),
+            make_file_hit("src/mid.rs", SearchFilesTier::LoosePath),
+            make_file_hit("src/cold.rs", SearchFilesTier::LoosePath),
+        ];
+        let mut scores = HashMap::new();
+        scores.insert(PathBuf::from("src/peak.rs"), 10.0);
+        scores.insert(PathBuf::from("src/mid.rs"), 2.5);
+        // "src/cold.rs" intentionally missing — treated as 0.
+        let breakdowns = score_hits_by_frecency_fusion(&hits, &scores);
+        assert!((breakdowns[0].frecency_normalized - 1.0).abs() < f64::EPSILON);
+        assert!((breakdowns[1].frecency_normalized - 0.25).abs() < f64::EPSILON);
+        assert_eq!(breakdowns[2].frecency_normalized, 0.0);
+    }
+
+    #[test]
+    fn score_hits_by_frecency_fusion_applies_weights_060_030_010() {
+        // Single candidate with a full-score path_match, nonzero co_change,
+        // and the only frecency row (→ normalized == 1.0). Final combined
+        // must equal 0.6 + 0.3 * 0.5 + 0.1 = 0.85.
+        let mut hit = make_file_hit("src/star.rs", SearchFilesTier::StrongPath);
+        hit.coupling_score = Some(0.5);
+        let hits = vec![hit];
+        let mut scores = HashMap::new();
+        scores.insert(PathBuf::from("src/star.rs"), 1.0);
+        let breakdowns = score_hits_by_frecency_fusion(&hits, &scores);
+        let b = breakdowns[0];
+        assert!((b.path_match - 1.0).abs() < f64::EPSILON);
+        assert!((b.co_change - 0.5).abs() < f64::EPSILON);
+        assert!((b.frecency_normalized - 1.0).abs() < f64::EPSILON);
+        assert!((b.combined - (0.6 + 0.15 + 0.1)).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn reorder_hits_by_frecency_fusion_sorts_by_combined_descending() {
+        let hits = vec![
+            make_file_hit("src/c.rs", SearchFilesTier::LoosePath),
+            make_file_hit("src/a.rs", SearchFilesTier::LoosePath),
+            make_file_hit("src/b.rs", SearchFilesTier::LoosePath),
+        ];
+        // All three tied on path_match (LoosePath → 0.3). Give each a
+        // different raw frecency so the normalized contribution breaks
+        // ties and re-orders the set.
+        let mut scores = HashMap::new();
+        scores.insert(PathBuf::from("src/c.rs"), 1.0);
+        scores.insert(PathBuf::from("src/a.rs"), 10.0);
+        scores.insert(PathBuf::from("src/b.rs"), 5.0);
+        let breakdowns = score_hits_by_frecency_fusion(&hits, &scores);
+        let reordered = reorder_hits_by_frecency_fusion(hits, &breakdowns);
+        assert_eq!(reordered[0].path, "src/a.rs");
+        assert_eq!(reordered[1].path, "src/b.rs");
+        assert_eq!(reordered[2].path, "src/c.rs");
+    }
+
+    #[test]
+    fn reorder_hits_by_frecency_fusion_breaks_combined_ties_by_path() {
+        // Two hits with identical tier and no frecency → identical combined.
+        // Tiebreak must be stable-alphabetical by path for determinism.
+        let hits = vec![
+            make_file_hit("src/z.rs", SearchFilesTier::Basename),
+            make_file_hit("src/a.rs", SearchFilesTier::Basename),
+        ];
+        let scores: HashMap<PathBuf, f64> = HashMap::new();
+        let breakdowns = score_hits_by_frecency_fusion(&hits, &scores);
+        let reordered = reorder_hits_by_frecency_fusion(hits, &breakdowns);
+        assert_eq!(reordered[0].path, "src/a.rs");
+        assert_eq!(reordered[1].path, "src/z.rs");
+    }
+
+    #[test]
+    fn recent_single_bump_outranks_old_ten_bumps_via_fusion_math() {
+        // Spec fixture: "File touched 5 min ago outranks file touched 6
+        // months ago with 10× hits". Pinned here at the fusion-math layer
+        // (no DB involved) so the math stays correct even before the
+        // end-to-end integration test is wired.
+        //
+        // Decay uses 7-day half-life. 5 minutes is negligible decay
+        // → score_b ≈ 1.0. 6 months ≈ 26 half-lives → score_a ≈ 10 * 2^-26
+        // ≈ 1.5e-7. After normalizing against max (== score_b), file_a's
+        // contribution is essentially 0 and file_b's is 1.0.
+        let hits = vec![
+            make_file_hit("src/file_a.rs", SearchFilesTier::LoosePath),
+            make_file_hit("src/file_b.rs", SearchFilesTier::LoosePath),
+        ];
+        let mut scores = HashMap::new();
+        scores.insert(PathBuf::from("src/file_a.rs"), 1.5e-7);
+        scores.insert(PathBuf::from("src/file_b.rs"), 1.0);
+        let breakdowns = score_hits_by_frecency_fusion(&hits, &scores);
+        let reordered = reorder_hits_by_frecency_fusion(hits, &breakdowns);
+        assert_eq!(
+            reordered[0].path, "src/file_b.rs",
+            "recent single bump must outrank old 10x bumps"
         );
     }
 }

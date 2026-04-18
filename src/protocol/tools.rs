@@ -397,6 +397,13 @@ pub struct SearchFilesInput {
     /// Optional maximum token budget for the response.
     #[serde(default, deserialize_with = "lenient_u64")]
     pub max_tokens: Option<u64>,
+    /// Optional ranking mode. `"frecency"` fuses the tier-based path match
+    /// with per-workspace frecency and git-temporal co-change signals
+    /// (weights `0.6 / 0.3 / 0.1`). Requires `SYMFORGE_FRECENCY=1`; any
+    /// other value (including `None`) preserves the default tier-based
+    /// ordering exactly.
+    #[serde(default)]
+    pub rank_by: Option<String>,
 }
 
 /// Input for `index_folder`.
@@ -3981,7 +3988,7 @@ impl SymForgeServer {
             return "search_files requires a non-empty `query` (or use `changed_with` to find co-changing files).".to_string();
         }
 
-        let view = {
+        let mut view = {
             let guard = self.index.read();
             loading_guard!(guard);
             guard.capture_search_files_view(
@@ -3990,6 +3997,39 @@ impl SymForgeServer {
                 params.0.current_file.as_deref(),
             )
         };
+        // Optional frecency-fusion rerank. Activated only when the caller asked
+        // for `rank_by="frecency"` AND the `SYMFORGE_FRECENCY=1` flag is on.
+        // Any failure to open the on-disk store silently falls back to the
+        // tier-based ordering — the feature must never break `search_files`.
+        if params.0.rank_by.as_deref() == Some("frecency")
+            && std::env::var("SYMFORGE_FRECENCY").as_deref() == Ok("1")
+            && let SearchFilesView::Found { hits, .. } = &mut view
+        {
+            if let Some(repo_root) = self.capture_repo_root() {
+                let db_path = repo_root.join(crate::paths::SYMFORGE_FRECENCY_DB_PATH);
+                if let Ok(store) = crate::live_index::frecency::FrecencyStore::open(&db_path) {
+                    let hit_paths: Vec<std::path::PathBuf> =
+                        hits.iter().map(|h| std::path::PathBuf::from(&h.path)).collect();
+                    let path_refs: Vec<&std::path::Path> =
+                        hit_paths.iter().map(|p| p.as_path()).collect();
+                    let now_ts = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0);
+                    if let Ok(scores) = store.bulk_scores(&path_refs, now_ts) {
+                        let breakdowns =
+                            crate::live_index::search::score_hits_by_frecency_fusion(
+                                hits, &scores,
+                            );
+                        let taken = std::mem::take(hits);
+                        *hits = crate::live_index::search::reorder_hits_by_frecency_fusion(
+                            taken,
+                            &breakdowns,
+                        );
+                    }
+                }
+            }
+        }
         let envelope = match &view {
             SearchFilesView::Found {
                 hits,
@@ -6002,6 +6042,7 @@ impl SymForgeServer {
                     resolve: None,
                     estimate: None,
                     max_tokens: None,
+                    rank_by: None,
                 };
                 self.search_files(Parameters(input)).await
             }
@@ -9500,6 +9541,7 @@ mod tests {
                 resolve: None,
                 estimate: None,
                 max_tokens: None,
+                rank_by: None,
             }))
             .await;
         assert!(result.contains("2 matching files"), "got: {result}");
@@ -9533,6 +9575,7 @@ mod tests {
                 resolve: None,
                 estimate: None,
                 max_tokens: None,
+                rank_by: None,
             }))
             .await;
         assert_eq!(result, "No indexed source files matching 'src/service.rs'");
@@ -9552,6 +9595,7 @@ mod tests {
                 resolve: None,
                 estimate: None,
                 max_tokens: None,
+                rank_by: None,
             }))
             .await;
         // Without git temporal data, should return informative message (not an error/panic)
@@ -9615,6 +9659,7 @@ mod tests {
                 resolve: None,
                 estimate: None,
                 max_tokens: None,
+                rank_by: None,
             }))
             .await;
 
@@ -9639,6 +9684,7 @@ mod tests {
                 resolve: Some(true),
                 estimate: None,
                 max_tokens: None,
+                rank_by: None,
             }))
             .await;
         assert!(
@@ -9667,6 +9713,7 @@ mod tests {
                 resolve: Some(true),
                 estimate: None,
                 max_tokens: None,
+                rank_by: None,
             }))
             .await;
         assert!(
@@ -15186,6 +15233,7 @@ mod tests {
                 resolve: None,
                 estimate: None,
                 max_tokens: None,
+                rank_by: None,
             }))
             .await;
 
