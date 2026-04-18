@@ -87,6 +87,27 @@ class VersionSyncTests(unittest.TestCase):
         with self.assertRaises(version_sync.VersionSyncError):
             version_sync.set_version(root, "next-release")
 
+    def test_repo_cargo_and_npm_versions_agree(self) -> None:
+        """Cross-check against the real repo files version_sync syncs.
+
+        Reads the actual Cargo.toml and npm/package.json at the repo root
+        and asserts their versions match. A drift between these two at
+        release time is a ship-blocker, and this test catches it directly
+        against the files on disk rather than synthetic fixtures.
+        """
+        root = version_sync.repo_root()
+        cargo_version = version_sync.read_cargo_version(root)
+        npm_version = version_sync.read_npm_version(root)
+        self.assertEqual(
+            cargo_version,
+            npm_version,
+            msg=(
+                f"Cargo.toml version '{cargo_version}' does not match "
+                f"npm/package.json version '{npm_version}'. "
+                "A drift between these is a ship-blocker."
+            ),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
