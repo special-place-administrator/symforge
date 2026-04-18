@@ -162,6 +162,124 @@ fn test_admission_tier_acceptance() {
 }
 
 // ---------------------------------------------------------------------------
+// Test 1b: admission-tier assignment is stable across a reindex
+//
+// The live index does NOT persist admission tier: `IndexSnapshot` only carries
+// Tier-1 indexed files, and `snapshot_to_live_index` / `build_reload_data`
+// both reset `skipped_files` to empty. Tier assignment is therefore recomputed
+// on every fresh `LiveIndex::load`. This test asserts that the recomputation
+// is deterministic — two back-to-back loads of the same directory tree must
+// produce byte-identical tier assignments and skip reasons for every file, so
+// `health` output stays honest after a cold start or a manual reindex.
+// ---------------------------------------------------------------------------
+
+/// Flat, comparable snapshot of the admission-gate output for one load.
+/// `(tier1_indexed_paths, tier2_by_path, tier3_by_path)`.
+type TierSnapshot = (
+    Vec<String>,
+    std::collections::BTreeMap<String, symforge::domain::index::SkipReason>,
+    std::collections::BTreeMap<String, symforge::domain::index::SkipReason>,
+);
+
+fn snapshot_tiers(index: &symforge::live_index::LiveIndex) -> TierSnapshot {
+    use std::collections::BTreeMap;
+    use symforge::domain::index::{AdmissionTier, SkipReason};
+
+    let mut tier1: Vec<String> = index
+        .all_files()
+        .map(|(p, _)| p.replace('\\', "/"))
+        .collect();
+    tier1.sort();
+
+    let mut tier2: BTreeMap<String, SkipReason> = BTreeMap::new();
+    let mut tier3: BTreeMap<String, SkipReason> = BTreeMap::new();
+
+    for sf in index.skipped_files() {
+        let path = sf.path.replace('\\', "/");
+        let reason = sf
+            .reason()
+            .expect("a skipped file must always carry a SkipReason");
+        match sf.tier() {
+            AdmissionTier::MetadataOnly => {
+                tier2.insert(path, reason);
+            }
+            AdmissionTier::HardSkip => {
+                tier3.insert(path, reason);
+            }
+            AdmissionTier::Normal => {
+                panic!("Tier-1 file {path} leaked into skipped_files");
+            }
+        }
+    }
+
+    (tier1, tier2, tier3)
+}
+
+#[test]
+fn test_admission_tiers_stable_across_reindex() {
+    use symforge::domain::index::SkipReason;
+
+    let dir = tempdir().unwrap();
+
+    // ── Tier 1: normal source files ──────────────────────────────────────
+    write_file(dir.path(), "src/main.rs", b"fn main() {}\n");
+    write_file(dir.path(), "src/lib.rs", b"pub fn helper() -> i32 { 42 }\n");
+    write_file(dir.path(), "README.md", b"# Project\n");
+
+    // ── Tier 2: one file per SkipReason ──────────────────────────────────
+    write_file(dir.path(), "assets/logo.png", b"fake png");
+    write_file(dir.path(), "data/big.json", &b"x".repeat(1_500_000));
+    write_file(
+        dir.path(),
+        "data/custom.dat",
+        &[0x89, 0x50, 0x4E, 0x47, 0x00, 0x00, 0x00, 0x0D],
+    );
+
+    // ── First load ────────────────────────────────────────────────────────
+    let snap1 = {
+        let shared = LiveIndex::load(dir.path()).unwrap();
+        snapshot_tiers(&shared.read())
+    };
+
+    // ── Reindex: load again from the same tree ───────────────────────────
+    let snap2 = {
+        let shared = LiveIndex::load(dir.path()).unwrap();
+        snapshot_tiers(&shared.read())
+    };
+
+    assert_eq!(
+        snap1, snap2,
+        "admission tier assignments must be stable across a reindex \
+         (recompute stability is the only guarantee — tier is not persisted)"
+    );
+
+    // ── Sanity: the snapshot describes what we actually created ──────────
+    let (tier1, tier2, tier3) = &snap1;
+    assert_eq!(
+        tier1.len(),
+        3,
+        "expected exactly 3 Tier-1 files, got {tier1:?}"
+    );
+    assert!(tier1.iter().any(|p| p.ends_with("src/main.rs")));
+    assert!(tier1.iter().any(|p| p.ends_with("src/lib.rs")));
+    assert!(tier1.iter().any(|p| p.ends_with("README.md")));
+
+    assert_eq!(tier2.len(), 3, "expected exactly 3 Tier-2 files");
+    assert_eq!(tier3.len(), 0, "no Tier-3 files were created in this test");
+
+    let by_suffix = |suffix: &str| -> SkipReason {
+        *tier2
+            .iter()
+            .find(|(p, _)| p.ends_with(suffix))
+            .unwrap_or_else(|| panic!("Tier-2 missing {suffix}: {tier2:?}"))
+            .1
+    };
+    assert_eq!(by_suffix("assets/logo.png"), SkipReason::DenylistedExtension);
+    assert_eq!(by_suffix("data/big.json"), SkipReason::SizeThreshold);
+    assert_eq!(by_suffix("data/custom.dat"), SkipReason::BinaryContent);
+}
+
+// ---------------------------------------------------------------------------
 // Test 2: classify_admission — Tier 3 (HardSkip / SizeCeiling) direct test
 //
 // We cannot create 150 MB files in tests, so we call classify_admission
