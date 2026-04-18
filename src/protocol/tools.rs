@@ -13375,6 +13375,88 @@ mod tests {
         );
     }
 
+    /// Orphaned doc comments (separated from the symbol by a blank line)
+    /// must NOT be swallowed when new_body has no doc of its own. This is
+    /// the narrowest behavioral delta between the old and new splice math,
+    /// and the case the plan's Risks table explicitly flagged for fixture
+    /// coverage.
+    #[tokio::test]
+    async fn test_replace_symbol_body_preserves_orphan_doc_without_new_doc() {
+        let original =
+            b"/// Intro remark about the next item.\n\npub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n";
+        let (_dir, server, file_path) = setup_edit_test(original);
+
+        let input = crate::protocol::edit::ReplaceSymbolBodyInput {
+            path: "src/lib.rs".to_string(),
+            name: "add".to_string(),
+            kind: None,
+            symbol_line: None,
+            new_body: "pub fn add(a: i32, b: i32) -> i32 {\n    a.saturating_add(b)\n}".to_string(),
+            dry_run: None,
+            working_directory: None,
+        };
+        let result = server.replace_symbol_body(Parameters(input)).await;
+        assert!(result.contains("replaced"), "result was: {result}");
+
+        let on_disk = std::fs::read_to_string(&file_path).unwrap();
+        assert!(
+            on_disk.contains("/// Intro remark about the next item."),
+            "orphaned doc must survive a body-only replace; disk was:\n{on_disk}"
+        );
+        assert!(
+            on_disk.contains("saturating_add"),
+            "new body must be written; disk was:\n{on_disk}"
+        );
+        assert_eq!(
+            on_disk.matches("/// Intro remark about the next item.").count(),
+            1,
+            "orphan doc must not duplicate; disk was:\n{on_disk}"
+        );
+    }
+
+    /// TypeScript/JSDoc variant: `/** ... */` doc block on a separate line
+    /// must be preserved when new_body has no doc. Plan Risks table named
+    /// this specifically — multi-language coverage proves the helper works
+    /// off of the language-agnostic doc-marker list in edit.rs.
+    #[tokio::test]
+    async fn test_replace_symbol_body_preserves_jsdoc_without_new_doc() {
+        let original = b"/** Adds two numbers. */\nexport function add(a: number, b: number): number {\n    return a + b;\n}\n";
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        let file_path = src_dir.join("math.ts");
+        std::fs::write(&file_path, original).unwrap();
+        let parse_result = crate::parsing::process_file("src/math.ts", original, LanguageId::TypeScript);
+        let indexed = IndexedFile::from_parse_result(parse_result, original.to_vec());
+        let index = make_live_index_ready(vec![("src/math.ts".to_string(), indexed)]);
+        let server = make_server_with_root(index, Some(dir.path().to_path_buf()));
+
+        let input = crate::protocol::edit::ReplaceSymbolBodyInput {
+            path: "src/math.ts".to_string(),
+            name: "add".to_string(),
+            kind: None,
+            symbol_line: None,
+            new_body:
+                "export function add(a: number, b: number): number {\n    return a + b;\n}"
+                    .to_string(),
+            dry_run: None,
+            working_directory: None,
+        };
+        let result = server.replace_symbol_body(Parameters(input)).await;
+        assert!(result.contains("replaced"), "result was: {result}");
+
+        let on_disk = std::fs::read_to_string(&file_path).unwrap();
+        assert!(
+            on_disk.contains("/** Adds two numbers. */"),
+            "JSDoc block must survive a body-only replace; disk was:\n{on_disk}"
+        );
+        assert_eq!(
+            on_disk.matches("/** Adds two numbers. */").count(),
+            1,
+            "JSDoc must not duplicate; disk was:\n{on_disk}"
+        );
+    }
+
     #[tokio::test]
     async fn test_replace_symbol_body_preserves_indentation() {
         // Simulates a method inside a class — symbol is indented 4 spaces.

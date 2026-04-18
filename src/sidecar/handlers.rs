@@ -982,11 +982,18 @@ async fn handle_edit_impact(
 
         // Show callers for Changed + Removed symbols.
         //
-        // For changed symbols that live inside an `impl` block (methods),
-        // scope the caller list to files that also reference the parent
-        // type. This prevents a generic-name method like `MathMachine::new`
-        // from flagging every unrelated `new()` call in the project.
-        // Mirrors the filter in protocol::edit::detect_stale_references.
+        // For CHANGED symbols that live inside an `impl` block, scope the
+        // caller list to files that also reference the parent type —
+        // prevents `MathMachine::new` from flagging every unrelated `new()`
+        // call. Mirrors the filter in protocol::edit::detect_stale_references.
+        //
+        // REMOVED symbols cannot be type-scoped here: the post-edit file no
+        // longer contains the SymbolRecord, so `find_record_matching_snapshot`
+        // returns None and the filter short-circuits to name-only matching.
+        // Acceptable trade-off: removing a same-named method from one of many
+        // types is rare, and carrying parent_type through SymbolSnapshot would
+        // widen the schema for a corner case. Revisit if the false positive
+        // surfaces in real usage.
         let impacted: Vec<&SymbolSnapshot> =
             changed.iter().chain(removed.iter()).copied().collect();
         if !impacted.is_empty() {
@@ -1333,12 +1340,15 @@ pub async fn workflow_repo_start_handler(
     repo_map_handler(State(state)).await
 }
 
-/// Whether an indexed path belongs to the active workspace.
+/// Heuristic: whether an indexed path looks like it belongs to the
+/// active workspace.
 ///
-/// Paths carrying a drive letter (`C:`) or starting at filesystem root (`/`)
-/// originate from other indexed projects and must be excluded from any
-/// repo-wide summary view (directory tree, key types, etc.) that implies
-/// the current workspace.
+/// Rejects any path containing `:` (Windows drive letter — `C:\…`) or
+/// starting with `/` (POSIX absolute). Kept loose on purpose: a legit
+/// file literally named `src/a:b.rs` on POSIX would also be filtered,
+/// but we accept that edge case in exchange for matching the pre-existing
+/// guard at the header-stats loop exactly and blocking the octogent-style
+/// cross-workspace leak that motivated Unit 1.
 fn is_intra_workspace_path(path: &str) -> bool {
     !(path.contains(':') || path.starts_with('/'))
 }
