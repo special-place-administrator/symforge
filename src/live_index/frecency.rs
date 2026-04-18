@@ -1,18 +1,26 @@
 //! Per-workspace frecency scoring for file ranking.
 //!
-//! SQLite-backed, WAL mode, bumped on commitment tools (reads/edits of known
-//! files) and never on discovery tools (search). Decays on a 7-day half-life.
+//! Two complementary layers live here:
 //!
-//! This module owns only the storage + scoring layer. The `RankSignal` and
-//! `EditHook` impls that plug it into search/edit pipelines are wired by the
-//! consumer sites (see todo #3 in the frecency-ranking tentacle).
+//! 1. [`FrecencyStore`] — SQLite-backed, WAL mode, bumped on commitment tools
+//!    (reads/edits of known files) and never on discovery tools (search).
+//!    Decays on a 7-day half-life. This is the storage + scoring layer.
+//! 2. [`bump`] — the call-site façade that commitment tools
+//!    (`get_file_context`, `get_file_content`, `get_symbol`,
+//!    `get_symbol_context`) invoke at the end of their happy path. Currently
+//!    a test-observability sink gated by `SYMFORGE_FRECENCY="1"`; a follow-up
+//!    todo wires it to dispatch into the process-wide [`FrecencyStore`].
+//!
+//! Discovery tools (`search_files`, `search_text`, `search_symbols`)
+//! deliberately never call [`bump`] — see the spec §"Search tools deliberately
+//! do NOT bump" for the positive-feedback-loop rationale.
 //!
 //! Spec: `wiki/concepts/SymForge Frecency-Weighted File Ranking.md`.
 
 use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 /// Half-life for frecency decay, in seconds. 7 days.
 pub const HALF_LIFE_SECS: i64 = 7 * 24 * 60 * 60;
@@ -22,6 +30,10 @@ pub const RESET_NOOP_THRESHOLD: u32 = 50;
 pub const RESET_HALVE_THRESHOLD: u32 = 500;
 
 const META_LAST_HEAD: &str = "last_head_sha";
+
+/// Env var that gates every call-site [`bump`]. `"1"` enables recording;
+/// anything else (including unset) treats [`bump`] as a no-op.
+pub const FRECENCY_FLAG_ENV: &str = "SYMFORGE_FRECENCY";
 
 /// Outcome of applying the HEAD-change reset policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -279,9 +291,70 @@ fn normalize_path(p: &Path) -> String {
     p.to_string_lossy().replace('\\', "/")
 }
 
+// ---------------------------------------------------------------------------
+// Call-site bump façade (owned by todo #3 — wire bump hooks on commitment tools)
+// ---------------------------------------------------------------------------
+//
+// `bump(paths)` below is the stable surface commitment-tool handlers call at
+// the end of their happy path. Today its body is a test-observability sink
+// so wiring tests can assert that handlers actually invoke it. A follow-up
+// todo replaces the body with a dispatch into a process-wide [`FrecencyStore`]
+// instance; the signature is the contract and stays put.
+
+fn sink() -> &'static Mutex<Vec<PathBuf>> {
+    static SINK: OnceLock<Mutex<Vec<PathBuf>>> = OnceLock::new();
+    SINK.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Record that the given paths were accessed by a commitment tool.
+///
+/// No-op when `SYMFORGE_FRECENCY` is unset or not `"1"`. Infallible — callers
+/// never need to handle errors; failure to record a bump is silently dropped
+/// so the feature cannot break the tool it hooks into.
+///
+/// `paths` is expected to already be deduplicated (batch tools collect into a
+/// `HashSet<PathBuf>` before calling).
+pub fn bump(paths: &[PathBuf]) {
+    if std::env::var(FRECENCY_FLAG_ENV).as_deref() != Ok("1") {
+        return;
+    }
+    if paths.is_empty() {
+        return;
+    }
+    if let Ok(mut guard) = sink().lock() {
+        guard.extend(paths.iter().cloned());
+    }
+}
+
+/// Drain and return every path recorded by [`bump`] since the last drain/clear.
+///
+/// Intended for wiring tests that need to observe whether a tool handler
+/// actually called [`bump`]. Kept `pub` (behind `#[doc(hidden)]`) because the
+/// integration-test crate lives outside the library crate and cannot use
+/// `#[cfg(test)]`-gated items.
+#[doc(hidden)]
+pub fn drain_test_bumps() -> Vec<PathBuf> {
+    match sink().lock() {
+        Ok(mut guard) => std::mem::take(&mut *guard),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Clear the test-observability sink without returning its contents.
+#[doc(hidden)]
+pub fn clear_test_bumps() {
+    if let Ok(mut guard) = sink().lock() {
+        guard.clear();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------
+    // FrecencyStore tests (storage layer — from swarm-1)
+    // -----------------------------------------------------------------
 
     fn make_store() -> FrecencyStore {
         FrecencyStore::open_in_memory().expect("open in-memory frecency store")
@@ -607,5 +680,94 @@ mod tests {
         assert!(nested.exists(), "db file should be created");
         let store2 = FrecencyStore::open(&nested).unwrap();
         assert_eq!(store2.score(Path::new("src/foo.rs"), 0).unwrap(), 1.0);
+    }
+
+    // -----------------------------------------------------------------
+    // Call-site bump() façade tests (from swarm-2)
+    // -----------------------------------------------------------------
+
+    // Serialize tests that mutate the shared env var + sink. Tests run
+    // single-threaded per CLAUDE.md; this lock is belt-and-suspenders so
+    // any future parallel runner does not interleave env mutations.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn set_flag_on() {
+        // SAFETY: tests hold ENV_LOCK and run with --test-threads=1; no
+        // concurrent env readers can observe the transition.
+        unsafe { std::env::set_var(FRECENCY_FLAG_ENV, "1") };
+    }
+
+    fn clear_flag() {
+        // SAFETY: see set_flag_on.
+        unsafe { std::env::remove_var(FRECENCY_FLAG_ENV) };
+    }
+
+    #[test]
+    fn module_bump_is_noop_when_flag_unset() {
+        let _g = ENV_LOCK.lock().unwrap();
+        clear_flag();
+        clear_test_bumps();
+        super::bump(&[PathBuf::from("src/lib.rs")]);
+        assert!(
+            drain_test_bumps().is_empty(),
+            "bump with flag unset must not record"
+        );
+    }
+
+    #[test]
+    fn module_bump_is_noop_when_flag_not_one() {
+        let _g = ENV_LOCK.lock().unwrap();
+        // SAFETY: see set_flag_on.
+        unsafe { std::env::set_var(FRECENCY_FLAG_ENV, "0") };
+        clear_test_bumps();
+        super::bump(&[PathBuf::from("src/lib.rs")]);
+        let recorded = drain_test_bumps();
+        clear_flag();
+        assert!(
+            recorded.is_empty(),
+            "bump with flag != 1 must not record, got {recorded:?}"
+        );
+    }
+
+    #[test]
+    fn module_bump_records_paths_when_flag_on() {
+        let _g = ENV_LOCK.lock().unwrap();
+        set_flag_on();
+        clear_test_bumps();
+        super::bump(&[PathBuf::from("src/a.rs"), PathBuf::from("src/b.rs")]);
+        let recorded = drain_test_bumps();
+        clear_flag();
+        assert_eq!(
+            recorded,
+            vec![PathBuf::from("src/a.rs"), PathBuf::from("src/b.rs")],
+            "bump with flag on must record every supplied path in order"
+        );
+    }
+
+    #[test]
+    fn module_bump_empty_slice_is_noop_when_flag_on() {
+        let _g = ENV_LOCK.lock().unwrap();
+        set_flag_on();
+        clear_test_bumps();
+        super::bump(&[]);
+        let recorded = drain_test_bumps();
+        clear_flag();
+        assert!(
+            recorded.is_empty(),
+            "empty bump must not record even with flag on"
+        );
+    }
+
+    #[test]
+    fn drain_is_idempotent() {
+        let _g = ENV_LOCK.lock().unwrap();
+        set_flag_on();
+        clear_test_bumps();
+        super::bump(&[PathBuf::from("src/lib.rs")]);
+        let first = drain_test_bumps();
+        let second = drain_test_bumps();
+        clear_flag();
+        assert_eq!(first.len(), 1, "first drain returns recorded bump");
+        assert!(second.is_empty(), "second drain returns nothing");
     }
 }
