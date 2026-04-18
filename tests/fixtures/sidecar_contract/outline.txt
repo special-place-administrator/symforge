@@ -1,0 +1,11 @@
+Match type: exact
+Source authority: current index
+Parse state: parsed
+Completeness: full
+Scope: path `src/lib.rs`; all sections
+Evidence: file anchor `src/lib.rs`
+
+── src/lib.rs (2 symbols, Rust) ──
+  fn         hello  L2-2
+  struct     Config  L2-2
+[~0 tokens saved]

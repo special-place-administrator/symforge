@@ -1,0 +1,3 @@
+Language: Rust
+Symbols: 1 fn, 1 struct
+[Indexed, 0 callers yet]
