@@ -1274,6 +1274,15 @@ pub async fn workflow_repo_start_handler(
     repo_map_handler(State(state)).await
 }
 
+/// Whether an indexed path belongs to the active workspace.
+///
+/// Paths carrying a drive letter (`C:`) or starting at filesystem root (`/`)
+/// originate from other indexed projects and must be excluded from any
+/// repo-wide summary view (directory tree, key types, etc.) that implies
+/// the current workspace.
+fn is_intra_workspace_path(path: &str) -> bool {
+    !(path.contains(':') || path.starts_with('/'))
+}
 pub(crate) fn repo_map_text(state: &SidecarState) -> Result<String, StatusCode> {
     // Single lock acquisition covers both the directory stats and key-types passes.
     let guard = state.index.read();
@@ -1292,7 +1301,7 @@ pub(crate) fn repo_map_text(state: &SidecarState) -> Result<String, StatusCode> 
 
     for (path, file) in guard.all_files() {
         // Skip files with absolute paths (outside project root, e.g., Windows memory files).
-        if path.contains(':') || path.starts_with('/') {
+        if !is_intra_workspace_path(path) {
             continue;
         }
 
@@ -1339,6 +1348,12 @@ pub(crate) fn repo_map_text(state: &SidecarState) -> Result<String, StatusCode> 
     {
         let mut entry_points: Vec<(String, String, String)> = Vec::new(); // (kind, name, path)
         for (path, file) in guard.all_files() {
+            // Exclude paths from other indexed workspaces — same guard as the
+            // directory-stats loop above; without it the key-types section
+            // leaks symbols from unrelated projects.
+            if !is_intra_workspace_path(path) {
+                continue;
+            }
             // Only source code, skip docs/tests/vendor
             let pl = path.to_ascii_lowercase();
             if pl.ends_with(".md")
@@ -2632,6 +2647,62 @@ mod tests {
         assert!(
             result.contains("0 files"),
             "empty index should show 0 files"
+        );
+    }
+
+    #[test]
+    fn test_is_intra_workspace_path_rejects_absolute_paths() {
+        assert!(is_intra_workspace_path("src/main.rs"));
+        assert!(is_intra_workspace_path("tests/fixtures/foo.rs"));
+        // Windows drive-letter paths from other indexed repos.
+        assert!(!is_intra_workspace_path(
+            "C:\\AI_STUFF\\PROGRAMMING\\octogent\\apps\\api\\tests\\hookDrivenBootstrap.test.ts"
+        ));
+        // POSIX absolute paths.
+        assert!(!is_intra_workspace_path("/usr/local/project/src/main.rs"));
+    }
+
+    #[tokio::test]
+    async fn test_repo_map_excludes_foreign_workspace_paths_from_key_types() {
+        let local = make_indexed_file(
+            "src/local_type.rs",
+            vec![make_symbol("LocalThing", SymbolKind::Struct, 1, 5)],
+            vec![],
+            ParseStatus::Parsed,
+        );
+        let foreign_windows = make_indexed_file(
+            "C:\\AI_STUFF\\PROGRAMMING\\otherrepo\\src\\ForeignType.ts",
+            vec![make_symbol("ForeignWindows", SymbolKind::Class, 1, 5)],
+            vec![],
+            ParseStatus::Parsed,
+        );
+        let foreign_posix = make_indexed_file(
+            "/home/someone/otherrepo/src/foreign.rs",
+            vec![make_symbol("ForeignPosix", SymbolKind::Struct, 1, 5)],
+            vec![],
+            ParseStatus::Parsed,
+        );
+        let state = make_state(vec![
+            ("src/local_type.rs", local),
+            (
+                "C:\\AI_STUFF\\PROGRAMMING\\otherrepo\\src\\ForeignType.ts",
+                foreign_windows,
+            ),
+            ("/home/someone/otherrepo/src/foreign.rs", foreign_posix),
+        ]);
+
+        let result = repo_map_handler(State(state)).await.unwrap();
+        assert!(
+            result.contains("LocalThing"),
+            "key types should include the local symbol; got:\n{result}"
+        );
+        assert!(
+            !result.contains("ForeignWindows"),
+            "key types must not leak Windows drive-letter paths from other workspaces; got:\n{result}"
+        );
+        assert!(
+            !result.contains("ForeignPosix"),
+            "key types must not leak POSIX absolute paths from other workspaces; got:\n{result}"
         );
     }
 
