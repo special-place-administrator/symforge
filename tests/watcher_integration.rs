@@ -417,6 +417,131 @@ async fn test_watcher_state_reports_active() {
 }
 
 // ---------------------------------------------------------------------------
+// Test 9: Rename-replace pattern (editor atomic saves)
+// ---------------------------------------------------------------------------
+
+/// Prove that the watcher correctly handles rename-replace atomic saves.
+///
+/// Editors like VS Code and vim write files via `foo.rs.tmp` → `foo.rs` rename
+/// to guarantee atomicity. `notify-debouncer-full` fires Create/Modify/Remove
+/// events in quick succession for these; the final state of the index MUST
+/// reflect the new content within the debounce window.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_watcher_atomic_save_via_rename_replace() {
+    let dir = tempfile::tempdir().unwrap();
+    let src_dir = dir.path().join("src");
+    fs::create_dir_all(&src_dir).unwrap();
+
+    // Initial content — indexed via a normal write.
+    write_file(dir.path(), "src/atomic.rs", "fn initial() {}");
+
+    let shared = LiveIndex::load(dir.path()).unwrap();
+
+    // Verify initial state
+    {
+        let index = shared.read();
+        let file = index
+            .get_file("src/atomic.rs")
+            .expect("src/atomic.rs should be indexed");
+        let names: Vec<&str> = file.symbols.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            names.contains(&"initial"),
+            "initial symbol 'initial' should exist: {names:?}"
+        );
+    }
+
+    let _watcher_info = spawn_watcher(&dir, &shared).await;
+
+    // Simulate editor atomic-save: write to `.tmp` in the same directory,
+    // then rename over the target. This is what VS Code and vim do.
+    let target = dir.path().join("src/atomic.rs");
+    let tmp = dir.path().join("src/atomic.rs.tmp");
+    fs::write(&tmp, "fn replaced() {}").unwrap();
+    fs::rename(&tmp, &target).unwrap();
+
+    wait_debounce().await;
+
+    // Index MUST reflect the new content: rename-replace is a legitimate
+    // content change and the watcher must not lose track of the file.
+    {
+        let index = shared.read();
+        let file = index
+            .get_file("src/atomic.rs")
+            .expect("rename-replace: src/atomic.rs should still be indexed");
+        let names: Vec<&str> = file.symbols.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            names.contains(&"replaced"),
+            "rename-replace: new symbol 'replaced' must be in index after atomic save, got: {names:?}"
+        );
+        assert!(
+            !names.contains(&"initial"),
+            "rename-replace: old symbol 'initial' must be gone after atomic save, got: {names:?}"
+        );
+    }
+
+    // The `.tmp` sibling must not be indexed: its extension is unsupported
+    // and it no longer exists on disk.
+    {
+        let index = shared.read();
+        assert!(
+            index.get_file("src/atomic.rs.tmp").is_none(),
+            "rename-replace: .tmp file must not appear in index"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test 10: Rename-replace with content-unchanged payload
+// ---------------------------------------------------------------------------
+
+/// Prove that a rename-replace whose payload is byte-identical to the current
+/// indexed content does not corrupt the index.
+///
+/// vim sometimes atomically saves a file the user never edited (e.g. `:w`
+/// on an unchanged buffer). The watcher sees Create/Modify/Remove bursts,
+/// but the content hash is unchanged, so `maybe_reindex` should HashSkip
+/// and leave the index untouched.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_watcher_atomic_save_noop_content() {
+    let dir = tempfile::tempdir().unwrap();
+    let src_dir = dir.path().join("src");
+    fs::create_dir_all(&src_dir).unwrap();
+
+    let content = "fn unchanged() {}";
+    write_file(dir.path(), "src/noop.rs", content);
+
+    let shared = LiveIndex::load(dir.path()).unwrap();
+
+    let initial_symbols: Vec<String> = {
+        let index = shared.read();
+        let file = index.get_file("src/noop.rs").unwrap();
+        file.symbols.iter().map(|s| s.name.clone()).collect()
+    };
+
+    let _watcher_info = spawn_watcher(&dir, &shared).await;
+
+    // Atomic save whose payload matches the existing bytes.
+    let target = dir.path().join("src/noop.rs");
+    let tmp = dir.path().join("src/noop.rs.tmp");
+    fs::write(&tmp, content).unwrap();
+    fs::rename(&tmp, &target).unwrap();
+
+    wait_debounce().await;
+
+    {
+        let index = shared.read();
+        let file = index
+            .get_file("src/noop.rs")
+            .expect("rename-replace (noop): file should still be indexed");
+        let after: Vec<String> = file.symbols.iter().map(|s| s.name.clone()).collect();
+        assert_eq!(
+            initial_symbols, after,
+            "rename-replace (noop): symbols must be unchanged when bytes are identical"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Test 8: Watcher ignores non-source files (e.g., README.md)
 // ---------------------------------------------------------------------------
 
