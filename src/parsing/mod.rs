@@ -188,7 +188,7 @@ fn collect_first_error_node(root: &Node, source: &str) -> Option<(String, u32, u
     None
 }
 
-fn parse_source(source: &str, language: &LanguageId) -> Result<ParseSourceOutput, String> {
+pub(crate) fn parse_source(source: &str, language: &LanguageId) -> Result<ParseSourceOutput, String> {
     let mut parser = Parser::new();
 
     let ts_language = match language {

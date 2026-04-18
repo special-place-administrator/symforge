@@ -562,6 +562,16 @@ pub async fn run_watcher(
                             info.stale_files_found += stale as u64;
                             info.last_reconcile_at = Some(SystemTime::now());
                         });
+                        // Coupling store refresh runs on its own task so a
+                        // slow delta never delays stale-file reconciliation.
+                        // Gates on SYMFORGE_COUPLING internally and holds a
+                        // per-workspace guard against concurrent refreshes.
+                        let root_for_coupling = repo_root.clone();
+                        tokio::task::spawn_blocking(move || {
+                            crate::live_index::coupling::refresh_on_reconcile_tick(
+                                &root_for_coupling,
+                            );
+                        });
                         last_reconcile = Instant::now();
                     }
 

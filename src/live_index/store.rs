@@ -1088,6 +1088,7 @@ impl LiveIndex {
         index.rebuild_path_indices();
 
         super::persist::init_frecency_store(root);
+        super::coupling::init_coupling_store(root);
 
         Ok(SharedIndexHandle::shared(index))
     }

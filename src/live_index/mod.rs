@@ -1,3 +1,4 @@
+pub mod coupling;
 pub mod frecency;
 pub mod git_temporal;
 pub mod persist;

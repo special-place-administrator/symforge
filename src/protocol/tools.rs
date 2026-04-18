@@ -397,11 +397,16 @@ pub struct SearchFilesInput {
     /// Optional maximum token budget for the response.
     #[serde(default, deserialize_with = "lenient_u64")]
     pub max_tokens: Option<u64>,
-    /// Optional ranking mode. `"frecency"` fuses the tier-based path match
-    /// with per-workspace frecency and git-temporal co-change signals
-    /// (weights `0.6 / 0.3 / 0.1`). Requires `SYMFORGE_FRECENCY=1`; any
-    /// other value (including `None`) preserves the default tier-based
-    /// ordering exactly.
+    /// Optional ranking mode. `"frecency"` fuses the tier-based path
+    /// match with per-workspace frecency; requires `SYMFORGE_FRECENCY=1`.
+    /// Any other value (including `None`) preserves the default
+    /// tier-based ordering exactly.
+    ///
+    /// Note: co-change rerank is NOT yet wired into this parameter. It
+    /// will land in Tentacle 3 (see ADR 0013) at which point this
+    /// docstring will be updated to describe the fused mode. Until
+    /// then, coupling-store signals are only available via the
+    /// separate `changed_with=` branch.
     #[serde(default)]
     pub rank_by: Option<String>,
 }
