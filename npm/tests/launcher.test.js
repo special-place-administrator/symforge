@@ -1,6 +1,9 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const path = require("node:path");
+const fs = require("node:fs");
+const os = require("node:os");
+const { spawnSync } = require("node:child_process");
 const winPath = path.win32;
 
 const { createLauncher } = require("../bin/launcher.js");
@@ -396,3 +399,64 @@ test("launcher promotes pending version metadata alongside a pending binary", ()
   );
   assert.match(errors.join("\n"), /applied pending update/);
 });
+
+test(
+  "launcher smoke-tests symforge --version end-to-end via a stub binary",
+  {
+    skip:
+      process.platform === "win32"
+        ? "Windows cannot execute shebang stubs via CreateProcess as symforge.exe; follow-up: add a pre-built PE or .cmd/launcher-hook path"
+        : false,
+  },
+  (t) => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "symforge-smoke-"));
+    t.after(() => {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    const binDir = path.join(tmpDir, "bin");
+    fs.mkdirSync(binDir, { recursive: true });
+
+    const stubPath = path.join(binDir, "symforge");
+    const stubBody =
+      `#!${process.execPath}\n` +
+      `"use strict";\n` +
+      `const args = process.argv.slice(2);\n` +
+      `process.stdout.write("symforge 0.0.0-test " + JSON.stringify(args) + "\\n");\n` +
+      `process.exit(0);\n`;
+    fs.writeFileSync(stubPath, stubBody);
+    fs.chmodSync(stubPath, 0o755);
+
+    const pkg = require("../package.json");
+    fs.writeFileSync(
+      path.join(binDir, "symforge.version"),
+      `${pkg.version}\n`,
+    );
+
+    const symforgeEntry = path.join(__dirname, "..", "bin", "symforge.js");
+    const result = spawnSync(
+      process.execPath,
+      [symforgeEntry, "--version"],
+      {
+        env: { ...process.env, SYMFORGE_HOME: tmpDir },
+        encoding: "utf8",
+      },
+    );
+
+    assert.equal(
+      result.status,
+      0,
+      `launcher exited ${result.status}; stderr=${result.stderr}; stdout=${result.stdout}`,
+    );
+    assert.match(
+      result.stdout,
+      /symforge/,
+      `stdout missing 'symforge': ${JSON.stringify(result.stdout)}`,
+    );
+    assert.match(
+      result.stdout,
+      /\["--version"\]/,
+      `--version not forwarded to stub: ${JSON.stringify(result.stdout)}`,
+    );
+  },
+);
