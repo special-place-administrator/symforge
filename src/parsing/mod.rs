@@ -357,6 +357,94 @@ mod tests {
     }
 
     #[test]
+    fn test_process_file_partial_parse_diagnostic_pins_location() {
+        // Tightens the ParseDiagnostic contract that validate_file_syntax relies on:
+        // a partial parse must pinpoint the actually-broken line, not just return
+        // Some(1) for everything. The source below has two clean lines followed
+        // by a broken one, so a regression that loses multi-line tracking or
+        // hardcodes line 1 would slip past the existing is_some()-only test but
+        // fail here.
+        let source = b"fn foo() {}\nfn bar() {}\nfn broken( { }";
+        let result = process_file("multi.rs", source, LanguageId::Rust);
+
+        assert!(
+            matches!(result.outcome, FileOutcome::PartialParse { .. }),
+            "source with a line-3 syntax error should be partial-parsed; got {:?}",
+            result.outcome
+        );
+
+        let diag = result
+            .parse_diagnostic
+            .expect("partial parse must attach a ParseDiagnostic");
+
+        assert_eq!(diag.parser, "tree-sitter");
+        assert!(
+            !diag.fallback_used,
+            "tree-sitter parses must not set fallback_used; that flag is reserved \
+             for config extractors that recover via a secondary parser"
+        );
+
+        // Line is 1-based and must track the actual error row. Line 3 is where
+        // `fn broken( { }` lives (bytes 24..).
+        let line = diag.line.expect("diagnostic must carry a line number");
+        assert!(
+            line >= 3,
+            "error is on line 3 of the source; diagnostic reported line {line}"
+        );
+
+        let column = diag.column.expect("diagnostic must carry a column number");
+        assert!(column >= 1, "columns are 1-based; got {column}");
+
+        // Byte span must be ordered and inside the source, and must land on
+        // line 3 (which starts at byte 24: "fn foo() {}\n" + "fn bar() {}\n").
+        // Note: tree-sitter MISSING nodes are zero-width (start == end), so we
+        // allow span_start == span_end but require start <= end.
+        let (span_start, span_end) = diag
+            .byte_span
+            .expect("diagnostic must carry a byte span for downstream editors");
+        assert!(
+            span_start <= span_end,
+            "byte_span must be ordered; got {span_start}..{span_end}"
+        );
+        assert!(
+            (span_end as usize) <= source.len(),
+            "byte_span must fit inside source (len {}); got end {span_end}",
+            source.len()
+        );
+        assert!(
+            span_start >= 24,
+            "byte_span should point at line 3 content (starts at byte 24); got {span_start}"
+        );
+
+        // location_display is what validate_file_syntax / get_file_context use
+        // to render "(line X, column Y)" in tool output. Both must flow through.
+        let loc = diag
+            .location_display()
+            .expect("location_display must render when both line and column are present");
+        assert!(
+            loc.contains(&format!("line {line}")),
+            "location_display must include the line; got {loc}"
+        );
+        assert!(
+            loc.contains(&format!("column {column}")),
+            "location_display must include the column; got {loc}"
+        );
+
+        // summary() is what feeds into FileOutcome::PartialParse { warning } —
+        // pin that the warning carries the structured location, not just the bare
+        // message, so the index-health "partial files" path shows actionable info.
+        let summary = diag.summary();
+        assert!(
+            summary.contains("tree-sitter:"),
+            "summary should prefix with parser name; got {summary}"
+        );
+        assert!(
+            summary.contains(&format!("line {line}")),
+            "summary should include location for downstream display; got {summary}"
+        );
+    }
+
+    #[test]
     fn test_process_file_computes_content_hash() {
         let source = b"fn foo() {}";
         let result = process_file("hash_test.rs", source, LanguageId::Rust);
