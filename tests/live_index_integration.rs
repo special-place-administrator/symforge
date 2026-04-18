@@ -1273,3 +1273,148 @@ fn test_persist_version_mismatch() {
     let result = persist::load_snapshot(dir.path());
     assert!(result.is_none(), "version mismatch must return None");
 }
+
+// --------------------------------------------------------------------------
+// Test: ArcSwap concurrent-read contract under writer pressure.
+//
+// Pins the behavior claimed by `README.md:18` ("zero reader contention under
+// concurrent tool calls") and the docstring on `SharedIndexHandle`. A regression
+// that introduces reader-side locking, tears a read mid-swap, or skips rebuilding
+// a secondary index inside a writer would surface here.
+// --------------------------------------------------------------------------
+#[test]
+fn test_arcswap_concurrent_reads_under_writer_pressure() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let dir = tempdir().unwrap();
+    for i in 0..20 {
+        write_file(
+            dir.path(),
+            &format!("mod_{i:02}.rs"),
+            &format!(
+                "fn func_{i}() {{}}\nfn helper_{i}(x: u32) -> u32 {{ x + {i} }}\nstruct Struct_{i} {{}}\n"
+            ),
+        );
+    }
+    let shared = LiveIndex::load(dir.path()).unwrap();
+
+    // Capture an owned IndexedFile so the writer can drive clone-mutate-swap
+    // cycles without filesystem I/O. Each `SharedIndexHandle::update_file` call
+    // clones the live index, mutates it, and atomically swaps a fresh `Arc`
+    // into the `ArcSwap` — exactly the condition readers must not observe torn.
+    let (target_path, writer_payload) = {
+        let guard = shared.read();
+        let (path, indexed) = guard
+            .all_files()
+            .next()
+            .expect("initial index must contain at least one file");
+        (path.clone(), indexed.clone())
+    };
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let reader_reads = Arc::new(AtomicUsize::new(0));
+    let writer_swaps = Arc::new(AtomicUsize::new(0));
+    let inconsistencies = Arc::new(AtomicUsize::new(0));
+
+    let mut reader_handles = Vec::new();
+    for _ in 0..8 {
+        let shared = Arc::clone(&shared);
+        let stop = Arc::clone(&stop);
+        let reader_reads = Arc::clone(&reader_reads);
+        let inconsistencies = Arc::clone(&inconsistencies);
+        reader_handles.push(thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                let guard = shared.read();
+
+                // Invariant 1: within one snapshot, `file_count()` agrees with
+                // the number of entries enumerated by `all_files()`.
+                let file_count = guard.file_count();
+                let paths: Vec<String> = guard.all_files().map(|(p, _)| p.clone()).collect();
+                if paths.len() != file_count {
+                    inconsistencies.fetch_add(1, Ordering::Relaxed);
+                }
+
+                // Invariant 2: every path in `files` is reachable via the
+                // `files_by_basename` secondary index. A writer that mutates
+                // `files` but forgets to rebuild the secondary (or a torn
+                // read straddling two snapshots) would fail this.
+                for p in paths.iter().take(8) {
+                    let basename = std::path::Path::new(p.as_str())
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .map(|s| s.to_ascii_lowercase())
+                        .unwrap_or_default();
+                    let by_basename = guard.find_files_by_basename(&basename);
+                    if !by_basename.iter().any(|q| *q == p.as_str()) {
+                        inconsistencies.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+
+                // Invariant 3: every path reported by `all_files()` resolves
+                // back to a concrete `IndexedFile` via `get_file()` in the same
+                // snapshot.
+                for p in paths.iter().take(8) {
+                    if guard.get_file(p.as_str()).is_none() {
+                        inconsistencies.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+
+                // Exercise a few more public read paths to broaden contention
+                // surface area without coupling to their exact semantics.
+                let _ = guard.symbol_count();
+                let _ = guard.health_stats();
+
+                reader_reads.fetch_add(1, Ordering::Relaxed);
+            }
+        }));
+    }
+
+    let writer_handle = {
+        let shared = Arc::clone(&shared);
+        let stop = Arc::clone(&stop);
+        let writer_swaps = Arc::clone(&writer_swaps);
+        thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                // Public clone-mutate-swap entry point — triggers
+                // `SharedIndexHandle::swap_and_publish`, replacing the live
+                // `Arc<LiveIndex>` in the `ArcSwap` on every iteration.
+                shared.update_file(target_path.clone(), writer_payload.clone());
+                writer_swaps.fetch_add(1, Ordering::Relaxed);
+            }
+        })
+    };
+
+    thread::sleep(Duration::from_millis(750));
+    stop.store(true, Ordering::Relaxed);
+
+    for h in reader_handles {
+        h.join().expect("reader thread must not panic");
+    }
+    writer_handle.join().expect("writer thread must not panic");
+
+    let inconsistent = inconsistencies.load(Ordering::Relaxed);
+    let reads = reader_reads.load(Ordering::Relaxed);
+    let swaps = writer_swaps.load(Ordering::Relaxed);
+
+    assert_eq!(
+        inconsistent, 0,
+        "readers observed {inconsistent} inconsistent LiveIndex snapshot(s) across {reads} reads and {swaps} writer swaps"
+    );
+    assert!(
+        swaps > 0,
+        "writer did not complete any swaps during the stress window (reads={reads})"
+    );
+    assert!(
+        reads > 0,
+        "reader throughput was zero while the writer was active (swaps={swaps})"
+    );
+    // With 8 readers over ~750ms against a concurrent writer, ArcSwap should
+    // deliver thousands of reads. A regression that re-introduces reader-side
+    // locking or otherwise starves readers would collapse this toward zero;
+    // require at least 100 reads as a lower floor that is robust on loaded CI.
+    assert!(
+        reads >= 100,
+        "reader throughput suspiciously low: {reads} reads vs {swaps} swaps — possible reader starvation regression"
+    );
+}
