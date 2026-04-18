@@ -449,6 +449,29 @@ pub(crate) fn extend_past_orphaned_docs(
     line_start
 }
 
+/// Whether `body` begins (first non-blank line) with a doc-comment marker.
+///
+/// Used by `replace_symbol_body` to decide whether the caller intends to
+/// supply fresh docs for the symbol. When true, the splice range extends
+/// past the existing docs so the old ones are replaced. When false, the
+/// splice starts at the signature line so attached docs are preserved.
+///
+/// Conservative on purpose: only matches markers that are unambiguously
+/// doc comments across the grammars SymForge indexes. Line comments like
+/// `//` and `#` are NOT counted because they may be ordinary code
+/// comments or, for `#`, Rust attributes (e.g., `#[inline]`).
+pub(crate) fn body_starts_with_doc_comment(body: &str) -> bool {
+    let Some(first) = body.lines().find(|l| !l.trim().is_empty()) else {
+        return false;
+    };
+    let trimmed = first.trim_start();
+    trimmed.starts_with("///")
+        || trimmed.starts_with("//!")
+        || trimmed.starts_with("/**")
+        || trimmed.starts_with("/*!")
+        || trimmed.starts_with("#[doc")
+}
+
 pub(crate) fn build_delete(
     file_content: &[u8],
     sym: &SymbolRecord,
@@ -5166,5 +5189,47 @@ fn uses_it() { Widget::default(); }
         let raw = serde_json::Value::String("src/lib.rs::foo".to_string());
         let v: InsertTarget = serde_json::from_value(raw).unwrap();
         assert!(v.working_directory.is_none());
+    }
+
+    #[test]
+    fn body_starts_with_doc_comment_detects_common_doc_markers() {
+        // Unambiguous doc markers across supported languages.
+        assert!(body_starts_with_doc_comment("/// rust outer line doc\nfn foo() {}"));
+        assert!(body_starts_with_doc_comment("//! rust inner line doc\nmod m {}"));
+        assert!(body_starts_with_doc_comment(
+            "/** jsdoc-style block\n * details\n */\nfn foo() {}"
+        ));
+        assert!(body_starts_with_doc_comment(
+            "/*! rust inner block doc */\nmod m {}"
+        ));
+        assert!(body_starts_with_doc_comment("#[doc = \"attr doc\"]\nfn foo() {}"));
+
+        // Leading blank lines should not defeat detection.
+        assert!(body_starts_with_doc_comment("\n\n/// doc\nfn foo() {}"));
+
+        // Leading indentation is allowed.
+        assert!(body_starts_with_doc_comment("    /// indented doc\n    fn foo() {}"));
+    }
+
+    #[test]
+    fn body_starts_with_doc_comment_rejects_non_doc_prefixes() {
+        // Plain code.
+        assert!(!body_starts_with_doc_comment("fn foo() {}"));
+
+        // Ordinary line comments — could be code annotations, not doc.
+        assert!(!body_starts_with_doc_comment("// regular comment\nfn foo() {}"));
+
+        // Python comment — Python docstrings are inside the body, not above.
+        assert!(!body_starts_with_doc_comment("# python comment\ndef foo(): pass"));
+
+        // Rust attributes — must not be misread as docs. This was the
+        // concrete bug that would have duplicated `#[test]` during a
+        // replace_symbol_body on an attribute-prefixed function.
+        assert!(!body_starts_with_doc_comment("#[inline]\npub fn foo() {}"));
+        assert!(!body_starts_with_doc_comment("#[derive(Debug)]\nstruct S;"));
+
+        // Empty body — nothing to detect.
+        assert!(!body_starts_with_doc_comment(""));
+        assert!(!body_starts_with_doc_comment("\n\n   \n"));
     }
 }

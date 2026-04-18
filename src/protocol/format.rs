@@ -394,6 +394,30 @@ pub fn search_text_result_view(
         Err(search::TextSearchError::UnsupportedWholeWordRegex) => {
             return "whole_word is not supported when `regex=true`.".to_string();
         }
+        Err(search::TextSearchError::InvalidStructuralPattern { pattern, error }) => {
+            return format!(
+                "Error: structural pattern failed to parse.\n\
+                 Pattern: {pattern}\n\
+                 Parse error: {error}\n\
+                 Hint: ast-grep patterns use $VAR for single-node metavariables \
+                 and $$$ for multi-node wildcards (e.g., `fn $NAME($$$) {{ $$$ }}`). \
+                 Narrow `language` to target a specific grammar if needed."
+            );
+        }
+        Err(search::TextSearchError::UnsupportedStructuralLanguage {
+            pattern,
+            sample_error,
+        }) => {
+            return format!(
+                "Error: structural search has no supported grammar for any indexed file.\n\
+                 Pattern: {pattern}\n\
+                 Sample: {sample_error}\n\
+                 Hint: ast-grep only supports programming-language grammars. \
+                 Config languages (TOML, JSON, YAML) are never searchable with \
+                 `structural=true`. Widen `path_prefix` / `language` / `include_tests` \
+                 so at least one source-code candidate is in scope."
+            );
+        }
     };
 
     let annotate_term = |line: &str| -> String {
@@ -416,6 +440,21 @@ pub fn search_text_result_view(
             return format!(
                 "No matches for {} in source code. {} match(es) found in test modules — set include_tests=true to include them.",
                 result.label, result.suppressed_by_noise
+            );
+        }
+        // Structural searches can reach this branch three ways:
+        //   1. pattern compiled for at least one candidate, matched nothing
+        //   2. the index held no source-language candidates at all
+        //   3. candidates existed but were all filtered out by globs / noise
+        // The specific message can't distinguish them without an extra
+        // counter, so avoid the earlier "Pattern parsed OK" overclaim and
+        // just point at the levers that widen the search.
+        if result.label.starts_with("structural ") {
+            return format!(
+                "No AST matches for {}. Consider widening the search \
+                 (include_tests=true / include_generated=true / broader path_prefix) \
+                 or simplifying the pattern.",
+                result.label
             );
         }
         return format!(

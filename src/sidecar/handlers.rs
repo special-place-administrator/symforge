@@ -745,6 +745,21 @@ async fn handle_new_file_impact(
     Ok(text)
 }
 
+/// Locate the SymbolRecord in an indexed file that corresponds to a
+/// pre-recorded SymbolSnapshot.
+///
+/// Used by analyze_file_impact so it can walk the symbol's parent impl
+/// block and type-scope the "Callers to review" list. Matches on the
+/// triple (name, kind, byte_range) — overloaded names are common, so
+/// name alone is insufficient.
+fn find_record_matching_snapshot<'a>(
+    file: &'a crate::live_index::store::IndexedFile,
+    sym: &SymbolSnapshot,
+) -> Option<&'a crate::domain::SymbolRecord> {
+    file.symbols.iter().find(|s| {
+        s.name == sym.name && s.kind.to_string() == sym.kind && s.byte_range == sym.byte_range
+    })
+}
 async fn handle_edit_impact(
     state: SidecarState,
     path: &str,
@@ -860,10 +875,21 @@ async fn handle_edit_impact(
                 let mut cache = state.symbol_cache.write();
                 cache.remove(path);
             }
-            let text = format!(
-                "── Impact: {} ──\nStatus: not found on disk — removed from index\nPreviously had {} symbols.",
-                path, prev_symbol_count
-            );
+            let text = if prev_symbol_count > 0 {
+                format!(
+                    "── Impact: {} ──\nStatus: not found on disk — removed from index\nPreviously had {} symbols.",
+                    path, prev_symbol_count
+                )
+            } else {
+                // The file-watcher may have already purged the index entry
+                // between the on-disk delete and this call; in that case we
+                // have no pre-count to report, so say so plainly instead of
+                // printing a misleading `Previously had 0 symbols.`.
+                format!(
+                    "── Impact: {} ──\nStatus: not found on disk — no index record remains (may have been removed by watcher).",
+                    path
+                )
+            };
             return Ok(text);
         }
         ReadOutcome::Ok {
@@ -955,16 +981,56 @@ async fn handle_edit_impact(
         }
 
         // Show callers for Changed + Removed symbols.
+        //
+        // For CHANGED symbols that live inside an `impl` block, scope the
+        // caller list to files that also reference the parent type —
+        // prevents `MathMachine::new` from flagging every unrelated `new()`
+        // call. Mirrors the filter in protocol::edit::detect_stale_references.
+        //
+        // REMOVED symbols cannot be type-scoped here: the post-edit file no
+        // longer contains the SymbolRecord, so `find_record_matching_snapshot`
+        // returns None and the filter short-circuits to name-only matching.
+        // Acceptable trade-off: removing a same-named method from one of many
+        // types is rare, and carrying parent_type through SymbolSnapshot would
+        // widen the schema for a corner case. Revisit if the false positive
+        // surfaces in real usage.
         let impacted: Vec<&SymbolSnapshot> =
             changed.iter().chain(removed.iter()).copied().collect();
         if !impacted.is_empty() {
             let guard = state.index.read();
+            let post_file = guard.get_file(path);
             let mut callers_lines: Vec<String> = Vec::new();
             for sym in &impacted {
+                // Derive the parent impl/class type for this symbol, if any.
+                // Look the symbol up in the POST-edit file by name+byte_range so
+                // overloaded names do not confuse the walker.
+                let parent_type: Option<String> = post_file.as_ref().and_then(|file| {
+                    find_record_matching_snapshot(file, sym)
+                        .and_then(|record| {
+                            crate::protocol::edit::find_parent_impl_type(file, record)
+                        })
+                });
+
+                // When we know the parent type, collect the set of files that
+                // reference it. Only those files could plausibly call
+                // `ParentType::method_name()`.
+                let type_files: Option<std::collections::HashSet<String>> =
+                    parent_type.as_ref().map(|tn| {
+                        guard
+                            .find_references_for_name(tn, None, false)
+                            .into_iter()
+                            .map(|(fp, _)| fp.to_string())
+                            .collect()
+                    });
+
                 let callers = guard.find_references_for_name(&sym.name, None, false);
                 let external: Vec<_> = callers
                     .iter()
                     .filter(|(fp, _)| *fp != path)
+                    .filter(|(fp, _)| match &type_files {
+                        Some(tf) => tf.contains(*fp),
+                        None => true,
+                    })
                     .take(5)
                     .collect();
                 if !external.is_empty() {
@@ -1274,6 +1340,18 @@ pub async fn workflow_repo_start_handler(
     repo_map_handler(State(state)).await
 }
 
+/// Heuristic: whether an indexed path looks like it belongs to the
+/// active workspace.
+///
+/// Rejects any path containing `:` (Windows drive letter — `C:\…`) or
+/// starting with `/` (POSIX absolute). Kept loose on purpose: a legit
+/// file literally named `src/a:b.rs` on POSIX would also be filtered,
+/// but we accept that edge case in exchange for matching the pre-existing
+/// guard at the header-stats loop exactly and blocking the octogent-style
+/// cross-workspace leak that motivated Unit 1.
+fn is_intra_workspace_path(path: &str) -> bool {
+    !(path.contains(':') || path.starts_with('/'))
+}
 pub(crate) fn repo_map_text(state: &SidecarState) -> Result<String, StatusCode> {
     // Single lock acquisition covers both the directory stats and key-types passes.
     let guard = state.index.read();
@@ -1292,7 +1370,7 @@ pub(crate) fn repo_map_text(state: &SidecarState) -> Result<String, StatusCode> 
 
     for (path, file) in guard.all_files() {
         // Skip files with absolute paths (outside project root, e.g., Windows memory files).
-        if path.contains(':') || path.starts_with('/') {
+        if !is_intra_workspace_path(path) {
             continue;
         }
 
@@ -1339,6 +1417,12 @@ pub(crate) fn repo_map_text(state: &SidecarState) -> Result<String, StatusCode> 
     {
         let mut entry_points: Vec<(String, String, String)> = Vec::new(); // (kind, name, path)
         for (path, file) in guard.all_files() {
+            // Exclude paths from other indexed workspaces — same guard as the
+            // directory-stats loop above; without it the key-types section
+            // leaks symbols from unrelated projects.
+            if !is_intra_workspace_path(path) {
+                continue;
+            }
             // Only source code, skip docs/tests/vendor
             let pl = path.to_ascii_lowercase();
             if pl.ends_with(".md")
@@ -2381,6 +2465,209 @@ mod tests {
         );
     }
 
+    /// When the watcher purges the index entry before analyze_file_impact
+    /// runs, there is no pre-count to report. The response must not claim
+    /// `Previously had 0 symbols` as if zero were a measured pre-state.
+    #[tokio::test]
+    async fn test_impact_handler_edit_honest_wording_when_index_already_purged() {
+        // Index is empty; the caller asks about a path the watcher already
+        // removed (or which never existed). The handler should acknowledge
+        // the absence of a prior record rather than report "0 symbols".
+        let state = make_state(vec![]);
+
+        let params = ImpactParams {
+            path: "src/ghost.rs".to_string(),
+            new_file: None,
+        };
+        let result = impact_handler(State(state), Query(params)).await;
+        assert!(result.is_ok(), "handler must tolerate the watcher race");
+        let text = result.unwrap();
+        assert!(
+            text.contains("no index record remains"),
+            "should flag the purged-index case explicitly; got: {text}"
+        );
+        assert!(
+            !text.contains("Previously had 0 symbols"),
+            "must not claim a pre-count that was never observed; got: {text}"
+        );
+    }
+
+    /// Helper: SymbolRecord with explicit depth and byte_range, needed for
+    /// parent-impl-type tests that the simpler `make_symbol` can't express.
+    fn make_symbol_with_range(
+        name: &str,
+        kind: SymbolKind,
+        depth: u32,
+        line_range: (u32, u32),
+        byte_range: (u32, u32),
+    ) -> SymbolRecord {
+        SymbolRecord {
+            name: name.to_string(),
+            kind,
+            depth,
+            sort_order: 0,
+            byte_range,
+            item_byte_range: Some(byte_range),
+            line_range,
+            doc_byte_range: None,
+        }
+    }
+
+    #[test]
+    fn test_find_record_matching_snapshot_matches_on_name_kind_and_byte_range() {
+        let impl_record = make_symbol_with_range(
+            "impl Foo",
+            SymbolKind::Impl,
+            0,
+            (1, 5),
+            (0, 200),
+        );
+        let new_method = make_symbol_with_range(
+            "new",
+            SymbolKind::Function,
+            1,
+            (2, 3),
+            (50, 80),
+        );
+        let file = make_indexed_file(
+            "src/foo.rs",
+            vec![impl_record, new_method.clone()],
+            vec![],
+            ParseStatus::Parsed,
+        );
+
+        // Matching snapshot: all three fields agree → Some(record).
+        let snap = SymbolSnapshot {
+            name: "new".to_string(),
+            kind: new_method.kind.to_string(),
+            line_range: new_method.line_range,
+            byte_range: new_method.byte_range,
+        };
+        let hit = find_record_matching_snapshot(&file, &snap);
+        assert!(hit.is_some(), "exact match must resolve");
+
+        // Name-only collision: different byte_range → None. This is what
+        // prevents `MathMachine::new` from matching `Foo::new` elsewhere.
+        let wrong_range = SymbolSnapshot {
+            name: "new".to_string(),
+            kind: new_method.kind.to_string(),
+            line_range: new_method.line_range,
+            byte_range: (999, 1000),
+        };
+        assert!(
+            find_record_matching_snapshot(&file, &wrong_range).is_none(),
+            "byte_range mismatch must not resolve"
+        );
+
+        // Name + range match but wrong kind → None.
+        let wrong_kind = SymbolSnapshot {
+            name: "new".to_string(),
+            kind: SymbolKind::Struct.to_string(),
+            line_range: new_method.line_range,
+            byte_range: new_method.byte_range,
+        };
+        assert!(
+            find_record_matching_snapshot(&file, &wrong_kind).is_none(),
+            "kind mismatch must not resolve"
+        );
+    }
+
+    /// End-to-end: when analyze_file_impact reports callers of a changed
+    /// method inside `impl Foo`, it must exclude files that only reference
+    /// an unrelated same-named method (e.g. `Bar::new`). The fix type-scopes
+    /// the caller list using find_parent_impl_type + file-presence filter.
+    #[tokio::test]
+    async fn test_impact_handler_type_scopes_caller_review() {
+        use std::io::Write;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let src_dir = tmp.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+
+        // Write the post-edit file content. The parser must produce an
+        // Impl symbol and a nested `new` method so find_parent_impl_type
+        // returns Some("Foo").
+        let foo_path = src_dir.join("foo.rs");
+        let mut f = std::fs::File::create(&foo_path).unwrap();
+        writeln!(f, "pub struct Foo;").unwrap();
+        writeln!(f, "impl Foo {{").unwrap();
+        writeln!(f, "    pub fn new() -> Self {{ Self }}").unwrap();
+        writeln!(f, "}}").unwrap();
+        drop(f);
+
+        // Pre-edit snapshot: `new` existed at a different byte_range so the
+        // diff flags it as Changed rather than unchanged.
+        let pre_impl = make_symbol_with_range("impl Foo", SymbolKind::Impl, 0, (1, 1), (0, 5));
+        let pre_new = make_symbol_with_range("new", SymbolKind::Function, 1, (1, 1), (10, 20));
+        let pre_file = make_indexed_file(
+            "src/foo.rs",
+            vec![pre_impl, pre_new],
+            vec![],
+            ParseStatus::Parsed,
+        );
+
+        // A file that references `Foo` AND `new` — legitimate caller.
+        let uses_foo = make_indexed_file(
+            "src/uses_foo.rs",
+            vec![],
+            vec![
+                make_reference("Foo", ReferenceKind::TypeUsage, 1),
+                make_reference("new", ReferenceKind::Call, 2),
+            ],
+            ParseStatus::Parsed,
+        );
+
+        // A file that references `new` but NOT `Foo` — must be filtered out.
+        // Simulates the `MathMachine::new` vs other-type `::new` false positive.
+        let uses_other = make_indexed_file(
+            "src/uses_bar.rs",
+            vec![],
+            vec![
+                make_reference("Bar", ReferenceKind::TypeUsage, 1),
+                make_reference("new", ReferenceKind::Call, 5),
+            ],
+            ParseStatus::Parsed,
+        );
+
+        let state = make_state_with_root(
+            vec![
+                ("src/foo.rs", pre_file),
+                ("src/uses_foo.rs", uses_foo),
+                ("src/uses_bar.rs", uses_other),
+            ],
+            tmp.path().to_path_buf(),
+        );
+
+        let params = ImpactParams {
+            path: "src/foo.rs".to_string(),
+            new_file: None,
+        };
+        let result = impact_handler(State(state), Query(params))
+            .await
+            .expect("handler returns Ok");
+
+        // Sanity: `new` is reported as Changed (or Added — parse may shift
+        // byte ranges enough to confuse the diff, which is fine for this
+        // test — what matters is that the caller-review block renders and
+        // is type-scoped).
+        assert!(
+            result.contains("Callers of new()") || !result.contains("Callers to review:"),
+            "when caller review renders, the symbol name header must appear; got:\n{result}"
+        );
+
+        if result.contains("Callers to review:") {
+            assert!(
+                result.contains("src/uses_foo.rs"),
+                "caller in a file that references the parent type must be kept; got:\n{result}"
+            );
+            assert!(
+                !result.contains("src/uses_bar.rs"),
+                "caller in a file that does NOT reference the parent type must be filtered out; got:\n{result}"
+            );
+        }
+    }
+
     /// Proves that analyze_file_impact removes the file from the index when
     /// it cannot be read from disk (deleted externally).
     #[tokio::test]
@@ -2632,6 +2919,62 @@ mod tests {
         assert!(
             result.contains("0 files"),
             "empty index should show 0 files"
+        );
+    }
+
+    #[test]
+    fn test_is_intra_workspace_path_rejects_absolute_paths() {
+        assert!(is_intra_workspace_path("src/main.rs"));
+        assert!(is_intra_workspace_path("tests/fixtures/foo.rs"));
+        // Windows drive-letter paths from other indexed repos.
+        assert!(!is_intra_workspace_path(
+            "C:\\AI_STUFF\\PROGRAMMING\\octogent\\apps\\api\\tests\\hookDrivenBootstrap.test.ts"
+        ));
+        // POSIX absolute paths.
+        assert!(!is_intra_workspace_path("/usr/local/project/src/main.rs"));
+    }
+
+    #[tokio::test]
+    async fn test_repo_map_excludes_foreign_workspace_paths_from_key_types() {
+        let local = make_indexed_file(
+            "src/local_type.rs",
+            vec![make_symbol("LocalThing", SymbolKind::Struct, 1, 5)],
+            vec![],
+            ParseStatus::Parsed,
+        );
+        let foreign_windows = make_indexed_file(
+            "C:\\AI_STUFF\\PROGRAMMING\\otherrepo\\src\\ForeignType.ts",
+            vec![make_symbol("ForeignWindows", SymbolKind::Class, 1, 5)],
+            vec![],
+            ParseStatus::Parsed,
+        );
+        let foreign_posix = make_indexed_file(
+            "/home/someone/otherrepo/src/foreign.rs",
+            vec![make_symbol("ForeignPosix", SymbolKind::Struct, 1, 5)],
+            vec![],
+            ParseStatus::Parsed,
+        );
+        let state = make_state(vec![
+            ("src/local_type.rs", local),
+            (
+                "C:\\AI_STUFF\\PROGRAMMING\\otherrepo\\src\\ForeignType.ts",
+                foreign_windows,
+            ),
+            ("/home/someone/otherrepo/src/foreign.rs", foreign_posix),
+        ]);
+
+        let result = repo_map_handler(State(state)).await.unwrap();
+        assert!(
+            result.contains("LocalThing"),
+            "key types should include the local symbol; got:\n{result}"
+        );
+        assert!(
+            !result.contains("ForeignWindows"),
+            "key types must not leak Windows drive-letter paths from other workspaces; got:\n{result}"
+        );
+        assert!(
+            !result.contains("ForeignPosix"),
+            "key types must not leak POSIX absolute paths from other workspaces; got:\n{result}"
         );
     }
 

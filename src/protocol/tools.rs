@@ -6502,17 +6502,31 @@ impl SymForgeServer {
             );
         }
         let old_bytes = (sym.byte_range.1 - sym.byte_range.0) as usize;
-        // Splice at line start and apply indentation — same approach as insert tools.
-        // Extend past orphaned doc comments so they get replaced along with the symbol,
-        // preventing duplicate JSDoc/XML doc blocks.
-        let effective = sym.effective_start() as usize;
+        // Decide where the splice starts based on whether the caller
+        // supplied fresh docs in `new_body`:
+        //   * new_body starts with a doc marker → extend past the old
+        //     attached/orphaned docs so the new ones replace them
+        //     (prevents duplicate JSDoc/XML doc blocks).
+        //   * new_body has no doc marker → start at the signature line
+        //     so existing attached docs and attributes stay put.
+        // Preserving docs by default was the behavior users expected;
+        // swallowing them silently was the bug surfaced in the v7.5 review.
+        let new_body_supplies_docs = edit::body_starts_with_doc_comment(&params.0.new_body);
+        let effective = if new_body_supplies_docs {
+            sym.effective_start() as usize
+        } else {
+            sym.byte_range.0 as usize
+        };
         let raw_line_start = file.content[..effective]
             .iter()
             .rposition(|&b| b == b'\n')
             .map(|p| p + 1)
             .unwrap_or(0);
-        let line_start =
-            edit::extend_past_orphaned_docs(&file.content, raw_line_start, &sym) as u32;
+        let line_start = if new_body_supplies_docs {
+            edit::extend_past_orphaned_docs(&file.content, raw_line_start, &sym) as u32
+        } else {
+            raw_line_start as u32
+        };
         let indent = edit::detect_indentation(&file.content, sym.byte_range.0);
         let line_ending = edit::detect_line_ending(&file.content);
         let normalized = edit::normalize_line_endings(params.0.new_body.as_bytes(), line_ending);
@@ -13253,6 +13267,194 @@ mod tests {
         let file = guard.get_file("src/lib.rs").unwrap();
         assert!(file.symbols.iter().any(|s| s.name == "hello"));
         assert!(file.symbols.iter().any(|s| s.name == "world"));
+    }
+
+    /// When `new_body` does NOT supply its own doc comment, the existing
+    /// attached `/// ...` doc must be preserved. Previously the splice
+    /// range extended past the doc unconditionally, silently deleting it.
+    #[tokio::test]
+    async fn test_replace_symbol_body_preserves_attached_doc_without_new_doc() {
+        let original = b"/// Adds two numbers.\npub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n";
+        let (_dir, server, file_path) = setup_edit_test(original);
+
+        let input = crate::protocol::edit::ReplaceSymbolBodyInput {
+            path: "src/lib.rs".to_string(),
+            name: "add".to_string(),
+            kind: None,
+            symbol_line: None,
+            new_body: "pub fn add(a: i32, b: i32) -> i32 {\n    a.saturating_add(b)\n}".to_string(),
+            dry_run: None,
+            working_directory: None,
+        };
+        let result = server.replace_symbol_body(Parameters(input)).await;
+        assert!(result.contains("replaced"), "result was: {result}");
+
+        let on_disk = std::fs::read_to_string(&file_path).unwrap();
+        assert!(
+            on_disk.contains("/// Adds two numbers."),
+            "existing doc must be preserved; disk was:\n{on_disk}"
+        );
+        assert!(
+            on_disk.contains("saturating_add"),
+            "new body must be written; disk was:\n{on_disk}"
+        );
+        // No duplicated doc line.
+        assert_eq!(
+            on_disk.matches("/// Adds two numbers.").count(),
+            1,
+            "doc must appear exactly once; disk was:\n{on_disk}"
+        );
+    }
+
+    /// When `new_body` DOES supply its own doc comment, the existing doc
+    /// must be replaced — not kept alongside, which would duplicate it.
+    #[tokio::test]
+    async fn test_replace_symbol_body_replaces_attached_doc_when_new_body_supplies_one() {
+        let original = b"/// Old doc.\npub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n";
+        let (_dir, server, file_path) = setup_edit_test(original);
+
+        let input = crate::protocol::edit::ReplaceSymbolBodyInput {
+            path: "src/lib.rs".to_string(),
+            name: "add".to_string(),
+            kind: None,
+            symbol_line: None,
+            new_body: "/// New doc.\npub fn add(a: i32, b: i32) -> i32 {\n    a.saturating_add(b)\n}"
+                .to_string(),
+            dry_run: None,
+            working_directory: None,
+        };
+        let result = server.replace_symbol_body(Parameters(input)).await;
+        assert!(result.contains("replaced"), "result was: {result}");
+
+        let on_disk = std::fs::read_to_string(&file_path).unwrap();
+        assert!(
+            on_disk.contains("/// New doc."),
+            "new doc must be written; disk was:\n{on_disk}"
+        );
+        assert!(
+            !on_disk.contains("/// Old doc."),
+            "old doc must be replaced when new one is supplied; disk was:\n{on_disk}"
+        );
+        // Exactly one doc line (no duplication).
+        assert_eq!(
+            on_disk.matches("/// ").count(),
+            1,
+            "exactly one doc line expected; disk was:\n{on_disk}"
+        );
+    }
+
+    /// Attributes like `#[inline]` attached to the symbol must be preserved
+    /// when `new_body` has neither a doc nor the attribute. This is the
+    /// `#[test]`-duplication bug we hit while building Unit 5's tests.
+    #[tokio::test]
+    async fn test_replace_symbol_body_preserves_attribute_without_duplicating_it() {
+        let original = b"#[inline]\npub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n";
+        let (_dir, server, file_path) = setup_edit_test(original);
+
+        let input = crate::protocol::edit::ReplaceSymbolBodyInput {
+            path: "src/lib.rs".to_string(),
+            name: "add".to_string(),
+            kind: None,
+            symbol_line: None,
+            new_body: "pub fn add(a: i32, b: i32) -> i32 {\n    a.saturating_add(b)\n}".to_string(),
+            dry_run: None,
+            working_directory: None,
+        };
+        let result = server.replace_symbol_body(Parameters(input)).await;
+        assert!(result.contains("replaced"), "result was: {result}");
+
+        let on_disk = std::fs::read_to_string(&file_path).unwrap();
+        assert_eq!(
+            on_disk.matches("#[inline]").count(),
+            1,
+            "attribute must appear exactly once; disk was:\n{on_disk}"
+        );
+        assert!(
+            on_disk.contains("saturating_add"),
+            "new body must be written; disk was:\n{on_disk}"
+        );
+    }
+
+    /// Orphaned doc comments (separated from the symbol by a blank line)
+    /// must NOT be swallowed when new_body has no doc of its own. This is
+    /// the narrowest behavioral delta between the old and new splice math,
+    /// and the case the plan's Risks table explicitly flagged for fixture
+    /// coverage.
+    #[tokio::test]
+    async fn test_replace_symbol_body_preserves_orphan_doc_without_new_doc() {
+        let original =
+            b"/// Intro remark about the next item.\n\npub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n";
+        let (_dir, server, file_path) = setup_edit_test(original);
+
+        let input = crate::protocol::edit::ReplaceSymbolBodyInput {
+            path: "src/lib.rs".to_string(),
+            name: "add".to_string(),
+            kind: None,
+            symbol_line: None,
+            new_body: "pub fn add(a: i32, b: i32) -> i32 {\n    a.saturating_add(b)\n}".to_string(),
+            dry_run: None,
+            working_directory: None,
+        };
+        let result = server.replace_symbol_body(Parameters(input)).await;
+        assert!(result.contains("replaced"), "result was: {result}");
+
+        let on_disk = std::fs::read_to_string(&file_path).unwrap();
+        assert!(
+            on_disk.contains("/// Intro remark about the next item."),
+            "orphaned doc must survive a body-only replace; disk was:\n{on_disk}"
+        );
+        assert!(
+            on_disk.contains("saturating_add"),
+            "new body must be written; disk was:\n{on_disk}"
+        );
+        assert_eq!(
+            on_disk.matches("/// Intro remark about the next item.").count(),
+            1,
+            "orphan doc must not duplicate; disk was:\n{on_disk}"
+        );
+    }
+
+    /// TypeScript/JSDoc variant: `/** ... */` doc block on a separate line
+    /// must be preserved when new_body has no doc. Plan Risks table named
+    /// this specifically — multi-language coverage proves the helper works
+    /// off of the language-agnostic doc-marker list in edit.rs.
+    #[tokio::test]
+    async fn test_replace_symbol_body_preserves_jsdoc_without_new_doc() {
+        let original = b"/** Adds two numbers. */\nexport function add(a: number, b: number): number {\n    return a + b;\n}\n";
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        let file_path = src_dir.join("math.ts");
+        std::fs::write(&file_path, original).unwrap();
+        let parse_result = crate::parsing::process_file("src/math.ts", original, LanguageId::TypeScript);
+        let indexed = IndexedFile::from_parse_result(parse_result, original.to_vec());
+        let index = make_live_index_ready(vec![("src/math.ts".to_string(), indexed)]);
+        let server = make_server_with_root(index, Some(dir.path().to_path_buf()));
+
+        let input = crate::protocol::edit::ReplaceSymbolBodyInput {
+            path: "src/math.ts".to_string(),
+            name: "add".to_string(),
+            kind: None,
+            symbol_line: None,
+            new_body:
+                "export function add(a: number, b: number): number {\n    return a + b;\n}"
+                    .to_string(),
+            dry_run: None,
+            working_directory: None,
+        };
+        let result = server.replace_symbol_body(Parameters(input)).await;
+        assert!(result.contains("replaced"), "result was: {result}");
+
+        let on_disk = std::fs::read_to_string(&file_path).unwrap();
+        assert!(
+            on_disk.contains("/** Adds two numbers. */"),
+            "JSDoc block must survive a body-only replace; disk was:\n{on_disk}"
+        );
+        assert_eq!(
+            on_disk.matches("/** Adds two numbers. */").count(),
+            1,
+            "JSDoc must not duplicate; disk was:\n{on_disk}"
+        );
     }
 
     #[tokio::test]
