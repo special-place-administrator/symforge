@@ -210,6 +210,90 @@ test("launcher honors SYMFORGE_HOME for binary resolution", () => {
   assert.equal(launcher.getPendingPath(), pendingPath);
 });
 
+test("launcher spawns binary under SYMFORGE_HOME when override matches wrapper version", () => {
+  const homeDir = winPath.join("D:\\sandbox", "symforge-home");
+  const installDir = winPath.join(homeDir, "bin");
+  const binPath = winPath.join(installDir, "symforge.exe");
+  const pendingPath = winPath.join(installDir, "symforge.pending.exe");
+  const versionPath = winPath.join(installDir, "symforge.version");
+  const pendingVersionPath = winPath.join(installDir, "symforge.pending.version");
+  const fsOverrides = createFs({
+    binPath,
+    pendingPath,
+    versionPath,
+    pendingVersionPath,
+    hasBinary: true,
+    installedVersion: "0.3.12",
+  });
+  const spawnCalls = [];
+  const execCalls = [];
+
+  const { launcher, errors } = createLauncherForTest({
+    fsOverrides,
+    installDir: undefined,
+    env: { SYMFORGE_HOME: homeDir },
+    execFileSync(command, args) {
+      execCalls.push({ command, args });
+      return "";
+    },
+    spawnSync(command, args) {
+      spawnCalls.push({ command, args });
+      return { status: 0 };
+    },
+  });
+
+  const status = launcher.main(["--version"]);
+
+  assert.equal(status, 0);
+  assert.equal(spawnCalls.length, 1);
+  assert.equal(
+    spawnCalls[0].command,
+    binPath,
+    "launcher must spawn the binary from the SYMFORGE_HOME-derived path, not the default homedir path",
+  );
+  assert.deepEqual(spawnCalls[0].args, ["--version"]);
+  assert.deepEqual(execCalls, [], "installer must not run when version metadata matches");
+  assert.equal(errors.length, 0);
+});
+
+test("launcher surfaces a clear error when SYMFORGE_HOME points at a directory with no binary", () => {
+  const homeDir = winPath.join("D:\\nowhere", "missing-symforge-home");
+  const installDir = winPath.join(homeDir, "bin");
+  const binPath = winPath.join(installDir, "symforge.exe");
+  const pendingPath = winPath.join(installDir, "symforge.pending.exe");
+  const versionPath = winPath.join(installDir, "symforge.version");
+  const pendingVersionPath = winPath.join(installDir, "symforge.pending.version");
+  const fsOverrides = createFs({
+    binPath,
+    pendingPath,
+    versionPath,
+    pendingVersionPath,
+    hasBinary: false,
+    hasPending: false,
+  });
+
+  const { launcher, errors } = createLauncherForTest({
+    fsOverrides,
+    installDir: undefined,
+    env: { SYMFORGE_HOME: homeDir },
+    execFileSync() {
+      // Simulate the installer completing without producing the binary (e.g. offline mode).
+      return "";
+    },
+    spawnSync() {
+      return { status: 0 };
+    },
+  });
+
+  assert.throws(
+    () => launcher.main([]),
+    /symforge binary is still missing after install/,
+    "launcher must raise an explicit error instead of falling through to a cryptic spawn failure",
+  );
+  const errorLog = errors.join("\n");
+  assert.match(errorLog, /symforge binary not found/);
+});
+
 test("launcher relays installer stdout to stderr so MCP stdout stays clean", () => {
   const installDir = winPath.join("C:\\Users\\tester", ".symforge", "bin");
   const binPath = winPath.join(installDir, "symforge.exe");
