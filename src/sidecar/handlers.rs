@@ -860,10 +860,21 @@ async fn handle_edit_impact(
                 let mut cache = state.symbol_cache.write();
                 cache.remove(path);
             }
-            let text = format!(
-                "── Impact: {} ──\nStatus: not found on disk — removed from index\nPreviously had {} symbols.",
-                path, prev_symbol_count
-            );
+            let text = if prev_symbol_count > 0 {
+                format!(
+                    "── Impact: {} ──\nStatus: not found on disk — removed from index\nPreviously had {} symbols.",
+                    path, prev_symbol_count
+                )
+            } else {
+                // The file-watcher may have already purged the index entry
+                // between the on-disk delete and this call; in that case we
+                // have no pre-count to report, so say so plainly instead of
+                // printing a misleading `Previously had 0 symbols.`.
+                format!(
+                    "── Impact: {} ──\nStatus: not found on disk — no index record remains (may have been removed by watcher).",
+                    path
+                )
+            };
             return Ok(text);
         }
         ReadOutcome::Ok {
@@ -2393,6 +2404,33 @@ mod tests {
         assert!(
             text.contains("removed from index") || text.contains("not found on disk"),
             "should indicate file was removed from index; got: {text}"
+        );
+    }
+
+    /// When the watcher purges the index entry before analyze_file_impact
+    /// runs, there is no pre-count to report. The response must not claim
+    /// `Previously had 0 symbols` as if zero were a measured pre-state.
+    #[tokio::test]
+    async fn test_impact_handler_edit_honest_wording_when_index_already_purged() {
+        // Index is empty; the caller asks about a path the watcher already
+        // removed (or which never existed). The handler should acknowledge
+        // the absence of a prior record rather than report "0 symbols".
+        let state = make_state(vec![]);
+
+        let params = ImpactParams {
+            path: "src/ghost.rs".to_string(),
+            new_file: None,
+        };
+        let result = impact_handler(State(state), Query(params)).await;
+        assert!(result.is_ok(), "handler must tolerate the watcher race");
+        let text = result.unwrap();
+        assert!(
+            text.contains("no index record remains"),
+            "should flag the purged-index case explicitly; got: {text}"
+        );
+        assert!(
+            !text.contains("Previously had 0 symbols"),
+            "must not claim a pre-count that was never observed; got: {text}"
         );
     }
 
