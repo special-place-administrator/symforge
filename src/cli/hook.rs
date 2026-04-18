@@ -1809,6 +1809,150 @@ mod tests {
         assert_eq!(snapshot.total_attempts(), 3);
     }
 
+    // ---- Hook-adoption metric regression tests ----
+    //
+    // These pin the user-visible contract documented in CONTEXT.md:
+    // `health` output must render `Owned workflows routed: N/M (P%)` after
+    // hooks fire, and must visibly degrade (or disappear) when they don't.
+    //
+    // Chain under test: record_hook_outcome → ADOPTION_LOG_FILE on disk →
+    // load_hook_adoption_snapshot → format_hook_adoption. A regression at
+    // any link drops the "2/2 (100%)" contract, and these tests fail loudly.
+    //
+    // Not covered here: whether `run_hook` still calls record_hook_outcome
+    // at its dispatch sites. That wire-up is guarded by code review — see
+    // src/cli/hook.rs::run_hook lines 307/350/378.
+
+    /// Serializes cwd mutation inside this test binary. Tests run with
+    /// --test-threads=1 (per CLAUDE.md), so this lock only guards against
+    /// future intra-binary concurrency regressions.
+    static HOOK_CWD_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+    #[test]
+    fn test_health_hook_adoption_metric_pins_published_contract() {
+        let tmp = TempDir::new().unwrap();
+        let symforge_dir = tmp.path().join(".symforge");
+        std::fs::create_dir_all(&symforge_dir).unwrap();
+        let log_path = symforge_dir.join("hook-adoption.log");
+        let session_path = symforge_dir.join("sidecar.session");
+
+        // Two tracked workflows, both routed — mirrors the "2/2 (100%)"
+        // contract shown in CONTEXT.md §Project rules.
+        append_hook_adoption_event(&log_path, Some("sess-live"), "repo-start", "routed").unwrap();
+        append_hook_adoption_event(&log_path, Some("sess-live"), "prompt-context", "routed")
+            .unwrap();
+        std::fs::write(&session_path, "sess-live\n").unwrap();
+
+        // adoption_log_path and load_hook_adoption_snapshot must agree on
+        // where the log lives — pin that too.
+        assert_eq!(adoption_log_path(Some(tmp.path())), log_path);
+
+        let snapshot = load_hook_adoption_snapshot(Some(tmp.path()));
+        assert_eq!(snapshot.total_routed(), 2);
+        assert_eq!(snapshot.total_attempts(), 2);
+        assert_eq!(snapshot.total_fail_open(), 0);
+
+        let rendered = crate::protocol::format::format_hook_adoption(&snapshot);
+        assert!(
+            rendered.contains("── Hook Adoption (current session) ──"),
+            "missing section header: {rendered}"
+        );
+        assert!(
+            rendered.contains("Owned workflows routed: 2/2 (100%)"),
+            "published contract string missing: {rendered}"
+        );
+        assert!(
+            rendered.contains("Fail-open outcomes: 0"),
+            "should show zero fail-open when all routed: {rendered}"
+        );
+        assert!(
+            rendered.contains("Repo start: routed 1"),
+            "missing per-workflow line for repo-start: {rendered}"
+        );
+        assert!(
+            rendered.contains("Prompt context: routed 1"),
+            "missing per-workflow line for prompt-context: {rendered}"
+        );
+        assert!(
+            rendered.contains("First repo start: routed"),
+            "first-repo-start outcome must render: {rendered}"
+        );
+    }
+
+    #[test]
+    fn test_health_hook_adoption_metric_flags_silent_failure_when_all_fail_open() {
+        // Regression guard for the scenario CONTEXT.md warns about:
+        // "a regression where hooks silently stop firing would drop this to
+        // 0/2 or 1/2 and nothing automated would notice".
+        let tmp = TempDir::new().unwrap();
+        let symforge_dir = tmp.path().join(".symforge");
+        std::fs::create_dir_all(&symforge_dir).unwrap();
+        let log_path = symforge_dir.join("hook-adoption.log");
+        let session_path = symforge_dir.join("sidecar.session");
+
+        append_hook_adoption_event(&log_path, Some("sess-down"), "source-read", "no-sidecar")
+            .unwrap();
+        append_hook_adoption_event(&log_path, Some("sess-down"), "prompt-context", "no-sidecar")
+            .unwrap();
+        std::fs::write(&session_path, "sess-down\n").unwrap();
+
+        let snapshot = load_hook_adoption_snapshot(Some(tmp.path()));
+        let rendered = crate::protocol::format::format_hook_adoption(&snapshot);
+
+        assert!(
+            rendered.contains("Owned workflows routed: 0/2 (0%)"),
+            "degraded metric must visibly read 0/2, not be absent: {rendered}"
+        );
+        assert!(
+            rendered.contains("Fail-open outcomes: 2 (no sidecar 2"),
+            "fail-open breakdown must surface the real cause: {rendered}"
+        );
+        assert!(
+            rendered.contains("⚠ All hook attempts failed open"),
+            "user-facing warning must render when no workflow routed: {rendered}"
+        );
+    }
+
+    #[test]
+    fn test_record_hook_outcome_writes_to_adoption_log_file_constant() {
+        // Pins the wire-up between record_hook_outcome and the
+        // ADOPTION_LOG_FILE path constant. A rename of either — or a
+        // rewrite of record_hook_outcome that stops calling
+        // append_hook_adoption_event — trips this test.
+        let _guard = HOOK_CWD_LOCK.lock().unwrap();
+        let tmp = TempDir::new().unwrap();
+        let original = std::env::current_dir().expect("cwd readable");
+        std::env::set_current_dir(tmp.path()).expect("cwd settable to tempdir");
+
+        // Use a catch_unwind-style restore so a failing assertion doesn't
+        // strand cwd in the tempdir for subsequent tests.
+        let result = std::panic::catch_unwind(|| {
+            record_hook_outcome(
+                HookWorkflow::SourceRead,
+                HookOutcome::Routed,
+                Some("sess-wireup"),
+            );
+
+            let log_path = tmp.path().join(ADOPTION_LOG_FILE);
+            assert!(
+                log_path.exists(),
+                "record_hook_outcome must create {ADOPTION_LOG_FILE} under cwd; \
+                 missing at {}",
+                log_path.display()
+            );
+            let contents = std::fs::read_to_string(&log_path).expect("log readable");
+            assert!(
+                contents.contains("sess-wireup\tsource-read\trouted"),
+                "log must contain the tab-separated routed event; got: {contents:?}"
+            );
+        });
+
+        std::env::set_current_dir(&original).expect("cwd restorable");
+        if let Err(e) = result {
+            std::panic::resume_unwind(e);
+        }
+    }
+
     // ---- HOOK-02: is_hook_verbose ----
 
     #[test]

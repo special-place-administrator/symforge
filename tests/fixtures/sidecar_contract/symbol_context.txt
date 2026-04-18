@@ -1,0 +1,10 @@
+Match type: heuristic
+Source authority: current index
+Parse state: parsed
+Completeness: full
+Scope: repo-wide symbol token `do_thing`
+Evidence: symbol token `do_thing` anchored at src/call.rs:1
+
+── src/call.rs ──
+  line 1  in fn caller
+[~0 tokens saved]
