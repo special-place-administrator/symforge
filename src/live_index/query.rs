@@ -788,7 +788,7 @@ fn tokenize_path_query(normalized_query: &str) -> Vec<String> {
         .collect()
 }
 
-fn path_has_component(path: &str, component: &str) -> bool {
+pub(super) fn path_has_component(path: &str, component: &str) -> bool {
     path.split('/')
         .any(|part| part.eq_ignore_ascii_case(component))
 }
@@ -1441,6 +1441,10 @@ impl LiveIndex {
         };
         let has_path_context = normalized_query.contains('/');
 
+        // Classify each indexed path into its tier. Order matters: a path that
+        // qualifies for a higher tier MUST NOT be double-counted in a lower one.
+        // The tier labels are consumed by the formatter; the ordering across
+        // tiers is driven by `super::rank_signals::combine` below.
         let mut strong_hits: Vec<String> = self
             .all_files()
             .map(|(path, _)| path.as_str())
@@ -1474,41 +1478,18 @@ impl LiveIndex {
             );
         }
 
-        let shared_len = |path: &str| -> usize {
-            current_file
-                .map(|cur| shared_directory_prefix_len(cur, path))
-                .unwrap_or(0)
-        };
-
-        strong_hits.sort_by(|left, right| {
-            let left_lower = left.to_ascii_lowercase();
-            let right_lower = right.to_ascii_lowercase();
-            let left_exact = left_lower == normalized_query_lower;
-            let right_exact = right_lower == normalized_query_lower;
-            let left_suffix = has_path_context && left_lower.ends_with(&normalized_query_lower);
-            let right_suffix = has_path_context && right_lower.ends_with(&normalized_query_lower);
-
-            right_exact
-                .cmp(&left_exact)
-                .then(right_suffix.cmp(&left_suffix))
-                .then(shared_len(right).cmp(&shared_len(left)))
-                .then(left.len().cmp(&right.len()))
-                .then(left.cmp(right))
-        });
-        strong_hits.dedup();
+        // Dedup strong_hits (the basename+components extension above can
+        // re-introduce paths already present via the exact/suffix filter).
+        {
+            let mut seen: HashSet<String> = HashSet::new();
+            strong_hits.retain(|p| seen.insert(p.clone()));
+        }
 
         let strong_set: HashSet<&str> = strong_hits.iter().map(String::as_str).collect();
-        let mut basename_only_hits: Vec<String> = basename_hits
+        let basename_only_hits: Vec<String> = basename_hits
             .into_iter()
             .filter(|path| !strong_set.contains(path.as_str()))
             .collect();
-        basename_only_hits.sort_by(|left, right| {
-            shared_len(right)
-                .cmp(&shared_len(left))
-                .then(left.len().cmp(&right.len()))
-                .then(left.cmp(right))
-        });
-        basename_only_hits.dedup();
 
         // Prefix matches on basenames (e.g., "orchestrat" matches "orchestrator.rs" and "orchestration.rs")
         let basename_set: HashSet<&str> = strong_hits
@@ -1516,7 +1497,8 @@ impl LiveIndex {
             .chain(basename_only_hits.iter())
             .map(String::as_str)
             .collect();
-        let mut prefix_hits: Vec<String> = if basename_token.len() >= 3 {
+        let prefix_hits: Vec<String> = if basename_token.len() >= 3 {
+            let basename_token_lower = basename_token.to_ascii_lowercase();
             self.all_files()
                 .map(|(path, _)| path.as_str())
                 .filter(|path| {
@@ -1526,7 +1508,7 @@ impl LiveIndex {
                         .unwrap_or("");
                     file_basename
                         .to_ascii_lowercase()
-                        .starts_with(&basename_token.to_ascii_lowercase())
+                        .starts_with(&basename_token_lower)
                 })
                 .filter(|path| !basename_set.contains(path))
                 .map(|path| path.to_string())
@@ -1534,13 +1516,6 @@ impl LiveIndex {
         } else {
             Vec::new()
         };
-        prefix_hits.sort_by(|left, right| {
-            shared_len(right)
-                .cmp(&shared_len(left))
-                .then(left.len().cmp(&right.len()))
-                .then(left.cmp(right))
-        });
-        prefix_hits.dedup();
 
         let strong_or_basename_or_prefix_set: HashSet<&str> = strong_hits
             .iter()
@@ -1548,7 +1523,7 @@ impl LiveIndex {
             .chain(prefix_hits.iter())
             .map(String::as_str)
             .collect();
-        let mut loose_hits: Vec<String> = self
+        let loose_hits: Vec<String> = self
             .all_files()
             .map(|(path, _)| path.as_str())
             .filter(|path| !strong_or_basename_or_prefix_set.contains(*path))
@@ -1558,13 +1533,6 @@ impl LiveIndex {
             })
             .map(|path| path.to_string())
             .collect();
-        loose_hits.sort_by(|left, right| {
-            shared_len(right)
-                .cmp(&shared_len(left))
-                .then(left.len().cmp(&right.len()))
-                .then(left.cmp(right))
-        });
-        loose_hits.dedup();
 
         let total_matches =
             strong_hits.len() + basename_only_hits.len() + prefix_hits.len() + loose_hits.len();
@@ -1574,34 +1542,77 @@ impl LiveIndex {
             };
         }
 
-        let mut hits: Vec<SearchFilesHit> = Vec::new();
-        hits.extend(strong_hits.into_iter().map(|path| SearchFilesHit {
-            tier: SearchFilesTier::StrongPath,
-            path,
-            coupling_score: None,
-            shared_commits: None,
-        }));
-        hits.extend(basename_only_hits.into_iter().map(|path| SearchFilesHit {
-            tier: SearchFilesTier::Basename,
-            path,
-            coupling_score: None,
-            shared_commits: None,
-        }));
-        hits.extend(prefix_hits.into_iter().map(|path| SearchFilesHit {
-            tier: SearchFilesTier::LoosePath,
-            path,
-            coupling_score: None,
-            shared_commits: None,
-        }));
-        hits.extend(loose_hits.into_iter().map(|path| SearchFilesHit {
-            tier: SearchFilesTier::LoosePath,
-            path,
-            coupling_score: None,
-            shared_commits: None,
-        }));
+        // Collect all classified candidates into a single list, preserving
+        // their tier label for the formatter. Ordering across the list is
+        // then driven by `super::rank_signals::combine` as the primary sort key,
+        // with within-tier tiebreakers (exact/suffix, shared dir prefix,
+        // length, lex) matching the previous per-bucket behavior.
+        let mut candidates: Vec<(String, SearchFilesTier)> =
+            Vec::with_capacity(total_matches);
+        candidates.extend(
+            strong_hits
+                .into_iter()
+                .map(|path| (path, SearchFilesTier::StrongPath)),
+        );
+        candidates.extend(
+            basename_only_hits
+                .into_iter()
+                .map(|path| (path, SearchFilesTier::Basename)),
+        );
+        candidates.extend(
+            prefix_hits
+                .into_iter()
+                .map(|path| (path, SearchFilesTier::LoosePath)),
+        );
+        candidates.extend(
+            loose_hits
+                .into_iter()
+                .map(|path| (path, SearchFilesTier::LoosePath)),
+        );
+
+        let shared_len = |path: &str| -> usize {
+            current_file
+                .map(|cur| shared_directory_prefix_len(cur, path))
+                .unwrap_or(0)
+        };
+
+        let ctx = super::rank_signals::RankCtx {
+            query: &normalized_query,
+            tokens: &tokens,
+            current_file,
+            target_path: None,
+        };
+        candidates.sort_by(|(lp, _), (rp, _)| {
+            let l_score = super::rank_signals::combine(std::path::Path::new(lp), &ctx);
+            let r_score = super::rank_signals::combine(std::path::Path::new(rp), &ctx);
+            let l_lower = lp.to_ascii_lowercase();
+            let r_lower = rp.to_ascii_lowercase();
+            let l_exact = l_lower == normalized_query_lower;
+            let r_exact = r_lower == normalized_query_lower;
+            let l_suffix = has_path_context && l_lower.ends_with(&normalized_query_lower);
+            let r_suffix = has_path_context && r_lower.ends_with(&normalized_query_lower);
+            r_score
+                .partial_cmp(&l_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(r_exact.cmp(&l_exact))
+                .then(r_suffix.cmp(&l_suffix))
+                .then(shared_len(rp).cmp(&shared_len(lp)))
+                .then(lp.len().cmp(&rp.len()))
+                .then(lp.cmp(rp))
+        });
 
         let overflow_count = total_matches.saturating_sub(limit);
-        hits.truncate(limit);
+        candidates.truncate(limit);
+
+        let hits: Vec<SearchFilesHit> = candidates
+            .into_iter()
+            .map(|(path, tier)| SearchFilesHit {
+                tier,
+                path,
+                coupling_score: None,
+                shared_commits: None,
+            })
+            .collect();
 
         SearchFilesView::Found {
             query: normalized_query,
