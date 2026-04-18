@@ -3618,6 +3618,47 @@ pub fn git_temporal_health_line(
     }
 }
 
+/// Render the "Top frecent files" section for the health report.
+///
+/// `entries` is a pre-sorted list of `(path, decayed_score)` from
+/// `FrecencyStore::top_frecent`. When empty, returns a short "no data yet"
+/// line so operators can tell the section is live but unpopulated.
+pub fn format_frecency_top(entries: &[(std::path::PathBuf, f64)]) -> String {
+    let mut lines = vec!["── Top frecent files ──".to_string()];
+    if entries.is_empty() {
+        lines.push("  (no frecency rows recorded yet)".to_string());
+    } else {
+        for (path, score) in entries {
+            lines.push(format!("  {:.2}  {}", score, path.display()));
+        }
+    }
+    lines.join("\n")
+}
+
+/// Render the "Last 10 frecency bumps" debug section for the health report.
+///
+/// Gated at the call-site on `SYMFORGE_DEBUG_RANKING=1`. `entries` comes from
+/// `FrecencyStore::last_10_bumps` (already ordered newest-first). Empty input
+/// produces a short "no data yet" line.
+pub fn format_frecency_last_bumps(
+    entries: &[crate::live_index::frecency::BumpEntry],
+) -> String {
+    let mut lines = vec!["── Last 10 frecency bumps ──".to_string()];
+    if entries.is_empty() {
+        lines.push("  (no frecency rows recorded yet)".to_string());
+    } else {
+        for e in entries {
+            lines.push(format!(
+                "  ts={} hits={}  {}",
+                e.last_access_ts,
+                e.hit_count,
+                e.path.display(),
+            ));
+        }
+    }
+    lines.join("\n")
+}
+
 pub(crate) type ExploreEnrichedSymbol = (String, String, String, Option<String>, Vec<String>);
 
 /// Format the output of the `explore` tool.

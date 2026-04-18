@@ -4135,6 +4135,36 @@ impl SymForgeServer {
             self.worktree_misuse.current_window_count(),
         ));
 
+        // Append frecency diagnostics when SYMFORGE_FRECENCY=1. The feature-flag
+        // guard mirrors the one in `frecency::bump`; when the flag is unset,
+        // the health output is byte-identical to pre-frecency releases.
+        // See `docs/decisions/0011-frecency-bump-policy.md` for the visibility
+        // rationale (Implementation Notes §Visibility: last-10 bumps in `health`).
+        if std::env::var(crate::live_index::frecency::FRECENCY_FLAG_ENV).as_deref() == Ok("1")
+            && let Some(repo_root) = self.capture_repo_root()
+            && let Ok(store) = crate::live_index::frecency::FrecencyStore::open(
+                &repo_root.join(crate::paths::SYMFORGE_FRECENCY_DB_PATH),
+            )
+        {
+            let now_ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            if let Ok(top) = store.top_frecent(10, now_ts) {
+                result.push('\n');
+                result.push_str(&format::format_frecency_top(&top));
+            }
+            // "Last 10 frecency bumps" is additionally gated on
+            // SYMFORGE_DEBUG_RANKING=1 per CONTEXT.md §Scope — debug-only
+            // surface for ranker tuning, not the default health view.
+            if std::env::var("SYMFORGE_DEBUG_RANKING").as_deref() == Ok("1")
+                && let Ok(last) = store.last_10_bumps()
+            {
+                result.push('\n');
+                result.push_str(&format::format_frecency_last_bumps(&last));
+            }
+        }
+
         self.session_context
             .record_summary_output("health", (result.len() / 4).min(u32::MAX as usize) as u32);
         result
@@ -5898,6 +5928,25 @@ impl SymForgeServer {
              Feature-gated on `SYMFORGE_WORKTREE_AWARE=1`; when the flag is \
              unset or the parameter is omitted, today's indexed-path \
              behaviour is preserved. See README §Worktree awareness.",
+        );
+        output.push_str("\n\n── Frecency ranking ──\n");
+        output.push_str(
+            "Per-workspace file-ranking signal that decays on a 7-day half-life \
+             and fuses with existing path-match and co-change signals. Call \
+             `search_files` with `rank_by=\"frecency\"` to surface files you \
+             recently touched. Feature-gated on `SYMFORGE_FRECENCY=1`; when the \
+             flag is unset the ranker and every bump hook are no-ops.\n\
+             Bump-on-commitment policy: SymForge bumps a path's frecency score \
+             on every edit tool and on the read tools that imply commitment to \
+             a known file (`get_file_context`, `get_file_content`, `get_symbol`, \
+             `get_symbol_context`). Discovery tools (`search_files`, \
+             `search_text`, `search_symbols`) deliberately never bump — \
+             searching for a file is not the same as working on it, and \
+             self-bumping searches corrupt rankings via a positive feedback \
+             loop. Batch tools dedup bumps per invocation. Set \
+             `SYMFORGE_DEBUG_RANKING=1` for per-signal score breakdowns in \
+             responses and the last-10 bumps list in `health`. See README \
+             §Frecency ranking and ADR 0011 for the full policy.",
         );
         self.session_context.record_summary_output(
             "conventions",
