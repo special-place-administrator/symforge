@@ -151,7 +151,16 @@ fn collect_first_error_node(root: &Node, source: &str) -> Option<(String, u32, u
         if node.is_error() || node.is_missing() {
             let start = node.start_position();
             let snippet_start = node.start_byte();
-            let snippet_end = node.end_byte().min(snippet_start + 40);
+            // Clamp the 40-byte snippet window down to the nearest UTF-8 char
+            // boundary — tree-sitter reports byte offsets, and `snippet_start +
+            // 40` can land mid-multibyte-char, which would panic str slicing.
+            let mut snippet_end = node
+                .end_byte()
+                .min(snippet_start + 40)
+                .min(source.len());
+            while snippet_end > snippet_start && !source.is_char_boundary(snippet_end) {
+                snippet_end -= 1;
+            }
             let snippet = &source[snippet_start..snippet_end];
             let kind = if node.is_missing() {
                 "missing"
@@ -569,5 +578,95 @@ mod tests {
                 "{path}: identical bytes must yield identical FileProcessingResult (run 2 vs 3)"
             );
         }
+    }
+
+    // --- Parser resilience audit (parse_source / collect_first_error_node) ---
+    //
+    // The adversarial `process_file` test above proves the `catch_unwind` safety
+    // net holds end-to-end. The tests below probe `parse_source` directly (no
+    // catch_unwind wrapper) so a panic in the parse path fails the test instead
+    // of being silently downgraded to a `Failed` outcome.
+
+    #[test]
+    fn test_parse_source_zero_bytes() {
+        let result = parse_source("", &LanguageId::Rust)
+            .expect("parse_source must handle empty input without error");
+        let (symbols, _has_error, _diagnostic, references, alias_map) = result;
+        assert!(symbols.is_empty(), "empty source has no symbols");
+        assert!(references.is_empty(), "empty source has no references");
+        assert!(alias_map.is_empty(), "empty source has no aliases");
+    }
+
+    #[test]
+    fn test_parse_source_null_bytes_only() {
+        // 4 KiB of NUL: valid UTF-8, no valid tokens in any grammar.
+        // Exercises parse_source + collect_first_error_node (if has_error) on a
+        // file that tree-sitter must reject-as-syntax-error rather than crash.
+        let source: String = "\0".repeat(4096);
+        let result = parse_source(&source, &LanguageId::Rust)
+            .expect("parse_source must handle null-byte input without error");
+        let (_symbols, _has_error, _diagnostic, _references, _aliases) = result;
+    }
+
+    #[test]
+    fn test_parse_source_wide_multibyte_error_region_no_panic() {
+        // Regression probe for collect_first_error_node:
+        //   let snippet_end = node.end_byte().min(snippet_start + 40);
+        //   let snippet = &source[snippet_start..snippet_end];
+        //
+        // If a multi-byte UTF-8 char straddles byte `snippet_start + 40`, naive
+        // slicing panics ("byte index is not a char boundary"). 100 × '€'
+        // (3 bytes each = 300 bytes, all non-ASCII) is not a valid Rust token
+        // stream, so tree-sitter must produce one or more ERROR nodes that
+        // could span > 40 bytes of multi-byte content.
+        let source: String = "€".repeat(100);
+        parse_source(&source, &LanguageId::Rust)
+            .expect("parse_source must not panic on wide multi-byte error region");
+    }
+
+    #[test]
+    fn test_parse_source_mixed_multibyte_error_boundary_no_panic() {
+        // Similar char-boundary probe but with a grammar-level syntax error
+        // interleaved with multi-byte text — guarantees an ERROR node whose
+        // [start, start+40) window crosses a UTF-8 char boundary.
+        let mut source = String::new();
+        source.push_str("struct S { ");
+        for _ in 0..14 {
+            source.push('€');
+        }
+        source.push(' ');
+        parse_source(&source, &LanguageId::Rust)
+            .expect("parse_source must not panic when error snippet spans multi-byte chars");
+    }
+
+    #[test]
+    fn test_process_file_deeply_nested_expression_no_stack_blow() {
+        // Stack-blow probe: 10 000 nested parens. Per-language extractors walk
+        // the AST recursively (see `walk_node` → `walk_children` → `walk_node`
+        // in src/parsing/languages/rust.rs L19-50). Default Rust test-thread
+        // stacks (~2 MiB) overflow around ~6 k frames, so the probe runs on a
+        // dedicated thread with a 16 MiB stack to verify the parse logic itself
+        // terminates. A real stack-blow on this depth would abort the test
+        // process; we want to observe it here rather than in production.
+        const DEPTH: usize = 10_000;
+        let handle = std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let mut source = String::with_capacity(DEPTH * 2 + 32);
+                source.push_str("fn f() -> i32 { ");
+                for _ in 0..DEPTH {
+                    source.push('(');
+                }
+                source.push('1');
+                for _ in 0..DEPTH {
+                    source.push(')');
+                }
+                source.push_str(" }");
+                let result = process_file("deep.rs", source.as_bytes(), LanguageId::Rust);
+                assert_eq!(result.byte_len, source.len() as u64);
+                assert!(!result.content_hash.is_empty());
+            })
+            .expect("spawn stack-blow probe thread");
+        handle.join().expect("deep-nesting probe must not panic");
     }
 }
