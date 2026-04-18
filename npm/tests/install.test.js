@@ -358,6 +358,156 @@ test("installer uses the symforge repo slug in release downloads and fallback in
   assert.match(errors.join("\n"), /cd symforge/);
 });
 
+test("installer skips download when installed binary version matches package version", async () => {
+  const installDir = winPath.join("C:\\Users\\tester", ".symforge", "bin");
+  const binPath = winPath.join(installDir, "symforge.exe");
+  const pendingPath = winPath.join(installDir, "symforge.pending.exe");
+  const versionPath = winPath.join(installDir, "symforge.version");
+  const pendingVersionPath = winPath.join(installDir, "symforge.pending.version");
+  const fsOverrides = createFs({
+    binPath,
+    pendingPath,
+    versionPath,
+    pendingVersionPath,
+    installDir,
+    hasBinary: true,
+    installedVersion: "0.3.9",
+  });
+  const execCalls = [];
+  let downloadCalls = 0;
+  const { installer, logs } = createInstallerForTest({
+    fsOverrides,
+    installDir,
+    execFileSync(command, args) {
+      execCalls.push({ command, args });
+      return "[]";
+    },
+    download: async () => {
+      downloadCalls += 1;
+      return Buffer.from("should-not-be-called");
+    },
+    packageVersion: "0.3.9",
+  });
+
+  await installer.main();
+
+  assert.equal(downloadCalls, 0, "installer should not download when version matches");
+  assert.equal(
+    fsOverrides.writes.filter((entry) => entry.target === binPath).length,
+    0,
+    "installer should not overwrite binPath on skip"
+  );
+  assert.equal(
+    fsOverrides.writes.filter((entry) => entry.target === versionPath).length,
+    0,
+    "installer should not rewrite version metadata on skip"
+  );
+  // Skip path must NOT invoke stopAllRunningProcesses (no PowerShell calls).
+  assert.equal(
+    execCalls.filter((call) => call.command === "powershell.exe").length,
+    0,
+    "installer should not attempt to stop processes on skip"
+  );
+  assert.match(logs.join("\n"), /symforge v0\.3\.9 already installed/);
+});
+
+test("installer re-downloads when pre-existing binary cannot report its version", async () => {
+  // Dummy/corrupted/unknown file at the target path: no version metadata and
+  // the binary can't be executed to self-report. Policy: re-download.
+  const installDir = winPath.join("C:\\Users\\tester", ".symforge", "bin");
+  const binPath = winPath.join(installDir, "symforge.exe");
+  const pendingPath = winPath.join(installDir, "symforge.pending.exe");
+  const versionPath = winPath.join(installDir, "symforge.version");
+  const pendingVersionPath = winPath.join(installDir, "symforge.pending.version");
+  const fsOverrides = createFs({
+    binPath,
+    pendingPath,
+    versionPath,
+    pendingVersionPath,
+    installDir,
+    hasBinary: true,
+    installedVersion: null,
+  });
+  let downloadCalls = 0;
+  const { installer, logs } = createInstallerForTest({
+    fsOverrides,
+    installDir,
+    execFileSync(command, args) {
+      if (args && args.includes("--version")) {
+        const err = new Error("dummy file is not executable");
+        err.code = "ENOEXEC";
+        throw err;
+      }
+      return "[]";
+    },
+    download: async () => {
+      downloadCalls += 1;
+      return Buffer.from("fresh-binary");
+    },
+    packageVersion: "0.3.9",
+  });
+
+  await installer.main();
+
+  assert.equal(downloadCalls, 1, "installer should re-download when version probe fails");
+  assert.equal(
+    fsOverrides.writes.some(
+      (entry) => entry.target === binPath && entry.data === "fresh-binary"
+    ),
+    true,
+    "installer should overwrite the dummy file with freshly downloaded data"
+  );
+  assert.equal(
+    fsOverrides.writes.some(
+      (entry) => entry.target === versionPath && entry.data.includes("0.3.9")
+    ),
+    true,
+    "installer should record the fresh version metadata"
+  );
+  assert.match(logs.join("\n"), /updating to v0\.3\.9/);
+});
+
+test("installer re-downloads when version metadata mismatches package version", async () => {
+  const installDir = winPath.join("C:\\Users\\tester", ".symforge", "bin");
+  const binPath = winPath.join(installDir, "symforge.exe");
+  const pendingPath = winPath.join(installDir, "symforge.pending.exe");
+  const versionPath = winPath.join(installDir, "symforge.version");
+  const pendingVersionPath = winPath.join(installDir, "symforge.pending.version");
+  const fsOverrides = createFs({
+    binPath,
+    pendingPath,
+    versionPath,
+    pendingVersionPath,
+    installDir,
+    hasBinary: true,
+    installedVersion: "0.3.5",
+  });
+  let downloadCalls = 0;
+  const { installer, logs } = createInstallerForTest({
+    fsOverrides,
+    installDir,
+    execFileSync() {
+      return "[]";
+    },
+    download: async () => {
+      downloadCalls += 1;
+      return Buffer.from("upgraded-binary");
+    },
+    packageVersion: "0.3.9",
+  });
+
+  await installer.main();
+
+  assert.equal(downloadCalls, 1, "installer should download the upgrade");
+  assert.equal(
+    fsOverrides.writes.some(
+      (entry) => entry.target === binPath && entry.data === "upgraded-binary"
+    ),
+    true
+  );
+  assert.match(logs.join("\n"), /symforge v0\.3\.5 found, updating to v0\.3\.9/);
+});
+
 test("installer skips auto-init when no home-scoped clients are detected", async () => {
   const installDir = winPath.join("C:\\Users\\tester", ".symforge", "bin");
   const binPath = winPath.join(installDir, "symforge.exe");
