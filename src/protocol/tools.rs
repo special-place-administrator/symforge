@@ -4011,6 +4011,13 @@ impl SymForgeServer {
             &self.index.git_temporal(),
         ));
 
+        // Append worktree-awareness misuse counter (rolling last-hour window).
+        result.push('\n');
+        result.push_str(&format!(
+            "── Worktree-awareness misuse ──\nedit tool calls without working_directory (last hour): {}",
+            self.worktree_misuse.current_window_count(),
+        ));
+
         self.session_context
             .record_summary_output("health", (result.len() / 4).min(u32::MAX as usize) as u32);
         result
@@ -5755,7 +5762,18 @@ impl SymForgeServer {
             loading_guard!(guard);
             crate::protocol::conventions::detect_conventions(&guard)
         };
-        let output = crate::protocol::conventions::format_conventions(&conv);
+        let mut output = crate::protocol::conventions::format_conventions(&conv);
+        output.push_str("\n\n── Worktree awareness ──\n");
+        output.push_str(
+            "When editing from inside a git worktree, pass `working_directory` \
+             (absolute path of the worktree root) to every edit tool \
+             (edit_within_symbol, replace_symbol_body, insert_symbol, \
+             delete_symbol, batch_edit, batch_insert, batch_rename) so writes \
+             land in your worktree instead of the indexed copy.\n\
+             Feature-gated on `SYMFORGE_WORKTREE_AWARE=1`; when the flag is \
+             unset or the parameter is omitted, today's indexed-path \
+             behaviour is preserved. See README §Worktree awareness.",
+        );
         self.session_context.record_summary_output(
             "conventions",
             (output.len() / 4).min(u32::MAX as usize) as u32,
@@ -6225,6 +6243,7 @@ impl SymForgeServer {
         if let Some(result) = self.proxy_tool_call("replace_symbol_body", &params.0).await {
             return result;
         }
+        self.note_worktree_misuse_if_flag_on(params.0.working_directory.as_deref());
         {
             let guard = self.index.read();
             loading_guard!(guard);
@@ -6244,11 +6263,18 @@ impl SymForgeServer {
             relative_path: &params.0.path,
             indexed_absolute_path: &abs_path,
             repo_root: &repo_root,
+            working_directory: params
+                .0
+                .working_directory
+                .as_deref()
+                .map(std::path::Path::new),
         };
-        let resolved_path = match edit_hooks::resolve(&hook_ctx) {
-            Ok(p) => p,
+        let resolved_target = match edit_hooks::resolve(&hook_ctx) {
+            Ok(r) => r,
             Err(e) => return format!("Error: {e}"),
         };
+        let resolved_path = resolved_target.target_path.clone();
+        let working_directory_supplied = params.0.working_directory.is_some();
         let file = {
             let guard = self.index.read();
             loading_guard!(guard);
@@ -6360,6 +6386,10 @@ impl SymForgeServer {
             &params.0.name,
             &warnings,
         ));
+        result.push_str(&edit_format::format_reroute_suffix(
+            working_directory_supplied,
+            &resolved_target,
+        ));
         result
     }
 
@@ -6377,6 +6407,7 @@ impl SymForgeServer {
         if let Some(result) = self.proxy_tool_call("insert_symbol", &params.0).await {
             return result;
         }
+        self.note_worktree_misuse_if_flag_on(params.0.working_directory.as_deref());
         let position = params.0.position.as_deref().unwrap_or("after");
         if position != "before" && position != "after" {
             return format!("Error: position must be 'before' or 'after', got '{position}'");
@@ -6400,11 +6431,18 @@ impl SymForgeServer {
             relative_path: &params.0.path,
             indexed_absolute_path: &abs_path,
             repo_root: &repo_root,
+            working_directory: params
+                .0
+                .working_directory
+                .as_deref()
+                .map(std::path::Path::new),
         };
-        let resolved_path = match edit_hooks::resolve(&hook_ctx) {
-            Ok(p) => p,
+        let resolved_target = match edit_hooks::resolve(&hook_ctx) {
+            Ok(r) => r,
             Err(e) => return format!("Error: {e}"),
         };
+        let resolved_path = resolved_target.target_path.clone();
+        let working_directory_supplied = params.0.working_directory.is_some();
         let file = {
             let guard = self.index.read();
             loading_guard!(guard);
@@ -6467,7 +6505,7 @@ impl SymForgeServer {
             file.language.clone(),
         );
         edit_hooks::after_commit(&hook_ctx, &resolved_path);
-        format!(
+        let mut out = format!(
             "{}\n{}",
             edit_format::format_edit_envelope(
                 edit_format::EditSafetyMode::StructuralEditSafe,
@@ -6481,7 +6519,12 @@ impl SymForgeServer {
                 position,
                 params.0.content.len(),
             )
-        )
+        );
+        out.push_str(&edit_format::format_reroute_suffix(
+            working_directory_supplied,
+            &resolved_target,
+        ));
+        out
     }
 
     /// Remove a symbol's entire definition and clean up surrounding blank lines.
@@ -6497,6 +6540,7 @@ impl SymForgeServer {
         if let Some(result) = self.proxy_tool_call("delete_symbol", &params.0).await {
             return result;
         }
+        self.note_worktree_misuse_if_flag_on(params.0.working_directory.as_deref());
         {
             let guard = self.index.read();
             loading_guard!(guard);
@@ -6516,11 +6560,18 @@ impl SymForgeServer {
             relative_path: &params.0.path,
             indexed_absolute_path: &abs_path,
             repo_root: &repo_root,
+            working_directory: params
+                .0
+                .working_directory
+                .as_deref()
+                .map(std::path::Path::new),
         };
-        let resolved_path = match edit_hooks::resolve(&hook_ctx) {
-            Ok(p) => p,
+        let resolved_target = match edit_hooks::resolve(&hook_ctx) {
+            Ok(r) => r,
             Err(e) => return format!("Error: {e}"),
         };
+        let resolved_path = resolved_target.target_path.clone();
+        let working_directory_supplied = params.0.working_directory.is_some();
         let file = {
             let guard = self.index.read();
             loading_guard!(guard);
@@ -6578,7 +6629,7 @@ impl SymForgeServer {
             file.language.clone(),
         );
         edit_hooks::after_commit(&hook_ctx, &resolved_path);
-        format!(
+        let mut out = format!(
             "{}\n{}",
             edit_format::format_edit_envelope(
                 edit_format::EditSafetyMode::StructuralEditSafe,
@@ -6592,7 +6643,12 @@ impl SymForgeServer {
                 &sym.kind.to_string(),
                 deleted_bytes,
             )
-        )
+        );
+        out.push_str(&edit_format::format_reroute_suffix(
+            working_directory_supplied,
+            &resolved_target,
+        ));
+        out
     }
 
     /// Find-and-replace scoped to a symbol's byte range — won't affect code outside it. The LLM
@@ -6610,6 +6666,7 @@ impl SymForgeServer {
         if let Some(result) = self.proxy_tool_call("edit_within_symbol", &params.0).await {
             return result;
         }
+        self.note_worktree_misuse_if_flag_on(params.0.working_directory.as_deref());
         {
             let guard = self.index.read();
             loading_guard!(guard);
@@ -6629,11 +6686,18 @@ impl SymForgeServer {
             relative_path: &params.0.path,
             indexed_absolute_path: &abs_path,
             repo_root: &repo_root,
+            working_directory: params
+                .0
+                .working_directory
+                .as_deref()
+                .map(std::path::Path::new),
         };
-        let resolved_path = match edit_hooks::resolve(&hook_ctx) {
-            Ok(p) => p,
+        let resolved_target = match edit_hooks::resolve(&hook_ctx) {
+            Ok(r) => r,
             Err(e) => return format!("Error: {e}"),
         };
+        let resolved_path = resolved_target.target_path.clone();
+        let working_directory_supplied = params.0.working_directory.is_some();
         let file = {
             let guard = self.index.read();
             loading_guard!(guard);
@@ -6795,7 +6859,7 @@ impl SymForgeServer {
             file.language.clone(),
         );
         edit_hooks::after_commit(&hook_ctx, &resolved_path);
-        format!(
+        let mut out = format!(
             "{}\n{}",
             edit_format::format_edit_envelope(
                 edit_format::EditSafetyMode::TextEditSafe,
@@ -6810,7 +6874,12 @@ impl SymForgeServer {
                 old_sym_bytes,
                 new_body.len(),
             )
-        )
+        );
+        out.push_str(&edit_format::format_reroute_suffix(
+            working_directory_supplied,
+            &resolved_target,
+        ));
+        out
     }
 
     // ── Tier 2: Batch edit tools ──────────────────────────────────────────
@@ -6825,6 +6894,7 @@ impl SymForgeServer {
         if let Some(result) = self.proxy_tool_call("batch_edit", &params.0).await {
             return result;
         }
+        self.note_worktree_misuse_if_flag_on(params.0.working_directory.as_deref());
         let repo_root = match self.capture_repo_root() {
             Some(root) => root,
             None => return "Error: no repository root configured.".to_string(),
@@ -6843,6 +6913,11 @@ impl SymForgeServer {
             &repo_root,
             &params.0.edits,
             params.0.dry_run.unwrap_or(false),
+            params
+                .0
+                .working_directory
+                .as_deref()
+                .map(std::path::Path::new),
         ) {
             Ok(summaries) => {
                 let file_count = params
@@ -6888,6 +6963,7 @@ impl SymForgeServer {
         if let Some(result) = self.proxy_tool_call("batch_rename", &params.0).await {
             return result;
         }
+        self.note_worktree_misuse_if_flag_on(params.0.working_directory.as_deref());
         let repo_root = match self.capture_repo_root() {
             Some(root) => root,
             None => return "Error: no repository root configured.".to_string(),
@@ -6933,6 +7009,7 @@ impl SymForgeServer {
         if let Some(result) = self.proxy_tool_call("batch_insert", &params.0).await {
             return result;
         }
+        self.note_worktree_misuse_if_flag_on(params.0.working_directory.as_deref());
         let repo_root = match self.capture_repo_root() {
             Some(root) => root,
             None => return "Error: no repository root configured.".to_string(),
@@ -12971,6 +13048,7 @@ mod tests {
             symbol_line: None,
             new_body: "fn hello() {\n    println!(\"HELLO\");\n}".to_string(),
             dry_run: None,
+            working_directory: None,
         };
         let result = server.replace_symbol_body(Parameters(input)).await;
         assert!(result.contains("replaced"), "result was: {result}");
@@ -13005,6 +13083,7 @@ mod tests {
             symbol_line: None,
             new_body: "fn inner() {\n    new_body();\n}".to_string(),
             dry_run: None,
+            working_directory: None,
         };
         let result = server.replace_symbol_body(Parameters(input)).await;
         assert!(result.contains("replaced"), "result: {result}");
@@ -13029,6 +13108,7 @@ mod tests {
             symbol_line: None,
             new_body: "fn foo() {}".to_string(),
             dry_run: None,
+            working_directory: None,
         };
         let result = server.replace_symbol_body(Parameters(input)).await;
         assert!(
@@ -13050,6 +13130,7 @@ mod tests {
             content: "fn world() {\n    println!(\"world\");\n}".to_string(),
             position: None, // defaults to "after"
             dry_run: None,
+            working_directory: None,
         };
         let result = server.insert_symbol(Parameters(input)).await;
         assert!(result.contains("inserted"), "result: {result}");
@@ -13080,6 +13161,7 @@ mod tests {
             content: "fn hello() {\n    println!(\"hello\");\n}".to_string(),
             position: Some("before".to_string()),
             dry_run: None,
+            working_directory: None,
         };
         let result = server.insert_symbol(Parameters(input)).await;
         assert!(result.contains("inserted"), "result: {result}");
@@ -13102,6 +13184,7 @@ mod tests {
             kind: None,
             symbol_line: None,
             dry_run: None,
+            working_directory: None,
         };
         let result = server.delete_symbol(Parameters(input)).await;
         assert!(result.contains("deleted"), "result: {result}");
@@ -13174,6 +13257,7 @@ mod tests {
             new_text: "\"HELLO\"".to_string(),
             replace_all: false,
             dry_run: None,
+            working_directory: None,
         };
         let result = server.edit_within_symbol(Parameters(input)).await;
         assert!(result.contains("edited within"), "result: {result}");
@@ -13212,6 +13296,7 @@ mod tests {
             symbol_line: None,
             new_body: "fn hello() {\n    println!(\"new body\");\n}".to_string(),
             dry_run: Some(true),
+            working_directory: None,
         };
         let result = server.replace_symbol_body(Parameters(input)).await;
         assert!(result.contains("Source authority: disk-refreshed"));
@@ -13238,6 +13323,7 @@ mod tests {
             new_text: "replacement".to_string(),
             replace_all: false,
             dry_run: None,
+            working_directory: None,
         };
         let result = server.edit_within_symbol(Parameters(input)).await;
         assert!(result.contains("not found within"), "result: {result}");
@@ -13256,6 +13342,7 @@ mod tests {
                 symbol_line: None,
                 new_body: "fn foo() { new }".to_string(),
                 dry_run: Some(true),
+                working_directory: None,
             }))
             .await;
 
@@ -13286,6 +13373,7 @@ mod tests {
                 content: "fn new_fn() {}".to_string(),
                 position: Some("after".to_string()),
                 dry_run: Some(true),
+                working_directory: None,
             }))
             .await;
 
@@ -13314,6 +13402,7 @@ mod tests {
                 kind: None,
                 symbol_line: None,
                 dry_run: Some(true),
+                working_directory: None,
             }))
             .await;
 
@@ -13345,6 +13434,7 @@ mod tests {
                 new_text: "new_text".to_string(),
                 replace_all: false,
                 dry_run: Some(true),
+                working_directory: None,
             }))
             .await;
 
@@ -13399,6 +13489,7 @@ mod tests {
                     operation: EditOperation::Replace {
                         new_body: "fn alpha() { new }".to_string(),
                     },
+                    working_directory: None,
                 },
                 SingleEdit {
                     path: "src/b.rs".to_string(),
@@ -13406,9 +13497,11 @@ mod tests {
                     kind: None,
                     symbol_line: None,
                     operation: EditOperation::Delete,
+                    working_directory: None,
                 },
             ],
             dry_run: Some(false),
+            working_directory: None,
         };
         let result = server.batch_edit(Parameters(input)).await;
         assert!(result.contains("2 edit(s)"), "result: {result}");
@@ -13458,8 +13551,10 @@ mod tests {
                 operation: EditOperation::Replace {
                     new_body: "fn alpha() { next }".to_string(),
                 },
+                working_directory: None,
             }],
             dry_run: Some(true),
+            working_directory: None,
         };
         let result = server.batch_edit(Parameters(input)).await;
         assert!(
@@ -13512,6 +13607,7 @@ mod tests {
             new_name: "new_name".to_string(),
             dry_run: None,
             code_only: None,
+            working_directory: None,
         };
         let result = server.batch_rename(Parameters(input)).await;
         assert!(result.contains("Renamed"), "result: {result}");
@@ -13566,6 +13662,7 @@ mod tests {
             new_name: "new_name".to_string(),
             dry_run: Some(true),
             code_only: None,
+            working_directory: None,
         };
         let result = server.batch_rename(Parameters(input)).await;
         assert!(
@@ -13622,6 +13719,7 @@ mod tests {
             new_name: "Gadget".to_string(),
             dry_run: None,
             code_only: None,
+            working_directory: None,
         };
         let result = server.batch_rename(Parameters(input)).await;
         assert!(result.contains("Renamed"), "result: {result}");
@@ -13677,6 +13775,7 @@ mod tests {
             new_name: "Gadget".to_string(),
             dry_run: None,
             code_only: None,
+            working_directory: None,
         };
         let _result = server.batch_rename(Parameters(input)).await;
 
@@ -13757,6 +13856,7 @@ mod tests {
             new_name: "NewType".to_string(),
             dry_run: None,
             code_only: None,
+            working_directory: None,
         };
         let result = server.batch_rename(Parameters(input)).await;
         assert!(result.contains("Renamed"), "result: {result}");
@@ -13810,6 +13910,7 @@ mod tests {
             new_name: "NewType".to_string(),
             dry_run: Some(true),
             code_only: None,
+            working_directory: None,
         };
         let result = server.batch_rename(Parameters(input)).await;
 
@@ -13863,6 +13964,7 @@ mod tests {
             new_name: "NewType".to_string(),
             dry_run: None,
             code_only: None,
+            working_directory: None,
         };
         let result = server.batch_rename(Parameters(input)).await;
         assert!(result.contains("Renamed"), "result: {result}");
@@ -13917,6 +14019,7 @@ mod tests {
             new_name: "Renamed".to_string(),
             dry_run: None,
             code_only: None,
+            working_directory: None,
         };
         let result = server.batch_rename(Parameters(input)).await;
         assert!(result.contains("Renamed"), "result: {result}");
@@ -13971,15 +14074,18 @@ mod tests {
                     name: "handler_a".to_string(),
                     kind: None,
                     symbol_line: None,
+                    working_directory: None,
                 },
                 InsertTarget {
                     path: "src/b.rs".to_string(),
                     name: "handler_b".to_string(),
                     kind: None,
                     symbol_line: None,
+                    working_directory: None,
                 },
             ],
             dry_run: Some(false),
+            working_directory: None,
         };
         let result = server.batch_insert(Parameters(input)).await;
         assert!(result.contains("2 edit(s)"), "result: {result}");
@@ -14028,8 +14134,10 @@ mod tests {
                 name: "handler_a".to_string(),
                 kind: None,
                 symbol_line: None,
+                working_directory: None,
             }],
             dry_run: Some(true),
+            working_directory: None,
         };
         let result = server.batch_insert(Parameters(input)).await;
         assert!(
@@ -14083,15 +14191,18 @@ mod tests {
                     name: "handler_a".to_string(),
                     kind: None,
                     symbol_line: None,
+                    working_directory: None,
                 },
                 InsertTarget {
                     path: "src/b.rs".to_string(),
                     name: "handler_b".to_string(),
                     kind: None,
                     symbol_line: None,
+                    working_directory: None,
                 },
             ],
             dry_run: Some(true),
+            working_directory: None,
         };
         let result = server.batch_insert(Parameters(input)).await;
         assert!(result.contains("[DRY RUN]"), "result: {result}");
