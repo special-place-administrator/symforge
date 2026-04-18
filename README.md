@@ -149,6 +149,19 @@ All seven edit tools accept an optional `working_directory` parameter pointing a
 }
 ```
 
+### Frecency ranking
+
+`search_files` accepts an optional `rank_by="frecency"` parameter that fuses a per-workspace frecency signal with the existing path-match and co-change signals. Frecency decays on a 7-day half-life, so a file you touched five minutes ago outranks one you hit ten times six months ago. Feature-gated on `SYMFORGE_FRECENCY=1`; when the flag is unset or `rank_by` is omitted, ranking is byte-identical to pre-flag releases. See [ADR 0011](docs/decisions/0011-frecency-bump-policy.md).
+
+```json
+{
+  "query": "cache",
+  "rank_by": "frecency"
+}
+```
+
+Frecency scores bump on *commitment* tools — every edit tool plus the read tools that imply you're working on a known file (`get_file_context`, `get_file_content`, `get_symbol`, `get_symbol_context`). Discovery tools (`search_files`, `search_text`, `search_symbols`) deliberately never bump: searching for a file is not the same as working on it, and a searching-bumps-too policy corrupts rankings via a positive feedback loop. Batch tools dedup bumps per invocation, so editing 20 symbols in one `batch_edit` call bumps each touched path exactly once. Set `SYMFORGE_DEBUG_RANKING=1` to surface per-signal scores in `search_files` responses and a last-10 bumps list in `health`.
+
 ### Validation and indexing
 
 | Tool | Purpose |
