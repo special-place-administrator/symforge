@@ -453,6 +453,7 @@ pub struct WhatChangedInput {
 
 /// Input for `get_file_content`.
 #[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct GetFileContentInput {
     /// Relative path to the file.
     pub path: String,
@@ -498,6 +499,17 @@ pub struct GetFileContentInput {
     /// When true, return an approximate token count for the file instead of content.
     #[serde(default, deserialize_with = "lenient_bool")]
     pub estimate: Option<bool>,
+    /// Alias for `start_line` using the Read-tool idiom: 0-based line count to skip.
+    /// Translated to `start_line = offset + 1` before processing.
+    /// Cannot be combined with `start_line`, `end_line`, `around_line`, `around_match`,
+    /// `around_symbol`, `chunk_index`, or `mode`.
+    #[serde(default, deserialize_with = "lenient_u32")]
+    pub offset: Option<u32>,
+    /// Alias for `end_line` using the Read-tool idiom: number of lines to include.
+    /// Translated to `end_line = offset + limit` before processing.
+    /// Cannot be combined with the fields listed under `offset`.
+    #[serde(default, deserialize_with = "lenient_u32")]
+    pub limit: Option<u32>,
 }
 
 /// Input for `validate_file_syntax`.
@@ -10118,6 +10130,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert!(
@@ -10146,6 +10160,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(
@@ -10176,6 +10192,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(result, "line 2\nline 3");
@@ -10203,6 +10221,8 @@ mod tests {
                 show_line_numbers: Some(true),
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(result, "1: line 1\n2: line 2\n3: line 3");
@@ -10230,6 +10250,8 @@ mod tests {
                 show_line_numbers: Some(true),
                 header: Some(true),
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(result, "src/lib.rs [lines 2-3]\n2: line 2\n3: line 3");
@@ -10257,6 +10279,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(result, "2: line 2\n3: line 3\n4: line 4");
@@ -10284,6 +10308,8 @@ mod tests {
                 show_line_numbers: None,
                 header: Some(true),
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         // Should succeed (not reject) — header is now allowed with around_line.
@@ -10319,6 +10345,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(
@@ -10349,6 +10377,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(result, "1: line 1\n2: TODO first\n3: line 3");
@@ -10376,6 +10406,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(
@@ -10406,6 +10438,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(result, "Chunk 3 out of range for src/lib.rs (2 chunks)");
@@ -10433,6 +10467,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(result, "No matches for 'needle' in src/lib.rs");
@@ -10460,6 +10496,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(result, "3: line 3\n4: TODO second\n5: line 5");
@@ -10487,6 +10525,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(
@@ -10526,6 +10566,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
 
@@ -10570,6 +10612,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
 
@@ -10609,6 +10653,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(result, "1: line 1\n2: fn connect() {}\n3: line 3");
@@ -10643,6 +10689,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(
@@ -10680,6 +10728,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(result, "3: fn connect() {}");
@@ -10711,6 +10761,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(
@@ -10741,6 +10793,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(
@@ -10771,6 +10825,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(
@@ -10801,6 +10857,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(
@@ -10831,6 +10889,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(
@@ -10861,6 +10921,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(
@@ -10897,6 +10959,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert!(
@@ -10927,6 +10991,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(result, "mode=symbol requires around_symbol");
@@ -10954,6 +11020,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert!(
@@ -10988,6 +11056,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert!(
@@ -11022,6 +11092,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert!(
@@ -11052,6 +11124,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(result, "mode 'search' is not yet implemented");
@@ -11083,6 +11157,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert!(
@@ -11117,6 +11193,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert!(
@@ -11147,6 +11225,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(
@@ -11177,6 +11257,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(result, "mode=match requires around_match");
@@ -11204,6 +11286,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(
@@ -11234,6 +11318,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(
@@ -11264,6 +11350,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(result, "mode=chunk requires chunk_index");
@@ -11291,6 +11379,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert!(
@@ -11321,6 +11411,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert!(
@@ -11330,6 +11422,48 @@ mod tests {
         assert!(
             result.contains("Use mode=match"),
             "expected guidance, got: {result}"
+        );
+    }
+
+    // ── get_file_content serde / alias tests ───────────────────────────────
+
+    #[test]
+    fn test_get_file_content_input_deserializes_offset_and_limit() {
+        let json = r#"{"path":"x","offset":10,"limit":5}"#;
+        let input: super::GetFileContentInput = serde_json::from_str(json).unwrap();
+        assert_eq!(input.offset, Some(10));
+        assert_eq!(input.limit, Some(5));
+        assert!(input.start_line.is_none());
+        assert!(input.end_line.is_none());
+    }
+
+    #[test]
+    fn test_get_file_content_input_defaults_all_none() {
+        let json = r#"{"path":"x"}"#;
+        let input: super::GetFileContentInput = serde_json::from_str(json).unwrap();
+        assert!(input.offset.is_none());
+        assert!(input.limit.is_none());
+        assert!(input.start_line.is_none());
+    }
+
+    #[test]
+    fn test_get_file_content_input_rejects_unknown_field() {
+        let json = r#"{"path":"x","typo_field":1}"#;
+        let result = serde_json::from_str::<super::GetFileContentInput>(json);
+        assert!(result.is_err(), "unknown field should be rejected");
+        let err = result.err().unwrap().to_string();
+        assert!(
+            err.contains("typo_field"),
+            "error should name the unknown field, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_get_file_content_input_rejects_non_numeric_offset() {
+        let json = r#"{"path":"x","offset":"not-a-number"}"#;
+        assert!(
+            serde_json::from_str::<super::GetFileContentInput>(json).is_err(),
+            "non-numeric offset should fail to deserialize"
         );
     }
 
