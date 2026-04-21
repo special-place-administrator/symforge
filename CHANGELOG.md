@@ -1,5 +1,20 @@
 # Changelog
 
+## [7.6.0](https://github.com/special-place-administrator/symforge/compare/v7.5.2...v7.6.0) (2026-04-21)
+
+
+### Features
+
+* **get-file-content:** add offset/limit aliases and deny_unknown_fields ([5c69175](https://github.com/special-place-administrator/symforge/commit/5c691755b85f760be94b3535cb73952be70a89df))
+* **get-file-content:** normalize offset/limit aliases before proxy call ([afd2f75](https://github.com/special-place-administrator/symforge/commit/afd2f750522edfb399d1fa702fbedf329bbdd3d3))
+* **get-file-content:** universal 60 KB byte cap on output ([945e151](https://github.com/special-place-administrator/symforge/commit/945e151728fba3754224bffedb4411ce68b4e888))
+
+
+### Bug Fixes
+
+* **get-file-content:** address review issues A/B/C ([09fc76a](https://github.com/special-place-administrator/symforge/commit/09fc76afd2932d2e7448ffaf2095cdd08d2e1dec))
+* **get-file-content:** agent-agnostic resilience — offset/limit aliases, deny_unknown_fields, 60 KB cap ([4ab20de](https://github.com/special-place-administrator/symforge/commit/4ab20de12d140f48916a6f90cdbc981bb3523bef))
+
 ## [Unreleased]
 
 ### Bug Fixes
