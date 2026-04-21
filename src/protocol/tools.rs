@@ -453,6 +453,7 @@ pub struct WhatChangedInput {
 
 /// Input for `get_file_content`.
 #[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct GetFileContentInput {
     /// Relative path to the file.
     pub path: String,
@@ -498,6 +499,17 @@ pub struct GetFileContentInput {
     /// When true, return an approximate token count for the file instead of content.
     #[serde(default, deserialize_with = "lenient_bool")]
     pub estimate: Option<bool>,
+    /// Alias for `start_line` using the Read-tool idiom: 0-based line count to skip.
+    /// Translated to `start_line = offset + 1` before processing.
+    /// Cannot be combined with `start_line`, `end_line`, `around_line`, `around_match`,
+    /// `around_symbol`, `chunk_index`, or `mode`.
+    #[serde(default, deserialize_with = "lenient_u32")]
+    pub offset: Option<u32>,
+    /// Alias for `end_line` using the Read-tool idiom: number of lines to include.
+    /// Translated to `end_line = offset + limit` before processing.
+    /// Cannot be combined with the fields listed under `offset`.
+    #[serde(default, deserialize_with = "lenient_u32")]
+    pub limit: Option<u32>,
 }
 
 /// Input for `validate_file_syntax`.
@@ -1187,6 +1199,60 @@ fn enrich_with_callers(
         // "not requested" (None) from "ran but found nothing" (Some([]))
         file_matches.callers = Some(callers);
     }
+}
+
+/// Translate `offset`/`limit` (Read-tool idiom) into `start_line`/`end_line` in-place.
+/// Called at the outermost handler boundary before `proxy_tool_call` so both the
+/// local index path and the sidecar-proxied path observe identical normalized input.
+fn normalize_file_content_aliases(input: &mut GetFileContentInput) -> Result<(), String> {
+    if input.offset.is_none() && input.limit.is_none() {
+        return Ok(());
+    }
+
+    // Reject combination with any explicit native selector.
+    let mut conflicts: Vec<&str> = Vec::new();
+    if input.start_line.is_some() {
+        conflicts.push("`start_line`");
+    }
+    if input.end_line.is_some() {
+        conflicts.push("`end_line`");
+    }
+    if input.around_line.is_some() {
+        conflicts.push("`around_line`");
+    }
+    if input.around_match.is_some() {
+        conflicts.push("`around_match`");
+    }
+    if input.around_symbol.is_some() {
+        conflicts.push("`around_symbol`");
+    }
+    if input.chunk_index.is_some() {
+        conflicts.push("`chunk_index`");
+    }
+    if input.mode.is_some() {
+        conflicts.push("`mode`");
+    }
+    if !conflicts.is_empty() {
+        return Err(format!(
+            "Invalid get_file_content request: `offset`/`limit` aliases cannot be combined with {}. Use native params instead.",
+            conflicts.join(", ")
+        ));
+    }
+
+    if input.limit == Some(0) {
+        return Err(
+            "Invalid get_file_content request: `limit` must be 1 or greater.".to_string(),
+        );
+    }
+
+    let offset = input.offset.unwrap_or(0);
+    input.start_line = Some(offset.saturating_add(1));
+    if let Some(limit) = input.limit {
+        input.end_line = Some(offset.saturating_add(limit));
+    }
+    input.offset = None;
+    input.limit = None;
+    Ok(())
 }
 
 fn file_content_options_from_input(
@@ -4517,15 +4583,19 @@ impl SymForgeServer {
     /// For structured understanding use get_file_context. For a single function
     /// body use get_symbol.
     #[tool(
-        description = "Read exact raw file content. Modes: full file, line range, around_line/around_match/around_symbol, or chunked paging. Use this for exact docs/config reads, whitespace-sensitive inspection, or exact source excerpts after narrowing with get_file_context, search_text, or get_symbol. For structured code understanding use get_file_context first. For a single function body use get_symbol.",
+        description = "Read exact raw file content. Modes: full file, line range, around_line/around_match/around_symbol, or chunked paging. Use this for exact docs/config reads, whitespace-sensitive inspection, or exact source excerpts after narrowing with get_file_context, search_text, or get_symbol. For structured code understanding use get_file_context first. For a single function body use get_symbol. Accepts offset/limit (Read-tool idiom) as aliases for start_line/end_line. Unknown fields are rejected with an error naming the invalid param. Responses are capped at ~60 KB; if truncated, a footer suggests chunk_index+max_lines, around_line, or around_symbol.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn get_file_content(&self, params: Parameters<GetFileContentInput>) -> String {
         let mut input = params.0;
         input.path = normalize_exact_path(&input.path);
 
+        if let Err(e) = normalize_file_content_aliases(&mut input) {
+            return e;
+        }
+
         if let Some(result) = self.proxy_tool_call("get_file_content", &input).await {
-            return result;
+            return format::cap_file_content_output(result);
         }
         // Estimate mode: return token cost without reading content
         if input.estimate == Some(true) {
@@ -4578,7 +4648,7 @@ impl SymForgeServer {
                 // no-op unless SYMFORGE_FRECENCY=1. See wiki
                 // `[[SymForge Frecency-Weighted File Ranking]]` §"Bump hooks".
                 self.bump_frecency(&[PathBuf::from(&input.path)]);
-                format!("{}{}", mode_annotation, output)
+                format::cap_file_content_output(format!("{}{}", mode_annotation, output))
             }
             None => {
                 // Not in index — try raw disk read for non-source files
@@ -4600,7 +4670,7 @@ impl SymForgeServer {
                                 // fallback branch (non-indexed source files);
                                 // no-op unless SYMFORGE_FRECENCY=1.
                                 self.bump_frecency(&[PathBuf::from(&input.path)]);
-                                return format!("{}{}", mode_annotation, body);
+                                return format::cap_file_content_output(format!("{}{}", mode_annotation, body));
                             }
                             Err(e) => {
                                 return format!("{} [error: could not read file: {e}]", input.path);
@@ -10118,6 +10188,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert!(
@@ -10146,6 +10218,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(
@@ -10176,6 +10250,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(result, "line 2\nline 3");
@@ -10203,6 +10279,8 @@ mod tests {
                 show_line_numbers: Some(true),
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(result, "1: line 1\n2: line 2\n3: line 3");
@@ -10230,6 +10308,8 @@ mod tests {
                 show_line_numbers: Some(true),
                 header: Some(true),
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(result, "src/lib.rs [lines 2-3]\n2: line 2\n3: line 3");
@@ -10257,6 +10337,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(result, "2: line 2\n3: line 3\n4: line 4");
@@ -10284,6 +10366,8 @@ mod tests {
                 show_line_numbers: None,
                 header: Some(true),
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         // Should succeed (not reject) — header is now allowed with around_line.
@@ -10319,6 +10403,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(
@@ -10349,6 +10435,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(result, "1: line 1\n2: TODO first\n3: line 3");
@@ -10376,6 +10464,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(
@@ -10406,6 +10496,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(result, "Chunk 3 out of range for src/lib.rs (2 chunks)");
@@ -10433,6 +10525,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(result, "No matches for 'needle' in src/lib.rs");
@@ -10460,6 +10554,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(result, "3: line 3\n4: TODO second\n5: line 5");
@@ -10487,6 +10583,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(
@@ -10526,6 +10624,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
 
@@ -10570,6 +10670,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
 
@@ -10609,6 +10711,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(result, "1: line 1\n2: fn connect() {}\n3: line 3");
@@ -10643,6 +10747,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(
@@ -10680,6 +10786,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(result, "3: fn connect() {}");
@@ -10711,6 +10819,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(
@@ -10741,6 +10851,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(
@@ -10771,6 +10883,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(
@@ -10801,6 +10915,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(
@@ -10831,6 +10947,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(
@@ -10861,6 +10979,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(
@@ -10897,6 +11017,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert!(
@@ -10927,6 +11049,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(result, "mode=symbol requires around_symbol");
@@ -10954,6 +11078,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert!(
@@ -10988,6 +11114,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert!(
@@ -11022,6 +11150,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert!(
@@ -11052,6 +11182,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(result, "mode 'search' is not yet implemented");
@@ -11083,6 +11215,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert!(
@@ -11117,6 +11251,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert!(
@@ -11147,6 +11283,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(
@@ -11177,6 +11315,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(result, "mode=match requires around_match");
@@ -11204,6 +11344,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(
@@ -11234,6 +11376,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(
@@ -11264,6 +11408,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert_eq!(result, "mode=chunk requires chunk_index");
@@ -11291,6 +11437,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert!(
@@ -11321,6 +11469,8 @@ mod tests {
                 show_line_numbers: None,
                 header: None,
                 estimate: None,
+                offset: None,
+                limit: None,
             }))
             .await;
         assert!(
@@ -11330,6 +11480,233 @@ mod tests {
         assert!(
             result.contains("Use mode=match"),
             "expected guidance, got: {result}"
+        );
+    }
+
+    // ── get_file_content serde / alias tests ───────────────────────────────
+
+    #[test]
+    fn test_get_file_content_input_deserializes_offset_and_limit() {
+        let json = r#"{"path":"x","offset":10,"limit":5}"#;
+        let input: super::GetFileContentInput = serde_json::from_str(json).unwrap();
+        assert_eq!(input.offset, Some(10));
+        assert_eq!(input.limit, Some(5));
+        assert!(input.start_line.is_none());
+        assert!(input.end_line.is_none());
+    }
+
+    #[test]
+    fn test_get_file_content_input_defaults_all_none() {
+        let json = r#"{"path":"x"}"#;
+        let input: super::GetFileContentInput = serde_json::from_str(json).unwrap();
+        assert!(input.offset.is_none());
+        assert!(input.limit.is_none());
+        assert!(input.start_line.is_none());
+    }
+
+    #[test]
+    fn test_get_file_content_input_rejects_unknown_field() {
+        let json = r#"{"path":"x","typo_field":1}"#;
+        let result = serde_json::from_str::<super::GetFileContentInput>(json);
+        assert!(result.is_err(), "unknown field should be rejected");
+        let err = result.err().unwrap().to_string();
+        assert!(
+            err.contains("typo_field"),
+            "error should name the unknown field, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_get_file_content_input_rejects_non_numeric_offset() {
+        let json = r#"{"path":"x","offset":"not-a-number"}"#;
+        assert!(
+            serde_json::from_str::<super::GetFileContentInput>(json).is_err(),
+            "non-numeric offset should fail to deserialize"
+        );
+    }
+
+    // ── normalize_file_content_aliases unit tests ───────────────────────────
+
+    fn make_alias_input(offset: Option<u32>, limit: Option<u32>) -> super::GetFileContentInput {
+        super::GetFileContentInput {
+            path: "x".to_string(),
+            mode: None,
+            start_line: None,
+            end_line: None,
+            chunk_index: None,
+            max_lines: None,
+            around_line: None,
+            around_match: None,
+            match_occurrence: None,
+            around_symbol: None,
+            symbol_line: None,
+            context_lines: None,
+            show_line_numbers: None,
+            header: None,
+            estimate: None,
+            offset,
+            limit,
+        }
+    }
+
+    #[test]
+    fn test_normalize_aliases_offset_and_limit() {
+        let mut input = make_alias_input(Some(10), Some(5));
+        super::normalize_file_content_aliases(&mut input).unwrap();
+        assert_eq!(input.start_line, Some(11));
+        assert_eq!(input.end_line, Some(15));
+        assert!(input.offset.is_none());
+        assert!(input.limit.is_none());
+    }
+
+    #[test]
+    fn test_normalize_aliases_zero_offset() {
+        let mut input = make_alias_input(Some(0), Some(100));
+        super::normalize_file_content_aliases(&mut input).unwrap();
+        assert_eq!(input.start_line, Some(1));
+        assert_eq!(input.end_line, Some(100));
+    }
+
+    #[test]
+    fn test_normalize_aliases_no_limit_reads_to_end() {
+        let mut input = make_alias_input(Some(50), None);
+        super::normalize_file_content_aliases(&mut input).unwrap();
+        assert_eq!(input.start_line, Some(51));
+        assert!(input.end_line.is_none());
+    }
+
+    #[test]
+    fn test_normalize_aliases_no_offset_defaults_to_start() {
+        let mut input = make_alias_input(None, Some(20));
+        super::normalize_file_content_aliases(&mut input).unwrap();
+        assert_eq!(input.start_line, Some(1));
+        assert_eq!(input.end_line, Some(20));
+    }
+
+    #[test]
+    fn test_normalize_aliases_single_line() {
+        let mut input = make_alias_input(Some(0), Some(1));
+        super::normalize_file_content_aliases(&mut input).unwrap();
+        assert_eq!(input.start_line, Some(1));
+        assert_eq!(input.end_line, Some(1));
+    }
+
+    #[test]
+    fn test_normalize_aliases_neither_set_is_noop() {
+        let mut input = make_alias_input(None, None);
+        super::normalize_file_content_aliases(&mut input).unwrap();
+        assert!(input.start_line.is_none());
+        assert!(input.end_line.is_none());
+    }
+
+    #[test]
+    fn test_normalize_aliases_rejects_conflict_with_start_line() {
+        let mut input = make_alias_input(Some(10), None);
+        input.start_line = Some(5);
+        let err = super::normalize_file_content_aliases(&mut input)
+            .err()
+            .unwrap();
+        assert!(err.contains("`start_line`"), "got: {err}");
+    }
+
+    #[test]
+    fn test_normalize_aliases_rejects_conflict_with_end_line() {
+        let mut input = make_alias_input(Some(10), Some(5));
+        input.end_line = Some(20);
+        let err = super::normalize_file_content_aliases(&mut input)
+            .err()
+            .unwrap();
+        assert!(err.contains("`end_line`"), "got: {err}");
+    }
+
+    #[test]
+    fn test_normalize_aliases_rejects_conflict_with_around_symbol() {
+        let mut input = make_alias_input(Some(10), None);
+        input.around_symbol = Some("foo".to_string());
+        let err = super::normalize_file_content_aliases(&mut input)
+            .err()
+            .unwrap();
+        assert!(err.contains("`around_symbol`"), "got: {err}");
+    }
+
+    #[test]
+    fn test_normalize_aliases_rejects_limit_zero() {
+        let mut input = make_alias_input(None, Some(0));
+        let err = super::normalize_file_content_aliases(&mut input)
+            .err()
+            .unwrap();
+        assert!(err.contains("must be 1 or greater"), "got: {err}");
+    }
+
+    #[test]
+    fn test_normalize_aliases_rejects_conflict_with_mode() {
+        let mut input = make_alias_input(Some(10), None);
+        input.mode = Some("lines".to_string());
+        let err = super::normalize_file_content_aliases(&mut input)
+            .err()
+            .unwrap();
+        assert!(err.contains("`mode`"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn test_get_file_content_offset_limit_returns_sliced_window() {
+        let content = b"line 1\nline 2\nline 3\nline 4\nline 5";
+        let (key, file) = make_file("src/lib.rs", content, vec![]);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let result = server
+            .get_file_content(Parameters(super::GetFileContentInput {
+                path: "src/lib.rs".to_string(),
+                mode: None,
+                start_line: None,
+                end_line: None,
+                chunk_index: None,
+                max_lines: None,
+                around_line: None,
+                around_match: None,
+                match_occurrence: None,
+                around_symbol: None,
+                symbol_line: None,
+                context_lines: None,
+                show_line_numbers: None,
+                header: None,
+                estimate: None,
+                offset: Some(1),
+                limit: Some(2),
+            }))
+            .await;
+        // offset=1 → start_line=2, limit=2 → end_line=3
+        assert_eq!(result, "line 2\nline 3", "got: {result}");
+    }
+
+    #[tokio::test]
+    async fn test_get_file_content_offset_limit_conflict_rejected() {
+        let content = b"line 1\nline 2";
+        let (key, file) = make_file("src/lib.rs", content, vec![]);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let result = server
+            .get_file_content(Parameters(super::GetFileContentInput {
+                path: "src/lib.rs".to_string(),
+                mode: None,
+                start_line: Some(1),
+                end_line: None,
+                chunk_index: None,
+                max_lines: None,
+                around_line: None,
+                around_match: None,
+                match_occurrence: None,
+                around_symbol: None,
+                symbol_line: None,
+                context_lines: None,
+                show_line_numbers: None,
+                header: None,
+                estimate: None,
+                offset: Some(1),
+                limit: None,
+            }))
+            .await;
+        assert!(
+            result.contains("cannot be combined"),
+            "conflict should be rejected, got: {result}"
         );
     }
 

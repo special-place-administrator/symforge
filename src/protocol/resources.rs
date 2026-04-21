@@ -206,6 +206,8 @@ impl SymForgeServer {
                     show_line_numbers,
                     header,
                     estimate: None,
+                    offset: None,
+                    limit: None,
                 }))
                 .await
             }
