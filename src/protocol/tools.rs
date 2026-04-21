@@ -4583,7 +4583,7 @@ impl SymForgeServer {
     /// For structured understanding use get_file_context. For a single function
     /// body use get_symbol.
     #[tool(
-        description = "Read exact raw file content. Modes: full file, line range, around_line/around_match/around_symbol, or chunked paging. Use this for exact docs/config reads, whitespace-sensitive inspection, or exact source excerpts after narrowing with get_file_context, search_text, or get_symbol. For structured code understanding use get_file_context first. For a single function body use get_symbol.",
+        description = "Read exact raw file content. Modes: full file, line range, around_line/around_match/around_symbol, or chunked paging. Use this for exact docs/config reads, whitespace-sensitive inspection, or exact source excerpts after narrowing with get_file_context, search_text, or get_symbol. For structured code understanding use get_file_context first. For a single function body use get_symbol. Accepts offset/limit (Read-tool idiom) as aliases for start_line/end_line. Unknown fields are rejected with an error naming the invalid param. Responses are capped at ~60 KB; if truncated, a footer suggests chunk_index+max_lines, around_line, or around_symbol.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn get_file_content(&self, params: Parameters<GetFileContentInput>) -> String {

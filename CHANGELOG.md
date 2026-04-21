@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Bug Fixes
+
+* **get-file-content:** accept `offset`/`limit` as aliases for `start_line`/`end_line` (Read-tool idiom) so agents using the Claude Code `Read` idiom get sliced windows instead of full-file returns
+* **get-file-content:** reject unknown input fields with an explicit error naming the unknown field, instead of silently ignoring them
+* **get-file-content:** cap all responses at 60 KB; oversized output is truncated at a line boundary with a footer suggesting narrower read modes
+
 ## [7.5.0](https://github.com/special-place-administrator/symforge/compare/v7.4.6...v7.5.0) (2026-04-18)
 
 
