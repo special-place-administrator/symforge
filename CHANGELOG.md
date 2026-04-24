@@ -1,5 +1,12 @@
 # Changelog
 
+## [7.6.2](https://github.com/special-place-administrator/symforge/compare/v7.6.1...v7.6.2) (2026-04-24)
+
+
+### Bug Fixes
+
+* **io:** add path-named context to startup file-write sites ([7c04744](https://github.com/special-place-administrator/symforge/commit/7c04744a0ef0afd62b1575084badf248c5ba694d))
+
 ## [7.6.1](https://github.com/special-place-administrator/symforge/compare/v7.6.0...v7.6.1) (2026-04-24)
 
 
