@@ -4082,29 +4082,28 @@ impl SymForgeServer {
         if params.0.rank_by.as_deref() == Some("frecency")
             && std::env::var("SYMFORGE_FRECENCY").as_deref() == Ok("1")
             && let SearchFilesView::Found { hits, .. } = &mut view
+            && let Some(repo_root) = self.capture_repo_root()
         {
-            if let Some(repo_root) = self.capture_repo_root() {
-                let db_path = repo_root.join(crate::paths::SYMFORGE_FRECENCY_DB_PATH);
-                if let Ok(store) = crate::live_index::frecency::FrecencyStore::open(&db_path) {
-                    let hit_paths: Vec<std::path::PathBuf> = hits
-                        .iter()
-                        .map(|h| std::path::PathBuf::from(&h.path))
-                        .collect();
-                    let path_refs: Vec<&std::path::Path> =
-                        hit_paths.iter().map(|p| p.as_path()).collect();
-                    let now_ts = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_secs() as i64)
-                        .unwrap_or(0);
-                    if let Ok(scores) = store.bulk_scores(&path_refs, now_ts) {
-                        let breakdowns =
-                            crate::live_index::search::score_hits_by_frecency_fusion(hits, &scores);
-                        let taken = std::mem::take(hits);
-                        *hits = crate::live_index::search::reorder_hits_by_frecency_fusion(
-                            taken,
-                            &breakdowns,
-                        );
-                    }
+            let db_path = repo_root.join(crate::paths::SYMFORGE_FRECENCY_DB_PATH);
+            if let Ok(store) = crate::live_index::frecency::FrecencyStore::open(&db_path) {
+                let hit_paths: Vec<std::path::PathBuf> = hits
+                    .iter()
+                    .map(|h| std::path::PathBuf::from(&h.path))
+                    .collect();
+                let path_refs: Vec<&std::path::Path> =
+                    hit_paths.iter().map(|p| p.as_path()).collect();
+                let now_ts = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                if let Ok(scores) = store.bulk_scores(&path_refs, now_ts) {
+                    let breakdowns =
+                        crate::live_index::search::score_hits_by_frecency_fusion(hits, &scores);
+                    let taken = std::mem::take(hits);
+                    *hits = crate::live_index::search::reorder_hits_by_frecency_fusion(
+                        taken,
+                        &breakdowns,
+                    );
                 }
             }
         }

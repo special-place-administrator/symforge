@@ -3102,26 +3102,26 @@ pub(crate) fn resolve_verbosity(
     body_fraction: f64,
 ) -> (String, &'static str) {
     // Explicit user choice always wins
-    if let Some(v) = explicit_verbosity {
-        if v != "full" {
-            let level: &'static str = match v {
-                "summary" => "summary",
-                "signature" => "signature",
-                "compact" => "compact",
-                _ => "full",
-            };
-            return (apply_verbosity(body, v), level);
-        }
+    if let Some(v) = explicit_verbosity
+        && v != "full"
+    {
+        let level: &'static str = match v {
+            "summary" => "summary",
+            "signature" => "signature",
+            "compact" => "compact",
+            _ => "full",
+        };
+        return (apply_verbosity(body, v), level);
     }
 
     // Adaptive: auto-select when budget is set and no explicit verbosity (or explicit "full")
-    if let Some(tokens) = max_tokens {
-        if tokens > 0 {
-            let body_budget = (tokens as f64 * body_fraction) as u64;
-            let (rendered, level) = adaptive_verbosity(body, body_budget);
-            if level != "full" {
-                return (rendered, level);
-            }
+    if let Some(tokens) = max_tokens
+        && tokens > 0
+    {
+        let body_budget = (tokens as f64 * body_fraction) as u64;
+        let (rendered, level) = adaptive_verbosity(body, body_budget);
+        if level != "full" {
+            return (rendered, level);
         }
     }
 

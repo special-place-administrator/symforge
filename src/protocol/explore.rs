@@ -469,10 +469,11 @@ pub fn stem_word(word: &str) -> String {
         ("es", 3),
         ("s", 3),
     ] {
-        if let Some(base) = w.strip_suffix(suffix) {
-            if base.len() >= *min_base && !(*suffix == "s" && w.ends_with("ss")) {
-                return base.to_string();
-            }
+        if let Some(base) = w.strip_suffix(suffix)
+            && base.len() >= *min_base
+            && !(*suffix == "s" && w.ends_with("ss"))
+        {
+            return base.to_string();
         }
     }
     w
@@ -557,7 +558,7 @@ pub fn enrich_concept_with_imports(
     };
 
     let existing: std::collections::HashSet<&str> =
-        concept.symbol_queries.iter().map(|s| *s).collect();
+        concept.symbol_queries.iter().copied().collect();
 
     relevant
         .iter()

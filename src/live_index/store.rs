@@ -696,10 +696,10 @@ impl DerefMut for SharedIndexWriteGuard<'_> {
 
 impl Drop for SharedIndexWriteGuard<'_> {
     fn drop(&mut self) {
-        if self.dirty {
-            if let Some(live) = self.index.take() {
-                self.handle.swap_and_publish(live);
-            }
+        if self.dirty
+            && let Some(live) = self.index.take()
+        {
+            self.handle.swap_and_publish(live);
         }
     }
 }

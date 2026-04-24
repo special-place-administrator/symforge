@@ -920,7 +920,7 @@ pub fn extract_references(
             if !qualified_text.contains("::")
                 || name_text.is_empty()
                 // Skip if inside a string literal (very rough: odd number of `"` before).
-                || source[..path_start].matches('"').count() % 2 != 0
+                || !source[..path_start].matches('"').count().is_multiple_of(2)
             {
                 i += 1;
                 continue;
