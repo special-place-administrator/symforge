@@ -139,8 +139,12 @@ impl TrigramIndex {
             return; // Not indexed — no-op
         }
         self.remove_trigrams_for_path(path);
-        let id = self.path_to_id.remove(path).unwrap();
-        self.id_to_path.remove(&id);
+        // The contains_key guard above typically ensures remove returns Some.
+        // The if-let is defensive against future refactors of remove_trigrams_for_path
+        // that might mutate path_to_id.
+        if let Some(id) = self.path_to_id.remove(path) {
+            self.id_to_path.remove(&id);
+        }
     }
 
     // ── Private helpers ──────────────────────────────────────────────────────

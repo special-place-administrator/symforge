@@ -115,8 +115,10 @@ fn write_snapshot(snapshot: IndexSnapshot, project_root: &Path) -> anyhow::Resul
     let final_path = dir.join(INDEX_FILENAME);
     let tmp_path = dir.join(format!("{INDEX_FILENAME}.tmp"));
 
-    std::fs::write(&tmp_path, &bytes)?;
-    std::fs::rename(&tmp_path, &final_path)?;
+    std::fs::write(&tmp_path, &bytes)
+        .map_err(|e| anyhow::anyhow!("writing index snapshot tmp at {}: {}", tmp_path.display(), e))?;
+    std::fs::rename(&tmp_path, &final_path)
+        .map_err(|e| anyhow::anyhow!("renaming index snapshot {} -> {}: {}", tmp_path.display(), final_path.display(), e))?;
 
     info!(
         bytes = bytes.len(),

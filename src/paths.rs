@@ -13,7 +13,12 @@ pub fn resolve_symforge_dir(base: &Path) -> PathBuf {
 /// Ensure the canonical symforge data directory exists under `base`.
 pub fn ensure_symforge_dir(base: &Path) -> io::Result<PathBuf> {
     let dir = resolve_symforge_dir(base);
-    std::fs::create_dir_all(&dir)?;
+    std::fs::create_dir_all(&dir).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!("ensuring symforge data dir at {}: {}", dir.display(), e),
+        )
+    })?;
     Ok(dir)
 }
 

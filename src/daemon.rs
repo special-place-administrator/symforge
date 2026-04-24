@@ -1756,11 +1756,23 @@ pub(crate) fn daemon_dir() -> io::Result<PathBuf> {
 }
 
 fn write_daemon_port_file(port: u16) -> io::Result<()> {
-    std::fs::write(daemon_dir()?.join(DAEMON_PORT_FILE), port.to_string())
+    let path = daemon_dir()?.join(DAEMON_PORT_FILE);
+    std::fs::write(&path, port.to_string()).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!("writing daemon port file at {}: {}", path.display(), e),
+        )
+    })
 }
 
 fn write_daemon_pid_file(pid: u32) -> io::Result<()> {
-    std::fs::write(daemon_dir()?.join(DAEMON_PID_FILE), pid.to_string())
+    let path = daemon_dir()?.join(DAEMON_PID_FILE);
+    std::fs::write(&path, pid.to_string()).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!("writing daemon pid file at {}: {}", path.display(), e),
+        )
+    })
 }
 
 fn read_daemon_pid_file() -> io::Result<u32> {
