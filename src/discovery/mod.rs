@@ -247,7 +247,6 @@ fn is_forbidden_root(path: &Path) -> bool {
     #[cfg(target_os = "windows")]
     {
         let path_str = path.to_string_lossy();
-        // Matches patterns like "C:\", "\\?\C:\"
         if path_str.len() <= 7 && path_str.ends_with('\\') {
             return true;
         }
@@ -261,26 +260,54 @@ fn is_forbidden_root(path: &Path) -> bool {
         }
     }
 
-    // 4. Known system/broad directory names.
+    // 4a. System directory names — always forbidden anywhere.
+    //     These are unambiguous: a directory literally named `system32`
+    //     or `node_modules` is virtually never a project root.
     if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
         let lower = name.to_lowercase();
-        let forbidden_names = [
+        const SYSTEM_NAMES: &[&str] = &[
             "windows",
             "system32",
             "program files",
             "program files (x86)",
             "programdata",
-            "appdata",
             "node_modules",
             ".npm",
             ".cargo",
-            "users",
-            "home",
-            "tmp",
-            "temp",
-            "var",
         ];
-        if forbidden_names.contains(&lower.as_str()) {
+        if SYSTEM_NAMES.contains(&lower.as_str()) {
+            return true;
+        }
+    }
+
+    // 4b. Top-level container names — forbidden only when sitting directly
+    //     under a filesystem root or drive root. A legitimate project named
+    //     `tmp` or `var` deeper in the tree is allowed.
+    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+        let lower = name.to_lowercase();
+        const CONTAINER_NAMES: &[&str] = &[
+            "users", "home", "tmp", "temp", "var", "appdata",
+        ];
+        if CONTAINER_NAMES.contains(&lower.as_str())
+            && path
+                .parent()
+                .map(|p| {
+                    // Parent is a drive root or filesystem root → forbid.
+                    p.parent().is_none()
+                        || {
+                            #[cfg(target_os = "windows")]
+                            {
+                                let pstr = p.to_string_lossy();
+                                pstr.len() <= 7 && pstr.ends_with('\\')
+                            }
+                            #[cfg(not(target_os = "windows"))]
+                            {
+                                false
+                            }
+                        }
+                })
+                .unwrap_or(false)
+        {
             return true;
         }
     }
@@ -558,6 +585,55 @@ mod tests {
             !is_forbidden_root(tmp.path()),
             "temp project dir should be allowed"
         );
+    }
+
+    #[test]
+    fn test_is_forbidden_root_allows_project_named_tmp() {
+        let tmp = TempDir::new().unwrap();
+        let project = tmp.path().join("projects").join("tmp");
+        std::fs::create_dir_all(&project).unwrap();
+        assert!(
+            !is_forbidden_root(&project),
+            "project at C:\\projects\\tmp must not be rejected by basename"
+        );
+    }
+
+    #[test]
+    fn test_is_forbidden_root_allows_project_named_var() {
+        let tmp = TempDir::new().unwrap();
+        let project = tmp.path().join("workspace").join("var");
+        std::fs::create_dir_all(&project).unwrap();
+        assert!(
+            !is_forbidden_root(&project),
+            "project at workspace/var must not be rejected by basename"
+        );
+    }
+
+    #[test]
+    fn test_is_forbidden_root_still_blocks_top_level_tmp_on_unix() {
+        // Skip on Windows where /tmp doesn't apply
+        #[cfg(unix)]
+        {
+            // /tmp itself is a real path; canonicalize will succeed.
+            let path = std::path::Path::new("/tmp");
+            if path.exists() {
+                assert!(is_forbidden_root(path), "/tmp must still be blocked as system path");
+            }
+        }
+    }
+
+    #[test]
+    fn test_is_forbidden_root_still_blocks_windows_system_paths() {
+        #[cfg(target_os = "windows")]
+        {
+            let path = std::path::Path::new(r"C:\Windows\System32");
+            if path.exists() {
+                assert!(
+                    is_forbidden_root(path),
+                    "C:\\Windows\\System32 must remain blocked"
+                );
+            }
+        }
     }
 
     #[test]
