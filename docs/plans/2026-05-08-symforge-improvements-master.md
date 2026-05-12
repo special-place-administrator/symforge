@@ -4,6 +4,8 @@
 
 **Goal:** Ship four independent improvement waves to SymForge: ultrareview polish (Phase 1), index hygiene (Phase 2), co-change ranker fusion T3.3 (Phase 3), and RTK Tier 1 adoption (Phase 4). Each phase is independently shippable; coding agent can pause between phases.
 
+**Phase H insertion (2026-05-12):** A stability-hotfix phase has been inserted between Phase 2.2 and Phase 2.3 to address 1 catastrophic and 12 high-severity defects surfaced by external evaluator reports. See `docs/plans/2026-05-12-symforge-stability-hotfix.md` and the **Phase H** section between Phase 2 and Phase 3 below. Phase H sub-tasks interleave the rest of the campaign per Option C sequencing.
+
 **Architecture:** Each phase ends at a green build (`cargo check && cargo test --all-targets -- --test-threads=1 && cargo clippy -- -D warnings`) and a single squash-mergeable PR. Phase ordering reflects risk: Phase 1 = trivial wins, Phase 4 = build-system changes. Phases 1–2 land in any order; Phase 3 depends on Phase 1.4 (health metric surface stays stable). Phase 4 is self-contained.
 
 **Tech Stack:** Rust 2024 edition, rmcp 1.1, tree-sitter 0.26, rusqlite (bundled), `ignore` crate (gitignore-aware walk), tokio, anyhow + thiserror.
@@ -1388,6 +1390,40 @@ EOF
 
 - [ ] Run: `cargo check && cargo clippy --all-targets -- -D warnings && cargo test --all-targets -- --test-threads=1`
 - [ ] Verify the working tree is clean: `git status`
+
+---
+
+# Phase H — Stability Hotfix (inserted 2026-05-12)
+
+**Plan-doc:** `docs/plans/2026-05-12-symforge-stability-hotfix.md`
+
+**Why inserted:** Three external evaluator reports on 2026-05-11 surfaced 1 catastrophic (B-P0-1) and 12 high-severity defects (B-P1-1 through B-P1-7, B-P2-1 through B-P2-5). Read-only investigation verified every claim against code at HEAD `f804d21` via 11 parallel-read spot checks of the most load-bearing anchors. The user declined to install the build pushed on 2026-05-11 because B-P0-1 destroys the index on every `index_folder` call against a new root (1135 files → 4 files in 2 minutes on Windows).
+
+**Insertion strategy (Option C, authorized 2026-05-12):** C-1 catastrophe-fix (H.1a-d) lands NOW between Phase 2.2 and Phase 2.3. C-2 ranker-substrate fixes (H.4, H.5) interleave between Phase 3.2 and Phase 3.3. C-3 opportunistic fixes (H.2, H.3, H.6) land before Phase 4. C-4 stability followup (H.7-H.12) defers to a dedicated post-Phase-4 sprint with its own plan-doc.
+
+**Sequence overlay:**
+
+```
+[shipped: Phase 0, 1, 2.1, 2.2]
+-> Phase H C-1 (H.1a -> H.1b -> H.1c -> H.1d)   [CATASTROPHE FIX]
+-> Phase 2.3, 2.4                                [resume]
+-> Phase 3.1, 3.2                                [CoChange data plumbing]
+-> Phase H C-2 (H.4, H.5)                        [ranker-substrate prereq]
+-> Phase H C-3 (H.2, H.3, H.6)                   [opportunistic]
+-> Phase 3.3-3.6                                 [CoChange fusion]
+-> Phase 4
+-> Phase H C-4 (H.7-H.12 stability followup)
+```
+
+**Source-of-truth evidence:**
+
+- `docs/notes/external-evaluations/2026-05-11/SYMFORGE_TEST_REPORT_2026-05-11_01.md` — evaluator 1
+- `docs/notes/external-evaluations/2026-05-11/SYMFORGE_EVALUATION_2026-05-11.md` — Kimi Code CLI (identified P0)
+- `docs/notes/external-evaluations/2026-05-11/SYMFORGE_TEST_REPORT_2026-05-11_02.md` — evaluator 3 (identified reference-engine defects)
+- `docs/notes/external-evaluations/2026-05-11/INVESTIGATION_B-P0-1.md` — read-only verification of P0 (Mechanism A confirmed at code level; Mechanism B refuted; Mechanism C latent)
+- `docs/notes/external-evaluations/2026-05-11/INVESTIGATION_HEALTH_REFS.md` — read-only verification of B-P1-6 health + B-P1-2 dependents + B-P1-3 references
+
+**Phase H C-1 close-out is the gate before Phase 2.3 resumes.** See plan-doc for per-task spec.
 
 ---
 
