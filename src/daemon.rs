@@ -6,7 +6,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use anyhow::Context;
@@ -86,6 +86,7 @@ struct ProjectInstance {
     index: SharedIndex,
     watcher_info: Arc<Mutex<WatcherInfo>>,
     watcher_task: Option<tokio::task::JoinHandle<()>>,
+    stop_token: Arc<AtomicBool>,
     token_stats: Arc<TokenStats>,
     symbol_cache: Arc<RwLock<HashMap<String, Vec<SymbolSnapshot>>>>,
     session_ids: HashSet<String>,
@@ -361,9 +362,8 @@ impl DaemonState {
                     project.session_ids.remove(session_id);
                     let remaining = project.session_ids.len();
                     if remaining == 0 {
-                        if let Some(removed) = projects.remove(&pid) {
-                            let mut watcher_task = removed.watcher_task;
-                            abort_watcher_task(&mut watcher_task);
+                        if let Some(mut removed) = projects.remove(&pid) {
+                            abort_watcher_task(&mut removed.watcher_task, &removed.stop_token);
                         }
                         project_removed = true;
                     }
@@ -502,9 +502,9 @@ impl DaemonState {
                     .get(&current_project_id)
                     .map(|project| project.session_ids.is_empty())
                     .unwrap_or(false);
-                if should_remove_old && let Some(removed) = projects.remove(&current_project_id) {
-                    let mut watcher_task = removed.watcher_task;
-                    abort_watcher_task(&mut watcher_task);
+                if should_remove_old && let Some(mut removed) = projects.remove(&current_project_id)
+                {
+                    abort_watcher_task(&mut removed.watcher_task, &removed.stop_token);
                 }
             }
 
@@ -1029,6 +1029,7 @@ impl ProjectInstance {
             index,
             watcher_info,
             watcher_task: None,
+            stop_token: Arc::new(AtomicBool::new(false)),
             token_stats,
             symbol_cache: Arc::new(RwLock::new(HashMap::new())),
             session_ids: HashSet::new(),
@@ -1052,10 +1053,12 @@ impl ProjectInstance {
         }
         self.activation_state = ActivationState::Activating;
 
+        self.stop_token = Arc::new(AtomicBool::new(false));
         self.watcher_task = start_project_watcher(
             self.canonical_root.clone(),
             Arc::clone(&self.index),
             Arc::clone(&self.watcher_info),
+            Arc::clone(&self.stop_token),
         );
 
         // Kick off background git temporal analysis (non-blocking).
@@ -1068,16 +1071,19 @@ impl ProjectInstance {
     }
 
     fn reload(&mut self, canonical_root: &Path) -> anyhow::Result<(usize, usize)> {
+        abort_watcher_task(&mut self.watcher_task, &self.stop_token);
+
         self.index.reload(canonical_root)?;
         let published = self.index.published_state();
         let file_count = published.file_count;
         let symbol_count = published.symbol_count;
 
-        abort_watcher_task(&mut self.watcher_task);
+        self.stop_token = Arc::new(AtomicBool::new(false));
         self.watcher_task = start_project_watcher(
             canonical_root.to_path_buf(),
             Arc::clone(&self.index),
             Arc::clone(&self.watcher_info),
+            Arc::clone(&self.stop_token),
         );
         self.canonical_root = canonical_root.to_path_buf();
         self.project_name = canonical_root
@@ -1111,13 +1117,23 @@ fn start_project_watcher(
     repo_root: PathBuf,
     index: SharedIndex,
     watcher_info: Arc<Mutex<WatcherInfo>>,
+    stop_token: Arc<AtomicBool>,
 ) -> Option<tokio::task::JoinHandle<()>> {
-    tokio::runtime::Handle::try_current()
-        .ok()
-        .map(|handle| handle.spawn(watcher::run_watcher(repo_root, index, watcher_info)))
+    tokio::runtime::Handle::try_current().ok().map(|handle| {
+        handle.spawn(watcher::run_watcher_with_stop(
+            repo_root,
+            index,
+            watcher_info,
+            stop_token,
+        ))
+    })
 }
 
-fn abort_watcher_task(task: &mut Option<tokio::task::JoinHandle<()>>) {
+fn abort_watcher_task(
+    task: &mut Option<tokio::task::JoinHandle<()>>,
+    stop_token: &Arc<AtomicBool>,
+) {
+    stop_token.store(true, Ordering::Release);
     if let Some(task) = task.take() {
         task.abort();
     }

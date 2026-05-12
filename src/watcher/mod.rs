@@ -2,6 +2,7 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
 use notify::{EventKind, RecommendedWatcher as NotifyRecommendedWatcher, RecursiveMode};
@@ -334,7 +335,11 @@ pub(crate) fn freshen_file_if_stale(
 /// the stored value. Returns the number of stale files re-indexed.
 ///
 /// Called on watcher overflow and by the periodic reconciliation timer.
-pub(crate) fn reconcile_stale_files(repo_root: &Path, shared: &SharedIndex) -> usize {
+pub(crate) fn reconcile_stale_files_with_stop(
+    repo_root: &Path,
+    shared: &SharedIndex,
+    should_stop: impl Fn() -> bool,
+) -> usize {
     let paths: Vec<String> = {
         let index = shared.read();
         index.all_files().map(|(p, _)| p.clone()).collect()
@@ -342,6 +347,9 @@ pub(crate) fn reconcile_stale_files(repo_root: &Path, shared: &SharedIndex) -> u
 
     let mut stale_count = 0usize;
     for relative_path in &paths {
+        if should_stop() {
+            break;
+        }
         let abs_path = repo_root.join(relative_path);
         if freshen_file_if_stale(relative_path, &abs_path, shared) {
             stale_count += 1;
@@ -379,6 +387,10 @@ pub(crate) fn reconcile_stale_files(repo_root: &Path, shared: &SharedIndex) -> u
         }
     }
     stale_count
+}
+
+pub(crate) fn reconcile_stale_files(repo_root: &Path, shared: &SharedIndex) -> usize {
+    reconcile_stale_files_with_stop(repo_root, shared, || false)
 }
 
 // ---------------------------------------------------------------------------
@@ -432,13 +444,20 @@ pub(crate) fn process_events(
     shared: &SharedIndex,
     burst_trackers: &mut HashMap<PathBuf, BurstTracker>,
     watcher_info: &Arc<Mutex<WatcherInfo>>,
+    should_stop: &dyn Fn() -> bool,
 ) {
     for event in events {
+        if should_stop() {
+            break;
+        }
         if !is_relevant_event(&event) {
             continue;
         }
 
         for abs_path in &event.paths {
+            if should_stop() {
+                break;
+            }
             // Normalize path — skip if outside repo_root or can't be normalized
             let relative_path = match normalize_event_path(abs_path, repo_root) {
                 Some(r) => r,
@@ -493,11 +512,18 @@ pub(crate) fn process_events(
 /// 1. Set state to Active
 /// 2. Loop: start_watcher → process events → restart on error with 1s backoff
 /// 3. After 3 consecutive failures: set state to Degraded and stop
-pub async fn run_watcher(
+pub async fn run_watcher_with_stop(
     repo_root: PathBuf,
     shared: SharedIndex,
     watcher_info: Arc<Mutex<WatcherInfo>>,
+    stop_token: Arc<AtomicBool>,
 ) {
+    if stop_token.load(Ordering::Acquire) {
+        let mut info = watcher_info.lock();
+        info.state = WatcherState::Off;
+        return;
+    }
+
     {
         let mut info = watcher_info.lock();
         info.state = WatcherState::Active;
@@ -505,8 +531,14 @@ pub async fn run_watcher(
 
     let mut consecutive_failures: u32 = 0;
     const MAX_FAILURES: u32 = 3;
+    let mut cancelled = false;
 
-    loop {
+    'watcher: loop {
+        if stop_token.load(Ordering::Acquire) {
+            cancelled = true;
+            break;
+        }
+
         // Read the current recommended debounce window (updated by the burst tracker).
         let debounce_ms = watcher_info.lock().debounce_window_ms;
         match start_watcher(&repo_root, debounce_ms) {
@@ -549,6 +581,11 @@ pub async fn run_watcher(
                 let mut last_reconcile = Instant::now();
 
                 loop {
+                    if stop_token.load(Ordering::Acquire) {
+                        cancelled = true;
+                        break 'watcher;
+                    }
+
                     // Periodic reconciliation sweep (belt-and-suspenders against missed events).
                     if reconcile_interval_secs > 0
                         && last_reconcile.elapsed() >= Duration::from_secs(reconcile_interval_secs)
@@ -556,8 +593,15 @@ pub async fn run_watcher(
                         let shared_clone = shared.clone();
                         let root_clone = repo_root.clone();
                         let watcher_info_clone = watcher_info.clone();
+                        let stop_for_reconcile = Arc::clone(&stop_token);
                         tokio::task::spawn_blocking(move || {
-                            let stale = reconcile_stale_files(&root_clone, &shared_clone);
+                            let stale =
+                                reconcile_stale_files_with_stop(&root_clone, &shared_clone, || {
+                                    stop_for_reconcile.load(Ordering::Acquire)
+                                });
+                            if stop_for_reconcile.load(Ordering::Acquire) {
+                                return;
+                            }
                             let mut info = watcher_info_clone.lock();
                             info.stale_files_found += stale as u64;
                             info.last_reconcile_at = Some(SystemTime::now());
@@ -567,7 +611,11 @@ pub async fn run_watcher(
                         // Gates on SYMFORGE_COUPLING internally and holds a
                         // per-workspace guard against concurrent refreshes.
                         let root_for_coupling = repo_root.clone();
+                        let stop_for_coupling = Arc::clone(&stop_token);
                         tokio::task::spawn_blocking(move || {
+                            if stop_for_coupling.load(Ordering::Acquire) {
+                                return;
+                            }
                             crate::live_index::coupling::refresh_on_reconcile_tick(
                                 &root_for_coupling,
                             );
@@ -583,6 +631,7 @@ pub async fn run_watcher(
                             let shared_clone = shared.clone();
                             let root_clone = repo_root.clone();
                             let watcher_info_clone = watcher_info.clone();
+                            let stop_for_events = Arc::clone(&stop_token);
                             let mut trackers = std::mem::take(&mut burst_trackers);
                             match tokio::task::spawn_blocking(move || {
                                 process_events(
@@ -591,6 +640,7 @@ pub async fn run_watcher(
                                     &shared_clone,
                                     &mut trackers,
                                     &watcher_info_clone,
+                                    &|| stop_for_events.load(Ordering::Acquire),
                                 );
                                 trackers
                             })
@@ -624,8 +674,16 @@ pub async fn run_watcher(
                                 let shared_clone = shared.clone();
                                 let root_clone = repo_root.clone();
                                 let watcher_info_clone = watcher_info.clone();
+                                let stop_for_reconcile = Arc::clone(&stop_token);
                                 tokio::task::spawn_blocking(move || {
-                                    let stale = reconcile_stale_files(&root_clone, &shared_clone);
+                                    let stale = reconcile_stale_files_with_stop(
+                                        &root_clone,
+                                        &shared_clone,
+                                        || stop_for_reconcile.load(Ordering::Acquire),
+                                    );
+                                    if stop_for_reconcile.load(Ordering::Acquire) {
+                                        return;
+                                    }
                                     let mut info = watcher_info_clone.lock();
                                     info.overflow_count += 1;
                                     info.last_overflow_at = Some(SystemTime::now());
@@ -667,6 +725,20 @@ pub async fn run_watcher(
             }
         }
     }
+
+    if cancelled {
+        let mut info = watcher_info.lock();
+        info.state = WatcherState::Off;
+    }
+}
+
+pub async fn run_watcher(
+    repo_root: PathBuf,
+    shared: SharedIndex,
+    watcher_info: Arc<Mutex<WatcherInfo>>,
+) {
+    let stop_token = Arc::new(AtomicBool::new(false));
+    run_watcher_with_stop(repo_root, shared, watcher_info, stop_token).await;
 }
 
 /// Spawn a new watcher task, cancelling implicit by JoinHandle drop.
