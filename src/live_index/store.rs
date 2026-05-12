@@ -436,7 +436,12 @@ pub struct SharedIndexHandle {
     write_mutex: Mutex<()>,
     published_state: ArcSwap<PublishedIndexState>,
     published_repo_outline: ArcSwap<RepoOutlineView>,
+    /// Publish-versioning counter for `PublishedIndexState`; bumped on every publish.
     next_generation: AtomicU64,
+    /// Project-identity counter for fencing stale watcher mutations; bumped only on reload.
+    project_generation: AtomicU64,
+    /// Telemetry counter for fenced mutations rejected due to stale project generation.
+    rejected_stale_mutations: AtomicU64,
     /// Git temporal intelligence — independently swapped side-table with
     /// per-file churn, ownership, and co-change data. Populated asynchronously
     /// after index load/reload completes.
@@ -469,6 +474,8 @@ impl SharedIndexHandle {
             published_state: ArcSwap::new(published_state),
             published_repo_outline: ArcSwap::new(published_repo_outline),
             next_generation: AtomicU64::new(1),
+            project_generation: AtomicU64::new(0),
+            rejected_stale_mutations: AtomicU64::new(0),
             git_temporal: ArcSwap::new(Arc::new(super::git_temporal::GitTemporalIndex::pending())),
             pre_update_symbols: Mutex::new(HashMap::new()),
         }
@@ -511,6 +518,15 @@ impl SharedIndexHandle {
         self.published_repo_outline.load_full()
     }
 
+    pub fn current_project_generation(&self) -> u64 {
+        self.project_generation.load(Ordering::Acquire)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn current_rejected_stale_mutations(&self) -> u64 {
+        self.rejected_stale_mutations.load(Ordering::Relaxed)
+    }
+
     pub fn reload(&self, root: &Path) -> anyhow::Result<()> {
         // Build new index data OUTSIDE the write lock (file I/O + parsing).
         // Only the final swap acquires the mutex, reducing block time from
@@ -520,6 +536,7 @@ impl SharedIndexHandle {
         let mut live = (*self.live.load_full()).clone();
         live.apply_reload_data(data);
         self.swap_and_publish(live);
+        self.project_generation.fetch_add(1, Ordering::AcqRel);
         Ok(())
     }
 
@@ -567,6 +584,70 @@ impl SharedIndexHandle {
         }
     }
 
+    pub fn update_file_at_generation(
+        &self,
+        path: &str,
+        file: IndexedFile,
+        expected_gen: u64,
+    ) -> bool {
+        let _wg = self.write_mutex.lock();
+        let current_gen = self.project_generation.load(Ordering::Acquire);
+        if current_gen != expected_gen {
+            self.rejected_stale_mutations
+                .fetch_add(1, Ordering::Relaxed);
+            tracing::trace!(
+                path,
+                expected_gen,
+                current_gen,
+                "rejecting stale indexed-file update"
+            );
+            return false;
+        }
+
+        let current = self.live.load_full();
+        // Capture pre-update symbols so analyze_file_impact can diff correctly
+        // even when the watcher re-indexes before the hook fires.
+        if let Some(existing) = current.get_file(path) {
+            let snapshot: Vec<PreUpdateSymbol> = existing
+                .symbols
+                .iter()
+                .map(|s| PreUpdateSymbol {
+                    name: s.name.clone(),
+                    kind: s.kind.to_string(),
+                    line_range: s.line_range,
+                    byte_range: s.byte_range,
+                })
+                .collect();
+            self.pre_update_symbols
+                .lock()
+                .insert(path.to_string(), snapshot);
+        }
+        let mut live = (*current).clone();
+        let path_owned = path.to_string();
+        let path_clone = path_owned.clone();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            live.update_file(path_owned, file);
+        }));
+        match result {
+            Ok(()) => self.swap_and_publish(live),
+            Err(panic_info) => {
+                // Clone-mutate-swap means the original index is untouched on panic —
+                // no repair needed, just log and discard the failed clone.
+                let msg = panic_info
+                    .downcast_ref::<String>()
+                    .map(|s| s.as_str())
+                    .or_else(|| panic_info.downcast_ref::<&str>().copied())
+                    .unwrap_or("unknown");
+                tracing::error!(
+                    "index mutation panicked for '{}': {} — original index preserved",
+                    path_clone,
+                    msg
+                );
+            }
+        }
+        true
+    }
+
     /// Update only the stored mtime for a file without re-parsing.
     ///
     /// Used by the watcher when a file's content hash matches but its mtime has
@@ -586,6 +667,35 @@ impl SharedIndexHandle {
             self.live.store(Arc::new(live));
             // mtime-only change doesn't affect published state
         }
+    }
+
+    pub fn touch_mtime_at_generation(&self, path: &str, new_mtime: u64, expected_gen: u64) -> bool {
+        let _wg = self.write_mutex.lock();
+        let current_gen = self.project_generation.load(Ordering::Acquire);
+        if current_gen != expected_gen {
+            self.rejected_stale_mutations
+                .fetch_add(1, Ordering::Relaxed);
+            tracing::trace!(
+                path,
+                expected_gen,
+                current_gen,
+                "rejecting stale mtime touch"
+            );
+            return false;
+        }
+
+        let current = self.live.load_full();
+        if let Some(file) = current.files.get(path)
+            && file.mtime_secs != new_mtime
+        {
+            let mut live = (*current).clone();
+            let mut updated = (**live.files.get(path).unwrap()).clone();
+            updated.mtime_secs = new_mtime;
+            live.files.insert(path.to_string(), Arc::new(updated));
+            self.live.store(Arc::new(live));
+            // mtime-only change doesn't affect published state
+        }
+        true
     }
 
     pub fn add_file(&self, path: String, file: IndexedFile) {
@@ -634,6 +744,44 @@ impl SharedIndexHandle {
                 );
             }
         }
+    }
+
+    pub fn remove_file_at_generation(&self, path: &str, expected_gen: u64) -> bool {
+        let _wg = self.write_mutex.lock();
+        let current_gen = self.project_generation.load(Ordering::Acquire);
+        if current_gen != expected_gen {
+            self.rejected_stale_mutations
+                .fetch_add(1, Ordering::Relaxed);
+            tracing::trace!(
+                path,
+                expected_gen,
+                current_gen,
+                "rejecting stale file removal"
+            );
+            return false;
+        }
+
+        let mut live = (*self.live.load_full()).clone();
+        let path_owned = path.to_string();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            live.remove_file(path);
+        }));
+        match result {
+            Ok(()) => self.swap_and_publish(live),
+            Err(panic_info) => {
+                let msg = panic_info
+                    .downcast_ref::<String>()
+                    .map(|s| s.as_str())
+                    .or_else(|| panic_info.downcast_ref::<&str>().copied())
+                    .unwrap_or("unknown");
+                tracing::error!(
+                    "index remove panicked for '{}': {} — original index preserved",
+                    path_owned,
+                    msg
+                );
+            }
+        }
+        true
     }
 
     pub fn mark_snapshot_verify_running(&self) {
@@ -1822,6 +1970,31 @@ mod tests {
         assert_eq!(after_remove.degraded_summary, None);
         assert_eq!(after_remove.file_count, 0);
         assert_eq!(after_remove.symbol_count, 0);
+    }
+
+    #[test]
+    fn rejected_stale_mutations_counter_increments_on_fence_rejection() {
+        let dir_a = TempDir::new().unwrap();
+        write_file(dir_a.path(), "src/a.rs", "pub fn from_a() {}\n");
+        let shared = LiveIndex::load(dir_a.path()).unwrap();
+        let gen_a = shared.current_project_generation();
+
+        assert_eq!(shared.current_rejected_stale_mutations(), 0);
+
+        let dir_b = TempDir::new().unwrap();
+        write_file(dir_b.path(), "src/b.rs", "pub fn from_b() {}\n");
+        shared.reload(dir_b.path()).unwrap();
+
+        assert!(
+            shared.current_project_generation() > gen_a,
+            "reload must advance project generation before stale mutations are checked"
+        );
+        assert!(!shared.remove_file_at_generation("src/a.rs", gen_a));
+        assert_eq!(shared.current_rejected_stale_mutations(), 1);
+
+        let indexed = make_indexed_file_for_mutation("src/stale.rs");
+        assert!(!shared.update_file_at_generation("src/stale.rs", indexed, gen_a));
+        assert_eq!(shared.current_rejected_stale_mutations(), 2);
     }
 
     #[test]
