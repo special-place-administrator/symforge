@@ -745,7 +745,8 @@ SYMFORGE_COUPLING=1 remaining opt-in default-off through Phase 3.
 - Modify: `src/protocol/format.rs` — `health_report_compact_from_published_state` to surface the "local fallback" sentinel distinctly from `Off`; align idle-arm guard with `health_report_from_stats`.
 - Modify: `src/protocol/format/tests.rs` — add cross-handler conformance test.
 - Modify: `src/watcher/mod.rs` (minor) — add a `WatcherInfo::detached_local_fallback() -> Self` constructor or equivalent, OR add a field `is_local_fallback: bool`.
-- Forbidden: Daemon-internal code.
+- Modify: `src/protocol/tools.rs` (narrow; expanded 2026-05-14 after H.2 dispatch HALTed on counter-data-flow gap) — only the `health` and `health_compact` handler regions (search for `pub(crate) async fn health(` and `pub(crate) async fn health_compact(`). Read `self.index.current_rejected_stale_mutations()` and thread that `u64` into the format functions as a new explicit argument. Do NOT modify any other handler, helper, or test in tools.rs. Reason for expansion: `PublishedIndexState` is the publish-time snapshot data carrier; `current_rejected_stale_mutations()` is a runtime-accumulating counter that does not belong in published state. The cleanest data flow is handler-read → format-render via a new format-fn parameter, which keeps the counter value fresh at invocation time.
+- Forbidden: Daemon-internal code (`src/daemon.rs` and any `daemon/` submodule). All non-health code paths in `src/protocol/tools.rs`. `src/live_index/store.rs` (do NOT extend `PublishedIndexState`).
 
 **Spec:**
 
@@ -762,7 +763,7 @@ SYMFORGE_COUPLING=1 remaining opt-in default-off through Phase 3.
   - [ ] Manual repro from evaluator: in-process health + health_compact return matching watcher state.
   - [ ] `cargo clippy -- -D warnings` clean.
 - **evidence_required:** `cargo test --all-targets -- --test-threads=1`, plus an in-process repro showing `health` and `health_compact` agree on watcher state.
-- **stop_conditions:** STOP if the local-fallback marker addition cascades into > 5 file changes.
+- **stop_conditions:** STOP if changes cascade into > 5 production-source files (`src/**/*.rs` excluding `tests/` and `format/tests.rs`). The narrow `src/protocol/tools.rs` expansion (2026-05-14) is counted in the 5.
 
 **Steps:**
 
