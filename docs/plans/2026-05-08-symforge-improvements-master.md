@@ -1425,6 +1425,22 @@ EOF
 
 **Phase H C-1 close-out is the gate before Phase 2.3 resumes.** See plan-doc for per-task spec.
 
+**C-1 software-side closed 2026-05-14.** Commit chain on `main` (10 ahead of `origin/main` at C-1 close, +3 with G1.x close-out work = 13 total):
+
+- `9325fd1` H.1a — project-generation fence for `SharedIndexHandle` mutations
+- `4fa5a97` H.1b — cooperative cancellation token for watcher reload paths
+- `3d225be` H.1c — generation-fence migration + Layer 3 bounded-backoff retry
+- `8007a2d` H.1d — close sibling leak surfaces
+- `a2d81bc` H.1e — generation fence for `git_temporal` publication (extension)
+- `b0f202b` H.1f — pre-flight generation fence for `refresh_on_reconcile_tick` (extension)
+- `d75a37b` G1.8 — AAP-shaped fixture smoke (no destruction over 35 s idle, root A 1083 → 1083 delta 0, root B 1083 → 1083 delta 0)
+- `083584b` G1.2 docs split — invariant criterion + public-API regression criterion
+- `fc9f288` G1.2 public-API regression — two-witness: FAIL at `f804d21` (`stale root A watcher event destroyed root B index: initial=32, lowest=0, tolerance=2`), PASS on HEAD
+
+**Remaining Gate 1 close-out (user-side, manual):** ≥30 min dogfood session on a non-symforge project with ≥1 cross-root `index_folder`, plus manual Kimi repro (large repo, 5 min idle, file count unchanged).
+
+**Push deferred until full Phase H ships.**
+
 ---
 
 # Phase 3 — CoChange T3.3 Ranker Fusion (Group 2)
