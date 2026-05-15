@@ -2678,6 +2678,33 @@ fn render_search_text_output(
     }
 }
 
+fn resolve_text_search_enclosing_symbols(
+    index: &LiveIndex,
+    result: &mut Result<search::TextSearchResult, search::TextSearchError>,
+) {
+    let Ok(result) = result else {
+        return;
+    };
+
+    for file_matches in &mut result.files {
+        let Some(file) = index.get_file(&file_matches.path) else {
+            continue;
+        };
+
+        for line_match in &mut file_matches.matches {
+            let zero_based_line = line_match.line_number.saturating_sub(1) as u32;
+            line_match.enclosing_symbol =
+                crate::domain::find_enclosing_symbol(&file.symbols, zero_based_line)
+                    .and_then(|idx| file.symbols.get(idx as usize))
+                    .map(|symbol| search::EnclosingMatchSymbol {
+                        name: symbol.name.clone(),
+                        kind: symbol.kind.to_string(),
+                        line_range: symbol.line_range,
+                    });
+        }
+    }
+}
+
 fn validate_chunk_mode(input: &GetFileContentInput) -> Result<search::FileContentOptions, String> {
     let chunk_index = input
         .chunk_index
@@ -3890,7 +3917,9 @@ impl SymForgeServer {
             let mut result = {
                 let guard = self.index.read();
                 loading_guard!(guard);
-                search::search_structural(&guard, pattern, &options)
+                let mut result = search::search_structural(&guard, pattern, &options);
+                resolve_text_search_enclosing_symbols(&guard, &mut result);
+                result
             };
             apply_path_predicate_filter(
                 &mut result,
@@ -3981,6 +4010,7 @@ impl SymForgeServer {
                 is_regex,
                 &options,
             );
+            resolve_text_search_enclosing_symbols(&guard, &mut r);
             // Enrich with callers if follow_refs is set
             if params.0.follow_refs.unwrap_or(false)
                 && let Ok(ref mut text_result) = r
@@ -4019,6 +4049,7 @@ impl SymForgeServer {
                         true,
                         &options,
                     );
+                    resolve_text_search_enclosing_symbols(&guard, &mut r);
                     if params.0.follow_refs.unwrap_or(false)
                         && let Ok(ref mut text_result) = r
                     {
@@ -14328,6 +14359,60 @@ mod tests {
         assert!(
             result.contains("in fn handle_request"),
             "should show kind and name, got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_text_uses_innermost_enclosing_symbol_for_nested_items() {
+        let outer = make_symbol("outer", SymbolKind::Function, 0, 5);
+        let inner = make_symbol("inner", SymbolKind::Function, 2, 4);
+        let content = b"fn outer() {\n    let target_marker = \"outer\";\n    fn inner() {\n        let target_marker = \"inner\";\n    }\n}\n";
+        let (key, file) = make_file("src/nested.rs", content, vec![inner, outer]);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+
+        let result = server
+            .search_text(Parameters(super::SearchTextInput {
+                query: Some("target_marker".to_string()),
+                terms: None,
+                regex: None,
+                path_prefix: None,
+                language: None,
+                limit: None,
+                max_per_file: None,
+                include_generated: None,
+                include_tests: None,
+                glob: None,
+                exclude_glob: None,
+                context: None,
+                case_sensitive: None,
+                whole_word: None,
+                group_by: None,
+                follow_refs: None,
+                follow_refs_limit: None,
+                ranked: None,
+                estimate: None,
+                max_tokens: None,
+                structural: None,
+                include_vendor: None,
+                include_personal_tooling: None,
+            }))
+            .await;
+
+        assert!(
+            result.contains("in fn outer (lines 1-6):"),
+            "outer-item match should still resolve to outer: {result}"
+        );
+        assert!(
+            result.contains("    > 2:     let target_marker = \"outer\";"),
+            "outer-item match line missing: {result}"
+        );
+        assert!(
+            result.contains("in fn inner (lines 3-5):"),
+            "nested-item match should resolve to innermost symbol: {result}"
+        );
+        assert!(
+            result.contains("    > 4:         let target_marker = \"inner\";"),
+            "inner-item match line missing: {result}"
         );
     }
 
