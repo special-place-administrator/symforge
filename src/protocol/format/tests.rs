@@ -754,7 +754,7 @@ fn test_health_report_from_stats_matches_live_index_output() {
 
     let live_result = health_report_with_watcher(&index, &watcher);
     let captured_result =
-        health_report_from_stats("Ready", &index.health_stats_with_watcher(&watcher));
+        health_report_from_stats("Ready", &index.health_stats_with_watcher(&watcher), 0);
 
     assert_eq!(captured_result, live_result);
 }
@@ -776,7 +776,8 @@ fn test_health_report_from_published_state_matches_live_index_output() {
 
     let live_result = health_report_with_watcher(&index, &watcher);
     let shared = crate::live_index::SharedIndexHandle::shared(index);
-    let captured_result = health_report_from_published_state(&shared.published_state(), &watcher);
+    let captured_result =
+        health_report_from_published_state(&shared.published_state(), &watcher, 0);
 
     assert_eq!(captured_result, live_result);
 }
@@ -816,7 +817,7 @@ fn test_health_report_from_published_state_shows_failed_file_details() {
         ..WatcherInfo::default()
     };
 
-    let report = health_report_from_published_state(&published, &watcher);
+    let report = health_report_from_published_state(&published, &watcher, 0);
     assert!(
         report.contains("Failed files (2):"),
         "published-state health should preserve failed file detail: {report}"
@@ -866,7 +867,7 @@ fn test_health_report_from_published_state_shows_partial_parse_files() {
         ..WatcherInfo::default()
     };
 
-    let report = health_report_from_published_state(&published, &watcher);
+    let report = health_report_from_published_state(&published, &watcher, 0);
     assert!(
         report.contains("Partial parse files (2):"),
         "published-state health should preserve partial file detail: {report}"
@@ -910,7 +911,7 @@ fn test_health_report_lists_partial_parse_files() {
         tier_counts: (3, 0, 0),
         local_empty_reason: None,
     };
-    let report = health_report_from_stats("Ready", &stats);
+    let report = health_report_from_stats("Ready", &stats, 0);
     assert!(
         report.contains("Partial parse files (3):"),
         "should contain header"
@@ -955,7 +956,7 @@ fn test_health_report_caps_partial_list_at_10() {
         tier_counts: (50, 0, 0),
         local_empty_reason: None,
     };
-    let report = health_report_from_stats("Ready", &stats);
+    let report = health_report_from_stats("Ready", &stats, 0);
     assert!(
         report.contains("Partial parse files (50):"),
         "should show count of 50"
@@ -993,7 +994,7 @@ fn test_health_report_shows_tier_breakdown() {
         tier_counts: (8200, 1280, 20),
         local_empty_reason: None,
     };
-    let report = health_report_from_stats("Ready", &stats);
+    let report = health_report_from_stats("Ready", &stats, 0);
     assert!(
         report.contains("Admission: 9500 files discovered"),
         "should show total discovered count; got:\n{report}"
@@ -1038,7 +1039,7 @@ fn test_health_report_shows_reconciliation_and_overflow_stats() {
         local_empty_reason: None,
     };
 
-    let report = health_report_from_stats("Ready", &stats);
+    let report = health_report_from_stats("Ready", &stats, 0);
     assert!(report.contains("overflows: 2"), "got: {report}");
     assert!(report.contains("reconcile repairs: 5"), "got: {report}");
     assert!(report.contains("last overflow:"), "got: {report}");
@@ -1069,7 +1070,7 @@ fn test_health_report_shows_empty_index_banner_with_reason() {
             "no safe project root found — starting with empty index".to_string(),
         ),
     };
-    let report = health_report_from_stats("Ready", &stats);
+    let report = health_report_from_stats("Ready", &stats, 0);
     assert!(
         report.contains("Empty index"),
         "report should announce empty-index state; got:\n{report}"
@@ -1090,7 +1091,7 @@ fn test_health_report_omits_empty_banner_when_index_populated() {
     let file = make_file("src/lib.rs", b"fn foo() {}\n", vec![sym]);
     let index = make_index(vec![file]);
     let stats = index.health_stats();
-    let report = health_report_from_stats("Ready", &stats);
+    let report = health_report_from_stats("Ready", &stats, 0);
     assert!(
         !report.contains("Empty index"),
         "report must not show empty-index banner when files exist; got:\n{report}"
@@ -1119,7 +1120,7 @@ fn test_health_report_idle_watcher_shows_reconcile_repairs() {
         tier_counts: (100, 0, 0),
         local_empty_reason: None,
     };
-    let report = health_report_from_stats("Ready", &stats);
+    let report = health_report_from_stats("Ready", &stats, 0);
     assert!(
         report.contains("active (idle; debounce: 200ms"),
         "idle-but-reconciled arm did not fire; rendered: {report}"
@@ -1171,10 +1172,254 @@ fn test_health_compact_idle_watcher_shows_reconcile_repairs() {
         stale_files_found: 7,
         last_reconcile_at: Some(SystemTime::now()),
     };
-    let report = health_report_compact_from_published_state(&published, &watcher);
+    let report = health_report_compact_from_published_state(&published, &watcher, 0);
     assert!(
         report.contains("repairs: 7"),
         "compact idle watcher line must surface reconcile repairs even when no events fired; got:\n{report}"
+    );
+}
+
+mod health_report_consistency {
+    use super::*;
+    use crate::live_index::HealthStats;
+    use crate::live_index::store::{
+        IndexLoadSource, PublishedIndexState, PublishedIndexStatus, SnapshotVerifyState,
+    };
+    use crate::watcher::{WatcherInfo, WatcherState};
+    use std::time::{Duration, SystemTime};
+
+    fn published(load_duration: Duration) -> PublishedIndexState {
+        PublishedIndexState {
+            generation: 1,
+            status: PublishedIndexStatus::Ready,
+            degraded_summary: None,
+            file_count: 100,
+            parsed_count: 100,
+            partial_parse_count: 0,
+            failed_count: 0,
+            partial_parse_files: vec![],
+            failed_files: vec![],
+            symbol_count: 1000,
+            loaded_at_system: SystemTime::now(),
+            load_duration,
+            load_source: IndexLoadSource::FreshLoad,
+            snapshot_verify_state: SnapshotVerifyState::NotNeeded,
+            is_empty: false,
+            tier_counts: (100, 0, 0),
+            local_empty_reason: None,
+        }
+    }
+
+    fn stats_from(published: &PublishedIndexState, watcher: &WatcherInfo) -> HealthStats {
+        HealthStats {
+            file_count: published.file_count,
+            symbol_count: published.symbol_count,
+            parsed_count: published.parsed_count,
+            partial_parse_count: published.partial_parse_count,
+            failed_count: published.failed_count,
+            load_duration: published.load_duration,
+            watcher_state: watcher.state.clone(),
+            events_processed: watcher.events_processed,
+            last_event_at: watcher.last_event_at,
+            debounce_window_ms: watcher.debounce_window_ms,
+            overflow_count: watcher.overflow_count,
+            last_overflow_at: watcher.last_overflow_at,
+            stale_files_found: watcher.stale_files_found,
+            last_reconcile_at: watcher.last_reconcile_at,
+            partial_parse_files: published.partial_parse_files.clone(),
+            failed_files: published.failed_files.clone(),
+            tier_counts: published.tier_counts,
+            local_empty_reason: published.local_empty_reason.clone(),
+        }
+    }
+
+    fn watcher_line(report: &str) -> &str {
+        report
+            .lines()
+            .find(|line| line.starts_with("Watcher:"))
+            .expect("health report should include a Watcher line")
+    }
+
+    fn watcher_classification(report: &str) -> &'static str {
+        let line = watcher_line(report);
+        if line.contains("local-fallback") {
+            "local-fallback"
+        } else if line.contains("degraded") {
+            "degraded"
+        } else if line.contains("active/idle") || line.contains("active (idle; event-driven") {
+            "active-idle"
+        } else if line.contains("active (idle;")
+            || (line.contains("active (events: 0")
+                && line.contains("repairs:")
+                && !line.contains("repairs: 0"))
+        {
+            "active-idle-reconciled"
+        } else if line.contains("active (event-driven") || line.contains("active (events:") {
+            "active-event-driven"
+        } else if line.contains("off") {
+            "off"
+        } else {
+            panic!("unclassified watcher line: {line}");
+        }
+    }
+
+    fn load_duration_ms(report: &str) -> &str {
+        let loaded = report
+            .lines()
+            .find(|line| line.contains("Loaded"))
+            .expect("health report should include load duration");
+        let marker = if let Some(rest) = loaded.split_once("Loaded in: ") {
+            rest.1
+        } else {
+            loaded
+                .split_once("Loaded: ")
+                .expect("health report should include a recognized load label")
+                .1
+        };
+        marker
+            .split("ms")
+            .next()
+            .expect("load duration should end in ms")
+    }
+
+    #[test]
+    fn both_paths_agree_on_watcher_state_and_load_time() {
+        let now = SystemTime::now();
+        let cases = [
+            (
+                "active idle",
+                WatcherInfo {
+                    state: WatcherState::Active,
+                    events_processed: 0,
+                    last_event_at: None,
+                    debounce_window_ms: 200,
+                    ..WatcherInfo::default()
+                },
+                "active-idle",
+            ),
+            (
+                "active idle with repairs",
+                WatcherInfo {
+                    state: WatcherState::Active,
+                    events_processed: 0,
+                    last_event_at: None,
+                    debounce_window_ms: 200,
+                    stale_files_found: 7,
+                    last_reconcile_at: Some(now),
+                    ..WatcherInfo::default()
+                },
+                "active-idle-reconciled",
+            ),
+            (
+                "active with events",
+                WatcherInfo {
+                    state: WatcherState::Active,
+                    events_processed: 3,
+                    last_event_at: Some(now),
+                    debounce_window_ms: 200,
+                    ..WatcherInfo::default()
+                },
+                "active-event-driven",
+            ),
+            (
+                "degraded",
+                WatcherInfo {
+                    state: WatcherState::Degraded,
+                    events_processed: 2,
+                    overflow_count: 1,
+                    last_overflow_at: Some(now),
+                    debounce_window_ms: 200,
+                    ..WatcherInfo::default()
+                },
+                "degraded",
+            ),
+            (
+                "off",
+                WatcherInfo {
+                    state: WatcherState::Off,
+                    debounce_window_ms: 200,
+                    ..WatcherInfo::default()
+                },
+                "off",
+            ),
+            (
+                "local fallback",
+                WatcherInfo {
+                    state: WatcherState::Off,
+                    debounce_window_ms: 0,
+                    ..WatcherInfo::default()
+                },
+                "local-fallback",
+            ),
+        ];
+
+        for (name, watcher, expected_classification) in cases {
+            let published = published(Duration::from_millis(457));
+            let stats = stats_from(&published, &watcher);
+            let full = health_report_from_stats(published.status_label(), &stats, 0);
+            let compact = health_report_compact_from_published_state(&published, &watcher, 0);
+
+            assert_eq!(
+                watcher_classification(&full),
+                expected_classification,
+                "full health watcher classification mismatch for {name}; report:\n{full}"
+            );
+            assert_eq!(
+                watcher_classification(&compact),
+                expected_classification,
+                "compact health watcher classification mismatch for {name}; report:\n{compact}"
+            );
+            assert_eq!(
+                load_duration_ms(&full),
+                load_duration_ms(&compact),
+                "load duration drift for {name}; full:\n{full}\ncompact:\n{compact}"
+            );
+        }
+    }
+}
+
+#[test]
+fn health_renders_rejected_stale_mutations_counter() {
+    use crate::live_index::store::{
+        IndexLoadSource, PublishedIndexState, PublishedIndexStatus, SnapshotVerifyState,
+    };
+    use crate::watcher::{WatcherInfo, WatcherState};
+    use std::time::{Duration, SystemTime};
+
+    let published = PublishedIndexState {
+        generation: 1,
+        status: PublishedIndexStatus::Ready,
+        degraded_summary: None,
+        file_count: 3,
+        parsed_count: 3,
+        partial_parse_count: 0,
+        failed_count: 0,
+        partial_parse_files: vec![],
+        failed_files: vec![],
+        symbol_count: 9,
+        loaded_at_system: SystemTime::now(),
+        load_duration: Duration::from_millis(25),
+        load_source: IndexLoadSource::FreshLoad,
+        snapshot_verify_state: SnapshotVerifyState::NotNeeded,
+        is_empty: false,
+        tier_counts: (3, 0, 0),
+        local_empty_reason: None,
+    };
+    let watcher = WatcherInfo {
+        state: WatcherState::Off,
+        ..WatcherInfo::default()
+    };
+
+    let full = health_report_from_published_state(&published, &watcher, 7);
+    let compact = health_report_compact_from_published_state(&published, &watcher, 7);
+
+    assert!(
+        full.contains("Stale-mutation rejections: 7"),
+        "full health must render rejected stale mutation telemetry; got:\n{full}"
+    );
+    assert!(
+        compact.contains("Stale-mutation rejections: 7"),
+        "compact health must render rejected stale mutation telemetry; got:\n{compact}"
     );
 }
 

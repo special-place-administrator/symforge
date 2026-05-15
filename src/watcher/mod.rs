@@ -62,6 +62,26 @@ impl Default for WatcherInfo {
     }
 }
 
+impl WatcherInfo {
+    pub fn detached_local_fallback() -> Self {
+        WatcherInfo {
+            debounce_window_ms: 0,
+            ..WatcherInfo::default()
+        }
+    }
+
+    pub fn is_local_fallback(&self) -> bool {
+        matches!(self.state, WatcherState::Off)
+            && self.events_processed == 0
+            && self.last_event_at.is_none()
+            && self.debounce_window_ms == 0
+            && self.overflow_count == 0
+            && self.last_overflow_at.is_none()
+            && self.stale_files_found == 0
+            && self.last_reconcile_at.is_none()
+    }
+}
+
 /// Tracks event bursts to adaptively extend the debounce window.
 ///
 /// Debounce logic:

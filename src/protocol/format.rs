@@ -1035,7 +1035,7 @@ pub fn health_report(index: &LiveIndex) -> String {
         IndexState::CircuitBreakerTripped { .. } => "Degraded",
     };
     let stats = index.health_stats();
-    health_report_from_stats(status, &stats)
+    health_report_from_stats(status, &stats, 0)
 }
 
 /// Generate a health report for the index with live watcher state.
@@ -1056,12 +1056,13 @@ pub fn health_report_with_watcher(
         IndexState::CircuitBreakerTripped { .. } => "Degraded",
     };
     let stats = index.health_stats_with_watcher(watcher);
-    health_report_from_stats(status, &stats)
+    health_report_from_stats(status, &stats, 0)
 }
 
 pub fn health_report_from_published_state(
     published: &PublishedIndexState,
     watcher: &crate::watcher::WatcherInfo,
+    rejected_stale_mutations: u64,
 ) -> String {
     let mut stats = HealthStats {
         file_count: published.file_count,
@@ -1088,36 +1089,42 @@ pub fn health_report_from_published_state(
         stats.events_processed = 0;
         stats.last_event_at = None;
     }
-    health_report_from_stats(published.status_label(), &stats)
+    health_report_from_stats(published.status_label(), &stats, rejected_stale_mutations)
 }
 
 pub fn health_report_compact_from_published_state(
     published: &PublishedIndexState,
     watcher: &crate::watcher::WatcherInfo,
+    rejected_stale_mutations: u64,
 ) -> String {
     use crate::watcher::WatcherState;
 
-    let watcher_label = match &watcher.state {
-        WatcherState::Active
-            if watcher.events_processed == 0
-                && watcher.overflow_count == 0
-                && watcher.stale_files_found == 0 =>
-        {
-            "active/idle".to_string()
+    let watcher_label = if watcher.is_local_fallback() {
+        "local-fallback (no watcher attached)".to_string()
+    } else {
+        match &watcher.state {
+            WatcherState::Active
+                if watcher.events_processed == 0
+                    && watcher.last_event_at.is_none()
+                    && watcher.overflow_count == 0
+                    && watcher.stale_files_found == 0 =>
+            {
+                "active/idle".to_string()
+            }
+            WatcherState::Active => format!(
+                "active (events: {}, overflows: {}, repairs: {})",
+                watcher.events_processed, watcher.overflow_count, watcher.stale_files_found
+            ),
+            WatcherState::Degraded => format!(
+                "degraded (events: {}, overflows: {}, repairs: {})",
+                watcher.events_processed, watcher.overflow_count, watcher.stale_files_found
+            ),
+            WatcherState::Off => "off".to_string(),
         }
-        WatcherState::Active => format!(
-            "active (events: {}, overflows: {}, repairs: {})",
-            watcher.events_processed, watcher.overflow_count, watcher.stale_files_found
-        ),
-        WatcherState::Degraded => format!(
-            "degraded (events: {}, overflows: {}, repairs: {})",
-            watcher.events_processed, watcher.overflow_count, watcher.stale_files_found
-        ),
-        WatcherState::Off => "off".to_string(),
     };
     let (tier1, tier2, tier3) = published.tier_counts;
     let mut output = format!(
-        "Status: {} | Files: {} indexed ({} parsed, {} partial, {} failed) | Symbols: {} | Loaded: {}ms\nWatcher: {} | Admission tiers: {}/{}/{} (indexed/metadata/skipped)",
+        "Status: {} | Files: {} indexed ({} parsed, {} partial, {} failed) | Symbols: {} | Loaded: {}ms\nWatcher: {} | Stale-mutation rejections: {} | Admission tiers: {}/{}/{} (indexed/metadata/skipped)",
         published.status_label(),
         published.file_count,
         published.parsed_count,
@@ -1126,6 +1133,7 @@ pub fn health_report_compact_from_published_state(
         published.symbol_count,
         published.load_duration.as_millis(),
         watcher_label,
+        rejected_stale_mutations,
         tier1,
         tier2,
         tier3,
@@ -1141,7 +1149,11 @@ pub fn health_report_compact_from_published_state(
     output
 }
 
-pub fn health_report_from_stats(status: &str, stats: &HealthStats) -> String {
+pub fn health_report_from_stats(
+    status: &str,
+    stats: &HealthStats,
+    rejected_stale_mutations: u64,
+) -> String {
     use crate::watcher::WatcherState;
 
     let relative_age = |time: Option<std::time::SystemTime>| -> String {
@@ -1155,6 +1167,9 @@ pub fn health_report_from_stats(status: &str, stats: &HealthStats) -> String {
     };
 
     let watcher_line = match &stats.watcher_state {
+        WatcherState::Off if is_local_fallback_stats(stats) => {
+            "Watcher: local-fallback (no watcher attached; daemon proxy unavailable)".to_string()
+        }
         WatcherState::Active
             if stats.events_processed == 0
                 && stats.last_event_at.is_none()
@@ -1166,9 +1181,7 @@ pub fn health_report_from_stats(status: &str, stats: &HealthStats) -> String {
                 stats.debounce_window_ms
             )
         }
-        WatcherState::Active
-            if stats.events_processed == 0 && stats.last_event_at.is_none() =>
-        {
+        WatcherState::Active if stats.events_processed == 0 && stats.last_event_at.is_none() => {
             format!(
                 "Watcher: active (idle; debounce: {}ms, overflows: {}, reconcile repairs: {}, last reconcile: {})",
                 stats.debounce_window_ms,
@@ -1206,7 +1219,7 @@ pub fn health_report_from_stats(status: &str, stats: &HealthStats) -> String {
     );
 
     let mut output = format!(
-        "Status: {}\nFiles:  {} indexed ({} parsed, {} partial, {} failed)\nSymbols: {}\nLoaded in: {}ms\n{}{}",
+        "Status: {}\nFiles:  {} indexed ({} parsed, {} partial, {} failed)\nSymbols: {}\nLoaded in: {}ms\n{}\nStale-mutation rejections: {}{}",
         status,
         stats.file_count,
         stats.parsed_count,
@@ -1215,6 +1228,7 @@ pub fn health_report_from_stats(status: &str, stats: &HealthStats) -> String {
         stats.symbol_count,
         stats.load_duration.as_millis(),
         watcher_line,
+        rejected_stale_mutations,
         admission_section
     );
 
@@ -1267,6 +1281,17 @@ pub fn health_report_from_stats(status: &str, stats: &HealthStats) -> String {
     }
 
     output
+}
+
+fn is_local_fallback_stats(stats: &HealthStats) -> bool {
+    matches!(stats.watcher_state, crate::watcher::WatcherState::Off)
+        && stats.events_processed == 0
+        && stats.last_event_at.is_none()
+        && stats.debounce_window_ms == 0
+        && stats.overflow_count == 0
+        && stats.last_overflow_at.is_none()
+        && stats.stale_files_found == 0
+        && stats.last_reconcile_at.is_none()
 }
 
 /// List files changed since the given Unix timestamp.

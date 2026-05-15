@@ -66,8 +66,8 @@ pub struct SymForgeServer {
     /// shared daemon-owned project runtime instead of the local in-process index.
     /// Wrapped in `tokio::sync::RwLock` so reconnection can swap in a fresh client.
     pub(crate) daemon_client: Option<Arc<tokio::sync::RwLock<crate::daemon::DaemonSessionClient>>>,
-    /// Set to `true` after a failed reconnection attempt. Prevents repeated reconnect
-    /// storms — once degraded, all subsequent calls fall through to local execution.
+    /// Set to `true` after a failed reconnection attempt. While degraded,
+    /// calls make one success probe but avoid repeated reconnect attempts.
     pub(crate) daemon_degraded: Arc<AtomicBool>,
     /// Session context tracking: records what the LLM has fetched this session.
     pub(crate) session_context: Arc<session::SessionContext>,
@@ -233,10 +233,7 @@ impl SymForgeServer {
     {
         let daemon_lock = self.daemon_client.as_ref()?;
 
-        // If we've already failed to reconnect, skip the proxy entirely.
-        if self.daemon_degraded.load(Ordering::Relaxed) {
-            return None;
-        }
+        let was_degraded = self.daemon_degraded.load(Ordering::Relaxed);
 
         let value = match serde_json::to_value(params) {
             Ok(value) => value,
@@ -257,7 +254,10 @@ impl SymForgeServer {
             )
             .await
             {
-                Ok(Ok(result)) => return Some(result),
+                Ok(Ok(result)) => {
+                    self.daemon_degraded.store(false, Ordering::Relaxed);
+                    return Some(result);
+                }
                 Ok(Err(error)) => {
                     tracing::warn!(
                         tool = tool_name,
@@ -271,6 +271,15 @@ impl SymForgeServer {
                     );
                 }
             }
+        }
+
+        if was_degraded {
+            tracing::warn!(
+                tool = tool_name,
+                "daemon proxy probe failed while degraded, falling back to local execution"
+            );
+            self.ensure_local_index().await;
+            return None;
         }
 
         // Reconnect attempt — take a write lock so only one caller does this.
@@ -306,7 +315,10 @@ impl SymForgeServer {
             )
             .await
             {
-                Ok(Ok(result)) => Some(result),
+                Ok(Ok(result)) => {
+                    self.daemon_degraded.store(false, Ordering::Relaxed);
+                    Some(result)
+                }
                 Ok(Err(error)) => {
                     tracing::warn!(
                         tool = tool_name,
@@ -338,6 +350,11 @@ impl SymForgeServer {
     /// Uses `SharedIndexHandle::reload` to populate the empty in-process index
     /// from disk, enabling graceful degradation to local-only mode.
     async fn ensure_local_index(&self) {
+        {
+            let mut watcher = self.watcher_info.lock();
+            *watcher = WatcherInfo::detached_local_fallback();
+        }
+
         // If the index already has files, nothing to do.
         if self.index.published_state().file_count > 0 {
             return;
@@ -473,5 +490,85 @@ impl ServerHandler for SymForgeServer {
     {
         let uri = request.uri;
         async move { self.read_resource_uri(&uri).await }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::Router;
+    use axum::extract::State;
+    use axum::routing::post;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::net::TcpListener;
+
+    #[derive(Clone)]
+    struct FakeToolState {
+        calls: Arc<AtomicUsize>,
+        body: Arc<String>,
+    }
+
+    async fn fake_tool_handler(State(state): State<FakeToolState>) -> String {
+        state.calls.fetch_add(1, Ordering::Relaxed);
+        state.body.as_ref().clone()
+    }
+
+    async fn spawn_fake_tool_server(
+        body: &str,
+    ) -> (String, tokio::sync::oneshot::Sender<()>, Arc<AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind fake daemon tool server");
+        let base_url = format!("http://{}", listener.local_addr().expect("listener addr"));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let state = FakeToolState {
+            calls: Arc::clone(&calls),
+            body: Arc::new(body.to_string()),
+        };
+        let app = Router::new()
+            .route(
+                "/v1/sessions/{session_id}/tools/{tool_name}",
+                post(fake_tool_handler),
+            )
+            .with_state(state);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let shutdown = async move {
+                let _ = shutdown_rx.await;
+            };
+            let _ = axum::serve(listener, app)
+                .with_graceful_shutdown(shutdown)
+                .await;
+        });
+        (base_url, shutdown_tx, calls)
+    }
+
+    #[tokio::test]
+    async fn daemon_degraded_clears_on_next_success() {
+        let (base_url, shutdown, calls) = spawn_fake_tool_server("daemon-ok").await;
+        let daemon_client = crate::daemon::DaemonSessionClient::new_for_test(
+            base_url,
+            "project-id".to_string(),
+            "session-id".to_string(),
+            "project-name".to_string(),
+        );
+        let server = SymForgeServer::new_daemon_proxy(daemon_client);
+        server.daemon_degraded.store(true, Ordering::Relaxed);
+
+        let result = server
+            .proxy_tool_call("health", &serde_json::json!({}))
+            .await;
+        let _ = shutdown.send(());
+
+        assert_eq!(result.as_deref(), Some("daemon-ok"));
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            1,
+            "degraded proxy should still probe the daemon once"
+        );
+        assert!(
+            !server.daemon_degraded.load(Ordering::Relaxed),
+            "successful proxy call should clear daemon_degraded"
+        );
     }
 }

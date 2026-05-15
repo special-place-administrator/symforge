@@ -4393,7 +4393,12 @@ impl SymForgeServer {
         }
         let published = self.index.published_state();
         let watcher_guard = self.watcher_info.lock();
-        let mut result = format::health_report_from_published_state(&published, &watcher_guard);
+        let rejected_stale_mutations = self.index.current_rejected_stale_mutations();
+        let mut result = format::health_report_from_published_state(
+            &published,
+            &watcher_guard,
+            rejected_stale_mutations,
+        );
 
         // Append token savings section if the sidecar's TokenStats are available.
         if let Some(ref stats) = self.token_stats {
@@ -4489,8 +4494,12 @@ impl SymForgeServer {
 
         let published = self.index.published_state();
         let watcher_guard = self.watcher_info.lock();
-        let mut result =
-            format::health_report_compact_from_published_state(&published, &watcher_guard);
+        let rejected_stale_mutations = self.index.current_rejected_stale_mutations();
+        let mut result = format::health_report_compact_from_published_state(
+            &published,
+            &watcher_guard,
+            rejected_stale_mutations,
+        );
 
         if let Some(ref stats) = self.token_stats {
             let snap = stats.summary();
