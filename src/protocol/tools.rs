@@ -2047,13 +2047,16 @@ fn search_completeness_label(overflow_count: usize, suppressed_by_noise: usize) 
 }
 
 fn search_text_match_type_label(
+    structural: bool,
     is_regex: bool,
     terms: Option<&[String]>,
     auto_detected_regex: bool,
     auto_corrected_regex: bool,
     ranked: bool,
 ) -> String {
-    if auto_corrected_regex {
+    if structural {
+        "structural (ast-grep)".to_string()
+    } else if auto_corrected_regex {
         "heuristic (auto-corrected regex)".to_string()
     } else if is_regex && auto_detected_regex {
         "heuristic (auto-detected regex)".to_string()
@@ -2623,6 +2626,7 @@ fn apply_path_predicate_filter(
 fn render_search_text_output(
     server: &SymForgeServer,
     result: Result<search::TextSearchResult, search::TextSearchError>,
+    structural: bool,
     group_by: Option<&str>,
     terms: Option<&[String]>,
     options: &search::TextSearchOptions,
@@ -2635,6 +2639,7 @@ fn render_search_text_output(
             let guard = server.index.read();
             Some(search_format::format_search_envelope(
                 &search_text_match_type_label(
+                    structural,
                     is_regex,
                     terms,
                     auto_detected_regex,
@@ -3929,6 +3934,7 @@ impl SymForgeServer {
             let output = render_search_text_output(
                 self,
                 result,
+                true,
                 params.0.group_by.as_deref(),
                 params.0.terms.as_deref(),
                 &options,
@@ -4070,6 +4076,7 @@ impl SymForgeServer {
                     let mut output = render_search_text_output(
                         self,
                         retry_result,
+                        false,
                         params.0.group_by.as_deref(),
                         params.0.terms.as_deref(),
                         &options,
@@ -4098,6 +4105,7 @@ impl SymForgeServer {
         let output = render_search_text_output(
             self,
             result,
+            false,
             params.0.group_by.as_deref(),
             params.0.terms.as_deref(),
             &options,
@@ -9974,6 +9982,48 @@ mod tests {
         assert!(
             result.contains("Tip:"),
             "search_text should include next-step hint"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_text_structural_envelope_reports_ast_grep_match_type() {
+        let (key, file) = make_file("src/lib.rs", b"fn find_user() {}", vec![]);
+        let server = make_server(make_live_index_ready(vec![(key, file)]));
+        let result = server
+            .search_text(Parameters(super::SearchTextInput {
+                query: Some("fn $NAME($$$) { $$$ }".to_string()),
+                terms: None,
+                regex: None,
+                path_prefix: None,
+                language: None,
+                limit: None,
+                max_per_file: None,
+                include_generated: None,
+                include_tests: None,
+                glob: None,
+                exclude_glob: None,
+                context: None,
+                case_sensitive: None,
+                whole_word: None,
+                group_by: None,
+                follow_refs: None,
+                follow_refs_limit: None,
+                ranked: None,
+                estimate: None,
+                max_tokens: None,
+                structural: Some(true),
+                include_vendor: None,
+                include_personal_tooling: None,
+            }))
+            .await;
+
+        assert!(
+            result.contains("find_user"),
+            "should find matching function, got: {result}"
+        );
+        assert!(
+            result.contains("Match type: structural (ast-grep)"),
+            "structural search should expose ast-grep match type, got: {result}"
         );
     }
 
