@@ -16,6 +16,9 @@ fn split_path_qualified_target(target: &str) -> Option<(&str, &str)> {
 }
 
 /// Plan an edit operation: analyze impact and suggest tool sequence.
+///
+/// Rendered symbol line ranges are one-based public selector lines. Internally
+/// `SymbolRecord::line_range` remains zero-based.
 pub fn plan_edit(index: &LiveIndex, target: &str) -> String {
     let target = target.trim();
     let qualified_target = split_path_qualified_target(target);
@@ -56,9 +59,11 @@ pub fn plan_edit(index: &LiveIndex, target: &str) -> String {
             target
         ));
         for (path, name, kind, (start, end)) in &symbol_hits {
+            let public_start = start.saturating_add(1);
+            let public_end = end.saturating_add(1);
             lines.push(format!(
                 "  {:?} {} in {} (lines {}-{})",
-                kind, name, path, start, end
+                kind, name, path, public_start, public_end
             ));
         }
 
