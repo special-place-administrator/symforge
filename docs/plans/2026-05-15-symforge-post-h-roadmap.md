@@ -209,13 +209,15 @@ Wave 3 has 11 items (after dropping 4.3); sequenced as four parallel-pair batche
 
 Foundation wave. Ships before any other roadmap work. Targets two fresh-from-dogfood regressions in v7.8.0 + two pre-Phase-H carryover bugs that block AAP-side workspace embed test re-enablement.
 
-#### - [ ] **Unit 0.1: `find_references` method-call false-positive fix**
+#### - [x] **Unit 0.1: `find_references` method-call false-positive fix**
 
 **Goal:** Stop reporting method calls (`s.truncate()`, `digest.truncate()`) as references to free function `truncate`. Shared collector at `src/live_index/qualified_usages.rs::find_qualified_usages` needs method-call vs free-function discrimination.
 
 **Requirements:** R1, R4
 
 **Dependencies:** None
+
+**Landed:** `cfc261f` (`fix: disambiguate rust method-call references`)
 
 **Files:**
 - Modify: `src/live_index/qualified_usages.rs` (collector path)
@@ -246,13 +248,15 @@ Foundation wave. Ships before any other roadmap work. Targets two fresh-from-dog
 - WSL fallback acceptable for libgit2 Class C flake
 - Cross-check on AAP repo: re-run `find_references` on `crates/aap-agents/src/actors/orchestrator.rs::truncate` after install. Confirm only the 1 known call site (in `sanitize_task_description`) is returned. Raw rg cross-check: `rg -n --pcre2 "(?<!\.)\btruncate\s*\(" crates/aap-agents/`.
 
-#### - [ ] **Unit 0.2: `edit_plan` vs `find_references` symbol_line drift fix**
+#### - [x] **Unit 0.2: `edit_plan` vs `find_references` symbol_line drift fix**
 
 **Goal:** Reconcile `edit_plan`'s reported symbol line with `find_references`'s `symbol_line` selector. Concrete AAP repro: `edit_plan` says `sha256_hex` is at line 4493; `find_references` with `symbol_line=4493` fails; with `4494` it works.
 
 **Requirements:** R1, R4
 
 **Dependencies:** None
+
+**Landed:** `c8ba267` (`fix: align edit_plan symbol lines with selectors`). Released and installed as `symforge@7.8.1`.
 
 **Files:**
 - Investigate: `src/protocol/tools.rs` (the `edit_plan` and `find_references` handlers)
@@ -280,13 +284,15 @@ Foundation wave. Ships before any other roadmap work. Targets two fresh-from-dog
 - `cargo test --test edit_plan_symbol_line -- --test-threads=1` PASS
 - Cross-check on AAP repo: `edit_plan` line for `sha256_hex` should now match `find_references` selector-line working value.
 
-#### - [ ] **Unit 0.3: AAP audit fix — frecency contract violation in search ops (Phase 0.1)**
+#### - [x] **Unit 0.3: AAP audit fix — frecency contract violation in search ops (Phase 0.1)**
 
 **Goal:** Discovery handlers (`search_files`, `search_text`, `search_symbols`) must NOT open or create the frecency DB. Per ADR 0011 + frecency-bump-policy doctrine, only commitment tools bump frecency.
 
 **Requirements:** R1, R4
 
 **Dependencies:** None (pre-Phase-H carryover; zero dependency on Phase H work)
+
+**Landed:** `6ee9f6d` (`fix(frecency): avoid DB creation during search rerank`)
 
 **Files:**
 - Modify: `src/live_index/frecency.rs` (likely `FrecencyStore::open` short-circuit when `SYMFORGE_FRECENCY` is unset, OR equivalent gate at handler dispatch)
@@ -312,13 +318,15 @@ Foundation wave. Ships before any other roadmap work. Targets two fresh-from-dog
 - All three existing test sites in `tests/frecency_ranking.rs` PASS at default parallelism
 - AAP-side `crates/symforge/tests/frecency_ranking.rs` `#[ignore]` rationale comments can be removed (out-of-scope here; AAP repo handles its own un-ignore)
 
-#### - [ ] **Unit 0.4: AAP audit fix — sidecar Windows TCP port-pool exhaustion (Phase 0.2)**
+#### - [x] **Unit 0.4: AAP audit fix — sidecar Windows TCP port-pool exhaustion (Phase 0.2)**
 
 **Goal:** Sidecar test fixtures must not flake on Windows TIME_WAIT port collision under workspace-wide test parallelism (~10% failure rate today, error `10048`).
 
 **Requirements:** R1, R4
 
 **Dependencies:** None
+
+**Landed:** `e77b009` (`fix(sidecar): SO_REUSEADDR + deterministic shutdown for parallel test fan-out`). Already included in `v7.7.0`, `v7.8.0`, and `v7.8.1`.
 
 **Files:**
 - Modify: `tests/sidecar_integration.rs` (port-acquire helper, likely `setup_sidecar_test()` or equivalent)
@@ -344,9 +352,11 @@ Foundation wave. Ships before any other roadmap work. Targets two fresh-from-dog
 - `cargo test --test sidecar_integration -- --test-threads=N --include-ignored` PASS on Windows in N=10+ consecutive runs, zero EADDRINUSE failures
 - AAP-side `crates/symforge/tests/sidecar_integration.rs::test_prompt_context_endpoint_*` `#[ignore]` can be removed downstream
 
-#### - [ ] **Unit 0.5: Wave 0 software-side gate + release as v7.8.1**
+#### - [ ] **Unit 0.5: Wave 0 software-side gate + release**
 
 **Goal:** Wave 0 close-out. All four hotfix units committed, gate criteria green, push to origin/main, release-please picks up patch bump.
+
+**Status 2026-05-16:** Software-side gates are green and captured in `docs/notes/2026-05-16-w0-close-out-evidence.md`. Final push/release remains pending. The original `v7.8.1` target is stale because `v7.8.1` was already published from Unit 0.2; release-please should determine the next patch version after Unit 0.3 lands on `main`.
 
 **Requirements:** R6
 
