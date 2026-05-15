@@ -19,7 +19,7 @@
 //!
 //! Spec: `wiki/concepts/SymForge Frecency-Weighted File Ranking.md`.
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -88,6 +88,22 @@ impl FrecencyStore {
         };
         store.migrate()?;
         Ok(store)
+    }
+
+    /// Open an existing file-backed store for read-only discovery use.
+    ///
+    /// Unlike [`Self::open`], this never creates parent directories, a database
+    /// file, or schema. Search tools can use it to consume frecency scores
+    /// without leaving a frecency footprint in discovery-only sessions.
+    pub fn open_existing_readonly(db_path: &Path) -> rusqlite::Result<Option<Self>> {
+        if !db_path.exists() {
+            return Ok(None);
+        }
+        let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
+        Ok(Some(Self {
+            conn: Mutex::new(conn),
+        }))
     }
 
     /// Open an in-memory store. For tests and ephemeral use.

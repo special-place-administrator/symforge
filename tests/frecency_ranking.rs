@@ -390,6 +390,27 @@ async fn search_files_does_not_bump() {
 }
 
 #[tokio::test]
+async fn search_files_frecency_rank_does_not_create_db_when_empty() {
+    let fx = Fixture::new(&[
+        ("src/alpha.rs", "pub fn alpha() {}\n"),
+        ("src/beta.rs", "pub fn beta() {}\n"),
+    ]);
+    let _flag = FlagGuard::on();
+
+    let _ = call(
+        &fx.server,
+        "search_files",
+        json!({"query": "alpha", "limit": 10, "rank_by": "frecency"}),
+    )
+    .await;
+
+    assert!(
+        !fx.db_path().exists(),
+        "search_files rank_by=frecency must not create a frecency database"
+    );
+}
+
+#[tokio::test]
 async fn search_text_does_not_bump() {
     let fx = Fixture::new(&[("src/lib.rs", "pub fn find_user() {}\n")]);
     let _flag = FlagGuard::on();

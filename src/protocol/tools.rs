@@ -4477,15 +4477,18 @@ impl SymForgeServer {
         };
         // Optional frecency-fusion rerank. Activated only when the caller asked
         // for `rank_by="frecency"` AND the `SYMFORGE_FRECENCY=1` flag is on.
-        // Any failure to open the on-disk store silently falls back to the
-        // tier-based ordering — the feature must never break `search_files`.
+        // Missing or unreadable stores silently fall back to the tier-based
+        // ordering — discovery must never create a frecency footprint or break
+        // `search_files`.
         if params.0.rank_by.as_deref() == Some("frecency")
             && std::env::var("SYMFORGE_FRECENCY").as_deref() == Ok("1")
             && let SearchFilesView::Found { hits, .. } = &mut view
             && let Some(repo_root) = self.capture_repo_root()
         {
             let db_path = repo_root.join(crate::paths::SYMFORGE_FRECENCY_DB_PATH);
-            if let Ok(store) = crate::live_index::frecency::FrecencyStore::open(&db_path) {
+            if let Ok(Some(store)) =
+                crate::live_index::frecency::FrecencyStore::open_existing_readonly(&db_path)
+            {
                 let hit_paths: Vec<std::path::PathBuf> = hits
                     .iter()
                     .map(|h| std::path::PathBuf::from(&h.path))
