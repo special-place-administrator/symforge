@@ -397,6 +397,8 @@ fn outline_text(
             Some(list) => list.iter().any(|s| s.eq_ignore_ascii_case(name)),
         }
     };
+    let include_consumers = include_section("consumers");
+    let include_references = include_section("references");
 
     // Build symbol outline lines.
     let mut body_lines: Vec<String> = Vec::new();
@@ -425,8 +427,15 @@ fn outline_text(
         }
     }
 
+    let mut budget_omissions = false;
     if include_section("outline") {
-        for sym in &file.symbols {
+        let symbol_cap = params
+            .max_tokens
+            .map(|tokens| ((tokens as usize).saturating_div(12)).max(25).min(500));
+        let symbols_to_render = symbol_cap
+            .map(|cap| cap.min(file.symbols.len()))
+            .unwrap_or(file.symbols.len());
+        for sym in file.symbols.iter().take(symbols_to_render) {
             let indent = "  ".repeat(sym.depth as usize);
             let kind_str = sym.kind.to_string();
             // Strip redundant kind prefix from name (e.g., impl blocks named "impl Foo").
@@ -442,6 +451,13 @@ fn outline_text(
                 display_name,
                 sym.line_range.0 + 1,
                 sym.line_range.1 + 1,
+            ));
+        }
+        if symbols_to_render < file.symbols.len() {
+            budget_omissions = true;
+            body_lines.push(format!(
+                "  ...omitted {} symbols due to budget; pass a larger max_tokens or request get_file_content(start_line,end_line) for exact text",
+                file.symbols.len() - symbols_to_render
             ));
         }
     }
@@ -476,8 +492,12 @@ fn outline_text(
 
     // Build "Used by" section.
     // Group dependents by consuming file, count references per consumer.
-    let attributed_dependents = guard.find_dependents_for_file(&params.path);
-    if include_section("consumers") {
+    let attributed_dependents = if include_consumers || include_references {
+        guard.find_dependents_for_file(&params.path)
+    } else {
+        Vec::new()
+    };
+    if include_consumers {
         let mut consumers: std::collections::HashMap<&str, usize> =
             std::collections::HashMap::new();
         for (file_path, _) in &attributed_dependents {
@@ -499,7 +519,7 @@ fn outline_text(
 
     // Build "Key references" section.
     // Rank symbols by caller count descending, take top 5, show up to 3 callers each.
-    if include_section("references") {
+    if include_references {
         let mut symbol_callers: Vec<(String, Vec<(String, u32)>)> = Vec::new();
 
         for sym in &file.symbols {
@@ -590,7 +610,7 @@ fn outline_text(
         None => 0,                                         // tool path: unlimited (0 = no cap)
     };
     let (body_text, remaining) = build_with_budget(&body_lines, max_bytes);
-    let completeness = if remaining > 0 {
+    let completeness = if remaining > 0 || budget_omissions {
         "budget-limited"
     } else {
         "full"

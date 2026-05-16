@@ -1399,13 +1399,27 @@ impl LiveIndex {
 
     /// Resolve a path hint to one exact indexed path, or a bounded ambiguous result.
     pub fn capture_search_files_resolve_view(&self, hint: &str) -> SearchFilesResolveView {
+        self.capture_search_files_resolve_view_with_noise(hint, true, true)
+    }
+
+    /// Resolve a path hint while optionally suppressing high-noise path classes.
+    pub fn capture_search_files_resolve_view_with_noise(
+        &self,
+        hint: &str,
+        include_vendor: bool,
+        include_personal_tooling: bool,
+    ) -> SearchFilesResolveView {
         const RESOLVE_PATH_AMBIGUOUS_CAP: usize = 10;
         let normalized_hint = normalize_path_query(hint);
         if normalized_hint.is_empty() {
             return SearchFilesResolveView::EmptyHint;
         }
+        let path_allowed = |path: &str| -> bool {
+            (include_vendor || !is_vendor_path(path))
+                && (include_personal_tooling || !is_personal_tooling_path(path))
+        };
 
-        if self.get_file(&normalized_hint).is_some() {
+        if self.get_file(&normalized_hint).is_some() && path_allowed(&normalized_hint) {
             return SearchFilesResolveView::Resolved {
                 path: normalized_hint,
             };
@@ -1426,6 +1440,7 @@ impl LiveIndex {
         let mut candidates: Vec<String> = self
             .find_files_by_basename(basename)
             .into_iter()
+            .filter(|path| path_allowed(path))
             .map(|path| path.to_string())
             .collect();
 
@@ -1433,6 +1448,7 @@ impl LiveIndex {
             candidates = self
                 .all_files()
                 .map(|(path, _)| path.as_str())
+                .filter(|path| path_allowed(path))
                 .filter(|path| {
                     let path_lower = path.to_ascii_lowercase();
                     path_lower.ends_with(&normalized_hint_lower)
@@ -1491,11 +1507,40 @@ impl LiveIndex {
         current_file: Option<&str>,
         coupling_context: Option<(&str, &SearchFilesCouplingNeighbors)>,
     ) -> SearchFilesView {
+        self.capture_search_files_view_with_noise(
+            query,
+            limit,
+            current_file,
+            coupling_context,
+            true,
+            true,
+        )
+    }
+
+    /// Search for indexed files, optionally suppressing high-noise path classes.
+    ///
+    /// `capture_search_files_view` preserves the historical in-process behavior
+    /// for tests and internal callers. Public tool entry points should call this
+    /// variant so advertised vendor/personal-tooling defaults apply before
+    /// ranking and total-match counts are computed.
+    pub fn capture_search_files_view_with_noise(
+        &self,
+        query: &str,
+        limit: usize,
+        current_file: Option<&str>,
+        coupling_context: Option<(&str, &SearchFilesCouplingNeighbors)>,
+        include_vendor: bool,
+        include_personal_tooling: bool,
+    ) -> SearchFilesView {
         let limit = limit.clamp(1, 50);
         let normalized_query = normalize_path_query(query);
         if normalized_query.is_empty() {
             return SearchFilesView::EmptyQuery;
         }
+        let path_allowed = |path: &str| -> bool {
+            (include_vendor || !is_vendor_path(path))
+                && (include_personal_tooling || !is_personal_tooling_path(path))
+        };
 
         // Detect glob patterns and handle them with globset.
         let is_glob = normalized_query.contains('*')
@@ -1510,6 +1555,7 @@ impl LiveIndex {
             let mut glob_hits: Vec<String> = self
                 .all_files()
                 .map(|(path, _)| path.as_str())
+                .filter(|path| path_allowed(path))
                 .filter(|path| matcher.is_match(path))
                 .map(|path| path.to_string())
                 .collect();
@@ -1557,6 +1603,7 @@ impl LiveIndex {
         let mut strong_hits: Vec<String> = self
             .all_files()
             .map(|(path, _)| path.as_str())
+            .filter(|path| path_allowed(path))
             .filter(|path| {
                 let path_lower = path.to_ascii_lowercase();
                 path_lower == normalized_query_lower
@@ -1570,6 +1617,7 @@ impl LiveIndex {
         } else {
             self.find_files_by_basename(basename_token)
                 .into_iter()
+                .filter(|path| path_allowed(path))
                 .map(|path| path.to_string())
                 .collect()
         };
@@ -1610,6 +1658,7 @@ impl LiveIndex {
             let basename_token_lower = basename_token.to_ascii_lowercase();
             self.all_files()
                 .map(|(path, _)| path.as_str())
+                .filter(|path| path_allowed(path))
                 .filter(|path| {
                     let file_basename = std::path::Path::new(path)
                         .file_stem()
@@ -1635,6 +1684,7 @@ impl LiveIndex {
         let loose_hits: Vec<String> = self
             .all_files()
             .map(|(path, _)| path.as_str())
+            .filter(|path| path_allowed(path))
             .filter(|path| !strong_or_basename_or_prefix_set.contains(*path))
             .filter(|path| {
                 let path_lower = path.to_ascii_lowercase();
@@ -2843,6 +2893,52 @@ impl LiveIndex {
         }
     }
 
+    fn exported_symbol_names(
+        file: &IndexedFile,
+        target_symbol_names: &HashSet<&str>,
+    ) -> HashSet<String> {
+        match file.language {
+            LanguageId::Rust => {
+                let content = String::from_utf8_lossy(&file.content);
+                let mut exported = HashSet::new();
+                for keyword in [
+                    "fn", "struct", "enum", "trait", "type", "const", "static", "mod",
+                ] {
+                    for prefix in ["pub ", "pub(crate) "] {
+                        let pattern = format!("{prefix}{keyword} ");
+                        let mut start = 0usize;
+                        while let Some(pos) = content[start..].find(&pattern) {
+                            let ident_start = start + pos + pattern.len();
+                            let ident_end = content[ident_start..]
+                                .find(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+                                .map(|offset| ident_start + offset)
+                                .unwrap_or(content.len());
+                            if ident_end > ident_start {
+                                let name = &content[ident_start..ident_end];
+                                if target_symbol_names.contains(name) {
+                                    exported.insert(name.to_string());
+                                }
+                            }
+                            start = ident_start.saturating_add(1);
+                        }
+                    }
+                }
+                exported
+            }
+            LanguageId::JavaScript | LanguageId::TypeScript => target_symbol_names
+                .iter()
+                .copied()
+                .filter(|name| Self::has_pub_symbol(file, name))
+                .map(str::to_string)
+                .collect(),
+            _ => target_symbol_names
+                .iter()
+                .copied()
+                .map(str::to_string)
+                .collect(),
+        }
+    }
+
     /// Find all files that import (depend on) `target_path`.
     ///
     /// Uses two strategies:
@@ -2876,6 +2972,8 @@ impl LiveIndex {
             .map(|symbol| symbol.name.as_str())
             .filter(|name| !name.is_empty())
             .collect();
+        let exported_target_symbol_names =
+            Self::exported_symbol_names(target_file, &target_symbol_names);
 
         let mut results = Vec::new();
 
@@ -2903,7 +3001,7 @@ impl LiveIndex {
                     .filter(|reference| {
                         reference.kind != ReferenceKind::Import
                             && target_symbol_names.contains(reference.name.as_str())
-                            && Self::has_pub_symbol(target_file, &reference.name)
+                            && exported_target_symbol_names.contains(reference.name.as_str())
                             && (reference.kind == ReferenceKind::TypeUsage
                                 || (reference.kind == ReferenceKind::Call
                                     && (reference.qualified_name.as_deref().is_some_and(|qn| {
@@ -2961,7 +3059,8 @@ impl LiveIndex {
                                 // Check: the ref's simple name is a public symbol in target,
                                 // AND the qualified_name suffix-matches the module path.
                                 target_symbol_names.contains(reference.name.as_str())
-                                    && Self::has_pub_symbol(target_file, &reference.name)
+                                    && exported_target_symbol_names
+                                        .contains(reference.name.as_str())
                                     && matches_exact_symbol_qualified_name(
                                         &target_language,
                                         qn,
@@ -3050,7 +3149,8 @@ impl LiveIndex {
                                 .filter(|reference| {
                                     reference.kind != ReferenceKind::Import
                                         && target_symbol_names.contains(reference.name.as_str())
-                                        && Self::has_pub_symbol(target_file, &reference.name)
+                                        && exported_target_symbol_names
+                                            .contains(reference.name.as_str())
                                 })
                                 .collect();
                             if !symbol_refs.is_empty() {

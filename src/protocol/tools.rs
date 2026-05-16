@@ -362,6 +362,14 @@ pub struct SearchSymbolsInput {
     /// When true, include test files in the result set.
     #[serde(default, deserialize_with = "lenient_bool")]
     pub include_tests: Option<bool>,
+    /// When true, include vendored/third-party paths (vendor/, node_modules/, third_party/).
+    /// Default false -- vendor noise dominates symbol lookup in repos with embedded grammars.
+    #[serde(default, deserialize_with = "lenient_bool")]
+    pub include_vendor: Option<bool>,
+    /// When true, include personal tooling paths (.claude/gsd-*).
+    /// Default false -- personal sidecars rarely answer codebase symbol questions.
+    #[serde(default, deserialize_with = "lenient_bool")]
+    pub include_personal_tooling: Option<bool>,
     /// When true, return an approximate token cost estimate instead of actual content.
     #[serde(default, deserialize_with = "lenient_bool")]
     pub estimate: Option<bool>,
@@ -484,6 +492,14 @@ pub struct SearchFilesInput {
     /// Anchor file used as the co-change pivot when `rank_by="path+cochange"`.
     #[serde(default)]
     pub anchor_path: Option<String>,
+    /// When true, include vendored/third-party paths (vendor/, node_modules/, third_party/).
+    /// Default false -- vendor noise dominates path lookup in repos with embedded grammars.
+    #[serde(default, deserialize_with = "lenient_bool")]
+    pub include_vendor: Option<bool>,
+    /// When true, include personal tooling paths (.claude/gsd-*).
+    /// Default false -- personal sidecars rarely answer codebase path questions.
+    #[serde(default, deserialize_with = "lenient_bool")]
+    pub include_personal_tooling: Option<bool>,
 }
 
 /// Input for `index_folder`.
@@ -1190,9 +1206,10 @@ fn search_symbols_options_from_input(
         noise_policy: search::NoisePolicy {
             include_generated: input.include_generated.unwrap_or(false),
             include_tests: input.include_tests.unwrap_or(false),
-            include_vendor: true,
+            include_vendor: input.include_vendor.unwrap_or(false),
             include_ignored: false,
         },
+        include_personal_tooling: input.include_personal_tooling.unwrap_or(false),
         language_filter: parse_language_filter(input.language.as_deref())?,
     })
 }
@@ -1204,10 +1221,9 @@ fn search_text_options_from_input(
     let is_ranked = input.ranked.unwrap_or(false);
 
     // When regex mode is active the user is doing a targeted, precise search
-    // and expects completeness over noise reduction.  Default to including
-    // tests and vendor files so we don't silently omit results that grep
-    // would find.  The user can still explicitly opt out via the normal
-    // include_tests / include_generated flags.
+    // and expects completeness over test noise by default. Vendor remains
+    // opt-in because embedded grammars and dependencies can dominate result
+    // caps before project code is seen.
     let include_tests = input.include_tests.unwrap_or(is_regex);
     let include_generated = input.include_generated.unwrap_or(false);
 
@@ -1222,9 +1238,10 @@ fn search_text_options_from_input(
         noise_policy: search::NoisePolicy {
             include_generated,
             include_tests,
-            include_vendor: true,
+            include_vendor: input.include_vendor.unwrap_or(false),
             include_ignored: false,
         },
+        include_personal_tooling: input.include_personal_tooling.unwrap_or(false),
         language_filter: parse_language_filter(input.language.as_deref())?,
         total_limit,
         max_per_file: input.max_per_file.unwrap_or(5) as usize,
@@ -1948,6 +1965,7 @@ fn search_scope_summary(
     path_scope: &search::PathScope,
     language_filter: Option<&LanguageId>,
     noise_policy: &search::NoisePolicy,
+    include_personal_tooling: bool,
     glob: Option<&str>,
     exclude_glob: Option<&str>,
     ranked: bool,
@@ -1970,6 +1988,16 @@ fn search_scope_summary(
         "generated included".to_string()
     } else {
         "generated filtered".to_string()
+    });
+    parts.push(if noise_policy.include_vendor {
+        "vendor included".to_string()
+    } else {
+        "vendor filtered".to_string()
+    });
+    parts.push(if include_personal_tooling {
+        "personal tooling included".to_string()
+    } else {
+        "personal tooling filtered".to_string()
     });
     if let Some(glob) = glob {
         parts.push(format!("glob `{glob}`"));
@@ -2153,6 +2181,57 @@ fn append_changed_with_deprecation_warning(mut result: String) -> String {
     result.push_str("\n\n");
     result.push_str(CHANGED_WITH_DEPRECATION_WARNING);
     result
+}
+
+fn search_files_total_matches(view: &SearchFilesView) -> usize {
+    match view {
+        SearchFilesView::Found { total_matches, .. } => *total_matches,
+        _ => 0,
+    }
+}
+
+fn search_symbols_total_matches(result: &search::SymbolSearchResult) -> usize {
+    result.hits.len().saturating_add(result.overflow_count)
+}
+
+fn search_files_resolve_candidate_count(view: &SearchFilesResolveView) -> usize {
+    match view {
+        SearchFilesResolveView::Resolved { .. } => 1,
+        SearchFilesResolveView::Ambiguous {
+            matches,
+            overflow_count,
+            ..
+        } => matches.len().saturating_add(*overflow_count),
+        _ => 0,
+    }
+}
+
+fn search_files_hidden_noise_note(
+    hidden_count: usize,
+    include_vendor: bool,
+    include_personal_tooling: bool,
+) -> Option<String> {
+    if hidden_count == 0 || (include_vendor && include_personal_tooling) {
+        return None;
+    }
+
+    let mut flags = Vec::new();
+    if !include_vendor {
+        flags.push("include_vendor=true");
+    }
+    if !include_personal_tooling {
+        flags.push("include_personal_tooling=true");
+    }
+
+    let noun = if hidden_count == 1 {
+        "path candidate"
+    } else {
+        "path candidates"
+    };
+    Some(format!(
+        "{hidden_count} vendor/personal-tooling {noun} hidden by default; pass {} to include suppressed noise.",
+        flags.join(" or ")
+    ))
 }
 
 fn search_files_resolve_match_type_label(view: &SearchFilesResolveView) -> &'static str {
@@ -2707,6 +2786,7 @@ fn render_search_text_output(
                     &options.path_scope,
                     options.language_filter.as_ref(),
                     &options.noise_policy,
+                    options.include_personal_tooling,
                     options.glob.as_deref(),
                     options.exclude_glob.as_deref(),
                     options.ranked,
@@ -3344,29 +3424,51 @@ impl SymForgeServer {
                 return format::not_found_file(&params.0.path);
             }
         }
-        let raw_chars = {
+        const LARGE_FILE_CONTEXT_DEFAULT_TOKENS: u64 = 2000;
+        let (raw_chars, symbol_count, reference_count) = {
             let guard = self.index.read();
             loading_guard!(guard);
-            let raw = guard
+            let stats = guard
                 .capture_shared_file(&params.0.path)
-                .map(|f| f.content.len())
-                .unwrap_or(0);
+                .map(|f| (f.content.len(), f.symbols.len(), f.references.len()))
+                .unwrap_or((0, 0, 0));
             drop(guard);
-            raw
+            stats
         };
+        let large_default_summary = params.0.sections.is_none()
+            && (raw_chars > 200_000 || symbol_count > 250 || reference_count > 800);
 
         let state = sidecar_state_for_server(self);
         let include_tests = include_tests_from_sections(params.0.sections.as_ref());
-        let sections = visible_sections(&params.0.sections);
+        let sections = if large_default_summary {
+            Some(vec!["outline".to_string(), "imports".to_string()])
+        } else {
+            visible_sections(&params.0.sections)
+        };
+        let context_max_tokens = params
+            .0
+            .max_tokens
+            .or_else(|| large_default_summary.then_some(LARGE_FILE_CONTEXT_DEFAULT_TOKENS));
         let outline = OutlineParams {
             path: params.0.path.clone(),
-            max_tokens: params.0.max_tokens,
+            max_tokens: context_max_tokens,
             sections: sections.clone(),
         };
         match outline_tool_text(&state, &outline) {
             Ok(result) => {
-                let result =
+                let mut result =
                     format::collapse_large_test_modules(result, include_tests, sections.as_deref());
+                if large_default_summary {
+                    let note = format!(
+                        "Large file summary: default call included outline/imports only for {} symbols and {} references. Omitted consumers, references, and git activity; request sections=[\"consumers\"], sections=[\"references\"], sections=[\"git\"], or a larger max_tokens for more detail.",
+                        symbol_count, reference_count
+                    );
+                    result = if let Some((envelope, rest)) = result.split_once("\n\n") {
+                        format!("{envelope}\n\n{note}\n\n{rest}")
+                    } else {
+                        format!("{note}\n\n{result}")
+                    };
+                }
                 let hint = format::compact_next_step_hint(&[
                     "get_symbol (body)",
                     "find_references (callers/imports)",
@@ -3378,7 +3480,7 @@ impl SymForgeServer {
                 let footer = format::compact_savings_footer(body.len(), raw_chars);
                 self.record_read_savings((saved / 4) as u64);
                 let output =
-                    format::enforce_token_budget(format!("{body}{footer}"), params.0.max_tokens);
+                    format::enforce_token_budget(format!("{body}{footer}"), context_max_tokens);
                 self.session_context
                     .record_listed_file(&params.0.path, (output.len() / 4) as u32);
                 // Frecency bump — commitment tool. Reached only on the happy
@@ -3846,6 +3948,21 @@ impl SymForgeServer {
                 &options,
             )
         };
+        let hidden_noise_count = if options.noise_policy.include_vendor {
+            0
+        } else {
+            let mut unfiltered_options = options.clone();
+            unfiltered_options.noise_policy.include_vendor = true;
+            let guard = self.index.read();
+            let unfiltered = search::search_symbols_with_options(
+                &guard,
+                query_str,
+                params.0.kind.as_deref(),
+                &unfiltered_options,
+            );
+            search_symbols_total_matches(&unfiltered)
+                .saturating_sub(search_symbols_total_matches(&result))
+        };
         // In browse mode, sort by relevance: public symbols first, then kind priority,
         // then penalize very short/common names, then alphabetical tiebreaker.
         if is_browse {
@@ -3895,11 +4012,12 @@ impl SymForgeServer {
                     &guard,
                     result.hits.iter().map(|hit| hit.path.as_str()),
                 ),
-                &search_completeness_label(result.overflow_count, 0),
+                &search_completeness_label(result.overflow_count, hidden_noise_count),
                 &search_scope_summary(
                     &options.path_scope,
                     options.language_filter.as_ref(),
                     &options.noise_policy,
+                    options.include_personal_tooling,
                     None,
                     None,
                     false,
@@ -4319,6 +4437,8 @@ impl SymForgeServer {
         if let Some(result) = self.proxy_tool_call("search_files", &params.0).await {
             return result;
         }
+        let include_vendor = params.0.include_vendor.unwrap_or(false);
+        let include_personal_tooling = params.0.include_personal_tooling.unwrap_or(false);
         if params.0.estimate == Some(true) {
             let limit = params.0.limit.unwrap_or(20) as usize;
             let est = limit * 10 + 30;
@@ -4336,7 +4456,19 @@ impl SymForgeServer {
             let view = {
                 let guard = self.index.read();
                 loading_guard!(guard);
-                guard.capture_search_files_resolve_view(&params.0.query)
+                guard.capture_search_files_resolve_view_with_noise(
+                    &params.0.query,
+                    include_vendor,
+                    include_personal_tooling,
+                )
+            };
+            let hidden_noise_count = if include_vendor && include_personal_tooling {
+                0
+            } else {
+                let guard = self.index.read();
+                let unfiltered = guard.capture_search_files_resolve_view(&params.0.query);
+                search_files_resolve_candidate_count(&unfiltered)
+                    .saturating_sub(search_files_resolve_candidate_count(&view))
             };
             let envelope = match &view {
                 SearchFilesResolveView::Resolved { path } => {
@@ -4375,6 +4507,15 @@ impl SymForgeServer {
                 Some(envelope) => format!("{envelope}\n\n{output}"),
                 None => output,
             };
+            let mut result = result;
+            if let Some(note) = search_files_hidden_noise_note(
+                hidden_noise_count,
+                include_vendor,
+                include_personal_tooling,
+            ) {
+                result.push_str("\n\n");
+                result.push_str(&note);
+            }
             let result = format::enforce_token_budget(result, params.0.max_tokens);
             self.session_context.record_summary_output(
                 "search_files",
@@ -4524,27 +4665,76 @@ impl SymForgeServer {
             return "search_files requires a non-empty `query` (or use `changed_with` to find co-changing files).".to_string();
         }
 
+        let rank_by_path_cochange = params.0.rank_by.as_deref() == Some("path+cochange");
+        let mut cochange_note: Option<String> = None;
+        let mut hidden_noise_count = 0usize;
         let mut view = {
             let guard = self.index.read();
             loading_guard!(guard);
-            let coupling_neighbors = if params.0.rank_by.as_deref() == Some("path+cochange")
+            let coupling_neighbors = if rank_by_path_cochange
                 && let Some(anchor_path) = params.0.anchor_path.as_deref()
             {
                 search_files_coupling_neighbors(&guard, anchor_path)
             } else {
                 None
             };
+            if rank_by_path_cochange {
+                cochange_note = match (params.0.anchor_path.as_deref(), coupling_neighbors.as_ref())
+                {
+                    (None, _) => Some(
+                        "Co-change ranking inactive: `rank_by=\"path+cochange\"` requires `anchor_path=<path>`; fell back to path-only ranking."
+                            .to_string(),
+                    ),
+                    (Some(anchor_path), None) => Some(format!(
+                        "Co-change ranking inactive: no usable coupling-store evidence for `anchor_path={anchor_path}`; fell back to path-only ranking."
+                    )),
+                    (Some(_), Some(_)) => None,
+                };
+            }
             let coupling_context = params
                 .0
                 .anchor_path
                 .as_deref()
                 .zip(coupling_neighbors.as_ref());
-            guard.capture_search_files_view(
+            let view = guard.capture_search_files_view_with_noise(
                 &params.0.query,
                 params.0.limit.unwrap_or(20) as usize,
                 params.0.current_file.as_deref(),
                 coupling_context,
-            )
+                include_vendor,
+                include_personal_tooling,
+            );
+            if !(include_vendor && include_personal_tooling) {
+                let unfiltered = guard.capture_search_files_view(
+                    &params.0.query,
+                    params.0.limit.unwrap_or(20) as usize,
+                    params.0.current_file.as_deref(),
+                    coupling_context,
+                );
+                hidden_noise_count = search_files_total_matches(&unfiltered)
+                    .saturating_sub(search_files_total_matches(&view));
+            }
+            if rank_by_path_cochange && let Some((anchor_path, neighbors)) = coupling_context {
+                let applied_hits = match &view {
+                    SearchFilesView::Found { hits, .. } => hits
+                        .iter()
+                        .filter(|hit| hit.tier == SearchFilesTier::CoChange)
+                        .count(),
+                    _ => 0,
+                };
+                cochange_note = if applied_hits > 0 {
+                    Some(format!(
+                        "Co-change ranking active: `anchor_path={anchor_path}` loaded {} usable coupling partner(s); rows with shared-commit counts show applied evidence.",
+                        neighbors.len()
+                    ))
+                } else {
+                    Some(format!(
+                        "Co-change ranking requested: `anchor_path={anchor_path}` loaded {} usable coupling partner(s), but none matched returned candidates or passed rank gates; path-only scores are shown.",
+                        neighbors.len()
+                    ))
+                };
+            }
+            view
         };
         // Optional frecency-fusion rerank. Activated only when the caller asked
         // for `rank_by="frecency"` AND the `SYMFORGE_FRECENCY=1` flag is on.
@@ -4596,7 +4786,11 @@ impl SymForgeServer {
                 };
                 Some(search_format::format_search_envelope(
                     search_files_match_type_label(&view),
-                    "current index",
+                    if rank_by_path_cochange {
+                        "current index + optional coupling store"
+                    } else {
+                        "current index"
+                    },
                     search_parse_state_for_paths(&guard, hits.iter().map(|hit| hit.path.as_str())),
                     &search_completeness_label(*overflow_count, 0),
                     &scope,
@@ -4606,10 +4800,22 @@ impl SymForgeServer {
             _ => None,
         };
         let output = format::search_files_result_view(&view);
-        let result = match envelope {
+        let mut result = match envelope {
             Some(envelope) => format!("{envelope}\n\n{output}"),
             None => output,
         };
+        if let Some(note) = cochange_note {
+            result.push_str("\n\n");
+            result.push_str(&note);
+        }
+        if let Some(note) = search_files_hidden_noise_note(
+            hidden_noise_count,
+            include_vendor,
+            include_personal_tooling,
+        ) {
+            result.push_str("\n\n");
+            result.push_str(&note);
+        }
         self.session_context.record_summary_output(
             "search_files",
             (result.len() / 4).min(u32::MAX as usize) as u32,
@@ -6793,6 +6999,8 @@ impl SymForgeServer {
                     limit: None,
                     include_generated: None,
                     include_tests: None,
+                    include_vendor: None,
+                    include_personal_tooling: None,
                     estimate: None,
                     max_tokens: None,
                 };
@@ -6809,6 +7017,8 @@ impl SymForgeServer {
                     max_tokens: None,
                     rank_by: None,
                     anchor_path: None,
+                    include_vendor: None,
+                    include_personal_tooling: None,
                 };
                 self.search_files(Parameters(input)).await
             }
@@ -8694,6 +8904,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_get_file_context_large_default_uses_bounded_summary() {
+        let mut content = String::new();
+        let mut symbols = Vec::new();
+        for i in 0..320u32 {
+            let name = format!("symbol_{i:03}");
+            content.push_str(&format!("pub fn {name}() {{}}\n"));
+            symbols.push(make_symbol(&name, SymbolKind::Function, i, i));
+        }
+        let target_file = make_file("src/target.rs", content.as_bytes(), symbols);
+        let caller_file = make_file_with_refs(
+            "src/caller.rs",
+            b"use crate::target::symbol_000;\nfn caller() { symbol_000(); }",
+            vec![make_symbol("caller", SymbolKind::Function, 1, 1)],
+            vec![
+                ReferenceRecord {
+                    name: "symbol_000".to_string(),
+                    qualified_name: Some("crate::target::symbol_000".to_string()),
+                    kind: ReferenceKind::Import,
+                    byte_range: (4, 14),
+                    line_range: (0, 0),
+                    enclosing_symbol_index: None,
+                },
+                ReferenceRecord {
+                    name: "symbol_000".to_string(),
+                    qualified_name: None,
+                    kind: ReferenceKind::Call,
+                    byte_range: (43, 53),
+                    line_range: (1, 1),
+                    enclosing_symbol_index: Some(0),
+                },
+            ],
+        );
+        let server = make_server(make_live_index_ready(vec![target_file, caller_file]));
+
+        let result = server
+            .get_file_context(Parameters(super::GetFileContextInput {
+                path: "src/target.rs".to_string(),
+                max_tokens: None,
+                sections: None,
+                estimate: None,
+            }))
+            .await;
+
+        assert!(
+            result.contains("Large file summary"),
+            "large default should declare summary mode: {result}"
+        );
+        assert!(
+            result.contains("sections outline, imports"),
+            "large default should limit expensive sections: {result}"
+        );
+        assert!(
+            result.contains("omitted") || result.contains("Omitted"),
+            "large summary should explain omitted detail: {result}"
+        );
+        assert!(
+            !result.contains("Used by") && !result.contains("Key references"),
+            "large default should skip expensive dependent/reference sections: {result}"
+        );
+    }
+
+    #[tokio::test]
     async fn test_get_file_context_shows_parse_diagnostic_for_partial_file() {
         let (key, mut file) = make_file(
             "Cargo.toml",
@@ -9586,6 +9858,8 @@ mod tests {
                 limit: None,
                 include_generated: None,
                 include_tests: None,
+                include_vendor: None,
+                include_personal_tooling: None,
                 estimate: None,
                 max_tokens: None,
             }))
@@ -9627,6 +9901,8 @@ mod tests {
                 limit: None,
                 include_generated: None,
                 include_tests: None,
+                include_vendor: None,
+                include_personal_tooling: None,
                 estimate: None,
                 max_tokens: None,
             }))
@@ -9670,6 +9946,8 @@ mod tests {
                 limit: None,
                 include_generated: None,
                 include_tests: None,
+                include_vendor: None,
+                include_personal_tooling: None,
                 estimate: None,
                 max_tokens: None,
             }))
@@ -9686,6 +9964,97 @@ mod tests {
         assert!(
             !result.contains("JobTest"),
             "test symbol noise should be hidden by default: {result}"
+        );
+        assert!(
+            result.contains("vendor filtered"),
+            "scope should report vendor filtering status: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_symbols_hides_vendor_by_default_and_reports_filter() {
+        let server = make_server(make_live_index_ready(vec![
+            make_file(
+                "src/job.rs",
+                b"struct Job {}\n",
+                vec![make_symbol("Job", SymbolKind::Class, 1, 1)],
+            ),
+            make_file(
+                "vendor/somelib/job.rs",
+                b"struct JobVendor {}\n",
+                vec![make_symbol("JobVendor", SymbolKind::Class, 1, 1)],
+            ),
+        ]));
+
+        let result = server
+            .search_symbols(Parameters(super::SearchSymbolsInput {
+                query: Some("job".to_string()),
+                kind: Some("class".to_string()),
+                path_prefix: None,
+                language: None,
+                limit: None,
+                include_generated: None,
+                include_tests: None,
+                include_vendor: None,
+                include_personal_tooling: None,
+                estimate: None,
+                max_tokens: None,
+            }))
+            .await;
+
+        assert!(
+            result.contains("class Job"),
+            "source symbol should remain visible: {result}"
+        );
+        assert!(
+            !result.contains("JobVendor"),
+            "vendor symbol should be hidden by default: {result}"
+        );
+        assert!(
+            result.contains("vendor filtered")
+                && result.contains("1 noise-filtered match(es) suppressed"),
+            "vendor filtering should be explicit in envelope: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_symbols_includes_vendor_when_flag_true() {
+        let server = make_server(make_live_index_ready(vec![
+            make_file(
+                "src/job.rs",
+                b"struct Job {}\n",
+                vec![make_symbol("Job", SymbolKind::Class, 1, 1)],
+            ),
+            make_file(
+                "vendor/somelib/job.rs",
+                b"struct JobVendor {}\n",
+                vec![make_symbol("JobVendor", SymbolKind::Class, 1, 1)],
+            ),
+        ]));
+
+        let result = server
+            .search_symbols(Parameters(super::SearchSymbolsInput {
+                query: Some("job".to_string()),
+                kind: Some("class".to_string()),
+                path_prefix: None,
+                language: None,
+                limit: None,
+                include_generated: None,
+                include_tests: None,
+                include_vendor: Some(true),
+                include_personal_tooling: None,
+                estimate: None,
+                max_tokens: None,
+            }))
+            .await;
+
+        assert!(
+            result.contains("JobVendor"),
+            "include_vendor=true should surface vendor symbols: {result}"
+        );
+        assert!(
+            result.contains("vendor included"),
+            "scope should report vendor inclusion: {result}"
         );
     }
 
@@ -9742,6 +10111,8 @@ mod tests {
                 limit: None,
                 include_generated: None,
                 include_tests: None, // default: false
+                include_vendor: None,
+                include_personal_tooling: None,
                 estimate: None,
                 max_tokens: None,
             }))
@@ -9786,6 +10157,8 @@ mod tests {
                 limit: None,
                 include_generated: Some(true),
                 include_tests: None,
+                include_vendor: None,
+                include_personal_tooling: None,
                 estimate: None,
                 max_tokens: None,
             }))
@@ -9834,6 +10207,8 @@ mod tests {
                 limit: None,
                 include_generated: None,
                 include_tests: Some(true),
+                include_vendor: None,
+                include_personal_tooling: None,
                 estimate: None,
                 max_tokens: None,
             }))
@@ -9883,6 +10258,8 @@ mod tests {
                 limit: Some(1),
                 include_generated: None,
                 include_tests: None,
+                include_vendor: None,
+                include_personal_tooling: None,
                 estimate: None,
                 max_tokens: None,
             }))
@@ -9929,6 +10306,8 @@ mod tests {
                 limit: None,
                 include_generated: None,
                 include_tests: None,
+                include_vendor: None,
+                include_personal_tooling: None,
                 estimate: None,
                 max_tokens: None,
             }))
@@ -9957,6 +10336,8 @@ mod tests {
                 limit: None,
                 include_generated: None,
                 include_tests: None,
+                include_vendor: None,
+                include_personal_tooling: None,
                 estimate: None,
                 max_tokens: None,
             }))
@@ -9985,6 +10366,8 @@ mod tests {
                 limit: None,
                 include_generated: None,
                 include_tests: None,
+                include_vendor: None,
+                include_personal_tooling: None,
                 estimate: None,
                 max_tokens: None,
             }))
@@ -10013,6 +10396,8 @@ mod tests {
                 limit: None,
                 include_generated: None,
                 include_tests: None,
+                include_vendor: None,
+                include_personal_tooling: None,
                 estimate: None,
                 max_tokens: None,
             }))
@@ -10682,6 +11067,8 @@ mod tests {
                 max_tokens: None,
                 rank_by: None,
                 anchor_path: None,
+                include_vendor: None,
+                include_personal_tooling: None,
             }))
             .await;
         assert!(result.contains("2 matching files"), "got: {result}");
@@ -10717,6 +11104,8 @@ mod tests {
                 max_tokens: None,
                 rank_by: None,
                 anchor_path: None,
+                include_vendor: None,
+                include_personal_tooling: None,
             }))
             .await;
         assert_eq!(result, "No indexed source files matching 'src/service.rs'");
@@ -10738,6 +11127,8 @@ mod tests {
                 max_tokens: None,
                 rank_by: None,
                 anchor_path: None,
+                include_vendor: None,
+                include_personal_tooling: None,
             }))
             .await;
         // Without git temporal data, should return informative message (not an error/panic)
@@ -10803,6 +11194,8 @@ mod tests {
                 max_tokens: None,
                 rank_by: None,
                 anchor_path: None,
+                include_vendor: None,
+                include_personal_tooling: None,
             }))
             .await;
 
@@ -10852,6 +11245,8 @@ mod tests {
                 max_tokens: None,
                 rank_by: Some("path+cochange".to_string()),
                 anchor_path: Some("src/auth/routes.rs".to_string()),
+                include_vendor: None,
+                include_personal_tooling: None,
             }))
             .await;
 
@@ -10868,6 +11263,11 @@ mod tests {
         assert!(
             result.contains("3 shared commits"),
             "coupling evidence should be rendered: {result}"
+        );
+        assert!(
+            result.contains("Co-change ranking active")
+                && result.contains("loaded 1 usable coupling partner"),
+            "rank_by=path+cochange should report applied evidence: {result}"
         );
     }
 
@@ -10892,6 +11292,8 @@ mod tests {
                 max_tokens: None,
                 rank_by: None,
                 anchor_path: None,
+                include_vendor: None,
+                include_personal_tooling: None,
             }))
             .await;
 
@@ -10906,10 +11308,26 @@ mod tests {
                 max_tokens: None,
                 rank_by: Some("path+cochange".to_string()),
                 anchor_path: None,
+                include_vendor: None,
+                include_personal_tooling: None,
             }))
             .await;
 
-        assert_eq!(path_cochange, default);
+        assert!(
+            path_cochange.contains("src/auth/routes.rs")
+                && path_cochange.contains("src/server/routes.rs"),
+            "fallback should preserve path results: {path_cochange}"
+        );
+        assert!(
+            path_cochange.contains(
+                "Co-change ranking inactive: `rank_by=\"path+cochange\"` requires `anchor_path=<path>`"
+            ),
+            "fallback should explain missing anchor: {path_cochange}"
+        );
+        assert!(
+            !default.contains("Co-change ranking inactive"),
+            "baseline should not contain rank_by diagnostics: {default}"
+        );
     }
 
     #[tokio::test]
@@ -10929,6 +11347,8 @@ mod tests {
                 max_tokens: None,
                 rank_by: None,
                 anchor_path: None,
+                include_vendor: None,
+                include_personal_tooling: None,
             }))
             .await;
 
@@ -10943,10 +11363,173 @@ mod tests {
                 max_tokens: None,
                 rank_by: Some("path+cochange".to_string()),
                 anchor_path: Some("src/auth/routes.rs".to_string()),
+                include_vendor: None,
+                include_personal_tooling: None,
             }))
             .await;
 
-        assert_eq!(path_cochange, default);
+        assert!(
+            path_cochange.contains("src/auth/routes.rs")
+                && path_cochange.contains("src/server/routes.rs"),
+            "fallback should preserve path results: {path_cochange}"
+        );
+        assert!(
+            path_cochange.contains("Co-change ranking inactive: no usable coupling-store evidence"),
+            "fallback should explain unavailable/empty coupling evidence: {path_cochange}"
+        );
+        assert!(
+            !default.contains("Co-change ranking inactive"),
+            "baseline should not contain rank_by diagnostics: {default}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_files_hides_vendor_paths_by_default() {
+        let server = make_server(make_live_index_ready_with_vendor_file());
+        let result = server
+            .search_files(Parameters(super::SearchFilesInput {
+                query: "bar.rs".to_string(),
+                limit: None,
+                current_file: None,
+                changed_with: None,
+                resolve: None,
+                estimate: None,
+                max_tokens: None,
+                rank_by: None,
+                anchor_path: None,
+                include_vendor: None,
+                include_personal_tooling: None,
+            }))
+            .await;
+
+        assert!(
+            !result.contains("vendor/foo/bar.rs"),
+            "vendor path should be suppressed by default: {result}"
+        );
+        assert!(
+            result.contains("No indexed source files matching 'bar.rs'"),
+            "filtered query should not resolve only-vendor matches: {result}"
+        );
+        assert!(
+            result.contains("1 vendor/personal-tooling path candidate hidden by default"),
+            "suppressed-noise note should be visible: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_files_includes_vendor_when_flag_true() {
+        let server = make_server(make_live_index_ready_with_vendor_file());
+        let result = server
+            .search_files(Parameters(super::SearchFilesInput {
+                query: "bar.rs".to_string(),
+                limit: None,
+                current_file: None,
+                changed_with: None,
+                resolve: None,
+                estimate: None,
+                max_tokens: None,
+                rank_by: None,
+                anchor_path: None,
+                include_vendor: Some(true),
+                include_personal_tooling: None,
+            }))
+            .await;
+
+        assert!(
+            result.contains("vendor/foo/bar.rs"),
+            "include_vendor=true should surface vendor path: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_files_resolve_hides_vendor_paths_by_default() {
+        let server = make_server(make_live_index_ready_with_vendor_file());
+        let result = server
+            .search_files(Parameters(super::SearchFilesInput {
+                query: "bar.rs".to_string(),
+                limit: None,
+                current_file: None,
+                changed_with: None,
+                resolve: Some(true),
+                estimate: None,
+                max_tokens: None,
+                rank_by: None,
+                anchor_path: None,
+                include_vendor: None,
+                include_personal_tooling: None,
+            }))
+            .await;
+
+        assert!(
+            !result.contains("vendor/foo/bar.rs"),
+            "resolve=true should suppress vendor by default: {result}"
+        );
+        assert!(
+            result.contains("No indexed source path matched 'bar.rs'"),
+            "resolve=true should not resolve only-vendor matches by default: {result}"
+        );
+        assert!(
+            result.contains("1 vendor/personal-tooling path candidate hidden by default"),
+            "resolve=true should explain suppressed vendor candidate: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_files_resolve_includes_vendor_when_flag_true() {
+        let server = make_server(make_live_index_ready_with_vendor_file());
+        let result = server
+            .search_files(Parameters(super::SearchFilesInput {
+                query: "bar.rs".to_string(),
+                limit: None,
+                current_file: None,
+                changed_with: None,
+                resolve: Some(true),
+                estimate: None,
+                max_tokens: None,
+                rank_by: None,
+                anchor_path: None,
+                include_vendor: Some(true),
+                include_personal_tooling: None,
+            }))
+            .await;
+
+        assert!(
+            result.contains("vendor/foo/bar.rs"),
+            "include_vendor=true should resolve vendor path: {result}"
+        );
+        assert!(
+            result.contains("Match type: exact (resolve)"),
+            "include_vendor=true should keep normal resolve envelope: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_files_glob_hides_vendor_paths_by_default() {
+        let server = make_server(make_live_index_ready_with_vendor_file());
+        let result = server
+            .search_files(Parameters(super::SearchFilesInput {
+                query: "vendor/**/*.rs".to_string(),
+                limit: None,
+                current_file: None,
+                changed_with: None,
+                resolve: None,
+                estimate: None,
+                max_tokens: None,
+                rank_by: None,
+                anchor_path: None,
+                include_vendor: None,
+                include_personal_tooling: None,
+            }))
+            .await;
+
+        assert!(
+            !result.contains("vendor/foo/bar.rs"),
+            "glob search should suppress vendor by default: {result}"
+        );
+        assert!(
+            result.contains("1 vendor/personal-tooling path candidate hidden by default"),
+            "glob search should report suppressed vendor candidate: {result}"
+        );
     }
 
     #[tokio::test]
@@ -10964,6 +11547,8 @@ mod tests {
                 max_tokens: None,
                 rank_by: None,
                 anchor_path: None,
+                include_vendor: None,
+                include_personal_tooling: None,
             }))
             .await;
         assert!(
@@ -10994,6 +11579,8 @@ mod tests {
                 max_tokens: None,
                 rank_by: None,
                 anchor_path: None,
+                include_vendor: None,
+                include_personal_tooling: None,
             }))
             .await;
         assert!(
@@ -13677,6 +14264,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_search_text_vendor_filter_runs_before_result_cap() {
+        let vendor_content = b"needle one\nneedle two\nneedle three\n";
+        let source_content = b"needle source\n";
+        let server = make_server(make_live_index_ready(vec![
+            make_file("vendor/noisy/lib.rs", vendor_content, vec![]),
+            make_file("src/normal.rs", source_content, vec![]),
+        ]));
+
+        let result = server
+            .search_text(Parameters(super::SearchTextInput {
+                query: Some("needle".to_string()),
+                limit: Some(1),
+                ..Default::default()
+            }))
+            .await;
+
+        assert!(
+            result.contains("src/normal.rs"),
+            "non-vendor hit must survive even when vendor has more matches: {result}"
+        );
+        assert!(
+            !result.contains("vendor/noisy/lib.rs"),
+            "vendor path should remain suppressed by default: {result}"
+        );
+        assert!(
+            result.contains("3 noise-filtered match(es) suppressed"),
+            "suppressed vendor matches should be counted: {result}"
+        );
+    }
+
+    #[tokio::test]
     async fn test_search_text_hides_personal_tooling_paths_by_default() {
         let server = make_server(make_live_index_ready_with_vendor_file());
         let result = server
@@ -14564,6 +15182,8 @@ mod tests {
                     limit: None,
                     include_generated: None,
                     include_tests: None,
+                    include_vendor: None,
+                    include_personal_tooling: None,
                     estimate: None,
                     max_tokens: None,
                 }))

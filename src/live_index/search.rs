@@ -433,6 +433,7 @@ pub struct SymbolSearchOptions {
     pub search_scope: SearchScope,
     pub result_limit: ResultLimit,
     pub noise_policy: NoisePolicy,
+    pub include_personal_tooling: bool,
     pub language_filter: Option<LanguageId>,
 }
 
@@ -448,6 +449,7 @@ impl SymbolSearchOptions {
                 include_vendor: true,
                 include_ignored: false,
             },
+            include_personal_tooling: true,
             language_filter: None,
         }
     }
@@ -458,6 +460,7 @@ pub struct TextSearchOptions {
     pub path_scope: PathScope,
     pub search_scope: SearchScope,
     pub noise_policy: NoisePolicy,
+    pub include_personal_tooling: bool,
     pub language_filter: Option<LanguageId>,
     pub total_limit: usize,
     pub max_per_file: usize,
@@ -479,6 +482,7 @@ impl Default for TextSearchOptions {
             path_scope: PathScope::default(),
             search_scope: SearchScope::default(),
             noise_policy: NoisePolicy::default(),
+            include_personal_tooling: true,
             language_filter: None,
             total_limit: 50,
             max_per_file: 5,
@@ -504,6 +508,7 @@ impl TextSearchOptions {
                 include_vendor: true,
                 include_ignored: false,
             },
+            include_personal_tooling: true,
             language_filter: None,
             total_limit: 50,
             max_per_file: 5,
@@ -781,6 +786,8 @@ pub fn search_symbols_with_options(
         if !options.path_scope.matches(path)
             || !options.search_scope.allows(&file.classification)
             || !options.noise_policy.allows(&file.classification)
+            || (!options.include_personal_tooling
+                && crate::live_index::query::is_personal_tooling_path(path))
             || options
                 .language_filter
                 .as_ref()
@@ -943,18 +950,37 @@ pub fn search_text_with_options(
             }
         };
 
-        let candidate_paths = index
-            .all_files()
-            .filter(|(path, file)| file_matches_text_options(path, file, options, &compiled_globs))
-            .map(|(path, _)| path.clone())
-            .collect();
-        return Ok(collect_text_matches(
+        let mut candidate_paths = Vec::new();
+        let mut suppressed_candidate_paths = Vec::new();
+        for (path, file) in index.all_files() {
+            if !file_matches_text_base_scope(path, file, options, &compiled_globs) {
+                continue;
+            }
+            if file_hidden_by_search_policy(path, file, options) {
+                suppressed_candidate_paths.push(path.clone());
+            } else {
+                candidate_paths.push(path.clone());
+            }
+        }
+        let label = format!("regex '{pattern}'");
+        let mut result = collect_text_matches(
             index,
             candidate_paths,
             |line| regex.is_match(line),
-            format!("regex '{pattern}'"),
+            label.clone(),
             options,
-        ));
+        );
+        result.suppressed_by_noise =
+            result
+                .suppressed_by_noise
+                .saturating_add(count_suppressed_text_matches(
+                    index,
+                    suppressed_candidate_paths,
+                    |line| regex.is_match(line),
+                    label,
+                    options,
+                ));
+        return Ok(result);
     }
 
     if normalized_terms.is_empty() {
@@ -962,12 +988,18 @@ pub fn search_text_with_options(
     }
 
     let mut candidate_paths = HashSet::new();
+    let mut suppressed_candidate_paths = HashSet::new();
     for term in &normalized_terms {
         for path in index.trigram_index.search(term.as_bytes(), &index.files) {
             let Some(file) = index.get_file(&path) else {
                 continue;
             };
-            if file_matches_text_options(&path, file, options, &compiled_globs) {
+            if !file_matches_text_base_scope(&path, file, options, &compiled_globs) {
+                continue;
+            }
+            if file_hidden_by_search_policy(&path, file, options) {
+                suppressed_candidate_paths.insert(path);
+            } else {
                 candidate_paths.insert(path);
             }
         }
@@ -1018,6 +1050,7 @@ pub fn search_text_with_options(
             exclude_glob: options.exclude_glob.clone(),
             search_scope: options.search_scope,
             noise_policy: options.noise_policy,
+            include_personal_tooling: options.include_personal_tooling,
             context: options.context,
             ranked: options.ranked,
             churn_scores: options.churn_scores.clone(),
@@ -1027,33 +1060,105 @@ pub fn search_text_with_options(
         options
     };
 
-    Ok(collect_text_matches(
+    let line_matches = |line: &str| -> bool {
+        if let Some(matcher) = whole_word_matcher.as_ref() {
+            return matcher.is_match(line);
+        }
+
+        if let Some(ac) = multi_term_ac.as_ref() {
+            return ac.is_match(line);
+        }
+
+        // Single-term path (or non-ASCII multi-term fallback)
+        if case_sensitive {
+            normalized_terms.iter().any(|term| line.contains(term))
+        } else {
+            let lowered = line.to_lowercase();
+            lowered_terms
+                .as_ref()
+                .expect("lowered terms should exist for case-insensitive search")
+                .iter()
+                .any(|term| lowered.contains(term))
+        }
+    };
+
+    let mut result = collect_text_matches(
         index,
         candidate_paths.into_iter().collect(),
-        |line| {
-            if let Some(matcher) = whole_word_matcher.as_ref() {
-                return matcher.is_match(line);
-            }
-
-            if let Some(ac) = multi_term_ac.as_ref() {
-                return ac.is_match(line);
-            }
-
-            // Single-term path (or non-ASCII multi-term fallback)
-            if case_sensitive {
-                normalized_terms.iter().any(|term| line.contains(term))
-            } else {
-                let lowered = line.to_lowercase();
-                lowered_terms
-                    .as_ref()
-                    .expect("lowered terms should exist for case-insensitive search")
-                    .iter()
-                    .any(|term| lowered.contains(term))
-            }
-        },
-        label,
+        |line| line_matches(line),
+        label.clone(),
         opts,
-    ))
+    );
+    result.suppressed_by_noise =
+        result
+            .suppressed_by_noise
+            .saturating_add(count_suppressed_text_matches(
+                index,
+                suppressed_candidate_paths.into_iter().collect(),
+                |line| line_matches(line),
+                label,
+                opts,
+            ));
+    Ok(result)
+}
+
+fn count_suppressed_text_matches<F>(
+    index: &LiveIndex,
+    candidate_paths: Vec<String>,
+    is_match: F,
+    label: String,
+    options: &TextSearchOptions,
+) -> usize
+where
+    F: FnMut(&str) -> bool,
+{
+    if candidate_paths.is_empty() {
+        return 0;
+    }
+    let mut count_options = options.clone();
+    count_options.total_limit = usize::MAX / 4;
+    count_options.max_per_file = usize::MAX / 4;
+    count_options.ranked = false;
+    let hidden = collect_text_matches(index, candidate_paths, is_match, label, &count_options);
+    hidden
+        .total_matches
+        .saturating_add(hidden.overflow_count)
+        .saturating_add(hidden.suppressed_by_noise)
+}
+
+fn file_matches_text_base_scope(
+    path: &str,
+    file: &crate::live_index::IndexedFile,
+    options: &TextSearchOptions,
+    glob_filters: &CompiledTextGlobFilters,
+) -> bool {
+    options.path_scope.matches(path)
+        && glob_filters.matches(path)
+        && options.search_scope.allows(&file.classification)
+        && options
+            .language_filter
+            .as_ref()
+            .is_none_or(|language| &file.language == language)
+}
+
+fn file_hidden_by_search_policy(
+    path: &str,
+    file: &crate::live_index::IndexedFile,
+    options: &TextSearchOptions,
+) -> bool {
+    !options.noise_policy.allows(&file.classification)
+        || (!options.include_personal_tooling
+            && crate::live_index::query::is_personal_tooling_path(path))
+}
+
+fn file_matches_text_options(
+    path: &str,
+    file: &crate::live_index::IndexedFile,
+    options: &TextSearchOptions,
+    glob_filters: &CompiledTextGlobFilters,
+) -> bool {
+    file_matches_text_base_scope(path, file, options, glob_filters)
+        && !file_hidden_by_search_policy(path, file, options)
 }
 
 /// Structural (AST-pattern) search across indexed files.
@@ -1237,22 +1342,6 @@ pub fn search_structural(
         suppressed_by_noise,
         overflow_count: 0,
     })
-}
-
-fn file_matches_text_options(
-    path: &str,
-    file: &crate::live_index::IndexedFile,
-    options: &TextSearchOptions,
-    glob_filters: &CompiledTextGlobFilters,
-) -> bool {
-    options.path_scope.matches(path)
-        && glob_filters.matches(path)
-        && options.search_scope.allows(&file.classification)
-        && options.noise_policy.allows(&file.classification)
-        && options
-            .language_filter
-            .as_ref()
-            .is_none_or(|language| &file.language == language)
 }
 
 fn compile_text_glob_filters(
@@ -2036,6 +2125,7 @@ mod tests {
             search_scope: SearchScope::Code,
             result_limit: ResultLimit::new(1),
             noise_policy: NoisePolicy::permissive(),
+            include_personal_tooling: true,
             language_filter: Some(LanguageId::TypeScript),
         };
 
@@ -2165,6 +2255,7 @@ mod tests {
                 include_vendor: true,
                 include_ignored: false,
             },
+            include_personal_tooling: true,
             language_filter: Some(LanguageId::TypeScript),
             total_limit: 3,
             max_per_file: 2,
@@ -2205,6 +2296,7 @@ mod tests {
                 include_vendor: true,
                 include_ignored: false,
             },
+            include_personal_tooling: true,
             language_filter: None,
             total_limit: 10,
             max_per_file: 5,
