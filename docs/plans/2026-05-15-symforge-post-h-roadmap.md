@@ -483,9 +483,11 @@ Lights up `CoChangeSignal::score()`. Implements ADR 0013's 6-rule contract. Rule
 
 **Verification:** `cargo test --lib coupling -- --test-threads=1` PASS.
 
-#### - [ ] **Unit 2.3: CoChangeSignal::score() implements ADR 0013 6-rule contract (T3.3)**
+#### - [x] **Unit 2.3: CoChangeSignal::score() implements ADR 0013 6-rule contract (T3.3)**
 
 **Goal:** Replace `CoChangeSignal::score() -> 0.0` with the actual scoring per ADR 0013. Rule 5 (`Basename` anchor-confidence) starts as PROVISIONAL; promotion to CALIBRATED happens via Wave 2 calibration data.
+
+**Status 2026-05-16:** Complete locally. TDD RED verified with `cargo test --test cochange_signal_rules -- --test-threads=1` failing because valid weighted co-change inputs still scored `0.0`, then again failing for missing Rule 3 chore-anchor and Rule 5 weak-anchor gates. GREEN passed after `CoChangeSignal::score()` started requiring a non-chore `target_path`, `PathMatchSignal` anchor confidence at least `Basename`, `co_change_count >= 2`, and a finite positive `co_change_weighted_score`. Verification passed: `cargo check`, `cargo test --lib rank_signals -- --test-threads=1`, `cargo test --test cochange_signal_rules -- --test-threads=1`, `cargo test --all-targets -- --test-threads=1`, and `cargo build --release`.
 
 **Requirements:** R3
 
@@ -511,9 +513,11 @@ Lights up `CoChangeSignal::score()`. Implements ADR 0013's 6-rule contract. Rule
 
 **Verification:** Targeted + lib tests all PASS.
 
-#### - [ ] **Unit 2.4: capture_search_files_view widens + path+cochange branch in search_files handler (T3.4)**
+#### - [x] **Unit 2.4: capture_search_files_view widens + path+cochange branch in search_files handler (T3.4)**
 
-**Goal:** Add 4th param `coupling_neighbors: Option<&HashMap<String, u32>>` to `capture_search_files_view`. Wire the `rank_by="path+cochange"` branch in the `search_files` handler analogous to existing `rank_by="frecency"`.
+**Goal:** Add 4th param `coupling_context` to `capture_search_files_view`, carrying an anchor path plus per-candidate shared-commit and weighted-score evidence. Wire the `rank_by="path+cochange"` branch in the `search_files` handler analogous to existing `rank_by="frecency"`.
+
+**Status 2026-05-16:** Complete locally. TDD RED verified with `cargo test --test cochange_fusion -- --test-threads=1` failing on missing `SearchFilesCouplingEvidence` and 4-arg `capture_search_files_view`, and `cargo test --lib search_files_path_cochange -- --test-threads=1` failing on missing `SearchFilesInput::anchor_path`. GREEN passed after `capture_search_files_view` accepted optional coupling context, `SearchFilesInput` gained optional `anchor_path`, and `search_files` populated coupling evidence from `LiveIndex::coupling_store().query_with_floor(...)` for `rank_by="path+cochange"`. Fallbacks preserve default ordering when `rank_by` is unset/not `path+cochange`, `anchor_path` is absent, coupling store is unavailable, query fails/returns no usable partners, or the anchor-confidence gate rejects the rerank. Verification passed: `cargo check`, `cargo test --test cochange_fusion -- --test-threads=1`, `cargo test --lib search_files_path_cochange -- --test-threads=1`, `cargo test --lib capture_search_files_view -- --test-threads=1`, `cargo test --all-targets -- --test-threads=1`, and `cargo build --release`.
 
 **Requirements:** R3
 
@@ -523,7 +527,9 @@ Lights up `CoChangeSignal::score()`. Implements ADR 0013's 6-rule contract. Rule
 - Modify: `src/live_index/query.rs::capture_search_files_view` (lines 1397-1403; widen signature)
 - Modify: `src/protocol/tools.rs::search_files` (~line 4478 area; mirror frecency branch as `path+cochange`)
 - Modify: `src/protocol/tools.rs::SearchFilesInput` (line 450-482; add optional `anchor_path: Option<String>`)
-- Test: `tests/cochange_fusion.rs` (new — ~6 integration tests covering rerank shape, anchor-confidence handling, fallback on store-open failure)
+- Modify: `src/live_index/mod.rs` (export coupling evidence types)
+- Modify: `src/protocol/format.rs` (preserve default call site with `None` context)
+- Test: `tests/cochange_fusion.rs` (new — 6 integration tests covering rerank shape, anchor-confidence handling, shared-floor, relative-score, and default fallback)
 
 **Approach:** Mirror the existing `rank_by="frecency"` branch at `src/protocol/tools.rs:4478-4504`. Open per-workspace `CouplingStore`, look up neighbors keyed on `anchor_path`, pass into `capture_search_files_view`, rerank, fall back to tier ordering on failure.
 

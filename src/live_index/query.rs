@@ -1,4 +1,4 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -973,6 +973,14 @@ pub enum SearchFilesTier {
     LoosePath,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SearchFilesCouplingEvidence {
+    pub shared_commits: u32,
+    pub weighted_score: f32,
+}
+
+pub type SearchFilesCouplingNeighbors = HashMap<String, SearchFilesCouplingEvidence>;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchFilesHit {
     pub tier: SearchFilesTier,
@@ -993,6 +1001,51 @@ pub enum SearchFilesView {
         overflow_count: usize,
         hits: Vec<SearchFilesHit>,
     },
+}
+
+fn usable_search_files_coupling_evidence(
+    path: &str,
+    query: &str,
+    tokens: &[String],
+    current_file: Option<&str>,
+    coupling_context: Option<(&str, &SearchFilesCouplingNeighbors)>,
+) -> Option<SearchFilesCouplingEvidence> {
+    let (anchor_path, neighbors) = coupling_context?;
+    let evidence = *neighbors.get(path)?;
+    let ctx = super::rank_signals::RankCtx {
+        query,
+        tokens,
+        current_file,
+        target_path: Some(anchor_path),
+        co_change_count: Some(evidence.shared_commits),
+        co_change_weighted_score: Some(evidence.weighted_score),
+    };
+    let score = <super::rank_signals::CoChangeSignal as super::rank_signals::RankSignal>::score(
+        &super::rank_signals::CoChangeSignal,
+        std::path::Path::new(path),
+        &ctx,
+    );
+    if score > 0.0 { Some(evidence) } else { None }
+}
+
+fn search_files_rank_score(
+    path: &str,
+    query: &str,
+    tokens: &[String],
+    current_file: Option<&str>,
+    coupling_context: Option<(&str, &SearchFilesCouplingNeighbors)>,
+) -> f32 {
+    let evidence =
+        usable_search_files_coupling_evidence(path, query, tokens, current_file, coupling_context);
+    let ctx = super::rank_signals::RankCtx {
+        query,
+        tokens,
+        current_file,
+        target_path: coupling_context.map(|(anchor_path, _)| anchor_path),
+        co_change_count: evidence.map(|evidence| evidence.shared_commits),
+        co_change_weighted_score: evidence.map(|evidence| evidence.weighted_score),
+    };
+    super::rank_signals::combine(std::path::Path::new(path), &ctx)
 }
 
 /// One rendered dependent-reference line captured under the read lock.
@@ -1436,6 +1489,7 @@ impl LiveIndex {
         query: &str,
         limit: usize,
         current_file: Option<&str>,
+        coupling_context: Option<(&str, &SearchFilesCouplingNeighbors)>,
     ) -> SearchFilesView {
         let limit = limit.clamp(1, 50);
         let normalized_query = normalize_path_query(query);
@@ -1630,17 +1684,32 @@ impl LiveIndex {
                 .unwrap_or(0)
         };
 
-        let ctx = super::rank_signals::RankCtx {
-            query: &normalized_query,
-            tokens: &tokens,
-            current_file,
-            target_path: None,
-            co_change_count: None,
-            co_change_weighted_score: None,
-        };
+        let coupling_context = coupling_context
+            .filter(|(anchor_path, neighbors)| !anchor_path.is_empty() && !neighbors.is_empty());
+        let max_coupling_weight = coupling_context
+            .map(|(_, neighbors)| {
+                neighbors
+                    .values()
+                    .map(|evidence| evidence.weighted_score)
+                    .filter(|score| score.is_finite() && *score > 0.0)
+                    .fold(0.0_f32, f32::max)
+            })
+            .unwrap_or(0.0);
         candidates.sort_by(|(lp, _), (rp, _)| {
-            let l_score = super::rank_signals::combine(std::path::Path::new(lp), &ctx);
-            let r_score = super::rank_signals::combine(std::path::Path::new(rp), &ctx);
+            let l_score = search_files_rank_score(
+                lp,
+                &normalized_query,
+                &tokens,
+                current_file,
+                coupling_context,
+            );
+            let r_score = search_files_rank_score(
+                rp,
+                &normalized_query,
+                &tokens,
+                current_file,
+                coupling_context,
+            );
             let l_lower = lp.to_ascii_lowercase();
             let r_lower = rp.to_ascii_lowercase();
             let l_exact = l_lower == normalized_query_lower;
@@ -1662,11 +1731,31 @@ impl LiveIndex {
 
         let hits: Vec<SearchFilesHit> = candidates
             .into_iter()
-            .map(|(path, tier)| SearchFilesHit {
-                tier,
-                path,
-                coupling_score: None,
-                shared_commits: None,
+            .map(|(path, tier)| {
+                let coupling_evidence = usable_search_files_coupling_evidence(
+                    &path,
+                    &normalized_query,
+                    &tokens,
+                    current_file,
+                    coupling_context,
+                );
+                let coupling_score = coupling_evidence.and_then(|evidence| {
+                    if max_coupling_weight > 0.0 {
+                        Some((evidence.weighted_score / max_coupling_weight).clamp(0.0, 1.0))
+                    } else {
+                        None
+                    }
+                });
+                SearchFilesHit {
+                    tier: if coupling_evidence.is_some() {
+                        SearchFilesTier::CoChange
+                    } else {
+                        tier
+                    },
+                    path,
+                    coupling_score,
+                    shared_commits: coupling_evidence.map(|evidence| evidence.shared_commits),
+                }
             })
             .collect();
 
@@ -3711,7 +3800,7 @@ mod tests {
             false,
         );
 
-        let view = index.capture_search_files_view("protocol/tools.rs", 2, None);
+        let view = index.capture_search_files_view("protocol/tools.rs", 2, None, None);
 
         assert_eq!(
             view,
@@ -3753,7 +3842,7 @@ mod tests {
             false,
         );
 
-        let view = index.capture_search_files_view("live_index", 20, None);
+        let view = index.capture_search_files_view("live_index", 20, None, None);
 
         assert_eq!(
             view,
@@ -3800,7 +3889,7 @@ mod tests {
         );
 
         // "orchestrat" should find both orchestrator.rs and orchestration.rs via prefix matching.
-        let view = index.capture_search_files_view("orchestrat", 10, None);
+        let view = index.capture_search_files_view("orchestrat", 10, None, None);
         if let SearchFilesView::Found { hits, .. } = view {
             let paths: Vec<&str> = hits.iter().map(|h| h.path.as_str()).collect();
             assert!(
@@ -3838,7 +3927,7 @@ mod tests {
 
         // When in server context, server utils should rank first.
         let view_server =
-            index.capture_search_files_view("utils.rs", 10, Some("src/server/main.rs"));
+            index.capture_search_files_view("utils.rs", 10, Some("src/server/main.rs"), None);
         if let SearchFilesView::Found { hits, .. } = view_server {
             assert_eq!(hits[0].path, "src/server/utils.rs");
         } else {
@@ -3847,7 +3936,7 @@ mod tests {
 
         // When in client context, client utils should rank first.
         let view_client =
-            index.capture_search_files_view("utils.rs", 10, Some("src/client/main.rs"));
+            index.capture_search_files_view("utils.rs", 10, Some("src/client/main.rs"), None);
         if let SearchFilesView::Found { hits, .. } = view_client {
             assert_eq!(hits[0].path, "src/client/utils.rs");
         } else {

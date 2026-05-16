@@ -1442,7 +1442,7 @@ pub fn search_files_resolve_result_view(view: &SearchFilesResolveView) -> String
 }
 
 pub fn search_files(index: &LiveIndex, query: &str, limit: usize) -> String {
-    let view = index.capture_search_files_view(query, limit, None);
+    let view = index.capture_search_files_view(query, limit, None, None);
     search_files_result_view(&view)
 }
 

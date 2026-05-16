@@ -15,7 +15,8 @@ pub use query::{
     FileOutlineView, FindDependentsView, FindReferencesView, GitActivityView, HealthStats,
     ImplBlockSuggestionView, ImplementationEntryView, ImplementationsView, InspectMatchFoundView,
     InspectMatchView, ReferenceContextLineView, ReferenceFileView, ReferenceHitView,
-    RepoOutlineFileView, RepoOutlineView, SearchFilesHit, SearchFilesResolveView, SearchFilesTier,
+    RepoOutlineFileView, RepoOutlineView, SearchFilesCouplingEvidence,
+    SearchFilesCouplingNeighbors, SearchFilesHit, SearchFilesResolveView, SearchFilesTier,
     SearchFilesView, SiblingSymbolView, SymbolDetailView, TraceSymbolView, TypeDependencyView,
     WhatChangedTimestampView,
 };

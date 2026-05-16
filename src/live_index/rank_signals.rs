@@ -10,8 +10,8 @@
 //! `PathMatchSignal` returns one of a small set of tier weights
 //! (strong / basename / prefix / loose / none) that reproduce the previous
 //! tier-bucket concatenation ordering: `Strong > Basename > Prefix > Loose`.
-//! `CoChangeSignal` multiplies a caller-reported co-change count; the live
-//! search path does not populate that input today, so it defaults to `0.0`.
+//! `CoChangeSignal` consumes caller-prepared co-change evidence; the live
+//! search path does not populate those inputs today, so it defaults to `0.0`.
 
 use std::path::Path;
 use std::sync::{OnceLock, RwLock};
@@ -31,6 +31,19 @@ pub const PREFIX_SCORE: f32 = 50.0;
 /// Weight applied to paths that contain every query token as a case-insensitive
 /// substring — the weakest path-relevance match the live ranker surfaces.
 pub const LOOSE_PATH_SCORE: f32 = 10.0;
+pub const FILE_LEVEL_CO_CHANGE_FLOOR: u32 = 2;
+pub const CO_CHANGE_ANCHOR_CONFIDENCE_FLOOR: f32 = BASENAME_SCORE;
+
+const CHORE_ANCHOR_FILENAMES: &[&str] = &[
+    "Cargo.lock",
+    "package-lock.json",
+    "uv.lock",
+    "poetry.lock",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "CHANGELOG.md",
+    ".release-please-manifest.json",
+];
 
 /// Contextual inputs shared by every registered `RankSignal` when scoring a
 /// candidate path. Fields are borrowed from the caller for the duration of a
@@ -114,9 +127,8 @@ impl RankSignal for PathMatchSignal {
         let has_path_context = ctx.query.contains('/');
 
         let is_exact = !query_lower.is_empty() && path_lower == query_lower;
-        let is_suffix = has_path_context
-            && !query_lower.is_empty()
-            && path_lower.ends_with(&query_lower);
+        let is_suffix =
+            has_path_context && !query_lower.is_empty() && path_lower.ends_with(&query_lower);
 
         let basename_token = ctx.tokens.last().map(String::as_str).unwrap_or("");
         let component_tokens: &[String] = if ctx.tokens.len() > 1 {
@@ -136,8 +148,7 @@ impl RankSignal for PathMatchSignal {
             .unwrap_or("")
             .to_ascii_lowercase();
 
-        let has_basename_match =
-            !basename_token.is_empty() && file_basename == basename_token;
+        let has_basename_match = !basename_token.is_empty() && file_basename == basename_token;
         let has_all_components = !component_tokens.is_empty()
             && component_tokens
                 .iter()
@@ -160,11 +171,11 @@ impl RankSignal for PathMatchSignal {
     }
 }
 
-/// Co-change signal — multiplies the caller-reported coupling count by the
-/// signal's weight. The live `search_files` path does not populate co-change
-/// inputs via `RankCtx` today, so the signal contributes `0.0` there; the
-/// CoChange tier is assigned directly by `changed_with=` callers in
-/// `protocol::tools`.
+/// Co-change signal — consumes the caller-prepared weighted coupling score
+/// once the shared-commit floor is met. The live `search_files` path does not
+/// populate co-change inputs via `RankCtx` today, so the signal contributes
+/// `0.0` there; the CoChange tier is assigned directly by `changed_with=`
+/// callers in `protocol::tools`.
 pub struct CoChangeSignal;
 
 impl RankSignal for CoChangeSignal {
@@ -176,9 +187,47 @@ impl RankSignal for CoChangeSignal {
         1.0
     }
 
-    fn score(&self, _path: &Path, _ctx: &RankCtx<'_>) -> f32 {
-        0.0
+    fn score(&self, _path: &Path, ctx: &RankCtx<'_>) -> f32 {
+        let Some(target_path) = ctx.target_path else {
+            return 0.0;
+        };
+        if is_chore_anchor_path(target_path) {
+            return 0.0;
+        }
+        if PathMatchSignal.score(Path::new(target_path), ctx) < CO_CHANGE_ANCHOR_CONFIDENCE_FLOOR {
+            return 0.0;
+        }
+
+        let Some(co_change_count) = ctx.co_change_count else {
+            return 0.0;
+        };
+        if co_change_count < FILE_LEVEL_CO_CHANGE_FLOOR {
+            return 0.0;
+        }
+
+        let Some(weighted_score) = ctx.co_change_weighted_score else {
+            return 0.0;
+        };
+        if !weighted_score.is_finite() || weighted_score <= 0.0 {
+            return 0.0;
+        }
+
+        weighted_score
     }
+}
+
+fn is_chore_anchor_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    let normalized = normalized.trim_start_matches("./");
+    let file_name = normalized.rsplit('/').next().unwrap_or(normalized);
+    if CHORE_ANCHOR_FILENAMES.contains(&file_name) {
+        return true;
+    }
+
+    let Some(workflow_name) = normalized.strip_prefix(".github/workflows/") else {
+        return false;
+    };
+    workflow_name.ends_with(".yml") || workflow_name.ends_with(".yaml")
 }
 
 fn registry() -> &'static RwLock<Vec<Box<dyn RankSignal>>> {
@@ -255,7 +304,10 @@ mod tests {
     fn combine_with_defaults_returns_zero() {
         reset_for_tests();
         let ctx = RankCtx::empty();
-        assert_eq!(combine(Path::new("src/live_index/rank_signals.rs"), &ctx), 0.0);
+        assert_eq!(
+            combine(Path::new("src/live_index/rank_signals.rs"), &ctx),
+            0.0
+        );
     }
 
     #[test]

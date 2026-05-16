@@ -272,7 +272,8 @@ use crate::domain::{LanguageId, ReferenceKind};
 use crate::live_index::qualified_usages::{self, QualifiedUsage};
 use crate::live_index::{
     FindReferencesView, IndexedFile, ReferenceContextLineView, ReferenceFileView, ReferenceHitView,
-    SearchFilesHit, SearchFilesResolveView, SearchFilesTier, SearchFilesView, search,
+    SearchFilesCouplingEvidence, SearchFilesCouplingNeighbors, SearchFilesHit,
+    SearchFilesResolveView, SearchFilesTier, SearchFilesView, search,
     store::{IndexState, LiveIndex},
 };
 use crate::protocol::edit;
@@ -469,16 +470,17 @@ pub struct SearchFilesInput {
     pub max_tokens: Option<u64>,
     /// Optional ranking mode. `"frecency"` fuses the tier-based path
     /// match with per-workspace frecency; requires `SYMFORGE_FRECENCY=1`.
+    /// `"path+cochange"` fuses path match with the coupling store when
+    /// `anchor_path` is set and the workspace has coupling data.
     /// Any other value (including `None`) preserves the default
     /// tier-based ordering exactly.
     ///
-    /// Note: co-change rerank is NOT yet wired into this parameter. It
-    /// will land in Tentacle 3 (see ADR 0013) at which point this
-    /// docstring will be updated to describe the fused mode. Until
-    /// then, coupling-store signals are only available via the
-    /// separate `changed_with=` branch.
+    /// The separate `changed_with=` branch is preserved for compatibility.
     #[serde(default)]
     pub rank_by: Option<String>,
+    /// Anchor file used as the co-change pivot when `rank_by="path+cochange"`.
+    #[serde(default)]
+    pub anchor_path: Option<String>,
 }
 
 /// Input for `index_folder`.
@@ -2101,6 +2103,44 @@ fn search_files_match_type_label(view: &SearchFilesView) -> &'static str {
             None => "constrained",
         },
         _ => "constrained",
+    }
+}
+
+const MAX_CO_CHANGE_PARTNERS_PER_ANCHOR: u32 = 20;
+
+fn search_files_coupling_neighbors(
+    index: &LiveIndex,
+    anchor_path: &str,
+) -> Option<SearchFilesCouplingNeighbors> {
+    let store = index.coupling_store()?;
+    let rows = store
+        .query_with_floor(
+            &crate::live_index::coupling::AnchorKey::file(anchor_path),
+            MAX_CO_CHANGE_PARTNERS_PER_ANCHOR,
+            crate::live_index::rank_signals::FILE_LEVEL_CO_CHANGE_FLOOR,
+        )
+        .ok()?;
+    let mut neighbors = HashMap::new();
+    for row in rows {
+        let Some(partner_path) = row.partner.as_str().strip_prefix("file:") else {
+            continue;
+        };
+        let weighted_score = row.weighted_score as f32;
+        if !weighted_score.is_finite() || weighted_score <= 0.0 {
+            continue;
+        }
+        neighbors.insert(
+            partner_path.to_string(),
+            SearchFilesCouplingEvidence {
+                shared_commits: row.shared_commits,
+                weighted_score,
+            },
+        );
+    }
+    if neighbors.is_empty() {
+        None
+    } else {
+        Some(neighbors)
     }
 }
 
@@ -4257,10 +4297,11 @@ impl SymForgeServer {
     }
 
     /// Find files by path, filename, or folder — ranked by relevance. With changed_with=path,
-    /// finds co-changing files via git temporal coupling. Set resolve=true for exact path resolution.
+    /// finds co-changing files via git temporal coupling. Set rank_by="path+cochange" with
+    /// anchor_path to fuse path matches with the coupling store. Set resolve=true for exact path resolution.
     /// NOT for file content search (use search_text). NOT for symbol names (use search_symbols).
     #[tool(
-        description = "Find files by path, filename, or folder — ranked by relevance. Modes: (1) default: fuzzy search ranked by relevance, (2) changed_with=path: co-changing files via git temporal coupling, (3) resolve=true: resolve an ambiguous filename or partial path to one exact project path. NOT for file content search (use search_text). NOT for symbol names (use search_symbols).",
+        description = "Find files by path, filename, or folder — ranked by relevance. Modes: (1) default: fuzzy search ranked by relevance, (2) changed_with=path: co-changing files via git temporal coupling, (3) rank_by=\"path+cochange\" with anchor_path: fuse path matches with coupling-store evidence, (4) resolve=true: resolve an ambiguous filename or partial path to one exact project path. NOT for file content search (use search_text). NOT for symbol names (use search_symbols).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn search_files(&self, params: Parameters<SearchFilesInput>) -> String {
@@ -4469,10 +4510,23 @@ impl SymForgeServer {
         let mut view = {
             let guard = self.index.read();
             loading_guard!(guard);
+            let coupling_neighbors = if params.0.rank_by.as_deref() == Some("path+cochange")
+                && let Some(anchor_path) = params.0.anchor_path.as_deref()
+            {
+                search_files_coupling_neighbors(&guard, anchor_path)
+            } else {
+                None
+            };
+            let coupling_context = params
+                .0
+                .anchor_path
+                .as_deref()
+                .zip(coupling_neighbors.as_ref());
             guard.capture_search_files_view(
                 &params.0.query,
                 params.0.limit.unwrap_or(20) as usize,
                 params.0.current_file.as_deref(),
+                coupling_context,
             )
         };
         // Optional frecency-fusion rerank. Activated only when the caller asked
@@ -6737,6 +6791,7 @@ impl SymForgeServer {
                     estimate: None,
                     max_tokens: None,
                     rank_by: None,
+                    anchor_path: None,
                 };
                 self.search_files(Parameters(input)).await
             }
@@ -8153,6 +8208,15 @@ mod tests {
         };
         index.rebuild_reverse_index();
         index.rebuild_path_indices();
+        index
+    }
+
+    fn make_live_index_ready_with_coupling_store(
+        files: Vec<(String, IndexedFile)>,
+        store: crate::live_index::coupling::CouplingStore,
+    ) -> LiveIndex {
+        let mut index = make_live_index_ready(files);
+        index.coupling_store = Some(Arc::new(store));
         index
     }
 
@@ -10600,6 +10664,7 @@ mod tests {
                 estimate: None,
                 max_tokens: None,
                 rank_by: None,
+                anchor_path: None,
             }))
             .await;
         assert!(result.contains("2 matching files"), "got: {result}");
@@ -10634,6 +10699,7 @@ mod tests {
                 estimate: None,
                 max_tokens: None,
                 rank_by: None,
+                anchor_path: None,
             }))
             .await;
         assert_eq!(result, "No indexed source files matching 'src/service.rs'");
@@ -10654,6 +10720,7 @@ mod tests {
                 estimate: None,
                 max_tokens: None,
                 rank_by: None,
+                anchor_path: None,
             }))
             .await;
         // Without git temporal data, should return informative message (not an error/panic)
@@ -10718,6 +10785,7 @@ mod tests {
                 estimate: None,
                 max_tokens: None,
                 rank_by: None,
+                anchor_path: None,
             }))
             .await;
 
@@ -10727,6 +10795,135 @@ mod tests {
         );
         assert!(result.contains("Low confidence"), "{result}");
         assert!(result.contains("src/routes.rs"), "{result}");
+    }
+
+    #[tokio::test]
+    async fn test_search_files_path_cochange_uses_coupling_store_anchor_neighbors() {
+        let store = crate::live_index::coupling::CouplingStore::open_in_memory().unwrap();
+        store
+            .bulk_upsert(&[crate::live_index::coupling::CouplingRow {
+                anchor: crate::live_index::coupling::AnchorKey::file("src/auth/routes.rs"),
+                partner: crate::live_index::coupling::AnchorKey::file("src/server/routes.rs"),
+                shared_commits: 3,
+                weighted_score: 11.0,
+                last_commit_ts: 1_700_000_000,
+            }])
+            .unwrap();
+        let server = make_server(make_live_index_ready_with_coupling_store(
+            vec![
+                make_file("src/auth/routes.rs", b"fn auth_routes() {}", vec![]),
+                make_file("src/server/routes.rs", b"fn server_routes() {}", vec![]),
+                make_file("src/client/routes.rs", b"fn client_routes() {}", vec![]),
+            ],
+            store,
+        ));
+
+        let result = server
+            .search_files(Parameters(super::SearchFilesInput {
+                query: "routes.rs".to_string(),
+                limit: Some(20),
+                current_file: None,
+                changed_with: None,
+                resolve: None,
+                estimate: None,
+                max_tokens: None,
+                rank_by: Some("path+cochange".to_string()),
+                anchor_path: Some("src/auth/routes.rs".to_string()),
+            }))
+            .await;
+
+        assert!(
+            result.contains("── Co-changed files (git temporal coupling) ──"),
+            "got: {result}"
+        );
+        let partner_pos = result.find("src/server/routes.rs").expect("partner");
+        let anchor_pos = result.find("src/auth/routes.rs").expect("anchor");
+        assert!(
+            partner_pos < anchor_pos,
+            "co-change partner should be promoted above anchor: {result}"
+        );
+        assert!(
+            result.contains("3 shared commits"),
+            "coupling evidence should be rendered: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_files_path_cochange_without_anchor_path_falls_back_to_default() {
+        let store = crate::live_index::coupling::CouplingStore::open_in_memory().unwrap();
+        let server = make_server(make_live_index_ready_with_coupling_store(
+            vec![
+                make_file("src/auth/routes.rs", b"fn auth_routes() {}", vec![]),
+                make_file("src/server/routes.rs", b"fn server_routes() {}", vec![]),
+            ],
+            store,
+        ));
+        let default = server
+            .search_files(Parameters(super::SearchFilesInput {
+                query: "routes.rs".to_string(),
+                limit: Some(20),
+                current_file: None,
+                changed_with: None,
+                resolve: None,
+                estimate: None,
+                max_tokens: None,
+                rank_by: None,
+                anchor_path: None,
+            }))
+            .await;
+
+        let path_cochange = server
+            .search_files(Parameters(super::SearchFilesInput {
+                query: "routes.rs".to_string(),
+                limit: Some(20),
+                current_file: None,
+                changed_with: None,
+                resolve: None,
+                estimate: None,
+                max_tokens: None,
+                rank_by: Some("path+cochange".to_string()),
+                anchor_path: None,
+            }))
+            .await;
+
+        assert_eq!(path_cochange, default);
+    }
+
+    #[tokio::test]
+    async fn test_search_files_path_cochange_without_coupling_store_falls_back_to_default() {
+        let server = make_server(make_live_index_ready(vec![
+            make_file("src/auth/routes.rs", b"fn auth_routes() {}", vec![]),
+            make_file("src/server/routes.rs", b"fn server_routes() {}", vec![]),
+        ]));
+        let default = server
+            .search_files(Parameters(super::SearchFilesInput {
+                query: "routes.rs".to_string(),
+                limit: Some(20),
+                current_file: None,
+                changed_with: None,
+                resolve: None,
+                estimate: None,
+                max_tokens: None,
+                rank_by: None,
+                anchor_path: None,
+            }))
+            .await;
+
+        let path_cochange = server
+            .search_files(Parameters(super::SearchFilesInput {
+                query: "routes.rs".to_string(),
+                limit: Some(20),
+                current_file: None,
+                changed_with: None,
+                resolve: None,
+                estimate: None,
+                max_tokens: None,
+                rank_by: Some("path+cochange".to_string()),
+                anchor_path: Some("src/auth/routes.rs".to_string()),
+            }))
+            .await;
+
+        assert_eq!(path_cochange, default);
     }
 
     #[tokio::test]
@@ -10743,6 +10940,7 @@ mod tests {
                 estimate: None,
                 max_tokens: None,
                 rank_by: None,
+                anchor_path: None,
             }))
             .await;
         assert!(
@@ -10772,6 +10970,7 @@ mod tests {
                 estimate: None,
                 max_tokens: None,
                 rank_by: None,
+                anchor_path: None,
             }))
             .await;
         assert!(
