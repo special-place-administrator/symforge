@@ -894,7 +894,7 @@ Bounded product-correctness slice after the current Wave 3 trust and edit-safety
 
 **Dependency:** after Wave 3 trust/edit-safety foundation work has landed, especially pre-write tee snapshots and `.symforge/` trust-gating decisions.
 
-**Scope:** execute tasks 01-06 from `docs/plans/2026-05-16-call-time-capability-resolution/`:
+**Scope:** execute tasks 01-07 from `docs/plans/2026-05-16-call-time-capability-resolution/`:
 
 - Task 01 records the product contract in ADR 0016, README wording, and this roadmap entry.
 - Task 02 adds the shared capability evidence and policy model.
@@ -902,10 +902,11 @@ Bounded product-correctness slice after the current Wave 3 trust and edit-safety
 - Task 04 converts co-change lazy preparation and fallback evidence.
 - Task 05 converts worktree routing to explicit call-time `working_directory` consent unless policy disables it.
 - Task 06 adds call-time ranking explanation.
+- Task 07 closes the slice with compact health capability-state visibility, integration tests, and close-out evidence.
 
 **Non-goals:** no multi-process router, no multi-index SymForge swarm, no broad generic `scope` parameter, no cloud control plane, and no replacement of `LiveIndex` as the current-byte authority.
 
-**Gate:** env-vars-unset call-time capability tests pass for frecency, co-change, worktree routing, and ranking explanation, or the response includes explicit unavailable/disabled/fallback evidence per ADR 0016.
+**Gate:** env-vars-unset call-time capability tests pass for frecency, co-change, worktree routing, and ranking explanation, health reports compact capability states, or the response includes explicit unavailable/disabled/fallback evidence per ADR 0016.
 
 **Verification:** targeted tests for each task plus `cargo check`, `cargo test --all-targets -- --test-threads=1`, `cargo build --release`, and `git diff --check` before the wave is called complete.
 

@@ -27,7 +27,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::capability::{
     CapabilityCost, CapabilityEvidence, CapabilityFreshness, CapabilityName, CapabilitySafety,
-    CapabilityStatus, CouplingPreparePolicy,
+    CapabilityStatus, CouplingPreparePolicy, FrecencyCollectionPolicy, WorktreeRoutingPolicy,
 };
 
 /// Deserialize a `u32` from either a JSON number or a stringified number like `"5"`.
@@ -2575,6 +2575,138 @@ fn search_files_ranking_explanation(
         ),
     ]
     .join("\n")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CapabilityStatusReport {
+    frecency: String,
+    co_change: String,
+    worktree_routing: String,
+    ranking_diagnostics: String,
+}
+
+impl CapabilityStatusReport {
+    fn full_text(&self) -> String {
+        format!(
+            "Capabilities:\n  frecency: {}\n  co-change: {}\n  worktree routing: {}\n  ranking diagnostics: {}",
+            self.frecency, self.co_change, self.worktree_routing, self.ranking_diagnostics
+        )
+    }
+
+    fn compact_text(&self) -> String {
+        format!(
+            "Capabilities: frecency={}; co-change={}; worktree={}; ranking={}",
+            self.frecency, self.co_change, self.worktree_routing, self.ranking_diagnostics
+        )
+    }
+}
+
+fn frecency_health_status(repo_root: Option<&Path>) -> String {
+    let Some(repo_root) = repo_root else {
+        return "unavailable/no-repository-root".to_string();
+    };
+    let has_persistent_history = repo_root
+        .join(crate::paths::SYMFORGE_FRECENCY_DB_PATH)
+        .is_file();
+    match crate::live_index::frecency::collection_policy_from_env() {
+        FrecencyCollectionPolicy::Disabled => "disabled by policy".to_string(),
+        FrecencyCollectionPolicy::Session => {
+            if has_persistent_history {
+                "ready/session+persistent".to_string()
+            } else {
+                "ready/session/no-history fallback-used-on-empty".to_string()
+            }
+        }
+        FrecencyCollectionPolicy::Persistent => {
+            if has_persistent_history {
+                "ready/persistent".to_string()
+            } else {
+                "ready/persistent/no-history fallback-used-on-empty".to_string()
+            }
+        }
+    }
+}
+
+fn cochange_store_health_status(
+    store: &crate::live_index::coupling::CouplingStore,
+    repo_root: &Path,
+) -> String {
+    match store.cold_built_at() {
+        Ok(Some(_)) => {}
+        Ok(None) => return "preparing/cold-build-pending fallback-used-on-request".to_string(),
+        Err(error) => return format!("unavailable/store-build-state-error ({error})"),
+    }
+
+    let stored_head = match store.last_head() {
+        Ok(Some(head)) => head,
+        Ok(None) => return "preparing/no-head-recorded fallback-used-on-request".to_string(),
+        Err(error) => return format!("unavailable/store-head-state-error ({error})"),
+    };
+    let current_head = match crate::git::head_sha(repo_root) {
+        Ok(head) => head,
+        Err(error) => return format!("unavailable/head-read-failed ({error})"),
+    };
+    if stored_head != current_head {
+        "stale/head-mismatch fallback-used-on-request".to_string()
+    } else {
+        "ready/current".to_string()
+    }
+}
+
+fn cochange_health_status(index: &LiveIndex, repo_root: Option<&Path>) -> String {
+    let policy = crate::live_index::coupling::coupling_prepare_policy_from_env();
+    if matches!(policy, CouplingPreparePolicy::Disabled) {
+        return "disabled by policy".to_string();
+    }
+
+    let Some(repo_root) = repo_root else {
+        return "unavailable/no-repository-root".to_string();
+    };
+    if git2::Repository::discover(repo_root).is_err() {
+        return "unavailable/not-a-git-repo".to_string();
+    }
+
+    if let Some(store) = index.coupling_store() {
+        return cochange_store_health_status(store, repo_root);
+    }
+
+    match crate::live_index::coupling::open_existing_coupling_store(repo_root) {
+        Ok(Some(store)) => cochange_store_health_status(store.as_ref(), repo_root),
+        Ok(None) => match policy {
+            CouplingPreparePolicy::LazyOnRequest => {
+                "preparing/lazy-on-request fallback-used-on-request".to_string()
+            }
+            CouplingPreparePolicy::WarmOnStart => {
+                "preparing/warm-on-start fallback-used-on-request".to_string()
+            }
+            CouplingPreparePolicy::Disabled => "disabled by policy".to_string(),
+        },
+        Err(error) => format!("unavailable/store-open-failed ({error})"),
+    }
+}
+
+fn worktree_routing_health_status() -> String {
+    match crate::worktree::routing_policy_from_env() {
+        WorktreeRoutingPolicy::ExplicitCallTime => "explicit-call enabled".to_string(),
+        WorktreeRoutingPolicy::Disabled => "disabled by policy".to_string(),
+    }
+}
+
+fn ranking_diagnostics_health_status() -> String {
+    if std::env::var("SYMFORGE_DEBUG_RANKING").as_deref() == Ok("1") {
+        "call-time explain available/default-on".to_string()
+    } else {
+        "call-time explain available/default-off".to_string()
+    }
+}
+
+fn capability_status_report(index: &LiveIndex, repo_root: Option<&Path>) -> CapabilityStatusReport {
+    CapabilityStatusReport {
+        frecency: frecency_health_status(repo_root),
+        co_change: cochange_health_status(index, repo_root),
+        worktree_routing: worktree_routing_health_status(),
+        ranking_diagnostics: ranking_diagnostics_health_status(),
+    }
 }
 
 const CHANGED_WITH_DEPRECATION_WARNING: &str = "Deprecation warning: `search_files changed_with=` is deprecated since v7.x and scheduled for removal in v8.x; prefer `rank_by=\"path+cochange\"` with `anchor_path=<path>`.";
@@ -5464,6 +5596,14 @@ impl SymForgeServer {
             &self.index.git_temporal(),
         ));
 
+        let capabilities = {
+            let repo_root = self.capture_repo_root();
+            let guard = self.index.read();
+            capability_status_report(&guard, repo_root.as_deref())
+        };
+        result.push('\n');
+        result.push_str(&capabilities.full_text());
+
         // Append worktree-awareness misuse counter (rolling last-hour window).
         result.push('\n');
         result.push_str(&format!(
@@ -5559,6 +5699,14 @@ impl SymForgeServer {
             git_temporal_summary,
             self.worktree_misuse.current_window_count()
         ));
+
+        let capabilities = {
+            let repo_root = self.capture_repo_root();
+            let guard = self.index.read();
+            capability_status_report(&guard, repo_root.as_deref())
+        };
+        result.push('\n');
+        result.push_str(&capabilities.compact_text());
 
         self.session_context.record_summary_output(
             "health_compact",

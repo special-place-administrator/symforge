@@ -21,7 +21,7 @@ SymForge is a local-first code intelligence layer for agents. It keeps an in-mem
 - **Impact tracing:** references, dependents, symbol-level diffs, uncommitted/changed-file views, match inspection, and post-edit impact analysis.
 - **Structural edits:** symbol-scoped replacement, insertion, deletion, find-and-replace, batch edits, batch inserts, batch renames, and edit planning.
 - **Ranking signals:** path matching by default, optional frecency ranking, and optional co-change ranking when a coupling store is available.
-- **Runtime observability:** health reports for index state, parser resilience, watcher state, hook adoption, daemon fallback routing, git temporal hotspots, coupling evidence, and worktree-awareness misuse.
+- **Runtime observability:** health reports for index state, parser resilience, watcher state, hook adoption, daemon fallback routing, git temporal hotspots, compact capability states, coupling evidence, and worktree-awareness misuse.
 - **MCP surfaces:** tools, built-in resources, resource templates, and prompts for review, architecture mapping, failure triage, onboarding, refactoring, and debugging.
 
 ### Supported inputs and clients
@@ -160,6 +160,18 @@ All seven edit tools accept an optional `working_directory` parameter pointing a
 ### Ranking signals
 
 `search_files` ranks path matches by default and can opt into additional signals when the caller requests them. SymForge is migrating optional ranking capabilities to a call-time contract: a requested capability should be applied, prepared with evidence, reported unavailable, or reported disabled by policy. Frecency and co-change ranking follow that contract now; other optional capabilities may still carry transitional gates until their migration tasks land. The variables below are policy/default controls, not the only path for an LLM to request advertised behavior. See [ADR 0016](docs/decisions/0016-call-time-capability-resolution.md).
+
+`health` and `health_compact` include a compact capability summary so operators can see the current call-time state without turning ranking responses into logs:
+
+```text
+Capabilities:
+  frecency: ready/session/no-history fallback-used-on-empty
+  co-change: preparing/lazy-on-request fallback-used-on-request
+  worktree routing: explicit-call enabled
+  ranking diagnostics: call-time explain available/default-off
+```
+
+The status labels distinguish ready/current, preparing, unavailable, disabled-by-policy, stale, and fallback-used states where they apply. Detailed per-query ranking reasons stay in `search_files(debug_ranking=true)`.
 
 Use `rank_by="frecency"` to request fusion of a per-workspace frecency signal with path matching. Frecency decays on a 7-day half-life, so a file you touched five minutes ago outranks one you hit ten times six months ago. The request uses available current-session or existing persistent frecency history; if there is no useful history, the store is unavailable, or policy disables frecency, the response returns path ranking with explicit capability evidence. Omit `rank_by` for the default path-based order. See [ADR 0011](docs/decisions/0011-frecency-bump-policy.md).
 

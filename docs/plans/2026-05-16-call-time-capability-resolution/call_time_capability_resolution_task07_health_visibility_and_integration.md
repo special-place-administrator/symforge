@@ -94,18 +94,18 @@
 
 ## Implementation Checklist
 
-- [ ] Re-read this task and list the plan.
-- [ ] Inspect health output paths, schema roundtrip tests, and feature-specific tests from Tasks 03-06.
-- [ ] Add or update capability status integration tests.
-- [ ] Add health/status output for capability states.
-- [ ] Update README and roadmap to match final behavior.
-- [ ] Create close-out evidence note.
-- [ ] Run focused integration tests.
-- [ ] Run `cargo check`.
-- [ ] Run `cargo test --all-targets -- --test-threads=1`.
-- [ ] Run `cargo build --release`.
-- [ ] Run installed-runtime smoke if available on the local machine.
-- [ ] Confirm every success criterion.
+- [x] Re-read this task and list the plan.
+- [x] Inspect health output paths, schema roundtrip tests, and feature-specific tests from Tasks 03-06.
+- [x] Add or update capability status integration tests.
+- [x] Add health/status output for capability states.
+- [x] Update README and roadmap to match final behavior.
+- [x] Create close-out evidence note.
+- [x] Run focused integration tests.
+- [x] Run `cargo check`.
+- [x] Run `cargo test --all-targets -- --test-threads=1`.
+- [x] Run `cargo build --release`.
+- [x] Run installed-runtime smoke if available on the local machine.
+- [x] Confirm every success criterion.
 
 ## Implementation Chunks
 
