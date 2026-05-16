@@ -1,5 +1,12 @@
 # Changelog
 
+## [7.9.0](https://github.com/special-place-administrator/symforge/compare/v7.8.2...v7.9.0) (2026-05-16)
+
+
+### Features
+
+* **search-files:** fuse cochange ranking ([c90a757](https://github.com/special-place-administrator/symforge/commit/c90a7577cbc64712694128b158846cea52a1bb82))
+
 ## [7.8.2](https://github.com/special-place-administrator/symforge/compare/v7.8.1...v7.8.2) (2026-05-15)
 
 
