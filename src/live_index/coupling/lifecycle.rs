@@ -64,32 +64,41 @@ fn try_acquire(guard: Arc<AtomicBool>) -> Option<GuardRelease> {
 /// per-workspace guard is acquired before spawning and released by RAII in
 /// the spawned thread. On `std::thread::Builder::spawn` failure the guard
 /// is released synchronously so the workspace does not wedge.
-pub fn init_coupling_store(project_root: &Path) {
+pub fn init_coupling_store(project_root: &Path) -> Option<Arc<CouplingStore>> {
     if !flag_on() {
-        return;
+        return None;
     }
     if !is_git_repo(project_root) {
-        return;
+        return None;
     }
+
+    let db_path = project_root.join(crate::paths::SYMFORGE_COUPLING_DB_PATH);
+    let store = match CouplingStore::open(&db_path) {
+        Ok(store) => Arc::new(store),
+        Err(e) => {
+            debug!("coupling init: open failed: {e}");
+            return None;
+        }
+    };
 
     let guard = guard_for(project_root);
     if guard
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
     {
-        return;
+        return Some(store);
     }
     let guard_for_thread = Arc::clone(&guard);
 
-    let db_path = project_root.join(crate::paths::SYMFORGE_COUPLING_DB_PATH);
     let repo_root = project_root.to_path_buf();
+    let store_for_thread = Arc::clone(&store);
 
     let spawn_result = std::thread::Builder::new()
         .name("coupling-init".into())
         .spawn(move || {
             let _release = GuardRelease(guard_for_thread);
             debug!("coupling init: starting");
-            match run_init(&db_path, &repo_root) {
+            match run_init_with_store(&store_for_thread, &repo_root) {
                 Ok(()) => debug!("coupling init: ok"),
                 Err(e) => debug!("coupling init: failed: {e}"),
             }
@@ -99,6 +108,8 @@ pub fn init_coupling_store(project_root: &Path) {
         guard.store(false, Ordering::SeqCst);
         debug!("coupling init: spawn failed: {e}");
     }
+
+    Some(store)
 }
 
 /// Reconcile-tick entry point. Called from the watcher's 30 s reconcile
@@ -146,6 +157,10 @@ pub fn refresh_on_reconcile_tick(project_root: &Path, expected_gen: u64, shared:
 /// Errors are returned as `String` for the caller to log-and-drop.
 pub(crate) fn run_init(db_path: &Path, repo_root: &Path) -> Result<(), String> {
     let store = CouplingStore::open(db_path).map_err(|e| e.to_string())?;
+    run_init_with_store(&store, repo_root)
+}
+
+fn run_init_with_store(store: &CouplingStore, repo_root: &Path) -> Result<(), String> {
     let cfg = WalkerConfig::system_now();
 
     let cold_built_at = store.cold_built_at().map_err(|e| e.to_string())?;

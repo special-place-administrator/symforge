@@ -403,6 +403,8 @@ pub struct LiveIndex {
     pub(crate) gitignore: Option<ignore::gitignore::Gitignore>,
     /// Files that were not fully indexed (Tier 2 metadata-only or Tier 3 hard-skipped).
     pub(crate) skipped_files: Vec<SkippedFile>,
+    /// Per-workspace co-change store, present only when coupling is explicitly enabled.
+    pub(crate) coupling_store: Option<Arc<super::coupling::CouplingStore>>,
     /// Reason this index started empty, if any. Set at construction time by
     /// the startup-plan branch; surfaced in `health` output as an actionable
     /// banner. `None` when the index has files or after a reload.
@@ -979,6 +981,7 @@ pub(crate) struct ReloadData {
     pub gitignore: Option<ignore::gitignore::Gitignore>,
     pub derived: DerivedIndices,
     pub skipped_files: Vec<SkippedFile>,
+    pub coupling_store: Option<Arc<super::coupling::CouplingStore>>,
 }
 
 /// Build a reverse index from a file map (standalone, no `&self` needed).
@@ -1257,6 +1260,7 @@ impl LiveIndex {
 
         let trigram_index = super::trigram::TrigramIndex::build_from_files(&files);
         let gitignore = discovery::load_gitignore(root);
+        let coupling_store = super::coupling::init_coupling_store(root);
 
         let mut index = LiveIndex {
             files,
@@ -1273,6 +1277,7 @@ impl LiveIndex {
             trigram_index,
             gitignore,
             skipped_files,
+            coupling_store,
             local_empty_reason: Arc::new(parking_lot::RwLock::new(None)),
         };
         index.rebuild_reverse_index();
@@ -1284,7 +1289,6 @@ impl LiveIndex {
         // `cached_store_for`) per ADR 0011 — discovery-only sessions leave
         // no frecency footprint.
         crate::live_index::frecency::ensure_bump_hook_registered();
-        super::coupling::init_coupling_store(root);
 
         Ok(SharedIndexHandle::shared(index))
     }
@@ -1309,6 +1313,7 @@ impl LiveIndex {
             trigram_index: super::trigram::TrigramIndex::new(),
             gitignore: None,
             skipped_files: Vec::new(),
+            coupling_store: None,
             local_empty_reason: Arc::new(parking_lot::RwLock::new(None)),
         };
         SharedIndexHandle::shared(index)
@@ -1323,6 +1328,10 @@ impl LiveIndex {
     /// Read the empty-index reason, if any.
     pub fn local_empty_reason(&self) -> Option<String> {
         self.local_empty_reason.read().clone()
+    }
+
+    pub fn coupling_store(&self) -> Option<&super::coupling::CouplingStore> {
+        self.coupling_store.as_deref()
     }
 
     pub fn add_skipped_file(&mut self, sf: SkippedFile) {
@@ -1454,6 +1463,7 @@ impl LiveIndex {
             // NOTE: reload does not track skipped files; health tier counts
             // will show 0 for Tier 2/3 after reload.
             skipped_files: Vec::new(),
+            coupling_store: super::coupling::init_coupling_store(root),
         })
     }
 
@@ -1475,6 +1485,7 @@ impl LiveIndex {
         self.files_by_dir_component = data.derived.files_by_dir_component;
         self.gitignore = data.gitignore;
         self.skipped_files = data.skipped_files;
+        self.coupling_store = data.coupling_store;
     }
 
     /// Replaces all files, resets circuit breaker, and updates timestamps.
@@ -1709,7 +1720,51 @@ mod tests {
         FileOutcome, LanguageId, ReferenceKind, ReferenceRecord, SymbolKind, SymbolRecord,
     };
     use std::fs;
+    use std::sync::Mutex as StdMutex;
     use tempfile::TempDir;
+
+    static COUPLING_ENV_LOCK: StdMutex<()> = StdMutex::new(());
+
+    struct CouplingEnvGuard {
+        previous: Option<String>,
+    }
+
+    impl CouplingEnvGuard {
+        fn set(value: Option<&str>) -> Self {
+            let previous =
+                std::env::var(crate::live_index::coupling::lifecycle::COUPLING_FLAG_ENV).ok();
+            // SAFETY: callers hold COUPLING_ENV_LOCK; relevant tests run single-threaded.
+            unsafe {
+                match value {
+                    Some(value) => std::env::set_var(
+                        crate::live_index::coupling::lifecycle::COUPLING_FLAG_ENV,
+                        value,
+                    ),
+                    None => std::env::remove_var(
+                        crate::live_index::coupling::lifecycle::COUPLING_FLAG_ENV,
+                    ),
+                }
+            }
+            Self { previous }
+        }
+    }
+
+    impl Drop for CouplingEnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: callers hold COUPLING_ENV_LOCK; relevant tests run single-threaded.
+            unsafe {
+                match self.previous.as_deref() {
+                    Some(value) => std::env::set_var(
+                        crate::live_index::coupling::lifecycle::COUPLING_FLAG_ENV,
+                        value,
+                    ),
+                    None => std::env::remove_var(
+                        crate::live_index::coupling::lifecycle::COUPLING_FLAG_ENV,
+                    ),
+                }
+            }
+        }
+    }
 
     fn dummy_symbol() -> SymbolRecord {
         let byte_range = (0, 10);
@@ -1886,6 +1941,42 @@ mod tests {
         assert_eq!(
             index.snapshot_verify_state(),
             SnapshotVerifyState::NotNeeded
+        );
+    }
+
+    #[test]
+    fn coupling_store_accessor_is_none_when_flag_unset() {
+        let _lock = COUPLING_ENV_LOCK.lock().unwrap();
+        let _env = CouplingEnvGuard::set(None);
+        let tmp = TempDir::new().unwrap();
+        git2::Repository::init(tmp.path()).unwrap();
+        write_file(tmp.path(), "src/lib.rs", "pub fn alpha() {}");
+
+        let shared = LiveIndex::load(tmp.path()).unwrap();
+        let db_path = tmp.path().join(crate::paths::SYMFORGE_COUPLING_DB_PATH);
+        assert!(shared.read().coupling_store().is_none());
+        assert!(
+            !db_path.exists(),
+            "flag-off load must not create the coupling database"
+        );
+    }
+
+    #[test]
+    fn coupling_store_accessor_is_some_when_flag_enabled_for_git_workspace() {
+        let _lock = COUPLING_ENV_LOCK.lock().unwrap();
+        let _env = CouplingEnvGuard::set(Some("1"));
+        let tmp = TempDir::new().unwrap();
+        git2::Repository::init(tmp.path()).unwrap();
+        write_file(tmp.path(), "src/lib.rs", "pub fn alpha() {}");
+
+        let shared = LiveIndex::load(tmp.path()).unwrap();
+        let index = shared.read();
+        let store = index
+            .coupling_store()
+            .expect("flag-on git workspace should expose coupling store");
+        assert_eq!(
+            store.schema_version().unwrap(),
+            crate::live_index::coupling::schema::CURRENT_SCHEMA_VERSION
         );
     }
 
@@ -2266,6 +2357,7 @@ mod tests {
             trigram_index: crate::live_index::trigram::TrigramIndex::new(),
             gitignore: None,
             skipped_files: Vec::new(),
+            coupling_store: None,
             local_empty_reason: Arc::new(parking_lot::RwLock::new(None)),
         }
     }

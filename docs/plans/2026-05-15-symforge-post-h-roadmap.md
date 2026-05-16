@@ -460,9 +460,11 @@ Lights up `CoChangeSignal::score()`. Implements ADR 0013's 6-rule contract. Rule
 
 **Verification:** `cargo test --lib rank_signals -- --test-threads=1` PASS.
 
-#### - [ ] **Unit 2.2: LiveIndex::coupling_store accessor (T3.2)**
+#### - [x] **Unit 2.2: LiveIndex::coupling_store accessor (T3.2)**
 
 **Goal:** Expose the per-workspace CouplingStore via `LiveIndex::coupling_store(&self) -> Option<&CouplingStore>`. Coupling store landed in T3.1/T3.2; this is the read-side accessor.
+
+**Status 2026-05-16:** Complete locally. TDD RED verified with `cargo test --lib coupling -- --test-threads=1` failing on missing `coupling_store()`; GREEN passed after storing `Option<Arc<CouplingStore>>` on `LiveIndex`, returning a borrowed accessor, and making `init_coupling_store` return `Some(store)` only for `SYMFORGE_COUPLING=1` git workspaces. Existing `LiveIndex` test/helper literals were updated with `coupling_store: None`. Verification passed: `cargo check`, `cargo test --lib coupling -- --test-threads=1`, `cargo test --all-targets -- --test-threads=1`, and `cargo build --release`.
 
 **Requirements:** R3
 
@@ -470,6 +472,7 @@ Lights up `CoChangeSignal::score()`. Implements ADR 0013's 6-rule contract. Rule
 
 **Files:**
 - Modify: `src/live_index/store.rs`, `src/live_index/coupling/lifecycle.rs` (per master plan-doc)
+- Mechanical constructor updates: existing `LiveIndex` test/helpers that build struct literals now pass `coupling_store: None`
 - Test: extend `tests/coupling_persistence.rs` or equivalent
 
 **Approach:** Wire the existing `CouplingStore` to `LiveIndex` as `Option<Arc<CouplingStore>>`; return `None` when `SYMFORGE_COUPLING != 1`.

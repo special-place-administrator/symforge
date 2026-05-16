@@ -3282,6 +3282,7 @@ mod tests {
             trigram_index,
             gitignore: None,
             skipped_files: Vec::new(),
+            coupling_store: None,
             local_empty_reason: Arc::new(parking_lot::RwLock::new(None)),
         };
         // Rebuild the reverse index so xref query tests work.
@@ -4428,6 +4429,7 @@ impl Actor for MyActor {
             trigram_index: crate::live_index::trigram::TrigramIndex::new(),
             gitignore: None,
             skipped_files: Vec::new(),
+            coupling_store: None,
             local_empty_reason: Arc::new(parking_lot::RwLock::new(None)),
         };
         assert!(!index.is_ready());
@@ -4465,6 +4467,7 @@ impl Actor for MyActor {
             trigram_index: crate::live_index::trigram::TrigramIndex::new(),
             gitignore: None,
             skipped_files: Vec::new(),
+            coupling_store: None,
             local_empty_reason: Arc::new(parking_lot::RwLock::new(None)),
         };
 

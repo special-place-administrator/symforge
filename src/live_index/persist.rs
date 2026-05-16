@@ -204,6 +204,7 @@ pub fn snapshot_to_live_index(snapshot: IndexSnapshot) -> LiveIndex {
         trigram_index,
         gitignore: None,
         skipped_files: Vec::new(),
+        coupling_store: None,
         local_empty_reason: Arc::new(parking_lot::RwLock::new(None)),
     };
     index.rebuild_reverse_index();
@@ -672,6 +673,7 @@ mod tests {
             trigram_index,
             gitignore: None,
             skipped_files: Vec::new(),
+            coupling_store: None,
             local_empty_reason: Arc::new(parking_lot::RwLock::new(None)),
         };
         index.rebuild_reverse_index();
@@ -996,6 +998,7 @@ mod tests {
             trigram_index,
             gitignore: None,
             skipped_files: Vec::new(),
+            coupling_store: None,
             local_empty_reason: Arc::new(parking_lot::RwLock::new(None)),
         };
         index.rebuild_reverse_index();
@@ -1172,6 +1175,7 @@ mod tests {
             trigram_index,
             gitignore: None,
             skipped_files: Vec::new(),
+            coupling_store: None,
             local_empty_reason: Arc::new(parking_lot::RwLock::new(None)),
         };
         before.rebuild_reverse_index();
@@ -1408,6 +1412,7 @@ mod tests {
             trigram_index,
             gitignore: None,
             skipped_files: Vec::new(),
+            coupling_store: None,
             local_empty_reason: Arc::new(parking_lot::RwLock::new(None)),
         };
         index.rebuild_reverse_index();
@@ -1471,6 +1476,7 @@ mod tests {
             trigram_index,
             gitignore: None,
             skipped_files: Vec::new(),
+            coupling_store: None,
             local_empty_reason: Arc::new(parking_lot::RwLock::new(None)),
         };
         index.rebuild_reverse_index();
@@ -1542,6 +1548,7 @@ mod tests {
             trigram_index,
             gitignore: None,
             skipped_files: Vec::new(),
+            coupling_store: None,
             local_empty_reason: Arc::new(parking_lot::RwLock::new(None)),
         };
         index.rebuild_reverse_index();
@@ -1597,6 +1604,7 @@ mod tests {
             trigram_index,
             gitignore: None,
             skipped_files: Vec::new(),
+            coupling_store: None,
             local_empty_reason: Arc::new(parking_lot::RwLock::new(None)),
         };
         index.rebuild_reverse_index();
