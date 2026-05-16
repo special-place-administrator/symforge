@@ -437,9 +437,11 @@ Small wave. One mechanical commit + one verification pass. Completed on 2026-05-
 
 Lights up `CoChangeSignal::score()`. Implements ADR 0013's 6-rule contract. Rule 5 (anchor-confidence `Basename`) is promoted from PROVISIONAL to CALIBRATED via Wave 2 calibration data.
 
-#### - [ ] **Unit 2.1: RankCtx co-change fields (T3.1)**
+#### - [x] **Unit 2.1: RankCtx co-change fields (T3.1)**
 
 **Goal:** Add `co_change_count: Option<u32>` and `co_change_weighted_score: Option<f32>` to `RankCtx`. Existing `score()` callers pass `None` to preserve byte-identical behavior.
+
+**Status 2026-05-16:** Complete locally. TDD RED verified with `cargo test --lib rank_signals -- --test-threads=1` failing on missing `RankCtx` fields, then GREEN passed after adding the optional fields and `None` defaults in `RankCtx::empty()`, `capture_search_files_view`, and rank-signal test helpers. Verification passed: `cargo check`, `cargo test --lib rank_signals -- --test-threads=1`, `cargo test --all-targets -- --test-threads=1`, and `cargo build --release`.
 
 **Requirements:** R3 (ranker fusion foundation)
 

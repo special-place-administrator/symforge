@@ -1635,6 +1635,8 @@ impl LiveIndex {
             tokens: &tokens,
             current_file,
             target_path: None,
+            co_change_count: None,
+            co_change_weighted_score: None,
         };
         candidates.sort_by(|(lp, _), (rp, _)| {
             let l_score = super::rank_signals::combine(std::path::Path::new(lp), &ctx);

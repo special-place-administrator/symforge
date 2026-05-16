@@ -45,6 +45,10 @@ pub struct RankCtx<'a> {
     pub current_file: Option<&'a str>,
     /// Optional anchor path for co-change fusion (`changed_with=...`).
     pub target_path: Option<&'a str>,
+    /// Optional number of observed co-changes for the candidate path.
+    pub co_change_count: Option<u32>,
+    /// Optional normalized co-change score prepared by the caller.
+    pub co_change_weighted_score: Option<f32>,
 }
 
 impl<'a> RankCtx<'a> {
@@ -55,6 +59,8 @@ impl<'a> RankCtx<'a> {
             tokens: &[],
             current_file: None,
             target_path: None,
+            co_change_count: None,
+            co_change_weighted_score: None,
         }
     }
 }
@@ -300,6 +306,31 @@ mod tests {
         assert_eq!(default.tokens.len(), empty.tokens.len());
         assert_eq!(default.current_file, empty.current_file);
         assert_eq!(default.target_path, empty.target_path);
+        assert_eq!(default.co_change_count, empty.co_change_count);
+        assert_eq!(
+            default.co_change_weighted_score,
+            empty.co_change_weighted_score
+        );
+    }
+
+    #[test]
+    fn rank_ctx_defaults_co_change_inputs_to_none() {
+        let ctx = RankCtx::empty();
+        assert_eq!(ctx.co_change_count, None);
+        assert_eq!(ctx.co_change_weighted_score, None);
+    }
+
+    #[test]
+    fn co_change_signal_ignores_absent_or_zero_inputs_for_now() {
+        let none_ctx = RankCtx::empty();
+        let zero_ctx = RankCtx {
+            co_change_count: Some(0),
+            co_change_weighted_score: Some(0.0),
+            ..RankCtx::empty()
+        };
+
+        assert_eq!(CoChangeSignal.score(Path::new("foo.rs"), &none_ctx), 0.0);
+        assert_eq!(CoChangeSignal.score(Path::new("foo.rs"), &zero_ctx), 0.0);
     }
 
     fn ctx_with<'a>(query: &'a str, tokens: &'a [String]) -> RankCtx<'a> {
@@ -308,6 +339,8 @@ mod tests {
             tokens,
             current_file: None,
             target_path: None,
+            co_change_count: None,
+            co_change_weighted_score: None,
         }
     }
 
