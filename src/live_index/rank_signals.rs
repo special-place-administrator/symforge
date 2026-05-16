@@ -10,8 +10,9 @@
 //! `PathMatchSignal` returns one of a small set of tier weights
 //! (strong / basename / prefix / loose / none) that reproduce the previous
 //! tier-bucket concatenation ordering: `Strong > Basename > Prefix > Loose`.
-//! `CoChangeSignal` consumes caller-prepared co-change evidence; the live
-//! search path does not populate those inputs today, so it defaults to `0.0`.
+//! `CoChangeSignal` consumes caller-prepared co-change evidence. Default
+//! callers leave those inputs absent so it contributes `0.0`; callers that opt
+//! into `rank_by="path+cochange"` provide anchor and partner evidence.
 
 use std::path::Path;
 use std::sync::{OnceLock, RwLock};
@@ -56,7 +57,7 @@ pub struct RankCtx<'a> {
     pub tokens: &'a [String],
     /// Optional current editor file used for proximity-style boosts.
     pub current_file: Option<&'a str>,
-    /// Optional anchor path for co-change fusion (`changed_with=...`).
+    /// Optional anchor path for co-change fusion.
     pub target_path: Option<&'a str>,
     /// Optional number of observed co-changes for the candidate path.
     pub co_change_count: Option<u32>,
@@ -171,11 +172,9 @@ impl RankSignal for PathMatchSignal {
     }
 }
 
-/// Co-change signal — consumes the caller-prepared weighted coupling score
-/// once the shared-commit floor is met. The live `search_files` path does not
-/// populate co-change inputs via `RankCtx` today, so the signal contributes
-/// `0.0` there; the CoChange tier is assigned directly by `changed_with=`
-/// callers in `protocol::tools`.
+/// Co-change signal — consumes caller-prepared weighted coupling evidence once
+/// anchor confidence, chore-anchor, and shared-commit gates pass. Missing or
+/// rejected evidence contributes `0.0`, preserving default path-match ranking.
 pub struct CoChangeSignal;
 
 impl RankSignal for CoChangeSignal {

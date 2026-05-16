@@ -165,7 +165,7 @@ fn run_init_with_store(store: &CouplingStore, repo_root: &Path) -> Result<(), St
 
     let cold_built_at = store.cold_built_at().map_err(|e| e.to_string())?;
     if cold_built_at.is_none() {
-        cold_build(&store, repo_root, &cfg).map_err(|e| e.to_string())?;
+        cold_build(store, repo_root, &cfg).map_err(|e| e.to_string())?;
         return Ok(());
     }
 
@@ -175,7 +175,7 @@ fn run_init_with_store(store: &CouplingStore, repo_root: &Path) -> Result<(), St
         return Ok(());
     }
 
-    apply_head_delta(&store, repo_root, &cfg).map_err(|e| e.to_string())?;
+    apply_head_delta(store, repo_root, &cfg).map_err(|e| e.to_string())?;
     Ok(())
 }
 
