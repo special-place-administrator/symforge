@@ -1,5 +1,12 @@
 # Changelog
 
+## [7.9.2](https://github.com/special-place-administrator/symforge/compare/v7.9.1...v7.9.2) (2026-05-16)
+
+
+### Bug Fixes
+
+* close trust gate evidence and observability ([0dcbba4](https://github.com/special-place-administrator/symforge/commit/0dcbba43365df6cfcd1f70c8319b99711efc446e))
+
 ## [7.9.1](https://github.com/special-place-administrator/symforge/compare/v7.9.0...v7.9.1) (2026-05-16)
 
 
