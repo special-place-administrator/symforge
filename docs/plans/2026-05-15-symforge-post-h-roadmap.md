@@ -668,13 +668,17 @@ Per user direction: Tier 1 and Tier 2 combined into one cross-sprint. Sub-ordere
 
 **Verification:** `cargo test --lib parsing -- --test-threads=1` PASS; symbol count from `cargo test --lib parsing -- --list` unchanged.
 
-#### - [ ] **Unit 3b.2: Pre-edit tee snapshots module (RTK 4.4)**
+#### - [x] **Unit 3b.2: Pre-edit tee snapshots module (RTK 4.4)**
 
 **Goal:** Create `src/edit_safety/` module with tee-snapshot primitive. Save up to 20 files of up to 1MB each to `.symforge/tee/` before `replace_symbol_body`/`batch_edit` fires. Return recovery hint in tool response.
 
 **Requirements:** R3
 
 **Dependencies:** Wave 0 close (paired with 3b.1 in parallel — different files)
+
+**Status 2026-05-16:** Complete locally. TDD RED verified with `cargo test --test edit_safety_tee -- --test-threads=1` failing on missing `symforge::edit_safety`, then GREEN passed after adding `src/edit_safety/tee.rs`, wiring `atomic_write_file` to capture a non-fatal tee snapshot before replacement, and surfacing recovery hints in `replace_symbol_body` and `batch_edit` responses. Coverage pins created snapshots, 20-file retention, >1MB skip behavior, single-edit response hints, and batch-edit response hints. Verification passed: `cargo check`, `cargo test --test edit_safety_tee -- --test-threads=1`, `cargo test --lib test_replace_symbol_body_replaces_and_reindexes -- --test-threads=1`, `cargo test --lib test_batch_edit_applies_across_files -- --test-threads=1`, `cargo test --all-targets -- --test-threads=1`, and `cargo build --release`.
+
+**Landed:** `58f393f` (`feat(edit): add pre-write tee snapshots`)
 
 **Files:**
 - Create: `src/edit_safety/mod.rs`, `src/edit_safety/tee.rs`
