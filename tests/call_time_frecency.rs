@@ -2,14 +2,14 @@
 
 use std::ffi::OsString;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use parking_lot::Mutex;
 use serde_json::{Value, json};
 use symforge::live_index::LiveIndex;
-use symforge::live_index::frecency::{FRECENCY_FLAG_ENV, FrecencyStore};
+use symforge::live_index::frecency::{self, FRECENCY_FLAG_ENV, FrecencyStore};
 use symforge::paths::SYMFORGE_FRECENCY_DB_PATH;
 use symforge::protocol::SymForgeServer;
 use symforge::watcher::WatcherInfo;
@@ -137,6 +137,43 @@ fn assert_before(result: &str, first: &str, second: &str) {
         first_pos < second_pos,
         "expected `{first}` before `{second}`; result was:\n{result}"
     );
+}
+
+fn init_repo_with_root_commit(root: &Path) -> String {
+    let repo = git2::Repository::init(root).expect("git init");
+    let sig = git2::Signature::now("t", "t@x").expect("sig");
+    let tree_id = {
+        let mut idx = repo.index().expect("index");
+        idx.write_tree().expect("write tree")
+    };
+    let tree = repo.find_tree(tree_id).expect("find tree");
+    let oid = repo
+        .commit(Some("HEAD"), &sig, &sig, "root", &tree, &[])
+        .expect("commit");
+    oid.to_string()
+}
+
+fn advance_head(root: &Path, count: usize) {
+    let repo = git2::Repository::open(root).expect("open repo");
+    let sig = git2::Signature::now("t", "t@x").expect("sig");
+    let tree_id = {
+        let mut idx = repo.index().expect("index");
+        idx.write_tree().expect("write tree")
+    };
+    let tree = repo.find_tree(tree_id).expect("find tree");
+    for i in 0..count {
+        let parent_oid = repo.head().expect("head").target().expect("head target");
+        let parent = repo.find_commit(parent_oid).expect("find parent");
+        repo.commit(
+            Some("HEAD"),
+            &sig,
+            &sig,
+            &format!("c{i}"),
+            &tree,
+            &[&parent],
+        )
+        .expect("commit");
+    }
 }
 
 #[tokio::test]
@@ -280,4 +317,71 @@ async fn discovery_without_requested_frecency_stays_footprint_free() {
     .await;
     assert_contains(&result, "Capability: frecency ranking fallback used");
     assert_contains(&result, "no frecency history");
+}
+
+#[tokio::test]
+async fn cached_writer_post_reset_visible_to_ranking() {
+    let _env = EnvGuard::set("1");
+    let fx = Fixture::new(&[
+        ("src/file_a_old.rs", "pub fn item_a() {}\n"),
+        ("src/file_b_new.rs", "pub fn item_b() {}\n"),
+    ]);
+    let first = init_repo_with_root_commit(&fx.root);
+
+    {
+        let store = fx.open_store();
+        for _ in 0..10 {
+            store
+                .bump(&[PathBuf::from("src/file_a_old.rs")], 0)
+                .expect("seed old frecency row");
+        }
+        store
+            .reset_or_halve_on_head_change(None, &first, None)
+            .expect("anchor first HEAD");
+    }
+
+    advance_head(&fx.root, 501);
+    frecency::bump(&fx.root, &[PathBuf::from("src/file_b_new.rs")]);
+
+    let result = call(
+        &fx.server,
+        "search_files",
+        json!({"query": "src/file_", "limit": 10, "rank_by": "frecency"}),
+    )
+    .await;
+
+    assert_before(&result, "src/file_b_new.rs", "src/file_a_old.rs");
+    assert_contains(&result, "Capability: frecency ranking applied");
+    assert_contains(&result, "persistent (cached) frecency history");
+}
+
+#[tokio::test]
+async fn concurrent_bump_and_rank_under_persistent_policy_completes() {
+    let _env = EnvGuard::set("1");
+    let fx = Fixture::new(&[
+        ("src/file_a.rs", "pub fn item_a() {}\n"),
+        ("src/file_b.rs", "pub fn item_b() {}\n"),
+    ]);
+    frecency::bump(&fx.root, &[PathBuf::from("src/file_a.rs")]);
+
+    let bump_root = fx.root.clone();
+    let bump_task = tokio::task::spawn_blocking(move || {
+        for _ in 0..20 {
+            frecency::bump(&bump_root, &[PathBuf::from("src/file_b.rs")]);
+        }
+    });
+    let result = call(
+        &fx.server,
+        "search_files",
+        json!({"query": "src/file_", "limit": 10, "rank_by": "frecency"}),
+    )
+    .await;
+    bump_task.await.expect("bump task completed");
+
+    assert!(
+        !result.contains("unable to read frecency history"),
+        "rank_by=frecency must not error during same-process bump traffic; result was:\n{result}"
+    );
+    assert_contains(&result, "Capability: frecency ranking applied");
+    assert_contains(&result, "persistent (cached) frecency history");
 }

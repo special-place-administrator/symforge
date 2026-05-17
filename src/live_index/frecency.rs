@@ -193,9 +193,8 @@ impl FrecencyStore {
             return Ok(out);
         }
         let conn = self.conn.lock().expect("frecency mutex poisoned");
-        let mut stmt = conn.prepare_cached(
-            "SELECT last_access_ts, hit_count FROM frecency WHERE path = ?1",
-        )?;
+        let mut stmt =
+            conn.prepare_cached("SELECT last_access_ts, hit_count FROM frecency WHERE path = ?1")?;
         for p in paths {
             let key = normalize_path(p);
             let row: Option<(i64, i64)> = stmt
@@ -429,18 +428,29 @@ pub fn ranking_scores_for_paths(
     let mut scores = HashMap::new();
     let mut sources = Vec::new();
 
-    let db_path = repo_root.join(crate::paths::SYMFORGE_FRECENCY_DB_PATH);
-    match FrecencyStore::open_existing_readonly(&db_path) {
-        Ok(Some(store)) => {
-            scores.extend(
-                store
-                    .bulk_scores(paths, now_ts)
-                    .map_err(|err| err.to_string())?,
-            );
-            sources.push("persistent");
+    if let Some(store) = cached_persistent_for(repo_root) {
+        // Reuse the cached writer when it exists so rank-time reads serialize
+        // behind any same-process HEAD-reset transaction on the same mutex.
+        scores.extend(
+            store
+                .bulk_scores(paths, now_ts)
+                .map_err(|err| err.to_string())?,
+        );
+        sources.push("persistent (cached)");
+    } else {
+        let db_path = repo_root.join(crate::paths::SYMFORGE_FRECENCY_DB_PATH);
+        match FrecencyStore::open_existing_readonly(&db_path) {
+            Ok(Some(store)) => {
+                scores.extend(
+                    store
+                        .bulk_scores(paths, now_ts)
+                        .map_err(|err| err.to_string())?,
+                );
+                sources.push("persistent");
+            }
+            Ok(None) => {}
+            Err(err) => return Err(err.to_string()),
         }
-        Ok(None) => {}
-        Err(err) => return Err(err.to_string()),
     }
 
     if let Some(store) = cached_session_store_for(repo_root) {
@@ -462,6 +472,11 @@ pub fn ranking_scores_for_paths(
     }))
 }
 
+fn persistent_cache() -> &'static Mutex<HashMap<PathBuf, Arc<FrecencyStore>>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, Arc<FrecencyStore>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 /// Look up (or lazily create) the cached [`FrecencyStore`] for `repo_root`.
 ///
 /// All same-process callers for a given workspace share the same `Arc` and
@@ -475,8 +490,7 @@ pub fn ranking_scores_for_paths(
 /// happens INSIDE the cache mutex so two parallel bumps cannot race on policy
 /// application.
 fn cached_store_for(repo_root: &Path) -> Option<std::sync::Arc<FrecencyStore>> {
-    static CACHE: OnceLock<Mutex<HashMap<PathBuf, Arc<FrecencyStore>>>> = OnceLock::new();
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let cache = persistent_cache();
     let key = repo_root.join(crate::paths::SYMFORGE_FRECENCY_DB_PATH);
     let mut guard = cache.lock().ok()?;
     if let Some(existing) = guard.get(&key) {
@@ -488,6 +502,13 @@ fn cached_store_for(repo_root: &Path) -> Option<std::sync::Arc<FrecencyStore>> {
     let _ = store.apply_head_reset_policy(repo_root);
     guard.insert(key, Arc::clone(&store));
     Some(store)
+}
+
+fn cached_persistent_for(repo_root: &Path) -> Option<Arc<FrecencyStore>> {
+    let cache = persistent_cache();
+    let key = repo_root.join(crate::paths::SYMFORGE_FRECENCY_DB_PATH);
+    let guard = cache.lock().ok()?;
+    guard.get(&key).map(Arc::clone)
 }
 
 fn session_cache() -> &'static Mutex<HashMap<PathBuf, Arc<FrecencyStore>>> {
