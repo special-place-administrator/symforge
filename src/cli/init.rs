@@ -639,6 +639,14 @@ pub fn register_codex_mcp_server(
 }
 
 fn merge_symforge_codex_server(config: &mut DocumentMut, binary_path: &str) {
+    merge_symforge_codex_server_for_target_os(config, binary_path, std::env::consts::OS);
+}
+
+fn merge_symforge_codex_server_for_target_os(
+    config: &mut DocumentMut,
+    binary_path: &str,
+    target_os: &str,
+) {
     if !config.as_table().contains_key("mcp_servers") || !config["mcp_servers"].is_table() {
         config["mcp_servers"] = Item::Table(Table::new());
     }
@@ -658,6 +666,7 @@ fn merge_symforge_codex_server(config: &mut DocumentMut, binary_path: &str) {
     symforge["command"] = value(native_command_path(binary_path));
     symforge["startup_timeout_sec"] = value(CODEX_STARTUP_TIMEOUT_SEC);
     symforge["tool_timeout_sec"] = value(CODEX_TOOL_TIMEOUT_SEC);
+    merge_codex_mcp_env_overrides(symforge, target_os);
 
     let mut allow_array = Array::new();
     for tool_name in SYMFORGE_TOOL_NAMES {
@@ -670,6 +679,34 @@ fn merge_symforge_codex_server(config: &mut DocumentMut, binary_path: &str) {
     symforge["allowed_tools"] = value(allow_array);
 
     merge_codex_project_doc_fallbacks(config);
+}
+
+fn merge_codex_mcp_env_overrides(symforge: &mut Table, target_os: &str) {
+    let overrides = codex_mcp_env_overrides_for_target_os(target_os);
+    if overrides.is_empty() {
+        return;
+    }
+
+    if !symforge.contains_key("env") || !symforge["env"].is_table_like() {
+        symforge["env"] = Item::Table(Table::new());
+    }
+
+    let env = symforge["env"]
+        .as_table_like_mut()
+        .expect("symforge env must be a table or inline table");
+
+    for (name, env_value) in overrides {
+        env.insert(name, value(*env_value));
+    }
+}
+
+fn codex_mcp_env_overrides_for_target_os(
+    target_os: &str,
+) -> &'static [(&'static str, &'static str)] {
+    match target_os {
+        "linux" => &[("SYMFORGE_NO_DAEMON", "1")],
+        _ => &[],
+    }
 }
 
 fn merge_codex_project_doc_fallbacks(config: &mut DocumentMut) {
@@ -1531,6 +1568,86 @@ mod tests {
         assert!(
             content.contains("project_doc_fallback_filenames = [\"AGENTS.md\", \"CLAUDE.md\"]"),
             "should register both AGENTS.md and CLAUDE.md as project doc fallbacks: {content}"
+        );
+    }
+
+    #[test]
+    fn test_codex_linux_registration_disables_daemon() {
+        let mut config = DocumentMut::new();
+        merge_symforge_codex_server_for_target_os(&mut config, "/usr/bin/symforge", "linux");
+        let content = config.to_string();
+
+        assert!(
+            content.contains("[mcp_servers.symforge.env]"),
+            "linux Codex config should include an env table: {content}"
+        );
+        assert!(
+            content.contains("SYMFORGE_NO_DAEMON = \"1\""),
+            "linux Codex config should force reliable local stdio mode: {content}"
+        );
+        assert!(
+            content.contains("allowed_tools ="),
+            "existing Codex allow-list behavior should remain intact: {content}"
+        );
+    }
+
+    #[test]
+    fn test_codex_linux_registration_preserves_existing_env() {
+        let mut config = r#"
+[mcp_servers.symforge]
+command = "/old/symforge"
+
+[mcp_servers.symforge.env]
+EXISTING_FLAG = "keep"
+"#
+        .parse::<DocumentMut>()
+        .unwrap();
+
+        merge_symforge_codex_server_for_target_os(&mut config, "/usr/bin/symforge", "linux");
+        let content = config.to_string();
+
+        assert!(
+            content.contains("EXISTING_FLAG = \"keep\""),
+            "should preserve user-managed env entries: {content}"
+        );
+        assert!(
+            content.contains("SYMFORGE_NO_DAEMON = \"1\""),
+            "should add the Linux daemon bypass alongside existing env entries: {content}"
+        );
+    }
+
+    #[test]
+    fn test_codex_linux_registration_preserves_inline_env() {
+        let mut config = r#"
+[mcp_servers.symforge]
+command = "/old/symforge"
+env = { EXISTING_FLAG = "keep" }
+"#
+        .parse::<DocumentMut>()
+        .unwrap();
+
+        merge_symforge_codex_server_for_target_os(&mut config, "/usr/bin/symforge", "linux");
+        let content = config.to_string();
+
+        assert!(
+            content.contains("EXISTING_FLAG = \"keep\""),
+            "should preserve user-managed inline env entries: {content}"
+        );
+        assert!(
+            content.contains("SYMFORGE_NO_DAEMON = \"1\""),
+            "should add the Linux daemon bypass alongside inline env entries: {content}"
+        );
+    }
+
+    #[test]
+    fn test_codex_non_linux_registration_does_not_add_daemon_override() {
+        let mut config = DocumentMut::new();
+        merge_symforge_codex_server_for_target_os(&mut config, "/usr/bin/symforge", "windows");
+        let content = config.to_string();
+
+        assert!(
+            !content.contains("SYMFORGE_NO_DAEMON"),
+            "non-Linux Codex config should keep daemon behavior unchanged: {content}"
         );
     }
 
