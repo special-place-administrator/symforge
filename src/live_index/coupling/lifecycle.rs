@@ -21,18 +21,24 @@ use crate::live_index::store::SharedIndex;
 pub const COUPLING_FLAG_ENV: &str = "SYMFORGE_COUPLING";
 
 pub fn coupling_prepare_policy_from_env() -> CouplingPreparePolicy {
-    let Ok(raw) = std::env::var(COUPLING_FLAG_ENV) else {
-        return CouplingPreparePolicy::LazyOnRequest;
-    };
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "" | "lazy" | "lazy-on-request" | "lazy_on_request" | "request" => {
-            CouplingPreparePolicy::LazyOnRequest
-        }
-        "1" | "true" | "on" | "yes" | "warm" | "warm-on-start" | "warm_on_start" => {
-            CouplingPreparePolicy::WarmOnStart
-        }
-        "0" | "false" | "off" | "no" | "disable" | "disabled" => CouplingPreparePolicy::Disabled,
-        _ => CouplingPreparePolicy::LazyOnRequest,
+    match std::env::var(COUPLING_FLAG_ENV) {
+        Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+            "" | "lazy" | "lazy-on-request" | "lazy_on_request" | "request" => {
+                CouplingPreparePolicy::LazyOnRequest
+            }
+            "1" | "true" | "on" | "yes" | "warm" | "warm-on-start" | "warm_on_start" => {
+                CouplingPreparePolicy::WarmOnStart
+            }
+            "0" | "false" | "off" | "no" | "disable" | "disabled" => {
+                CouplingPreparePolicy::Disabled
+            }
+            // Unknown values fall back to the safe default (lazy). Coupling is
+            // opt-in-to-disable; unlike ranking diagnostics, an unrecognized
+            // value should not silently turn the feature off.
+            _ => CouplingPreparePolicy::LazyOnRequest,
+        },
+        Err(std::env::VarError::NotPresent) => CouplingPreparePolicy::LazyOnRequest,
+        Err(std::env::VarError::NotUnicode(_)) => CouplingPreparePolicy::Disabled,
     }
 }
 

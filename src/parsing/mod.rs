@@ -291,6 +291,10 @@ mod tests {
         assert_eq!(result.symbols[0].kind, SymbolKind::Function);
     }
 
+    // Regression guard: tree-sitter-rust must parse `&raw` as a borrow of a
+    // variable named `raw`, not as the start of `&raw const`/`&raw mut`.
+    // Originally guarded an in-tree byte-rewrite workaround (043b884); now
+    // pins the upgraded parser (9f7ff32) against future grammar regressions.
     #[test]
     fn test_process_file_rust_accepts_borrowed_raw_identifier() {
         let source = b"fn main() { let raw = 1; let _x = &raw; }";
@@ -298,6 +302,8 @@ mod tests {
         assert_eq!(result.outcome, FileOutcome::Processed);
     }
 
+    // Regression guard: tree-sitter-rust must still recognize the raw-borrow
+    // syntax `&raw const value` after the upgrade.
     #[test]
     fn test_process_file_rust_preserves_raw_borrow_syntax() {
         let source = b"fn main() { let value = 1; let _ptr = &raw const value; }";

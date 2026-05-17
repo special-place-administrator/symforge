@@ -420,6 +420,12 @@ pub fn bump(repo_root: &Path, paths: &[PathBuf]) {
 /// persistent store. Existing persistent history and current-process session
 /// history are both considered; session rows override persistent rows for the
 /// same path.
+///
+/// Note: a pre-existing `.symforge/frecency.db` is consulted whenever ranking
+/// is not policy-disabled. A workspace previously run under
+/// `SYMFORGE_FRECENCY=1` and now under Session policy will still see those
+/// stale persistent rows contribute. Operators wanting a clean slate must
+/// delete the DB file.
 pub fn ranking_scores_for_paths(
     repo_root: &Path,
     paths: &[&Path],
@@ -429,8 +435,11 @@ pub fn ranking_scores_for_paths(
     let mut sources = Vec::new();
 
     if let Some(store) = cached_persistent_for(repo_root) {
-        // Reuse the cached writer when it exists so rank-time reads serialize
-        // behind any same-process HEAD-reset transaction on the same mutex.
+        // Reuse the cached writer when it exists. The `bulk_scores` SQL
+        // executes under the same `FrecencyStore::conn` mutex as bumps and
+        // HEAD-reset, so SQL execution is serialized. Snapshot semantics are
+        // not — a HEAD-reset that commits between the cache lookup and the
+        // SQL read is reflected in the returned scores.
         scores.extend(
             store
                 .bulk_scores(paths, now_ts)
